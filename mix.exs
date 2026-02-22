@@ -46,6 +46,7 @@ defmodule Store.MixProject do
       {:postgrex, ">= 0.0.0"},
       {:ash, "~> 3.0"},
       {:ash_postgres, "~> 2.0"},
+      {:ash_state_machine, "~> 0.2.12"},
       {:ash_authentication, "~> 4.0"},
       {:ash_authentication_phoenix, "~> 2.0"},
       {:simple_sat, "~> 0.1"},
