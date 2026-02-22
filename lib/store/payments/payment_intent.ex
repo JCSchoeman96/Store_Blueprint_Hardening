@@ -6,6 +6,7 @@ defmodule Store.Payments.PaymentIntent do
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     extensions: [AshStateMachine],
+    authorizers: [Ash.Policy.Authorizer],
     domain: Store.Payments
 
   attributes do
@@ -83,6 +84,47 @@ defmodule Store.Payments.PaymentIntent do
     custom_indexes do
       index([:state], name: "payment_intents_state_index")
       index([:order_id], name: "payment_intents_order_id_index")
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      access_type(:runtime)
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
+    end
+
+    policy action(:create) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:submit) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:mark_succeeded) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:mark_failed) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:cancel) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy always() do
+      forbid_if(always())
     end
   end
 end

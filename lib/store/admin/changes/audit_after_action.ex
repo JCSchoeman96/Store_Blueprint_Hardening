@@ -30,12 +30,16 @@ defmodule Store.Admin.Changes.AuditAfterAction do
 
   defp normalize_context(changeset, change_context) do
     resource_change_context = change_context || %Ash.Resource.Change.Context{}
+    source_context = Map.get(resource_change_context, :source_context, %{})
 
     {:ok,
      %{
        context: changeset.context || %{},
-       source_context: Map.get(resource_change_context, :source_context, %{}),
-       actor: Map.get(resource_change_context, :actor)
+       source_context: source_context,
+       actor:
+         Map.get(resource_change_context, :actor) ||
+           source_context[:actor] ||
+           get_in(changeset.context || %{}, [:private, :actor])
      }}
   end
 
@@ -43,6 +47,8 @@ defmodule Store.Admin.Changes.AuditAfterAction do
     context_actor_id =
       context.context[:actor]
       |> actor_id()
+      |> fallback_actor_id(get_in(context.context, [:private, :actor]))
+      |> fallback_actor_id(context.source_context[:actor])
       |> fallback_actor_id(context.actor)
       |> fallback_actor_id(attribute_or_argument(changeset, :assigned_by))
 

@@ -80,14 +80,14 @@ defmodule Store.Admin.RoleAssignment do
     end
 
     policy action_type(:read) do
-      access_type(:strict)
+      access_type(:runtime)
       authorize_if(context_equals(:bootstrap?, true))
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
     end
 
     policy action_type(:create) do
-      access_type(:strict)
+      access_type(:runtime)
       authorize_if(context_equals(:bootstrap?, true))
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin]})

@@ -17,6 +17,7 @@ This document pins **who can do what**. If it isn’t here, it MUST be denied by
    - FORBIDDEN (logged in, but not allowed)
    - STEP_UP_REQUIRED (sensitive op without recent step-up)
 5) Support role MUST NOT become “shadow admin”. If you need a support-only mutation, define it explicitly below.
+6) Visibility constraints MUST be filter-based where possible (row-scoping in query/policy filter). Runtime checks are allowed only for non-row-scoping constraints (for example role gates and step-up gates).
 
 ## 3) Global “own-data” rule (customer)
 Customers may only read and mutate records they own:
@@ -31,7 +32,11 @@ Step-up is required for:
 - payout/bank detail changes (if present)
 
 Default window: 15 minutes.
+`step_up_at` MUST be set by trusted server-side step-up completion only (reauth/MFA boundary), injected into Ash context, and denied if absent/stale.
 See `docs/governance/step_up.md`.
+
+## 4.1 Data/index requirements (MUST)
+- `orders.user_id` MUST be indexed for own-data policy reads.
 
 ---
 

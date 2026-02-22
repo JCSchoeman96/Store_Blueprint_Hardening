@@ -8,5 +8,6 @@ defmodule Store.Admin do
   resources do
     resource(Store.Admin.AuditLog)
     resource(Store.Admin.RoleAssignment)
+    resource(Store.Admin.SiteSetting)
   end
 end

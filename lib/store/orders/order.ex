@@ -6,6 +6,7 @@ defmodule Store.Orders.Order do
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     extensions: [AshStateMachine],
+    authorizers: [Ash.Policy.Authorizer],
     domain: Store.Orders
 
   alias Store.Support.ID.OrderRef
@@ -21,6 +22,11 @@ defmodule Store.Orders.Order do
 
     attribute :order_ref, :string do
       allow_nil?(false)
+      public?(true)
+    end
+
+    attribute :user_id, :uuid do
+      allow_nil?(true)
       public?(true)
     end
 
@@ -54,7 +60,7 @@ defmodule Store.Orders.Order do
     defaults([:read])
 
     create :create do
-      accept([:order_ref])
+      accept([:order_ref, :user_id])
 
       change(fn changeset, _context ->
         case Ash.Changeset.get_attribute(changeset, :order_ref) do
@@ -96,6 +102,52 @@ defmodule Store.Orders.Order do
     custom_indexes do
       index([:state], name: "orders_state_index")
       index([:order_ref], name: "orders_order_ref_index")
+      index([:user_id], name: "orders_user_id_index")
+    end
+  end
+
+  policies do
+    bypass action_type(:read) do
+      access_type(:runtime)
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(user_id == ^actor(:id)))
+    end
+
+    policy action(:create) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:cancel) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
+    end
+
+    policy action(:mark_paid) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:mark_payment_failed) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:mark_refunded) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+
+      authorize_if(
+        {Store.Support.Governance.Checks.RoleWithStepUp,
+         roles: [:super_admin, :admin], window_minutes: 15}
+      )
     end
   end
 end

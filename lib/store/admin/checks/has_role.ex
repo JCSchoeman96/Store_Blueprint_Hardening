@@ -14,6 +14,6 @@ defmodule Store.Admin.Checks.HasRole do
 
   @impl true
   def match?(actor, _context, opts) do
-    {:ok, Authorization.has_any_role?(actor, List.wrap(opts[:roles]))}
+    Authorization.has_any_role?(actor, List.wrap(opts[:roles]))
   end
 end

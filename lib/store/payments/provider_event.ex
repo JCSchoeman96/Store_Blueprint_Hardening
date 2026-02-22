@@ -5,6 +5,7 @@ defmodule Store.Payments.ProviderEvent do
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     domain: Store.Payments
 
   alias Store.Support.Governance.Idempotency
@@ -96,6 +97,22 @@ defmodule Store.Payments.ProviderEvent do
     custom_indexes do
       index([:provider_event_key], name: "provider_events_provider_event_key_index")
       index([:received_at], name: "provider_events_received_at_index")
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      access_type(:runtime)
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:ingest) do
+      access_type(:strict)
+      authorize_if(context_equals(:system?, true))
+    end
+
+    policy always() do
+      forbid_if(always())
     end
   end
 

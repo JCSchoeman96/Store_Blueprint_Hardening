@@ -5,6 +5,7 @@ defmodule Store.Payments.WebhookReceipt do
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     domain: Store.Payments
 
   attributes do
@@ -59,6 +60,22 @@ defmodule Store.Payments.WebhookReceipt do
     custom_indexes do
       index([:provider], name: "webhook_receipts_provider_index")
       index([:received_at], name: "webhook_receipts_received_at_index")
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      access_type(:runtime)
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:ingest) do
+      access_type(:strict)
+      authorize_if(context_equals(:system?, true))
+    end
+
+    policy always() do
+      forbid_if(always())
     end
   end
 end

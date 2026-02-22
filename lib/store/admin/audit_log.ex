@@ -79,7 +79,7 @@ defmodule Store.Admin.AuditLog do
     end
 
     policy action_type(:read) do
-      access_type(:strict)
+      access_type(:runtime)
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 
