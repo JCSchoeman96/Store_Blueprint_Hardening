@@ -1,0 +1,62 @@
+# Governance: Error Codes (Authoritative)
+This document pins stable, registry-backed error codes referenced across governance docs.
+
+## Rules (MUST)
+1) All error codes MUST be **SCREAMING_SNAKE_CASE**.
+2) Every error code returned from policies/validations/actions/webhook idempotency MUST exist in `Store.Support.Errors.ErrorCodes`.
+3) Semantics MUST be stable. If meaning changes, introduce a NEW code.
+
+## Canonical auth/error semantics (MUST)
+- UNAUTHORIZED: actor missing / not signed in
+- FORBIDDEN: actor present, but not allowed by policy
+- STEP_UP_REQUIRED: sensitive op without recent step-up
+- INVALID_STATE_TRANSITION: forbidden lifecycle transition
+- STALE_RECORD: optimistic lock failure / concurrent write
+- WEBHOOK_DUPLICATE: duplicate receipt/event detected (often NOOP)
+- VALIDATION_ERROR: generic validation failure when no more specific code fits
+
+## Ecommerce correctness codes (MUST)
+Pricing/discounts:
+- INVALID_COUPON: coupon invalid/expired/ineligible
+
+Checkout replay safety:
+- CHECKOUT_DUPLICATE: duplicate begin_checkout detected (returns existing order)
+- PAYMENT_INTENT_DUPLICATE: duplicate payment intent creation (returns existing intent)
+- PAYMENT_ALREADY_SUCCEEDED: attempting to create/attach payment after success
+
+Inventory/reservations:
+- OUT_OF_STOCK: insufficient available inventory
+- RESERVATION_CONFLICT: concurrency conflict creating reservation
+
+Refunds:
+- REFUND_NOT_ALLOWED: wrong order/payment state
+- REFUND_EXCEEDS_REFUNDABLE: refund amount exceeds refundable amount
+- REFUND_DUPLICATE: duplicate refund request (returns existing refund / NOOP)
+- PAYMENT_PROVIDER_REFUND_FAILED: provider refund failed/declined
+
+Tax/shipping:
+- INVALID_ADDRESS: missing/invalid destination fields
+- SHIPPING_RATE_NOT_FOUND: no eligible shipping rate
+- TAX_RATE_NOT_FOUND: tax enabled but no applicable rate
+
+## Baseline domain codes (recommended)
+Orders:
+- ORDER_NOT_FOUND
+- ORDER_NOT_OWNED
+
+Payments:
+- PAYMENT_PROVIDER_VERIFICATION_FAILED
+- PAYMENT_EVENT_UNVERIFIED
+
+Catalog/Content:
+- SLUG_TAKEN
+- SKU_TAKEN
+
+## Drift protocol (MUST)
+1) Update registry first.
+2) Update tests.
+3) Only then use the code.
+
+## Test gates (MUST)
+- Registry uniqueness test (no duplicates)
+- Core codes exist test (all codes in this document)
