@@ -32,7 +32,7 @@ Step-up is required for:
 - payout/bank detail changes (if present)
 
 Default window: 15 minutes.
-`step_up_at` MUST be set by trusted server-side step-up completion only (reauth/MFA boundary), injected into Ash context, and denied if absent/stale.
+`step_up_at_mono_usec` MUST be set by trusted server-side step-up completion only (reauth/MFA boundary), injected into Ash context, and denied if absent/stale.
 See `docs/governance/step_up.md`.
 
 ## 4.1 Data/index requirements (MUST)

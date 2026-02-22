@@ -8,6 +8,7 @@ defmodule Store.Governance.PolicyMatrixTest do
   alias Store.Admin.SiteSetting
   alias Store.Orders.Order
   alias Store.Payments.{PaymentIntent, ProviderEvent, WebhookReceipt}
+  alias Store.Support.Time
   alias Store.TestFixtures
 
   test "customer has own-data access only for orders with matching non-null user_id" do
@@ -67,7 +68,7 @@ defmodule Store.Governance.PolicyMatrixTest do
     assert {:error, error} =
              SiteSetting
              |> Ash.Changeset.for_create(:upsert_setting, attrs,
-               context: %{step_up_at: DateTime.utc_now()}
+               context: %{step_up_at_mono_usec: Time.now_mono_usec()}
              )
              |> Ash.create(domain: Store.Admin, actor: support)
 
@@ -145,7 +146,7 @@ defmodule Store.Governance.PolicyMatrixTest do
              |> Ash.Changeset.for_create(
                :upsert_setting,
                %{key: :provider_mode, value: %{"mode" => "test"}},
-               context: %{step_up_at: DateTime.utc_now()}
+               context: %{step_up_at_mono_usec: Time.now_mono_usec()}
              )
              |> Ash.create(domain: Store.Admin, actor: editor)
 
@@ -168,7 +169,7 @@ defmodule Store.Governance.PolicyMatrixTest do
     assert {:ok, setting} =
              SiteSetting
              |> Ash.Changeset.for_create(:upsert_setting, attrs,
-               context: %{step_up_at: DateTime.utc_now()}
+               context: %{step_up_at_mono_usec: Time.now_mono_usec()}
              )
              |> Ash.create(domain: Store.Admin, actor: admin)
 
@@ -191,7 +192,7 @@ defmodule Store.Governance.PolicyMatrixTest do
     assert {:ok, setting} =
              SiteSetting
              |> Ash.Changeset.for_create(:upsert_setting, attrs,
-               context: %{step_up_at: DateTime.utc_now()}
+               context: %{step_up_at_mono_usec: Time.now_mono_usec()}
              )
              |> Ash.create(domain: Store.Admin, actor: super_admin)
 
@@ -207,7 +208,7 @@ defmodule Store.Governance.PolicyMatrixTest do
              |> Ash.Changeset.for_create(
                :upsert_setting,
                %{key: :provider_mode, value: %{"api_key" => "sk_test_123"}},
-               context: %{step_up_at: DateTime.utc_now()}
+               context: %{step_up_at_mono_usec: Time.now_mono_usec()}
              )
              |> Ash.create(domain: Store.Admin, actor: admin)
 

@@ -12,7 +12,8 @@ defmodule Store.Support.Governance.Checks.RoleWithStepUp do
   def describe(opts) do
     roles = List.wrap(opts[:roles])
     window_minutes = opts[:window_minutes] || 15
-    "actor has one of roles #{inspect(roles)} and step_up_at is within #{window_minutes} minutes"
+
+    "actor has one of roles #{inspect(roles)} and step_up_at_mono_usec is within #{window_minutes} minutes"
   end
 
   @impl true

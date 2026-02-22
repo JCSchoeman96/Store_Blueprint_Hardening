@@ -19,7 +19,7 @@ Freeze authorization rules so every client build stays consistent.
   - row visibility MUST be expressed as filter-capable policy checks where possible
   - runtime checks are allowed only for non-row-scoping constraints (role/step-up)
 - Step-up context source:
-  - `context[:step_up_at]` must come from trusted server-side step-up completion only
+  - `context[:step_up_at_mono_usec]` must come from trusted server-side step-up completion only
   - client-provided timestamps are not trusted
   - missing/stale step-up must deny the action
 - Policy enforcement scope in this phase is active resources only:

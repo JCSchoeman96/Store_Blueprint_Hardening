@@ -25,8 +25,8 @@
   - API keys/secrets/tokens/passwords are banned in Phase 06
 - Provider config mutation requires both:
   - role in `[:super_admin, :admin]`
-  - recent step-up (`context[:step_up_at]` within 15 minutes)
-  - `step_up_at` comes from trusted server-side step-up completion, not client-supplied timestamps
+  - recent step-up (`context[:step_up_at_mono_usec]` within 15 minutes)
+  - `step_up_at_mono_usec` comes from trusted server-side step-up completion, not client-supplied timestamps
 - `SiteSetting` mutations must emit audit entries via existing admin audit change.
 - Active policy matrix enforcement applies to existing resources only:
   - Accounts, Admin, Orders, Payments
