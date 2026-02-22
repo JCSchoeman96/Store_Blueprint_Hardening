@@ -8,12 +8,19 @@ defmodule Store.Orders.Order do
     extensions: [AshStateMachine],
     domain: Store.Orders
 
+  alias Store.Support.ID.OrderRef
+
   attributes do
     uuid_v7_primary_key(:id)
 
     attribute :state, Store.Orders.Types.OrderState do
       allow_nil?(false)
       default(:pending_payment)
+      public?(true)
+    end
+
+    attribute :order_ref, :string do
+      allow_nil?(false)
       public?(true)
     end
 
@@ -39,11 +46,22 @@ defmodule Store.Orders.Order do
     end
   end
 
+  identities do
+    identity(:unique_order_ref, [:order_ref])
+  end
+
   actions do
     defaults([:read])
 
     create :create do
-      accept([])
+      accept([:order_ref])
+
+      change(fn changeset, _context ->
+        case Ash.Changeset.get_attribute(changeset, :order_ref) do
+          nil -> Ash.Changeset.change_attribute(changeset, :order_ref, OrderRef.generate())
+          _order_ref -> changeset
+        end
+      end)
     end
 
     update :mark_paid do
@@ -77,6 +95,7 @@ defmodule Store.Orders.Order do
 
     custom_indexes do
       index([:state], name: "orders_state_index")
+      index([:order_ref], name: "orders_order_ref_index")
     end
   end
 end

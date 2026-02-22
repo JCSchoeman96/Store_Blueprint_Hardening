@@ -8,5 +8,6 @@ defmodule Store.Payments do
   resources do
     resource(Store.Payments.PaymentIntent)
     resource(Store.Payments.ProviderEvent)
+    resource(Store.Payments.WebhookReceipt)
   end
 end
