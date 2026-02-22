@@ -9,6 +9,7 @@ import Config
 
 config :store,
   ecto_repos: [Store.Repo],
+  ash_domains: [Store.Accounts],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
 # Configure the endpoint

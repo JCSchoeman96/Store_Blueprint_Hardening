@@ -23,6 +23,22 @@ end
 config :store, StoreWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() == :prod do
+  token_signing_secret =
+    System.get_env("STORE_TOKEN_SIGNING_SECRET") ||
+      raise "environment variable STORE_TOKEN_SIGNING_SECRET is missing."
+
+  google_client_id =
+    System.get_env("STORE_GOOGLE_CLIENT_ID") ||
+      raise "environment variable STORE_GOOGLE_CLIENT_ID is missing."
+
+  google_client_secret =
+    System.get_env("STORE_GOOGLE_CLIENT_SECRET") ||
+      raise "environment variable STORE_GOOGLE_CLIENT_SECRET is missing."
+
+  google_redirect_uri_base =
+    System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE") ||
+      raise "environment variable STORE_GOOGLE_REDIRECT_URI_BASE is missing."
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """
@@ -55,6 +71,13 @@ if config_env() == :prod do
   host = System.get_env("PHX_HOST") || "example.com"
 
   config :store, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+
+  config :store, :token_signing_secret, token_signing_secret
+
+  config :store, :google_oauth,
+    client_id: google_client_id,
+    client_secret: google_client_secret,
+    redirect_uri_base: google_redirect_uri_base
 
   config :store, StoreWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

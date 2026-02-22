@@ -14,6 +14,13 @@ config :store, Store.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
+config :store, :token_signing_secret, "test-store-token-signing-secret"
+
+config :store, :google_oauth,
+  client_id: "test-google-client-id",
+  client_secret: "test-google-client-secret",
+  redirect_uri_base: "http://localhost:4000/auth"
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :store, StoreWeb.Endpoint,

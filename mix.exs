@@ -48,6 +48,7 @@ defmodule Store.MixProject do
       {:ash_postgres, "~> 2.0"},
       {:ash_authentication, "~> 4.0"},
       {:ash_authentication_phoenix, "~> 2.0"},
+      {:simple_sat, "~> 0.1"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.1.0"},

@@ -11,6 +11,16 @@ config :store, Store.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
+config :store,
+       :token_signing_secret,
+       System.get_env("STORE_TOKEN_SIGNING_SECRET", "dev-store-token-signing-secret")
+
+config :store, :google_oauth,
+  client_id: System.get_env("STORE_GOOGLE_CLIENT_ID", "dev-google-client-id"),
+  client_secret: System.get_env("STORE_GOOGLE_CLIENT_SECRET", "dev-google-client-secret"),
+  redirect_uri_base:
+    System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE", "http://localhost:4000/auth")
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #
@@ -88,6 +98,17 @@ config :phoenix_live_view,
   debug_attributes: true,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
+
+if System.get_env("STORE_DEV_SMTP_ENABLED") == "true" do
+  config :store, Store.Mailer,
+    adapter: Swoosh.Adapters.SMTP,
+    relay: System.get_env("STORE_SMTP_HOST", "localhost"),
+    port: String.to_integer(System.get_env("STORE_SMTP_PORT", "1025")),
+    username: System.get_env("STORE_SMTP_USERNAME"),
+    password: System.get_env("STORE_SMTP_PASSWORD"),
+    tls: :if_available,
+    auth: :if_available
+end
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
