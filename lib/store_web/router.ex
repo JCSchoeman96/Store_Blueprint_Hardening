@@ -59,6 +59,7 @@ defmodule StoreWeb.Router do
     ash_authentication_live_session :authentication_required,
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live "/account", AccountLive, :index
+      live "/admin", AdminLive, :index
     end
   end
 

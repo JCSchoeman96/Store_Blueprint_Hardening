@@ -15,8 +15,9 @@ Allowed:
 - action (string)
 - resource (string)
 - record_id (uuid)
+- request_id (string, nullable)
 - inserted_at
-- metadata (scrubbed map)
+- metadata (scrubbed + capped map)
 - payload_sha256 (if referencing evidence)
 
 Forbidden:
@@ -32,7 +33,13 @@ Forbidden:
 Mask or remove known PII keys before storing metadata:
 - email, phone, address, name, card, bank, account, iban, bic, token, secret
 
+Metadata caps:
+- max serialized bytes: 8KB
+- max keys: 50
+- drop oversized unknown values
+
 ## Test gates (MUST)
 - There is no update/destroy action for AuditLog.
 - Attempting to mutate AuditLog returns UNAUTHORIZED (or equivalent).
 - Audit entries exist for at least one admin mutation path and one payment transition path.
+- Audit metadata caps are enforced and sensitive keys are redacted.

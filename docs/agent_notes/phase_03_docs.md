@@ -2,46 +2,57 @@
 
 ## Links Consulted (Hexdocs / web search)
 - https://hexdocs.pm/ash/policies.html
-- https://hexdocs.pm/ash/authorizers.html
-- https://hexdocs.pm/phoenix/Phoenix.Controller.html
-- https://hexdocs.pm/oban/
-- https://hexdocs.pm/elixir/Logger.html
-- https://hexdocs.pm/phoenix_live_view/Phoenix.LiveView.html
-- https://hexdocs.pm/ash_postgres/
-- https://hexdocs.pm/ecto/Ecto.Changeset.html
+- https://hexdocs.pm/ash/dsl-ash-policy-authorizer.html
+- https://hexdocs.pm/ash/Ash.Type.Enum.html
+- https://hexdocs.pm/ash_authentication/integrating-ash-authentication-and-phoenix.html
+- https://hexdocs.pm/ash_authentication_phoenix/liveview.html
+- https://hexdocs.pm/ash_authentication_phoenix/AshAuthentication.Phoenix.Router.html
 
 ## What the Docs Recommend Now
-- Keep role authorization explicit and deny-by-default in policy definitions.
-- Store audit events as append-only evidence; avoid mutable audit records.
-- Keep sensitive metadata redacted/minimized in logs and audit payloads.
-- Enforce sensitive operations with stronger proofs (step-up window + actor role checks).
+- Keep role authorization explicit with deny-by-default policy posture.
+- Use Ash policy authorizer checks as the primary authorization gate.
+- Keep audit evidence append-only with create/read-only resources.
+- Scrub sensitive fields before persistence and avoid storing raw provider payloads in generic audit metadata.
+- Use authenticated actor/session context in web routes and LiveView mounts while keeping web logic thin.
 
 ## What We Will Implement (Decisions)
-- Define role model (`super_admin`, `admin`, `editor`, `support`, `customer`) and policy matrix alignment.
-- Implement append-only `AuditLog` resource (create/read only; no update/destroy actions).
-- Add redaction rules to prevent raw webhook payloads or secrets in audit metadata.
-- Keep admin web flows thin and delegated to Ash actions only.
+- RBAC source of truth is `RoleAssignment`; do NOT add `role` column to `Store.Accounts.User`.
+- Pin role enum values: `super_admin`, `admin`, `editor`, `support`, `customer`.
+- `RoleAssignment` must enforce uniqueness on `(user_id, role)`.
+- `RoleAssignment.assigned_by` is nullable for bootstrap/system contexts only; admin operations must set it.
+- `AuditLog` is append-only (`create` + `read` only) and includes:
+  - `actor_id`, `action`, `resource`, `record_id`, `request_id`, `meta`, `payload_sha256`, timestamps.
+- `AuditLog.meta` must be scrubbed and bounded:
+  - max serialized bytes: 8192
+  - max keys: 50
+  - sensitive key denylist scrubbed
+  - oversized/unknown large values dropped.
+- Audit insertion occurs via an `after_action` change on admin mutations so the resulting `record.id` is available.
+- `after_action` audit change fails closed when actor is absent, except explicit system/bootstrap context.
+- Bootstrap contract uses a mix task to create `RoleAssignment(super_admin)` and write `AuditLog`; it never mutates `User.role`.
+- Admin web flows remain thin and call Ash actions only.
 
 ## Version Pins / Breaking Changes
 - No new package families planned beyond Phase 00 pins.
 - Breaking change watch:
-  - Authorization DSL behavior should be re-verified on Ash minor upgrades.
-  - If audit schemas evolve, preserve backward-compatible event metadata contracts.
+  - Ash policy DSL/check behavior should be re-verified on Ash minor upgrades.
+  - Audit metadata shape is a contract; changes require governance doc + test updates.
+  - Role enum set is pinned; adding roles requires policy matrix update and drift tests.
 
 ## Performance & Scaling Review
 - Hot paths:
-  - Authorization checks on admin actions and high-volume support tooling.
-  - Audit writes for every sensitive mutation must stay lightweight.
+  - Role checks on admin mutations and support tooling.
+  - Audit writes on every admin mutation.
 - Warm paths:
-  - Audit searches by actor/action/time window in admin UI.
+  - Audit reads by actor/action/time in admin UI.
 - Cold paths:
-  - Long-range audit investigations and export jobs.
+  - Long-range investigation and export queries.
 - Indexes:
-  - Add indexes on audit fields likely queried (`inserted_at`, `actor_id`, `action`, `resource`).
+  - `audit_logs`: indexes on `inserted_at`, `actor_id`, `action`, `resource`, `request_id`.
+  - `role_assignments`: unique index on `(user_id, role)` and read index on `role`.
 - TTL:
-  - No immediate TTL for audit rows in P0; retention policies are governance-driven and phased.
+  - No TTL in Phase 03; retention policy handled in retention phase governance.
 - Invalidation:
-  - If cached admin views are introduced later, invalidate on new audit events.
+  - If role or audit feeds are cached later, invalidate on new role assignments/audit entries.
 - PubSub:
-  - Optional admin activity feeds can publish lightweight audit notifications via PubSub.
-
+  - Optional admin activity feed can broadcast minimal audit events; not required in Phase 03.
