@@ -108,6 +108,9 @@ Every newly created bead MUST include:
 
 ## Project guidelines
 
+- NEVER weaken tests to get a green pass
+- MUST: Test must always be strict and airtight, never weaken just to get a pass, rather change and get code better.
+
 - Strict Ash 3.x project with Elixir, Phoenix, LiveView, Alpine.js
 - Run `mix check` before closing a bead (or before final push if no code changed).
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
