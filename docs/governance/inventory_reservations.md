@@ -37,6 +37,10 @@ At minimum, the system MUST be safe under concurrent checkouts for the same SKU.
 ### 4.1 DB-first locking (baseline, MUST)
 - Use optimistic locking and/or row-level locks on InventoryItem when reserving.
 - Lock ordering MUST follow the Lock Ordering Law when reserving multiple SKUs.
+- Reserve calls across multiple SKUs MUST be all-or-nothing in a single DB transaction.
+- Lock acquisition MUST be deterministic:
+  1) lock inventory rows in variant UUID raw16 order,
+  2) then lock/update reservation rows in that same order.
 
 ### 4.2 Redis reservation registry (optional performance pack)
 If high volume requires it, add Redis:
@@ -51,6 +55,16 @@ This is a separate pack; do not half-implement it.
 Reservations must have a stable idempotency key:
 - reservation_key = "order:<order_id>:sku:<variant_id>" (or similar)
 - unique constraint on reservation_key to prevent duplicates
+- unique constraint on `(order_id, variant_id)` to pin one reservation intent row per pair
+
+Pinned quantity behavior (MUST):
+- reserve operation sets the desired quantity for `(order_id, variant_id)` (not append-only).
+- if active reservation exists:
+  - `delta = desired_qty - existing_qty`
+  - `delta > 0`: require `available >= delta`, then increment `reserved_count` by delta and update quantity
+  - `delta < 0`: decrement `reserved_count` by `abs(delta)` and update quantity
+  - `delta == 0`: NOOP
+- `desired_qty == 0` transitions active reservation to `cancelled` and releases held units.
 
 ## 6) Reservation lifecycle (MUST)
 States:
@@ -64,6 +78,14 @@ Transitions:
 - active -> expired (on TTL)
 - active -> cancelled (manual/admin cancel)
 - expired/cancelled/consumed -> no further transitions
+
+Replay + forbidden semantics (MUST):
+- active -> consumed replay: NOOP
+- active -> expired replay: NOOP
+- active -> cancelled replay: NOOP
+- expired -> consumed: forbidden
+- consumed -> expired: forbidden
+- consumed -> cancelled: forbidden
 
 ## 7) Expiry policy (defaults)
 - reservation_ttl_minutes: 15 (default)

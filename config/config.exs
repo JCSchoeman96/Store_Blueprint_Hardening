@@ -9,7 +9,14 @@ import Config
 
 config :store,
   ecto_repos: [Store.Repo],
-  ash_domains: [Store.Accounts, Store.Admin, Store.Orders, Store.Payments, Store.Pricing],
+  ash_domains: [
+    Store.Accounts,
+    Store.Admin,
+    Store.Catalog,
+    Store.Orders,
+    Store.Payments,
+    Store.Pricing
+  ],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
 # Configure the endpoint
@@ -35,9 +42,13 @@ config :store, Store.Mailer, adapter: Swoosh.Adapters.Local
 config :store, Oban,
   repo: Store.Repo,
   plugins: [
-    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24}
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24},
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker}
+     ]}
   ],
-  queues: [webhooks: 10]
+  queues: [webhooks: 10, inventory: 10]
 
 # Configure esbuild (the version is required)
 config :esbuild,

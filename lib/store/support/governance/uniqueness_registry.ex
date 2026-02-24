@@ -17,6 +17,24 @@ defmodule Store.Support.Governance.UniquenessRegistry do
     %{key: :users_email, table: "users", columns: ["email"], mode: :active_now},
     %{key: :orders_order_ref, table: "orders", columns: ["order_ref"], mode: :active_now},
     %{
+      key: :inventory_items_variant_id,
+      table: "inventory_items",
+      columns: ["variant_id"],
+      mode: :active_now
+    },
+    %{
+      key: :inventory_reservations_order_variant,
+      table: "inventory_reservations",
+      columns: ["order_id", "variant_id"],
+      mode: :active_now
+    },
+    %{
+      key: :inventory_reservations_reservation_key,
+      table: "inventory_reservations",
+      columns: ["reservation_key"],
+      mode: :active_now
+    },
+    %{
       key: :webhook_receipts_idempotency_key,
       table: "webhook_receipts",
       columns: ["idempotency_key"],

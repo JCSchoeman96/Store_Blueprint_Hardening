@@ -1,11 +1,11 @@
 defmodule Store.Orders do
   @moduledoc """
-  Orders domain for lifecycle state-machine resources.
+  Orders domain for lifecycle state-machine resources and inventory reservations.
   """
 
   use Ash.Domain
 
-  alias Store.Orders.{Order, SnapshotWriter}
+  alias Store.Orders.{InventoryReservation, InventoryReservations, Order, SnapshotWriter}
   alias Store.Pricing.Contract
   alias Store.Support.ID.OrderRef
 
@@ -15,6 +15,7 @@ defmodule Store.Orders do
     resource(Store.Orders.Order)
     resource(Store.Orders.OrderLineItem)
     resource(Store.Orders.OrderAdjustment)
+    resource(Store.Orders.InventoryReservation)
   end
 
   @spec create_order(map(), keyword()) :: {:ok, Order.t()} | {:error, term()}
@@ -24,6 +25,46 @@ defmodule Store.Orders do
     ash_opts = Keyword.drop(opts, [:order_ref_generator, :max_attempts])
 
     do_create_order(attrs, generator, ash_opts, max_attempts)
+  end
+
+  @spec write_priced_snapshot(String.t(), Contract.Output.t() | map(), keyword()) ::
+          {:ok,
+           %{
+             line_items: [Store.Orders.OrderLineItem.t()],
+             adjustments: [Store.Orders.OrderAdjustment.t()]
+           }}
+          | {:error, term()}
+  def write_priced_snapshot(order_id, output, opts \\ [])
+      when is_binary(order_id) and is_list(opts) do
+    SnapshotWriter.write_priced_snapshot(order_id, output, opts)
+  end
+
+  @spec reserve_inventory(String.t(), [map()], keyword()) ::
+          {:ok,
+           %{
+             reservations: [InventoryReservation.t()],
+             inventory_items: [Store.Catalog.InventoryItem.t()]
+           }}
+          | {:error, term()}
+  def reserve_inventory(order_id, items, opts \\ [])
+      when is_binary(order_id) and is_list(items) and is_list(opts) do
+    InventoryReservations.reserve_inventory(order_id, items, opts)
+  end
+
+  @spec consume_reservations_for_order(String.t(), keyword()) ::
+          {:ok, %{consumed_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
+          | {:error, term()}
+  def consume_reservations_for_order(order_id, opts \\ [])
+      when is_binary(order_id) and is_list(opts) do
+    InventoryReservations.consume_reservations_for_order(order_id, opts)
+  end
+
+  @spec expire_reservations(DateTime.t(), keyword()) ::
+          {:ok, %{expired_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
+          | {:error, term()}
+  def expire_reservations(now \\ DateTime.utc_now(), opts \\ [])
+      when is_struct(now, DateTime) and is_list(opts) do
+    InventoryReservations.expire_reservations(now, opts)
   end
 
   defp do_create_order(_attrs, _generator, _ash_opts, attempts) when attempts <= 0 do
@@ -67,17 +108,5 @@ defmodule Store.Orders do
   defp order_ref_conflict?(error) do
     message = Exception.message(error)
     String.contains?(message, "order_ref") and String.contains?(message, "already been taken")
-  end
-
-  @spec write_priced_snapshot(String.t(), Contract.Output.t() | map(), keyword()) ::
-          {:ok,
-           %{
-             line_items: [Store.Orders.OrderLineItem.t()],
-             adjustments: [Store.Orders.OrderAdjustment.t()]
-           }}
-          | {:error, term()}
-  def write_priced_snapshot(order_id, output, opts \\ [])
-      when is_binary(order_id) and is_list(opts) do
-    SnapshotWriter.write_priced_snapshot(order_id, output, opts)
   end
 end
