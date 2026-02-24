@@ -5,7 +5,7 @@ defmodule Store.Orders do
 
   use Ash.Domain
 
-  alias Store.Orders.Order
+  alias Store.Orders.{Order, SnapshotWriter}
   alias Store.Pricing.Contract
   alias Store.Support.ID.OrderRef
 
@@ -78,6 +78,6 @@ defmodule Store.Orders do
           | {:error, term()}
   def write_priced_snapshot(order_id, output, opts \\ [])
       when is_binary(order_id) and is_list(opts) do
-    Store.Orders.SnapshotWriter.write_priced_snapshot(order_id, output, opts)
+    SnapshotWriter.write_priced_snapshot(order_id, output, opts)
   end
 end

@@ -80,7 +80,11 @@ defmodule Store.Governance.ImmutableSnapshotsTest do
                currency: "USD",
                quantity: 1,
                unit_price_minor: 1000,
-               line_total_minor: 1000
+               line_total_minor: 1000,
+               sku_snapshot: "SKU-1000",
+               product_title_snapshot: "Duplicate Line",
+               discount_allocated_minor: 0,
+               net_line_total_minor: 1000
              })
              |> Ash.create(domain: Store.Orders, authorize?: false)
 
@@ -117,7 +121,12 @@ defmodule Store.Governance.ImmutableSnapshotsTest do
         currency: "USD",
         quantity: 1,
         unit_price_minor: 1000,
-        line_total_minor: 1000
+        line_total_minor: 1000,
+        sku_snapshot: "SKU-DEFAULT",
+        product_title_snapshot: "Snapshot Line",
+        variant_title_snapshot: "Default Variant",
+        discount_allocated_minor: 0,
+        net_line_total_minor: 1000
       }
       |> Map.merge(overrides)
 

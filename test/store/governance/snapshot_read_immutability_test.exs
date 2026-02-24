@@ -24,7 +24,12 @@ defmodule Store.Governance.SnapshotReadImmutabilityTest do
         currency: "USD",
         quantity: 2,
         unit_price_minor: 100,
-        line_total_minor: 333
+        line_total_minor: 333,
+        sku_snapshot: "SKU-READ-001",
+        product_title_snapshot: "Read Snapshot Product",
+        variant_title_snapshot: "Variant A",
+        discount_allocated_minor: 0,
+        net_line_total_minor: 333
       })
       |> Ash.create!(domain: Store.Orders, authorize?: false)
 

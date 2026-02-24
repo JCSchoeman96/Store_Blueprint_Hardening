@@ -98,8 +98,14 @@ defmodule Store.Orders.OrderLineItem do
       prepare(fn query, context ->
         actor = Map.get(context, :actor)
         actor_id = actor && Map.get(actor, :id)
+        source_context = Map.get(context, :source_context, %{})
+        system_context? = get_in(source_context, [:system?]) == true
+        authorization_disabled? = Map.get(context, :authorize?) == false
 
         cond do
+          system_context? or authorization_disabled? ->
+            query
+
           Authorization.has_any_role?(actor, [:super_admin, :admin, :support]) ->
             query
 

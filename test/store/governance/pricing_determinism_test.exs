@@ -6,7 +6,7 @@ defmodule Store.Governance.PricingDeterminismTest do
 
   alias Store.Orders.{Order, OrderAdjustment, OrderLineItem}
   alias Store.Pricing
-  alias Store.Pricing.{Contract, Coupon, Evaluator, Promotion}
+  alias Store.Pricing.{Contract, Evaluator, Promotion}
 
   test "pricing evaluation is deterministic for identical inputs" do
     input = deterministic_input()

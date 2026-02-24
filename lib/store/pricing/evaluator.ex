@@ -27,56 +27,58 @@ defmodule Store.Pricing.Evaluator do
   def evaluate(input) do
     input = Contract.to_input!(input)
 
-    with :ok <- validate_input(input) do
-      lines = sort_lines(input.lines)
-      subtotal_minor = Enum.reduce(lines, 0, &(&1.line_total_minor + &2))
+    case validate_input(input) do
+      :ok ->
+        lines = sort_lines(input.lines)
+        subtotal_minor = Enum.reduce(lines, 0, &(&1.line_total_minor + &2))
 
-      selected_candidates = select_candidates(input)
-      ordered_candidates = sort_applied_candidates(selected_candidates)
+        selected_candidates = select_candidates(input)
+        ordered_candidates = sort_applied_candidates(selected_candidates)
 
-      applied_adjustments =
-        ordered_candidates
-        |> cap_candidates_to_subtotal(subtotal_minor)
-        |> Enum.map(&to_applied_adjustment/1)
+        applied_adjustments =
+          ordered_candidates
+          |> cap_candidates_to_subtotal(subtotal_minor)
+          |> Enum.map(&to_applied_adjustment/1)
 
-      discount_total_minor = Enum.reduce(applied_adjustments, 0, &(&1.discount_minor + &2))
+        discount_total_minor = Enum.reduce(applied_adjustments, 0, &(&1.discount_minor + &2))
 
-      {line_allocations, allocated_discount_minor} =
-        allocate_discount(lines, discount_total_minor)
+        {line_allocations, allocated_discount_minor} =
+          allocate_discount(lines, discount_total_minor)
 
-      lines =
-        lines
-        |> Enum.map(fn line ->
-          allocated_minor = allocation_for_line(line_allocations, line.id)
+        lines =
+          lines
+          |> Enum.map(fn line ->
+            allocated_minor = allocation_for_line(line_allocations, line.id)
 
-          %LineEvaluation{
-            line_id: line.id,
-            line_no: line.line_no,
-            sku_snapshot: line.sku_snapshot,
-            product_title_snapshot: line.product_title_snapshot,
-            variant_title_snapshot: line.variant_title_snapshot,
-            quantity: line.quantity,
-            unit_price_minor: line.unit_price_minor,
-            line_total_minor: line.line_total_minor,
-            discount_allocated_minor: allocated_minor,
-            net_line_total_minor: line.line_total_minor - allocated_minor
-          }
-        end)
+            %LineEvaluation{
+              line_id: line.id,
+              line_no: line.line_no,
+              sku_snapshot: line.sku_snapshot,
+              product_title_snapshot: line.product_title_snapshot,
+              variant_title_snapshot: line.variant_title_snapshot,
+              quantity: line.quantity,
+              unit_price_minor: line.unit_price_minor,
+              line_total_minor: line.line_total_minor,
+              discount_allocated_minor: allocated_minor,
+              net_line_total_minor: line.line_total_minor - allocated_minor
+            }
+          end)
 
-      total_minor = max(subtotal_minor - allocated_discount_minor, 0)
+        total_minor = max(subtotal_minor - allocated_discount_minor, 0)
 
-      {:ok,
-       %Output{
-         currency: input.currency,
-         subtotal_minor: subtotal_minor,
-         discount_total_minor: allocated_discount_minor,
-         total_minor: total_minor,
-         lines: lines,
-         line_allocations: line_allocations,
-         applied_adjustments: applied_adjustments
-       }}
-    else
-      {:error, _reason} = error -> error
+        {:ok,
+         %Output{
+           currency: input.currency,
+           subtotal_minor: subtotal_minor,
+           discount_total_minor: allocated_discount_minor,
+           total_minor: total_minor,
+           lines: lines,
+           line_allocations: line_allocations,
+           applied_adjustments: applied_adjustments
+         }}
+
+      {:error, _reason} = error ->
+        error
     end
   rescue
     KeyError -> {:error, Error.new("VALIDATION_ERROR", "Missing required pricing input")}
@@ -268,39 +270,37 @@ defmodule Store.Pricing.Evaluator do
       |> min(eligible_subtotal)
       |> max(0)
 
-    cond do
-      allocatable_discount_minor == 0 or eligible_subtotal == 0 ->
-        allocations = Enum.map(lines, &%LineAllocation{line_id: &1.id, discount_minor: 0})
-        {allocations, 0}
+    if allocatable_discount_minor == 0 or eligible_subtotal == 0 do
+      allocations = Enum.map(lines, &%LineAllocation{line_id: &1.id, discount_minor: 0})
+      {allocations, 0}
+    else
+      ordered_eligible_lines = Enum.sort_by(eligible_lines, &id_sort_key(&1.id))
 
-      true ->
-        ordered_eligible_lines = Enum.sort_by(eligible_lines, &id_sort_key(&1.id))
+      {base_allocations, base_total} =
+        Enum.reduce(ordered_eligible_lines, {%{}, 0}, fn line, {acc, total} ->
+          minor = div(line.line_total_minor * allocatable_discount_minor, eligible_subtotal)
+          {Map.put(acc, line.id, minor), total + minor}
+        end)
 
-        {base_allocations, base_total} =
-          Enum.reduce(ordered_eligible_lines, {%{}, 0}, fn line, {acc, total} ->
-            minor = div(line.line_total_minor * allocatable_discount_minor, eligible_subtotal)
-            {Map.put(acc, line.id, minor), total + minor}
-          end)
+      remainder = allocatable_discount_minor - base_total
 
-        remainder = allocatable_discount_minor - base_total
+      allocations_with_remainder =
+        Enum.reduce(Enum.take(ordered_eligible_lines, remainder), base_allocations, fn line,
+                                                                                       acc ->
+          Map.update!(acc, line.id, &(&1 + 1))
+        end)
 
-        allocations_with_remainder =
-          Enum.reduce(Enum.take(ordered_eligible_lines, remainder), base_allocations, fn line,
-                                                                                         acc ->
-            Map.update!(acc, line.id, &(&1 + 1))
-          end)
+      allocations =
+        lines
+        |> Enum.sort_by(&id_sort_key(&1.id))
+        |> Enum.map(fn line ->
+          %LineAllocation{
+            line_id: line.id,
+            discount_minor: Map.get(allocations_with_remainder, line.id, 0)
+          }
+        end)
 
-        allocations =
-          lines
-          |> Enum.sort_by(&id_sort_key(&1.id))
-          |> Enum.map(fn line ->
-            %LineAllocation{
-              line_id: line.id,
-              discount_minor: Map.get(allocations_with_remainder, line.id, 0)
-            }
-          end)
-
-        {allocations, allocatable_discount_minor}
+      {allocations, allocatable_discount_minor}
     end
   end
 

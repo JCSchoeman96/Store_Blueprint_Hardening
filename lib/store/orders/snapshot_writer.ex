@@ -11,6 +11,7 @@ defmodule Store.Orders.SnapshotWriter do
 
   alias Store.Orders.{OrderAdjustment, OrderLineItem}
   alias Store.Pricing.Contract
+  alias Store.Pricing.Evaluator
   alias Store.Support.Errors.Error
 
   @type write_result ::
@@ -28,11 +29,12 @@ defmodule Store.Orders.SnapshotWriter do
       when is_binary(order_id) and is_list(opts) do
     output = to_output!(output)
 
-    with {:ok, existing_line_items} <- read_existing_line_items(order_id),
-         {:ok, existing_adjustments} <- read_existing_adjustments(order_id),
-         {:ok, result} <-
-           maybe_write_snapshot(order_id, output, existing_line_items, existing_adjustments, opts) do
-      {:ok, result}
+    case read_existing_snapshot(order_id) do
+      {:ok, existing_line_items, existing_adjustments} ->
+        maybe_write_snapshot(order_id, output, existing_line_items, existing_adjustments, opts)
+
+      {:error, _reason} = error ->
+        error
     end
   rescue
     KeyError -> {:error, Error.new("VALIDATION_ERROR", "Invalid priced snapshot output")}
@@ -93,7 +95,7 @@ defmodule Store.Orders.SnapshotWriter do
   defp create_adjustments(order_id, %Contract.Output{} = output, ash_opts) do
     created =
       output.applied_adjustments
-      |> Enum.sort_by(&Store.Pricing.Evaluator.applied_adjustment_tuple/1)
+      |> Enum.sort_by(&Evaluator.applied_adjustment_tuple/1)
       |> Enum.with_index(1)
       |> Enum.map(fn {adjustment, sequence_no} ->
         attrs = %{
@@ -125,9 +127,10 @@ defmodule Store.Orders.SnapshotWriter do
   end
 
   defp read_existing_line_items(order_id) do
-    query = Ash.Query.filter(OrderLineItem, expr(order_id == ^order_id))
+    target_order_id = order_id
+    query = Ash.Query.filter(OrderLineItem, expr(order_id == ^target_order_id))
 
-    case Ash.read(query, domain: Store.Orders, authorize?: false) do
+    case Ash.read(query, domain: Store.Orders, context: %{system?: true}, authorize?: false) do
       {:ok, records} ->
         {:ok, records}
 
@@ -137,9 +140,10 @@ defmodule Store.Orders.SnapshotWriter do
   end
 
   defp read_existing_adjustments(order_id) do
-    query = Ash.Query.filter(OrderAdjustment, expr(order_id == ^order_id))
+    target_order_id = order_id
+    query = Ash.Query.filter(OrderAdjustment, expr(order_id == ^target_order_id))
 
-    case Ash.read(query, domain: Store.Orders, authorize?: false) do
+    case Ash.read(query, domain: Store.Orders, context: %{system?: true}, authorize?: false) do
       {:ok, records} ->
         {:ok, records}
 
@@ -152,5 +156,12 @@ defmodule Store.Orders.SnapshotWriter do
 
   defp to_output!(attrs) when is_map(attrs) do
     struct!(Contract.Output, attrs)
+  end
+
+  defp read_existing_snapshot(order_id) do
+    with {:ok, line_items} <- read_existing_line_items(order_id),
+         {:ok, adjustments} <- read_existing_adjustments(order_id) do
+      {:ok, line_items, adjustments}
+    end
   end
 end
