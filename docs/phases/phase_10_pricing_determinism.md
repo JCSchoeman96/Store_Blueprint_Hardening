@@ -5,6 +5,7 @@ Lock money correctness so totals are deterministic, auditable, and free of penny
 
 ## Must deliver
 - `docs/governance/pricing_determinism.md`
+- `docs/governance/immutable_snapshots.md` pin for denormalized line-item evidence fields (`sku_snapshot`, `product_title_snapshot`, variant descriptors) used by pricing/order snapshot writes
 - Test suite enforcing determinism + allocation + stacking rules
 
 ## Acceptance gates

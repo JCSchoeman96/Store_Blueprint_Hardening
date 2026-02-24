@@ -22,6 +22,15 @@ Orders.Order itself may transition state (pending_payment -> paid -> refunded), 
 - snapshot totals must remain stable once paid (no recomputation)
 - any new adjustments must be additive evidence (e.g., refund adjustment record)
 
+## 3.1) Denormalized snapshot evidence (Phase 10+ MUST)
+To keep snapshots self-contained for audits and support workflows, line-item snapshots should carry denormalized evidence fields once catalog/pricing resources are available. At minimum, pin:
+- `sku_snapshot` (or stable variant/sku code)
+- `product_title_snapshot`
+- `variant_title_snapshot` (if variants exist)
+- optional descriptors needed for deterministic customer-facing rendering and historical evidence
+
+Do not rely on joining mutable catalog records to reconstruct historical line-item evidence.
+
 ## 4) DB hardening (SHOULD)
 Add database guards (optional but recommended):
 - trigger to reject UPDATE/DELETE on order_line_items and order_adjustments
