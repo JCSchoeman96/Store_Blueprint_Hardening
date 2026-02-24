@@ -31,7 +31,8 @@ If DB hardening is not used, Ash action absence MUST be the mechanical enforceme
 
 ## 5) Enforcement gates (MUST)
 - Add a test gate that asserts snapshot resources do not define update/destroy actions.
-- Add a test that creating an order then changing product price does not change stored order totals.
+- Add a Phase 09 test proving snapshot read paths return stored evidence values and do not recompute totals.
+- Add a "product price change does not mutate historical totals" gate once catalog/pricing resources and pricing evaluation actions exist (Phase 10+ dependency).
 
 ## 6) Error semantics (MUST)
 Attempting to mutate snapshots must fail with:

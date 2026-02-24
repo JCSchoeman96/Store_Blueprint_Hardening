@@ -12,6 +12,8 @@ defmodule Store.Orders do
 
   resources do
     resource(Store.Orders.Order)
+    resource(Store.Orders.OrderLineItem)
+    resource(Store.Orders.OrderAdjustment)
   end
 
   @spec create_order(map(), keyword()) :: {:ok, Order.t()} | {:error, term()}
