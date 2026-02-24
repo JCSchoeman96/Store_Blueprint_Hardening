@@ -16,6 +16,11 @@ config :store, Store.Repo,
 
 config :store, :token_signing_secret, "test-store-token-signing-secret"
 
+config :store, Oban,
+  testing: :manual,
+  plugins: false,
+  queues: false
+
 config :store, :google_oauth,
   client_id: "test-google-client-id",
   client_secret: "test-google-client-secret",

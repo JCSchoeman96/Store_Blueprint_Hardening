@@ -10,6 +10,7 @@ defmodule Store.Application do
     children = [
       StoreWeb.Telemetry,
       Store.Repo,
+      {Oban, Application.fetch_env!(:store, Oban)},
       {AshAuthentication.Supervisor, otp_app: :store},
       {DNSCluster, query: Application.get_env(:store, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Store.PubSub},

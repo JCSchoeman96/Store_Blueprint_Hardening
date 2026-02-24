@@ -32,6 +32,13 @@ config :store, StoreWeb.Endpoint,
 # at the `config/runtime.exs`.
 config :store, Store.Mailer, adapter: Swoosh.Adapters.Local
 
+config :store, Oban,
+  repo: Store.Repo,
+  plugins: [
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24}
+  ],
+  queues: [webhooks: 10]
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",

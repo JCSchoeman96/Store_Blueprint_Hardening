@@ -34,6 +34,8 @@ defmodule Mix.Tasks.Check.ReqUsage do
       "--glob",
       "!lib/mix/tasks/check/req_usage.ex",
       "--glob",
+      "!lib/mix/tasks/check/web_no_http.ex",
+      "--glob",
       "!test/store/support/http/req_client_test.exs",
       "lib",
       "test"

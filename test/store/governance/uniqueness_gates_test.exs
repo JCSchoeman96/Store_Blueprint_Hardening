@@ -61,10 +61,14 @@ defmodule Store.Governance.UniquenessGatesTest do
   end
 
   test "duplicate webhook receipt ingest is NOOP and returns existing record" do
+    raw_body = Jason.encode!(%{"payment_intent_id" => "pi_duplicate_001"})
+
     attrs = %{
       provider: "stripe",
       idempotency_key: "stripe:evt_duplicate_001",
-      payload_sha256: "payload-a"
+      payload_sha256: "payload-a",
+      raw_body: raw_body,
+      headers: %{"content-type" => ["application/json"]}
     }
 
     assert {:ok, first} =

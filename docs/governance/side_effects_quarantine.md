@@ -31,6 +31,7 @@ Two exceptions are allowed by this blueprint:
 
 ### 4.1 Webhook controller enqueue-only
 `lib/store_web/controllers/webhook_controller.ex` MAY:
+- read and preserve raw webhook evidence (`raw_body` + headers)
 - create a `Payments.WebhookReceipt` via an Ash action (preferred)
 - enqueue a single Oban job to process the receipt
 
@@ -38,6 +39,10 @@ It MUST NOT:
 - verify signatures inline
 - apply payment state transitions inline
 - call outbound HTTP inline
+
+Phase 08 deterministic idempotency baseline:
+- `idempotency_key = sha256("#{provider}\n" <> raw_body)`
+- duplicate ingest MUST be NOOP-safe (receipt dedupe)
 
 ### 4.2 Redirect/callback controllers (optional pack)
 If an OAuth or payment redirect callback is introduced later:

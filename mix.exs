@@ -104,6 +104,8 @@ defmodule Store.MixProject do
         "format --check-formatted",
         "compile --warnings-as-errors",
         "check.req_usage",
+        "check.web_no_http",
+        "check.web_no_oban_enqueue",
         "check.no_repo_in_web",
         "check.moduledoc",
         "check.docs_notes",

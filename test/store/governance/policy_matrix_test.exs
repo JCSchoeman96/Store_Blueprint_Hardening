@@ -279,6 +279,11 @@ defmodule Store.Governance.PolicyMatrixTest do
   end
 
   defp create_webhook_receipt!(attrs) do
+    attrs =
+      attrs
+      |> Map.put_new(:raw_body, "{}")
+      |> Map.put_new(:headers, %{})
+
     WebhookReceipt
     |> Ash.Changeset.for_create(:ingest, attrs)
     |> Ash.create!(domain: Store.Payments, authorize?: false)

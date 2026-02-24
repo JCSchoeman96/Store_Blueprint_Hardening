@@ -26,6 +26,18 @@ defmodule Store.Payments.WebhookReceipt do
       public?(true)
     end
 
+    attribute :raw_body, :string do
+      allow_nil?(false)
+      default("")
+      public?(true)
+    end
+
+    attribute :headers, :map do
+      allow_nil?(false)
+      default(%{})
+      public?(true)
+    end
+
     attribute :received_at, :utc_datetime_usec do
       allow_nil?(false)
       default(&DateTime.utc_now/0)
@@ -44,7 +56,18 @@ defmodule Store.Payments.WebhookReceipt do
     defaults([:read])
 
     create :ingest do
-      accept([:provider, :idempotency_key, :payload_sha256, :received_at])
+      accept([:provider, :idempotency_key, :payload_sha256, :raw_body, :headers, :received_at])
+
+      change(fn changeset, _context ->
+        provider = Ash.Changeset.get_attribute(changeset, :provider)
+        raw_body = Ash.Changeset.get_attribute(changeset, :raw_body)
+        idempotency_key = Ash.Changeset.get_attribute(changeset, :idempotency_key)
+        payload_sha256 = Ash.Changeset.get_attribute(changeset, :payload_sha256)
+
+        changeset
+        |> maybe_set_idempotency_key(idempotency_key, provider, raw_body)
+        |> maybe_set_payload_sha(payload_sha256, raw_body)
+      end)
 
       upsert?(true)
       upsert_identity(:unique_idempotency_key)
@@ -77,5 +100,37 @@ defmodule Store.Payments.WebhookReceipt do
     policy always() do
       forbid_if(always())
     end
+  end
+
+  defp maybe_set_idempotency_key(changeset, idempotency_key, _provider, _raw_body)
+       when is_binary(idempotency_key) do
+    changeset
+  end
+
+  defp maybe_set_idempotency_key(changeset, _idempotency_key, provider, raw_body)
+       when is_binary(provider) and is_binary(raw_body) do
+    Ash.Changeset.change_attribute(
+      changeset,
+      :idempotency_key,
+      sha256_hex("#{provider}\n" <> raw_body)
+    )
+  end
+
+  defp maybe_set_idempotency_key(changeset, _idempotency_key, _provider, _raw_body), do: changeset
+
+  defp maybe_set_payload_sha(changeset, payload_sha256, _raw_body)
+       when is_binary(payload_sha256) do
+    changeset
+  end
+
+  defp maybe_set_payload_sha(changeset, _payload_sha256, raw_body) when is_binary(raw_body) do
+    Ash.Changeset.change_attribute(changeset, :payload_sha256, sha256_hex(raw_body))
+  end
+
+  defp maybe_set_payload_sha(changeset, _payload_sha256, _raw_body), do: changeset
+
+  defp sha256_hex(value) when is_binary(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
   end
 end

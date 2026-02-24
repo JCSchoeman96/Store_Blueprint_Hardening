@@ -68,6 +68,7 @@ defmodule StoreWeb.Router do
     pipe_through :api
 
     get "/orders/:id", OrderApiController, :show
+    post "/webhooks/:provider", WebhookController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
