@@ -96,3 +96,29 @@ Implement deterministic pricing evaluation and immutable snapshot evidence write
 - `bd create ...` (Phase 10 parent + child fanout)
 - `bd dep add ...`
 - `bd dep cycles`
+- `mix format`
+- `mix check`
+- `bd sync`
+- `git pull --rebase`
+- `git push`
+
+## GATE EVIDENCE (LATEST)
+
+- `mix check` result:
+  - `check.req_usage: OK`
+  - `check.web_no_http: OK`
+  - `check.web_no_oban_enqueue: OK`
+  - `check.no_repo_in_web: OK`
+  - `check.moduledoc: OK`
+  - `check.docs_notes: OK`
+  - `Finished in 12.6 seconds ... 112 tests, 0 failures`
+  - `credo ... found no issues`
+  - `Generating docs...`
+
+- `bd sync` result:
+  - success (no errors)
+
+- Git sync proof (current):
+  - `git pull --rebase` -> `Could not resolve hostname github.com: Temporary failure in name resolution`
+  - `git push` -> `Could not resolve hostname github.com: Temporary failure in name resolution`
+  - `git status -sb` -> `## main...origin/main`
