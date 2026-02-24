@@ -64,6 +64,7 @@ Required (at minimum for release-1):
 - Pricing evaluation must be deterministic for identical inputs.
 - Discount allocation must have no penny leak and remainder distribution must be deterministic.
 - Applied discount ordering must be deterministic.
+- Pricing evidence writes must be create-only (no runtime updates/backfills of existing snapshot rows).
 - See `docs/governance/pricing_determinism.md`.
 
 

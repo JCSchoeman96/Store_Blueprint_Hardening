@@ -13,3 +13,4 @@ Lock money correctness so totals are deterministic, auditable, and free of penny
 - Discount allocation sums exactly to the discount amount (no penny leak)
 - Tie-breaks select the same promotion consistently
 - Applied discounts stored in deterministic order
+- Pricing snapshot evidence writes are create-only (no runtime updates/backfills of existing snapshot rows)

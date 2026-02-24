@@ -44,6 +44,35 @@ defmodule Store.Orders.OrderLineItem do
       public?(true)
     end
 
+    attribute :sku_snapshot, :string do
+      allow_nil?(false)
+      default("")
+      public?(true)
+    end
+
+    attribute :product_title_snapshot, :string do
+      allow_nil?(false)
+      default("")
+      public?(true)
+    end
+
+    attribute :variant_title_snapshot, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :discount_allocated_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :net_line_total_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -85,7 +114,19 @@ defmodule Store.Orders.OrderLineItem do
     end
 
     create :create do
-      accept([:order_id, :line_no, :currency, :quantity, :unit_price_minor, :line_total_minor])
+      accept([
+        :order_id,
+        :line_no,
+        :currency,
+        :quantity,
+        :unit_price_minor,
+        :line_total_minor,
+        :sku_snapshot,
+        :product_title_snapshot,
+        :variant_title_snapshot,
+        :discount_allocated_minor,
+        :net_line_total_minor
+      ])
     end
   end
 

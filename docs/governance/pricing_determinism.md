@@ -15,6 +15,11 @@ Given the same inputs (cart lines, quantities, customer eligibility, coupon code
 
 No reliance on unordered map iteration. If rule evaluation produces sets/lists, they MUST be canonicalized.
 
+Evaluator boundary MUST be pure:
+- evaluator functions take DTO/read-model inputs only
+- evaluator functions perform zero DB side effects
+- persistence is handled by snapshot writer layers only
+
 ## 3) Canonicalization rules (MUST)
 Whenever hashing/signing or ordering for tie-breaks in pricing:
 - UUID lists MUST follow Binary UUID Sort Law (raw16 lexicographic).
@@ -25,6 +30,7 @@ Whenever hashing/signing or ordering for tie-breaks in pricing:
 Applied discount list MUST be ordered deterministically for storage and UI:
 1) primary key (uuid) sorted by binary sort
 2) if no uuid, stable code string uppercase sorted by bytes
+3) if timestamps are used, they MUST NOT be the final tie-break key; include UUID raw16 (`id_bytes`) as final tie-break
 
 ## 4) Rounding & allocation rules (MUST)
 ### 4.1 Rounding
@@ -56,9 +62,10 @@ You must declare a stacking model. This blueprint pins a conservative default:
   - **exclusive** (cannot stack with other promotions)
   - **combinable** (may stack with combinable promotions)
 - If multiple exclusive promotions match, select ONE using deterministic tie-break:
-  1) highest absolute discount amount (computed deterministically)
-  2) if tie: lowest UUID (binary sort)
-  3) if still tie: earliest created_at (if available), else stable fallback
+  1) highest `exclusive_priority`
+  2) if tie: highest absolute discount amount (computed deterministically)
+  3) if tie: earliest `inserted_at`
+  4) if tie: lowest UUID raw16 (`id_bytes`)
 
 ### 5.3 Coupon + promotion interaction (default)
 - Coupon may stack with combinable promotions only.
@@ -77,6 +84,10 @@ Orders must store:
 - discount allocation per line item (if applicable)
 
 No recomputing history.
+
+Snapshot evidence writes are create-only:
+- no runtime backfills/updates to existing order snapshot rows
+- idempotent replay must return existing evidence (or equivalent no-op), not mutate history
 
 ## 8) Error semantics (MUST)
 - INVALID_COUPON: invalid/expired/ineligible coupon

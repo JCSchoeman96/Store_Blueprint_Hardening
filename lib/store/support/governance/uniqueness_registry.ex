@@ -34,7 +34,8 @@ defmodule Store.Support.Governance.UniquenessRegistry do
     %{key: :products_slug, table: "products", columns: ["slug"], mode: :deferred_table_aware},
     %{key: :posts_slug, table: "posts", columns: ["slug"], mode: :deferred_table_aware},
     %{key: :variants_sku, table: "variants", columns: ["sku"], mode: :deferred_table_aware},
-    %{key: :coupons_code, table: "coupons", columns: ["code"], mode: :deferred_table_aware}
+    %{key: :coupons_code, table: "coupons", columns: ["code"], mode: :deferred_table_aware},
+    %{key: :promotions_code, table: "promotions", columns: ["code"], mode: :deferred_table_aware}
   ]
 
   @spec active_now() :: [constraint()]

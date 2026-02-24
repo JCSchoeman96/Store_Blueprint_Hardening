@@ -43,6 +43,27 @@ defmodule Store.Orders.OrderAdjustment do
       public?(true)
     end
 
+    attribute :source_kind, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :source_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :source_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :precedence_rank, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -84,7 +105,18 @@ defmodule Store.Orders.OrderAdjustment do
     end
 
     create :create do
-      accept([:order_id, :sequence_no, :currency, :kind, :amount_minor, :reason])
+      accept([
+        :order_id,
+        :sequence_no,
+        :currency,
+        :kind,
+        :amount_minor,
+        :reason,
+        :source_kind,
+        :source_code,
+        :source_id,
+        :precedence_rank
+      ])
     end
   end
 

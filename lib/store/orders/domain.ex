@@ -6,6 +6,7 @@ defmodule Store.Orders do
   use Ash.Domain
 
   alias Store.Orders.Order
+  alias Store.Pricing.Contract
   alias Store.Support.ID.OrderRef
 
   @max_order_ref_attempts 5
@@ -66,5 +67,17 @@ defmodule Store.Orders do
   defp order_ref_conflict?(error) do
     message = Exception.message(error)
     String.contains?(message, "order_ref") and String.contains?(message, "already been taken")
+  end
+
+  @spec write_priced_snapshot(String.t(), Contract.Output.t() | map(), keyword()) ::
+          {:ok,
+           %{
+             line_items: [Store.Orders.OrderLineItem.t()],
+             adjustments: [Store.Orders.OrderAdjustment.t()]
+           }}
+          | {:error, term()}
+  def write_priced_snapshot(order_id, output, opts \\ [])
+      when is_binary(order_id) and is_list(opts) do
+    Store.Orders.SnapshotWriter.write_priced_snapshot(order_id, output, opts)
   end
 end
