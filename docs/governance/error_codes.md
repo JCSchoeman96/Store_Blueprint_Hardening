@@ -9,11 +9,13 @@ This document pins stable, registry-backed error codes referenced across governa
 ## Canonical auth/error semantics (MUST)
 - UNAUTHORIZED: actor missing / not signed in
 - FORBIDDEN: actor present, but not allowed by policy
+- NOT_FOUND: requested resource not found
 - STEP_UP_REQUIRED: sensitive op without recent step-up
 - INVALID_STATE_TRANSITION: forbidden lifecycle transition
 - STALE_RECORD: optimistic lock failure / concurrent write
 - WEBHOOK_DUPLICATE: duplicate receipt/event detected (often NOOP)
 - VALIDATION_ERROR: generic validation failure when no more specific code fits
+- INTERNAL_ERROR: unexpected internal failure (non-leaky, used as a safe fallback)
 
 ## Ecommerce correctness codes (MUST)
 Pricing/discounts:

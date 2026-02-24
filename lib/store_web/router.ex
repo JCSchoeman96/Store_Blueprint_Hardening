@@ -64,9 +64,11 @@ defmodule StoreWeb.Router do
   end
 
   # Other scopes may use custom stacks.
-  # scope "/api", StoreWeb do
-  #   pipe_through :api
-  # end
+  scope "/api", StoreWeb do
+    pipe_through :api
+
+    get "/orders/:id", OrderApiController, :show
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:store, :dev_routes) do

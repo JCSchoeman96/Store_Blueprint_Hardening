@@ -6,11 +6,13 @@ defmodule Store.Support.Errors.ErrorCodes do
   @codes [
     "UNAUTHORIZED",
     "FORBIDDEN",
+    "NOT_FOUND",
     "STEP_UP_REQUIRED",
     "INVALID_STATE_TRANSITION",
     "STALE_RECORD",
     "WEBHOOK_DUPLICATE",
     "VALIDATION_ERROR",
+    "INTERNAL_ERROR",
     "INVALID_COUPON",
     "CHECKOUT_DUPLICATE",
     "PAYMENT_INTENT_DUPLICATE",

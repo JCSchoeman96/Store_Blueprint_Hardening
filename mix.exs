@@ -103,6 +103,7 @@ defmodule Store.MixProject do
       check: [
         "format --check-formatted",
         "compile --warnings-as-errors",
+        "check.req_usage",
         "check.no_repo_in_web",
         "check.moduledoc",
         "check.docs_notes",

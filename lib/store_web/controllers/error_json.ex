@@ -4,6 +4,7 @@ defmodule StoreWeb.ErrorJSON do
 
   See config/config.exs.
   """
+  alias Store.Support.Errors.Normalize
 
   # If you want to customize a particular status code,
   # you may add your own clauses, such as:
@@ -15,7 +16,15 @@ defmodule StoreWeb.ErrorJSON do
   # By default, Phoenix returns the status message from
   # the template name. For example, "404.json" becomes
   # "Not Found".
+  def render("error.json", %{error: error}) do
+    %{
+      errors: Normalize.to_map(error)
+    }
+  end
+
   def render(template, _assigns) do
-    %{errors: %{detail: Phoenix.Controller.status_message_from_template(template)}}
+    %{
+      errors: %{detail: Phoenix.Controller.status_message_from_template(template)}
+    }
   end
 end
