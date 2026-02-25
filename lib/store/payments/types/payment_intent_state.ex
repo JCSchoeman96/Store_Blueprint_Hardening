@@ -4,5 +4,5 @@ defmodule Store.Payments.Types.PaymentIntentState do
   """
 
   use Ash.Type.Enum,
-    values: [:created, :submitted, :succeeded, :failed, :cancelled]
+    values: [:created, :submitted, :requires_action, :succeeded, :failed, :cancelled]
 end

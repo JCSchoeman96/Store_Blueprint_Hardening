@@ -25,6 +25,11 @@ defmodule Store.Orders.Order do
       public?(true)
     end
 
+    attribute :checkout_key, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :user_id, :uuid do
       allow_nil?(true)
       public?(true)
@@ -119,13 +124,14 @@ defmodule Store.Orders.Order do
 
   identities do
     identity(:unique_order_ref, [:order_ref])
+    identity(:unique_checkout_key, [:checkout_key])
   end
 
   actions do
     defaults([:read])
 
     create :create do
-      accept([:order_ref, :user_id])
+      accept([:order_ref, :user_id, :checkout_key])
 
       change(fn changeset, _context ->
         case Ash.Changeset.get_attribute(changeset, :order_ref) do
@@ -133,6 +139,22 @@ defmodule Store.Orders.Order do
           _order_ref -> changeset
         end
       end)
+    end
+
+    create :begin_checkout do
+      accept([:order_ref, :user_id, :checkout_key])
+
+      change(fn changeset, _context ->
+        case Ash.Changeset.get_attribute(changeset, :order_ref) do
+          nil -> Ash.Changeset.change_attribute(changeset, :order_ref, OrderRef.generate())
+          _order_ref -> changeset
+        end
+      end)
+
+      upsert?(true)
+      upsert_identity(:unique_checkout_key)
+      upsert_fields([])
+      return_skipped_upsert?(true)
     end
 
     update :mark_paid do
@@ -203,6 +225,12 @@ defmodule Store.Orders.Order do
     end
 
     policy action(:create) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:begin_checkout) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

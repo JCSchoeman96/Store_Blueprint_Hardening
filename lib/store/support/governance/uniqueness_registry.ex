@@ -16,6 +16,7 @@ defmodule Store.Support.Governance.UniquenessRegistry do
   @active_now [
     %{key: :users_email, table: "users", columns: ["email"], mode: :active_now},
     %{key: :orders_order_ref, table: "orders", columns: ["order_ref"], mode: :active_now},
+    %{key: :orders_checkout_key, table: "orders", columns: ["checkout_key"], mode: :active_now},
     %{
       key: :inventory_items_variant_id,
       table: "inventory_items",
@@ -41,9 +42,39 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       mode: :active_now
     },
     %{
+      key: :payment_intents_payment_intent_key,
+      table: "payment_intents",
+      columns: ["payment_intent_key"],
+      mode: :active_now
+    },
+    %{
+      key: :payment_intents_in_flight_order_id,
+      table: "payment_intents",
+      columns: ["order_id"],
+      mode: :active_now
+    },
+    %{
       key: :provider_events_provider_provider_event_id,
       table: "provider_events",
       columns: ["provider", "provider_event_id"],
+      mode: :active_now
+    },
+    %{
+      key: :payment_attempts_provider_event_key,
+      table: "payment_attempts",
+      columns: ["provider_event_key"],
+      mode: :active_now
+    },
+    %{
+      key: :payment_attempts_attempt_key,
+      table: "payment_attempts",
+      columns: ["attempt_key"],
+      mode: :active_now
+    },
+    %{
+      key: :payment_applications_application_key,
+      table: "payment_applications",
+      columns: ["application_key"],
       mode: :active_now
     },
     %{

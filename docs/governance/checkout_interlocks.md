@@ -22,26 +22,30 @@ Constraints (MUST):
 When creating an order from cart/session:
 - checkout_key MUST be stable for the checkout attempt.
 Canonical:
-- `checkout_key = "checkout:user:<user_id>:cart:<cart_fingerprint>:as_of:<as_of_iso>"`
+- `checkout_key = "ck:" <> base32(sha256(canonical_checkout_payload))`
 
 cart_fingerprint MUST be deterministic:
 - product/variant UUIDs normalized to raw16 and sorted (binary sort)
 - quantities included
-- coupon codes normalized uppercase
+- currency included
+- explicit as_of included
+- pricing contract/version pin included
+- tax/shipping deterministic input set (or explicit digest) included
 - hash the canonical byte representation (sha256)
 
 DB uniqueness (MUST):
-- unique index on `orders.checkout_key` (nullable allowed, but when present must be unique)
+- unique index on `orders.checkout_key`
 
 Behavior (MUST):
 - If an order with checkout_key already exists in pending_payment, return it (NOOP), do not create a new one.
 
 ### 3.2 PaymentIntent create/attach
 payment_intent_key MUST be stable:
-- `payment_intent_key = "pi:order:<order_id>:amount:<grand_total_minor>:currency:<currency>:provider:<provider>"`
+- `payment_intent_key = "pi:" <> base32(sha256("order:<order_id>|amount:<grand_total_minor>|currency:<currency>|provider:<provider>"))`
 
 DB uniqueness (MUST):
 - unique index on `payment_intents.payment_intent_key`
+- partial unique index on `payment_intents(order_id)` for in-flight states (`submitted`, `requires_action`)
 
 Behavior (MUST):
 - If PaymentIntent with key exists, return it (NOOP).
@@ -66,8 +70,10 @@ All “paid” side effects must be guarded by a durable idempotency record:
 - fulfillment creation
 
 Approach (MUST):
-- Create a `Payments.ProviderEvent` or `Orders.OrderEvent` record with unique key.
-- Worker checks if the event already applied; if yes, NOOP.
+- Create `Orders.PaymentApplication` record with unique `application_key` per order paid transition.
+- Worker inserts `PaymentApplication` first:
+  - insert winner applies side effects
+  - replay sees existing row and NOOPs
 
 ## 6) Error semantics (MUST)
 - CHECKOUT_DUPLICATE: duplicate begin_checkout detected (returns existing order)

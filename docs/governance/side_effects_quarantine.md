@@ -44,10 +44,16 @@ Phase 08 deterministic idempotency baseline:
 - `idempotency_key = sha256("#{provider}\n" <> raw_body)`
 - duplicate ingest MUST be NOOP-safe (receipt dedupe)
 
-### 4.2 Redirect/callback controllers (optional pack)
-If an OAuth or payment redirect callback is introduced later:
-- it may parse query params and enqueue a job
-- it MUST NOT perform provider HTTP calls inline
+### 4.2 Payment callback controller enqueue-only
+`lib/store_web/controllers/payment_callback_controller.ex` MAY:
+- read callback payload + headers
+- create a `Payments.WebhookReceipt` via Ash action
+- enqueue `Store.Workers.ProcessWebhookReceiptWorker` only
+
+It MUST NOT:
+- call outbound HTTP inline
+- mutate order/payment state inline
+- enqueue arbitrary worker modules
 
 ## 5) Enforcement gates (MUST)
 `mix check` MUST include gates that fail CI when violations occur.
@@ -64,6 +70,7 @@ Fail if any file under `lib/store_web/**` references:
 
 ALLOWLIST:
 - `lib/store_web/controllers/webhook_controller.ex` may enqueue (enqueue-only rule)
+- `lib/store_web/controllers/payment_callback_controller.ex` may enqueue `Store.Workers.ProcessWebhookReceiptWorker` only
 
 Preferred implementation:
 - Credo custom check with per-path allowlist and file/line reporting.

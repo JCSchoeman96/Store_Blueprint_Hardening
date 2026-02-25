@@ -69,6 +69,7 @@ defmodule StoreWeb.Router do
 
     get "/orders/:id", OrderApiController, :show
     post "/webhooks/:provider", WebhookController, :create
+    post "/payments/:provider/callback", PaymentCallbackController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

@@ -30,6 +30,11 @@ defmodule Store.Payments.PaymentIntent do
       public?(true)
     end
 
+    attribute :payment_intent_key, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :state, Store.Payments.Types.PaymentIntentState do
       allow_nil?(false)
       default(:created)
@@ -52,23 +57,45 @@ defmodule Store.Payments.PaymentIntent do
 
     transitions do
       transition(:submit, from: :created, to: :submitted)
+      transition(:mark_requires_action, from: :submitted, to: :requires_action)
       transition(:mark_succeeded, from: :submitted, to: :succeeded)
+      transition(:mark_succeeded, from: :requires_action, to: :succeeded)
       transition(:mark_failed, from: :submitted, to: :failed)
+      transition(:mark_failed, from: :requires_action, to: :failed)
       transition(:cancel, from: :created, to: :cancelled)
     end
+  end
+
+  identities do
+    identity(:unique_payment_intent_key, [:payment_intent_key])
   end
 
   actions do
     defaults([:read])
 
     create :create do
-      accept([:order_id, :amount_received_minor, :currency])
+      accept([:order_id, :amount_received_minor, :currency, :payment_intent_key])
+    end
+
+    create :create_or_reuse do
+      accept([:order_id, :amount_received_minor, :currency, :payment_intent_key])
+
+      upsert?(true)
+      upsert_identity(:unique_payment_intent_key)
+      upsert_fields([])
+      return_skipped_upsert?(true)
     end
 
     update :submit do
       require_atomic?(false)
       accept([])
       change({Store.Support.Governance.TransitionState, target: :submitted})
+    end
+
+    update :mark_requires_action do
+      require_atomic?(false)
+      accept([])
+      change({Store.Support.Governance.TransitionState, target: :requires_action})
     end
 
     update :mark_succeeded do
@@ -97,6 +124,7 @@ defmodule Store.Payments.PaymentIntent do
     custom_indexes do
       index([:state], name: "payment_intents_state_index")
       index([:order_id], name: "payment_intents_order_id_index")
+      index([:payment_intent_key], name: "payment_intents_payment_intent_key_index")
     end
   end
 
@@ -112,7 +140,19 @@ defmodule Store.Payments.PaymentIntent do
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
     end
 
+    policy action(:create_or_reuse) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
     policy action(:submit) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:mark_requires_action) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

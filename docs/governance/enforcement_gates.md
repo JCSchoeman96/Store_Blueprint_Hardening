@@ -50,7 +50,9 @@ Required (at minimum for release-1):
 ## Side effects quarantine gates (MUST)
 - CI must fail if `Store.Support.HTTP.ReqClient` or `Req.` is referenced under `lib/store_web/**`.
 - CI must fail if `Oban.insert`/`Oban.insert_all` is referenced under `lib/store_web/**`.
-- Allowlist: `lib/store_web/controllers/webhook_controller.ex` may enqueue only.
+- Allowlist:
+  - `lib/store_web/controllers/webhook_controller.ex` may enqueue only.
+  - `lib/store_web/controllers/payment_callback_controller.ex` may enqueue `Store.Workers.ProcessWebhookReceiptWorker` only.
 - See `docs/governance/side_effects_quarantine.md`.
 
 
