@@ -4,7 +4,10 @@
 # If you run "mix test --cover", coverage assets end up here.
 /cover/
 
-.beads/
+# Beads: ignore internals, but track exports
+.beads/*
+!.beads/issues.jsonl
+!.beads/events.jsonl
 
 # The directory Mix downloads your dependencies sources to.
 /deps/
