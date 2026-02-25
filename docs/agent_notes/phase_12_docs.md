@@ -69,6 +69,12 @@ Implement refund semantics that prevent double refunds and inconsistent order/pa
 - Added dependency chain and verified cycles: none.
 - Added this docs-first Phase 12 note with authoritative pins.
 
+## MIGRATION NOTE (AUDIT)
+
+- `20260225100000_phase_12_refund_state_column_fix.exs` is intentional.
+- It exists to normalize environments that briefly had `refunds.status` so the resource/migration contract uses `refunds.state` consistently with AshStateMachine expectations.
+- This is a compatibility follow-up migration, not accidental schema drift.
+
 ## NEXT
 
 - Implement `Refund`, `RefundAttempt`, and `RefundAdjustment` resources and migration.
