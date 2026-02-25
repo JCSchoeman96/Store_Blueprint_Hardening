@@ -81,7 +81,12 @@ defmodule Store.Orders.SnapshotWriter do
           product_title_snapshot: line.product_title_snapshot,
           variant_title_snapshot: line.variant_title_snapshot,
           discount_allocated_minor: line.discount_allocated_minor,
-          net_line_total_minor: line.net_line_total_minor
+          net_line_total_minor: line.net_line_total_minor,
+          tax_category_snapshot: Map.get(line, :tax_category_snapshot, "STANDARD"),
+          tax_rate_id_snapshot: Map.get(line, :tax_rate_id_snapshot),
+          tax_rate_code_snapshot: Map.get(line, :tax_rate_code_snapshot),
+          tax_rate_bps_snapshot: Map.get(line, :tax_rate_bps_snapshot),
+          tax_minor: Map.get(line, :tax_minor, 0)
         }
 
         OrderLineItem

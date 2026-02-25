@@ -10,6 +10,9 @@ defmodule Store.Support.ID.BinaryUuidSort do
 
   @type raw16 :: UUIDv7.raw16()
 
+  @spec normalize_raw16(String.t() | raw16) :: {:ok, raw16} | :error
+  def normalize_raw16(value), do: UUIDv7.decode(value)
+
   @spec normalize_raw16!(String.t() | raw16) :: raw16
   def normalize_raw16!(value), do: UUIDv7.decode!(value)
 

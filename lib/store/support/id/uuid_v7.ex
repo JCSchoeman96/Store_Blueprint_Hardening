@@ -15,21 +15,30 @@ defmodule Store.Support.ID.UUIDv7 do
     Ash.UUIDv7.bingenerate()
   end
 
-  @spec decode!(String.t() | raw16) :: raw16
-  def decode!(<<_::128>> = raw16), do: raw16
+  @spec decode(String.t() | raw16) :: {:ok, raw16} | :error
+  def decode(<<_::128>> = raw16), do: {:ok, raw16}
 
-  def decode!(uuid) when is_binary(uuid) do
+  def decode(uuid) when is_binary(uuid) do
     case Ecto.UUID.dump(uuid) do
-      {:ok, raw16} ->
-        raw16
-
-      :error ->
-        raise ArgumentError, "invalid UUID: #{inspect(uuid)}"
+      {:ok, raw16} -> {:ok, raw16}
+      :error -> :error
     end
   end
 
+  def decode(_value), do: :error
+
+  @spec decode!(String.t() | raw16) :: raw16
   def decode!(value) do
-    raise ArgumentError, "invalid UUID input: #{inspect(value)}"
+    case decode(value) do
+      {:ok, raw16} ->
+        raw16
+
+      :error when is_binary(value) ->
+        raise ArgumentError, "invalid UUID: #{inspect(value)}"
+
+      :error ->
+        raise ArgumentError, "invalid UUID input: #{inspect(value)}"
+    end
   end
 
   @spec encode!(raw16) :: String.t()
@@ -45,9 +54,6 @@ defmodule Store.Support.ID.UUIDv7 do
 
   @spec valid?(term()) :: boolean()
   def valid?(value) do
-    _ = decode!(value)
-    true
-  rescue
-    ArgumentError -> false
+    match?({:ok, _}, decode(value))
   end
 end

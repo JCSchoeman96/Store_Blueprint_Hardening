@@ -30,6 +30,71 @@ defmodule Store.Orders.Order do
       public?(true)
     end
 
+    attribute :shipping_rate_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_rate_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_cost_minor_original, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :shipping_cost_minor_effective, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :free_shipping_applied, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    attribute :free_shipping_reason, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_tax_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :tax_total_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :shipping_country_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_region_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_postal_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :tax_as_of, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :version, :integer do
       allow_nil?(false)
       default(1)
@@ -93,6 +158,25 @@ defmodule Store.Orders.Order do
       accept([])
       change({Store.Support.Governance.TransitionState, target: :refunded})
     end
+
+    update :write_tax_shipping_snapshot do
+      require_atomic?(false)
+
+      accept([
+        :shipping_rate_id,
+        :shipping_rate_code,
+        :shipping_cost_minor_original,
+        :shipping_cost_minor_effective,
+        :free_shipping_applied,
+        :free_shipping_reason,
+        :shipping_tax_minor,
+        :tax_total_minor,
+        :shipping_country_code,
+        :shipping_region_code,
+        :shipping_postal_code,
+        :tax_as_of
+      ])
+    end
   end
 
   postgres do
@@ -103,6 +187,8 @@ defmodule Store.Orders.Order do
       index([:state], name: "orders_state_index")
       index([:order_ref], name: "orders_order_ref_index")
       index([:user_id], name: "orders_user_id_index")
+      index([:shipping_rate_id], name: "orders_shipping_rate_id_index")
+      index([:tax_as_of], name: "orders_tax_as_of_index")
     end
   end
 
@@ -148,6 +234,12 @@ defmodule Store.Orders.Order do
         {Store.Support.Governance.Checks.RoleWithStepUp,
          roles: [:super_admin, :admin], window_minutes: 15}
       )
+    end
+
+    policy action(:write_tax_shipping_snapshot) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
     end
   end
 end

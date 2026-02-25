@@ -5,7 +5,14 @@ defmodule Store.Orders do
 
   use Ash.Domain
 
-  alias Store.Orders.{InventoryReservation, InventoryReservations, Order, SnapshotWriter}
+  alias Store.Orders.{
+    InventoryReservation,
+    InventoryReservations,
+    Order,
+    SnapshotWriter,
+    TaxShippingSnapshotWriter
+  }
+
   alias Store.Pricing.Contract
   alias Store.Support.ID.OrderRef
 
@@ -38,6 +45,17 @@ defmodule Store.Orders do
   def write_priced_snapshot(order_id, output, opts \\ [])
       when is_binary(order_id) and is_list(opts) do
     SnapshotWriter.write_priced_snapshot(order_id, output, opts)
+  end
+
+  @spec write_tax_shipping_snapshot(
+          String.t(),
+          Store.Pricing.TaxShippingContract.Output.t() | map(),
+          keyword()
+        ) ::
+          {:ok, %{order: Store.Orders.Order.t(), idempotent?: boolean()}} | {:error, term()}
+  def write_tax_shipping_snapshot(order_id, output, opts \\ [])
+      when is_binary(order_id) and is_list(opts) do
+    TaxShippingSnapshotWriter.write_tax_shipping_snapshot(order_id, output, opts)
   end
 
   @spec reserve_inventory(String.t(), [map()], keyword()) ::

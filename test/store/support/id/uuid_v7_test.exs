@@ -21,6 +21,14 @@ defmodule Store.Support.ID.UUIDv7Test do
     assert UUIDv7.encode!(raw16) == uuid
   end
 
+  test "decode/1 is non-raising and returns tagged result" do
+    uuid = UUIDv7.generate()
+
+    assert {:ok, <<_::128>>} = UUIDv7.decode(uuid)
+    assert :error = UUIDv7.decode("not-a-uuid")
+    assert :error = UUIDv7.decode(123)
+  end
+
   test "valid?/1 rejects invalid UUID values" do
     refute UUIDv7.valid?("not-a-uuid")
     refute UUIDv7.valid?(123)

@@ -73,6 +73,33 @@ defmodule Store.Orders.OrderLineItem do
       public?(true)
     end
 
+    attribute :tax_category_snapshot, :string do
+      allow_nil?(false)
+      default("STANDARD")
+      public?(true)
+    end
+
+    attribute :tax_rate_id_snapshot, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :tax_rate_code_snapshot, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :tax_rate_bps_snapshot, :integer do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :tax_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -131,7 +158,12 @@ defmodule Store.Orders.OrderLineItem do
         :product_title_snapshot,
         :variant_title_snapshot,
         :discount_allocated_minor,
-        :net_line_total_minor
+        :net_line_total_minor,
+        :tax_category_snapshot,
+        :tax_rate_id_snapshot,
+        :tax_rate_code_snapshot,
+        :tax_rate_bps_snapshot,
+        :tax_minor
       ])
     end
   end
@@ -142,6 +174,7 @@ defmodule Store.Orders.OrderLineItem do
 
     custom_indexes do
       index([:order_id], name: "order_line_items_order_id_index")
+      index([:tax_rate_id_snapshot], name: "order_line_items_tax_rate_id_snapshot_index")
     end
   end
 

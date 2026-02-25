@@ -19,13 +19,16 @@ A project must pick which are enabled; do not allow ad-hoc combinations without 
 ### 2.2 Deterministic selection (MUST)
 If multiple shipping rates match:
 1) select the lowest shipping_cost_minor
-2) tie-break by stable rate_id UUID binary sort
+2) tie-break by stable rate_id UUID binary sort using a non-raising normalization path
 3) if still tie, stable code string sort
 
 ### 2.3 Shipping evidence (MUST)
 Orders must store:
 - selected shipping rate id/code
-- shipping_cost_minor snapshot
+- shipping_cost_minor_original snapshot
+- shipping_cost_minor_effective snapshot
+- free_shipping_applied flag
+- free_shipping_reason
 - destination fields used for calculation (scrubbed/minimal)
 
 ## 3) Tax model (baseline)
@@ -36,7 +39,7 @@ Tax computation inputs must be explicit:
 - tax rate table effective window
 
 ### 3.2 Deterministic tax calculation (MUST)
-- Compute per line item tax based on snapshot unit price and quantity.
+- Compute per line item tax from priced snapshot evidence (`net_line_total_minor`, post-discount).
 - Use round half up at the line level to minor units.
 - Order-level tax is sum of line taxes + shipping tax (if taxable), no recomputation.
 

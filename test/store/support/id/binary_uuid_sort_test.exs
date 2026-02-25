@@ -39,4 +39,10 @@ defmodule Store.Support.ID.BinaryUuidSortTest do
     assert BinaryUuidSort.compare_raw16(right, left) == :gt
     assert BinaryUuidSort.compare_raw16(left, left) == :eq
   end
+
+  test "normalize_raw16/1 returns tagged error for invalid values" do
+    assert {:ok, <<_::128>>} = BinaryUuidSort.normalize_raw16(UUIDv7.generate())
+    assert :error = BinaryUuidSort.normalize_raw16("not-a-uuid")
+    assert :error = BinaryUuidSort.normalize_raw16(:invalid)
+  end
 end
