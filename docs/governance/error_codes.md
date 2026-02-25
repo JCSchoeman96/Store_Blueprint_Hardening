@@ -34,6 +34,8 @@ Refunds:
 - REFUND_NOT_ALLOWED: wrong order/payment state
 - REFUND_EXCEEDS_REFUNDABLE: refund amount exceeds refundable amount
 - REFUND_DUPLICATE: duplicate refund request (returns existing refund / NOOP)
+- IDEMPOTENCY_KEY_REUSE_MISMATCH: same idempotency key used with different refund payload/fingerprint
+- CURRENCY_MISMATCH: refund currency does not match payment intent currency
 - PAYMENT_PROVIDER_REFUND_FAILED: provider refund failed/declined
 
 Tax/shipping:

@@ -28,10 +28,14 @@ Forbidden:
 - refunds on pending/failed/cancelled payment intents
 
 ## 4) Refundable amount definition (MUST)
-Refundable amount is computed from the order snapshot:
-- refundable_total_minor = order.grand_total_minor - sum(successful_refunds_minor)
+Phase-12 refundable base is computed from immutable evidence and captured amount:
+- `snapshot_total_minor_excl_tax_shipping = sum(order_line_items.net_line_total_minor) + sum(order_adjustments.amount_minor)`
+- `refundable_base_minor = min(payment_intent.amount_received_minor, snapshot_total_minor_excl_tax_shipping)`
+- `refundable_remaining_minor = refundable_base_minor - sum(successful_refunds_minor)`
 
-Refund requests MUST NOT exceed refundable_total_minor.
+Refund requests MUST NOT exceed `refundable_remaining_minor`.
+Tax/shipping refund semantics are deferred to Phase 13.
+Refund currency MUST match payment intent currency; mismatch returns `CURRENCY_MISMATCH`.
 
 ## 5) Evidence model (MUST)
 Introduce refund evidence resources (names may vary, but semantics must hold):
@@ -70,6 +74,19 @@ DB uniqueness:
 - unique index on refunds.idempotency_key
 - unique constraint on (provider, provider_refund_id) if provider ids exist
 
+Mismatch rule:
+- if same `idempotency_key` is reused with different immutable refund fingerprint
+  (scope_hash + requested_amount_minor + currency + reason),
+  return `IDEMPOTENCY_KEY_REUSE_MISMATCH` and perform no side effects.
+
+## 6.1 Concurrency lock (MUST)
+Refund request flow MUST serialize concurrent requests by locking the target payment intent row:
+- open transaction
+- `SELECT ... FOR UPDATE` on `payment_intents` row
+- compute remaining refundable and write/refetch refund evidence while lock is held
+
+This is mandatory to prevent concurrent overshoot of refundable bounds.
+
 ## 7) Authorization + step-up (MUST)
 - Refund actions require roles: admin or super_admin
 - Refund actions MUST require step-up (see step_up.md)
@@ -91,6 +108,8 @@ If refund is line-item scoped:
 - REFUND_NOT_ALLOWED: wrong order/payment state
 - REFUND_EXCEEDS_REFUNDABLE: amount too high
 - REFUND_DUPLICATE: idempotent duplicate request (NOOP or returns existing refund)
+- IDEMPOTENCY_KEY_REUSE_MISMATCH: idempotency key reused with non-equivalent payload
+- CURRENCY_MISMATCH: refund currency does not match payment intent currency
 - PAYMENT_PROVIDER_REFUND_FAILED: provider declined/failed
 - VALIDATION_ERROR: bad inputs
 

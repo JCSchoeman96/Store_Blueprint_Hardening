@@ -45,6 +45,36 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       table: "provider_events",
       columns: ["provider", "provider_event_id"],
       mode: :active_now
+    },
+    %{
+      key: :refunds_idempotency_key,
+      table: "refunds",
+      columns: ["idempotency_key"],
+      mode: :active_now
+    },
+    %{
+      key: :refunds_provider_provider_refund_id,
+      table: "refunds",
+      columns: ["provider", "provider_refund_id"],
+      mode: :active_now
+    },
+    %{
+      key: :refund_attempts_refund_sequence_no,
+      table: "refund_attempts",
+      columns: ["refund_id", "sequence_no"],
+      mode: :active_now
+    },
+    %{
+      key: :refund_attempts_provider_event_key,
+      table: "refund_attempts",
+      columns: ["provider_event_key"],
+      mode: :active_now
+    },
+    %{
+      key: :refund_adjustments_refund_id,
+      table: "refund_adjustments",
+      columns: ["refund_id"],
+      mode: :active_now
     }
   ]
 

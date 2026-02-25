@@ -6,6 +6,7 @@ defmodule StoreWeb.WebhookControllerTest do
   require Ash.Query
 
   alias Store.Payments.{PaymentIntent, WebhookReceipt}
+  alias Store.Workers.ProcessRefundWebhookReceiptWorker
   alias Store.Workers.ProcessWebhookReceiptWorker
 
   test "controller stores raw receipt, enqueues worker, and leaves transition to worker", %{
@@ -65,6 +66,28 @@ defmodule StoreWeb.WebhookControllerTest do
       |> Ash.count!(domain: Store.Payments, authorize?: false)
 
     assert count == 1
+  end
+
+  test "refund event payload routes to dedicated refund worker", %{conn: conn} do
+    raw_body =
+      Jason.encode!(%{
+        "event_type" => "refund.succeeded",
+        "provider_event_id" => "evt_refund_route_001",
+        "refund" => %{"idempotency_key" => "refund:route:test"}
+      })
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post(~p"/api/webhooks/stripe", raw_body)
+
+    assert %{"data" => %{"webhook_receipt_id" => webhook_receipt_id}} = json_response(conn, 202)
+
+    assert_enqueued(
+      worker: ProcessRefundWebhookReceiptWorker,
+      args: %{"webhook_receipt_id" => webhook_receipt_id},
+      queue: "refunds"
+    )
   end
 
   defp create_submitted_payment_intent! do

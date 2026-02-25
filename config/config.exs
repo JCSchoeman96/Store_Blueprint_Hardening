@@ -48,7 +48,7 @@ config :store, Oban,
        {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker}
      ]}
   ],
-  queues: [webhooks: 10, inventory: 10]
+  queues: [webhooks: 10, inventory: 10, refunds: 10]
 
 # Configure esbuild (the version is required)
 config :esbuild,

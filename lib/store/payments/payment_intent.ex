@@ -17,6 +17,19 @@ defmodule Store.Payments.PaymentIntent do
       public?(true)
     end
 
+    attribute :amount_received_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      constraints(min: 0)
+      public?(true)
+    end
+
+    attribute :currency, :string do
+      allow_nil?(false)
+      default("USD")
+      public?(true)
+    end
+
     attribute :state, Store.Payments.Types.PaymentIntentState do
       allow_nil?(false)
       default(:created)
@@ -49,7 +62,7 @@ defmodule Store.Payments.PaymentIntent do
     defaults([:read])
 
     create :create do
-      accept([:order_id])
+      accept([:order_id, :amount_received_minor, :currency])
     end
 
     update :submit do

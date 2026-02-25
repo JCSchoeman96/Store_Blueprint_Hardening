@@ -15,6 +15,7 @@ defmodule Store.Orders do
     resource(Store.Orders.Order)
     resource(Store.Orders.OrderLineItem)
     resource(Store.Orders.OrderAdjustment)
+    resource(Store.Orders.RefundAdjustment)
     resource(Store.Orders.InventoryReservation)
   end
 

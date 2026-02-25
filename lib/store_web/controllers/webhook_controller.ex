@@ -5,6 +5,7 @@ defmodule StoreWeb.WebhookController do
 
   alias Store.Payments.WebhookReceipt
   alias Store.Support.Errors.Error
+  alias Store.Workers.ProcessRefundWebhookReceiptWorker
   alias Store.Workers.ProcessWebhookReceiptWorker
   alias StoreWeb.API.ErrorResponder
 
@@ -17,7 +18,7 @@ defmodule StoreWeb.WebhookController do
     with {:ok, raw_body, conn} <- extract_raw_body(conn),
          headers <- headers_to_map(conn.req_headers),
          {:ok, receipt} <- ingest_receipt(provider, raw_body, headers),
-         {:ok, _job} <- enqueue_processing_job(receipt.id) do
+         {:ok, _job} <- enqueue_processing_job(receipt.id, raw_body) do
       conn
       |> put_status(:accepted)
       |> json(%{data: %{webhook_receipt_id: receipt.id}})
@@ -56,11 +57,33 @@ defmodule StoreWeb.WebhookController do
     |> Ash.create(domain: Store.Payments, authorize?: false)
   end
 
-  defp enqueue_processing_job(webhook_receipt_id) do
+  defp enqueue_processing_job(webhook_receipt_id, raw_body) do
+    worker = processing_worker(raw_body)
+
     %{"webhook_receipt_id" => webhook_receipt_id}
-    |> ProcessWebhookReceiptWorker.new()
+    |> worker.new()
     |> Oban.insert()
   end
+
+  defp processing_worker(raw_body) do
+    if refund_event_payload?(raw_body) do
+      ProcessRefundWebhookReceiptWorker
+    else
+      ProcessWebhookReceiptWorker
+    end
+  end
+
+  defp refund_event_payload?(raw_body) when is_binary(raw_body) do
+    with {:ok, payload} <- Jason.decode(raw_body),
+         event_type when is_binary(event_type) <-
+           Map.get(payload, "event_type") || Map.get(payload, "type") do
+      String.starts_with?(event_type, "refund.") or event_type == "charge.refunded"
+    else
+      _ -> false
+    end
+  end
+
+  defp refund_event_payload?(_raw_body), do: false
 
   defp headers_to_map(headers) when is_list(headers) do
     headers
