@@ -6,7 +6,7 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
   use StoreWeb, :live_view
 
   alias Store.Admin.Authorization
-  alias Store.Pricing
+  alias Store.Pricing.Facade, as: PricingFacade
   alias Store.Pricing.Queries.AdminShippingZonesQuery
   alias StoreWeb.Admin.ShippingRates.FormComponent
   alias StoreWeb.Params.Admin.ShippingRatesParams
@@ -30,11 +30,11 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
+  def handle_params(params, uri, socket) do
     actor = socket.assigns.current_user
 
-    with {:ok, query} <- ShippingRatesParams.index_query(params),
-         {:ok, shipping_rates} <- Pricing.list_shipping_rates_for_admin(query, actor),
+    with {:ok, query} <- ShippingRatesParams.index_query(extract_query_params(uri)),
+         {:ok, shipping_rates} <- PricingFacade.list_shipping_rates_for_admin(actor, query),
          {:ok, zone_options} <- load_zone_options(actor),
          {:ok, selected_shipping_rate} <- load_selected(socket.assigns.live_action, params, actor) do
       {:noreply,
@@ -146,13 +146,13 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
 
   defp load_zone_options(actor) do
     with {:ok, query} <- AdminShippingZonesQuery.new(%{"limit" => @zone_options_limit}),
-         {:ok, zones} <- Pricing.list_shipping_zones_for_admin(query, actor) do
+         {:ok, zones} <- PricingFacade.list_shipping_zones_for_admin(actor, query) do
       {:ok, Enum.map(zones, &{"#{&1.code} (#{&1.country_code})", &1.id})}
     end
   end
 
   defp load_selected(:edit, %{"id" => id}, actor) do
-    case Pricing.get_shipping_rate_for_admin(id, actor) do
+    case PricingFacade.get_shipping_rate_for_admin(actor, id) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, shipping_rate} -> {:ok, shipping_rate}
       {:error, _error} -> {:error, :not_found}
@@ -178,4 +178,16 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
   defp shipping_rate_form_id(:edit, %{id: id}), do: "shipping-rate-form-#{id}"
   defp shipping_rate_form_id(:edit, _shipping_rate), do: "shipping-rate-form-edit"
   defp shipping_rate_form_id(_action, _shipping_rate), do: "shipping-rate-form"
+
+  defp extract_query_params(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:query)
+    |> case do
+      nil -> %{}
+      query -> URI.decode_query(query)
+    end
+  end
+
+  defp extract_query_params(_uri), do: %{}
 end

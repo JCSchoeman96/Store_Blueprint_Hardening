@@ -231,6 +231,13 @@ defmodule Store.Orders.Order do
     end
   end
 
+  code_interface do
+    define(:list_for_user, action: :read_for_user)
+    define(:get_for_user, action: :get_for_user, args: [:id])
+    define(:list_for_admin, action: :read_for_admin)
+    define(:get_for_admin, action: :get_for_admin, args: [:id])
+  end
+
   json_api do
     type("order")
     includes([])

@@ -179,6 +179,13 @@ defmodule Store.Pricing.ShippingRate do
     end
   end
 
+  code_interface do
+    define(:list_for_admin, action: :admin_index, args: [:limit, :shipping_zone_id])
+    define(:get_for_admin, action: :admin_get, args: [:id])
+    define(:create_for_admin, action: :create)
+    define(:update_for_admin, action: :update)
+  end
+
   postgres do
     table("shipping_rates")
     repo(Store.Repo)

@@ -3,7 +3,8 @@ defmodule StoreWeb.PaymentCallbackController do
 
   use StoreWeb, :controller
 
-  alias Store.Payments.WebhookReceipt
+  alias Store.Payments.Facade, as: PaymentsFacade
+  alias Store.Payments.Inputs.WebhookReceiptIngestInput
   alias Store.Support.Errors.Error
   alias Store.Workers.ProcessWebhookReceiptWorker
   alias StoreWeb.API.ErrorResponder
@@ -45,15 +46,14 @@ defmodule StoreWeb.PaymentCallbackController do
   end
 
   defp ingest_receipt(provider, raw_body, headers) do
-    attrs = %{
-      provider: provider,
-      raw_body: raw_body,
-      headers: headers
-    }
-
-    WebhookReceipt
-    |> Ash.Changeset.for_create(:ingest, attrs)
-    |> Ash.create(domain: Store.Payments, authorize?: false)
+    with {:ok, input} <-
+           WebhookReceiptIngestInput.new(%{
+             provider: provider,
+             raw_body: raw_body,
+             headers: headers
+           }) do
+      PaymentsFacade.ingest_webhook_receipt_for_system(input)
+    end
   end
 
   defp enqueue_processing_job(webhook_receipt_id) do

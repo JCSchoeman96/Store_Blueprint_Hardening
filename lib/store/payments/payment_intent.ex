@@ -132,6 +132,11 @@ defmodule Store.Payments.PaymentIntent do
     end
   end
 
+  code_interface do
+    define(:list_for_admin, action: :read_for_admin)
+    define(:get_for_admin, action: :get_for_admin, args: [:id])
+  end
+
   json_api do
     type("payment_intent")
     includes([])

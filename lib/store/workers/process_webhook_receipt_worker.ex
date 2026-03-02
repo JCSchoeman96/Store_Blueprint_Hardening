@@ -3,16 +3,14 @@ defmodule Store.Workers.ProcessWebhookReceiptWorker do
 
   use Oban.Worker, queue: :webhooks, max_attempts: 10
 
-  import Ash.Expr
-  require Ash.Query
-
+  alias Store.Payments.Facade, as: PaymentsFacade
   alias Store.Payments.WebhookReceipt
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"webhook_receipt_id" => webhook_receipt_id}})
       when is_binary(webhook_receipt_id) do
     with {:ok, receipt} <- fetch_webhook_receipt(webhook_receipt_id),
-         result <- Store.Payments.process_payment_webhook_receipt(receipt),
+         result <- PaymentsFacade.process_payment_webhook_receipt_for_system(receipt),
          :ok <- normalize_result(result) do
       :ok
     else
@@ -24,13 +22,9 @@ defmodule Store.Workers.ProcessWebhookReceiptWorker do
   def perform(_job), do: {:discard, "missing webhook_receipt_id"}
 
   defp fetch_webhook_receipt(webhook_receipt_id) do
-    query =
-      WebhookReceipt
-      |> Ash.Query.filter(expr(id == ^webhook_receipt_id))
-
-    case Ash.read(query, domain: Store.Payments, authorize?: false) do
-      {:ok, [receipt | _]} -> {:ok, receipt}
-      {:ok, []} -> {:discard, "webhook receipt not found"}
+    case PaymentsFacade.get_webhook_receipt_for_system(webhook_receipt_id) do
+      {:ok, %WebhookReceipt{} = receipt} -> {:ok, receipt}
+      {:ok, nil} -> {:discard, "webhook receipt not found"}
       {:error, error} -> {:error, error}
     end
   end

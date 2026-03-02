@@ -3,6 +3,8 @@ defmodule Store.Payments.WebhookReceipt do
   Receipt-first webhook evidence with idempotent duplicate NOOP semantics.
   """
 
+  import Ash.Expr
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
@@ -55,6 +57,16 @@ defmodule Store.Payments.WebhookReceipt do
   actions do
     defaults([:read])
 
+    read :get_for_system do
+      get?(true)
+
+      argument :id, :uuid do
+        allow_nil?(false)
+      end
+
+      filter(expr(id == ^arg(:id)))
+    end
+
     create :ingest do
       accept([:provider, :idempotency_key, :payload_sha256, :raw_body, :headers, :received_at])
 
@@ -76,6 +88,10 @@ defmodule Store.Payments.WebhookReceipt do
     end
   end
 
+  code_interface do
+    define(:get_for_system, action: :get_for_system, args: [:id])
+  end
+
   postgres do
     table("webhook_receipts")
     repo(Store.Repo)
@@ -94,6 +110,11 @@ defmodule Store.Payments.WebhookReceipt do
 
     policy action(:ingest) do
       access_type(:strict)
+      authorize_if(context_equals(:system?, true))
+    end
+
+    policy action(:get_for_system) do
+      access_type(:runtime)
       authorize_if(context_equals(:system?, true))
     end
 

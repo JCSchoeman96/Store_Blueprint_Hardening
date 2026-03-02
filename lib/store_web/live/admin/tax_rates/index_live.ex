@@ -6,7 +6,7 @@ defmodule StoreWeb.Admin.TaxRates.IndexLive do
   use StoreWeb, :live_view
 
   alias Store.Admin.Authorization
-  alias Store.Pricing
+  alias Store.Pricing.Facade, as: PricingFacade
   alias StoreWeb.Admin.TaxRates.FormComponent
   alias StoreWeb.Params.Admin.TaxRatesParams
 
@@ -26,11 +26,11 @@ defmodule StoreWeb.Admin.TaxRates.IndexLive do
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
+  def handle_params(params, uri, socket) do
     actor = socket.assigns.current_user
 
-    with {:ok, query} <- TaxRatesParams.index_query(params),
-         {:ok, tax_rates} <- Pricing.list_tax_rates_for_admin(query, actor),
+    with {:ok, query} <- TaxRatesParams.index_query(extract_query_params(uri)),
+         {:ok, tax_rates} <- PricingFacade.list_tax_rates_for_admin(actor, query),
          {:ok, selected_tax_rate} <- load_selected(socket.assigns.live_action, params, actor) do
       {:noreply,
        socket
@@ -113,7 +113,7 @@ defmodule StoreWeb.Admin.TaxRates.IndexLive do
   end
 
   defp load_selected(:edit, %{"id" => id}, actor) do
-    case Pricing.get_tax_rate_for_admin(id, actor) do
+    case PricingFacade.get_tax_rate_for_admin(actor, id) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, tax_rate} -> {:ok, tax_rate}
       {:error, _error} -> {:error, :not_found}
@@ -126,4 +126,16 @@ defmodule StoreWeb.Admin.TaxRates.IndexLive do
   defp tax_rate_form_id(:edit, %{id: id}), do: "tax-rate-form-#{id}"
   defp tax_rate_form_id(:edit, _tax_rate), do: "tax-rate-form-edit"
   defp tax_rate_form_id(_action, _tax_rate), do: "tax-rate-form"
+
+  defp extract_query_params(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:query)
+    |> case do
+      nil -> %{}
+      query -> URI.decode_query(query)
+    end
+  end
+
+  defp extract_query_params(_uri), do: %{}
 end

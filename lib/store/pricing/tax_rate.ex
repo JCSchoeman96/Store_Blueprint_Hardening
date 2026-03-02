@@ -143,6 +143,13 @@ defmodule Store.Pricing.TaxRate do
     end
   end
 
+  code_interface do
+    define(:list_for_admin, action: :admin_index, args: [:limit])
+    define(:get_for_admin, action: :admin_get, args: [:id])
+    define(:create_for_admin, action: :create)
+    define(:update_for_admin, action: :update)
+  end
+
   postgres do
     table("tax_rates")
     repo(Store.Repo)

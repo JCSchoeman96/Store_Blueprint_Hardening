@@ -32,6 +32,27 @@ Deny patterns:
 
 Preferred: mix task with file+line reporting (`check.web_no_ash_query`)
 
+## No direct Ash read/write calls in web gate (MUST)
+Fail if any `.ex`/`.exs` file under:
+- `lib/store_web/**`
+
+contains direct Ash read/write call-sites:
+- `Ash.create/1,2` and `Ash.create!/1,2`
+- `Ash.update/1,2` and `Ash.update!/1,2`
+- `Ash.destroy/1,2` and `Ash.destroy!/1,2`
+- `Ash.read/1,2` and `Ash.read!/1,2`
+
+Notes:
+- This gate is intentionally surgical; it does not deny `Ash.Changeset`.
+- Comments/docstrings must not trigger false positives.
+- Gate: `check.web_no_direct_ash_calls`.
+
+## Facade surface naming gate (MUST)
+- Facade public exports must be registry-backed and consumer-scoped.
+- Source of truth: `Store.Support.Governance.SurfaceRegistry`.
+- Gate checks only configured facade modules; no heuristic module scanning.
+- Gate: `check.surface_naming`.
+
 ## One public API surface gates (MUST)
 
 ### No `ash_graphql` dependency gate
