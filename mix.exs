@@ -106,6 +106,8 @@ defmodule Store.MixProject do
         "check.req_usage",
         "check.web_no_http",
         "check.web_no_oban_enqueue",
+        "check.web_no_ash_query",
+        "check.admin_live_no_direct_ash",
         "check.no_repo_in_web",
         "check.moduledoc",
         "check.docs_notes",

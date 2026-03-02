@@ -13,6 +13,9 @@ defmodule Store.Pricing do
     Coupon,
     Evaluator,
     Promotion,
+    Queries.AdminShippingRatesQuery,
+    Queries.AdminShippingZonesQuery,
+    Queries.AdminTaxRatesQuery,
     ShippingRate,
     ShippingZone,
     TaxRate,
@@ -31,6 +34,75 @@ defmodule Store.Pricing do
   end
 
   @type evaluate_quote_opts :: [authorize?: boolean(), actor: term(), context: map()]
+
+  @spec list_shipping_zones_for_admin(AdminShippingZonesQuery.t(), map()) ::
+          {:ok, [ShippingZone.t()]} | {:error, term()}
+  def list_shipping_zones_for_admin(%AdminShippingZonesQuery{limit: limit}, actor)
+      when is_map(actor) do
+    query =
+      ShippingZone
+      |> Ash.Query.for_read(:admin_index, %{limit: limit}, actor: actor)
+
+    Ash.read(query, domain: __MODULE__, actor: actor)
+  end
+
+  @spec get_shipping_zone_for_admin(Ecto.UUID.t(), map()) ::
+          {:ok, ShippingZone.t() | nil} | {:error, term()}
+  def get_shipping_zone_for_admin(id, actor) when is_binary(id) and is_map(actor) do
+    query =
+      ShippingZone
+      |> Ash.Query.for_read(:admin_get, %{id: id}, actor: actor)
+
+    Ash.read_one(query, domain: __MODULE__, actor: actor)
+  end
+
+  @spec list_shipping_rates_for_admin(AdminShippingRatesQuery.t(), map()) ::
+          {:ok, [ShippingRate.t()]} | {:error, term()}
+  def list_shipping_rates_for_admin(
+        %AdminShippingRatesQuery{limit: limit, shipping_zone_id: shipping_zone_id},
+        actor
+      )
+      when is_map(actor) do
+    query =
+      ShippingRate
+      |> Ash.Query.for_read(
+        :admin_index,
+        %{limit: limit, shipping_zone_id: shipping_zone_id},
+        actor: actor
+      )
+
+    Ash.read(query, domain: __MODULE__, actor: actor)
+  end
+
+  @spec get_shipping_rate_for_admin(Ecto.UUID.t(), map()) ::
+          {:ok, ShippingRate.t() | nil} | {:error, term()}
+  def get_shipping_rate_for_admin(id, actor) when is_binary(id) and is_map(actor) do
+    query =
+      ShippingRate
+      |> Ash.Query.for_read(:admin_get, %{id: id}, actor: actor)
+
+    Ash.read_one(query, domain: __MODULE__, actor: actor)
+  end
+
+  @spec list_tax_rates_for_admin(AdminTaxRatesQuery.t(), map()) ::
+          {:ok, [TaxRate.t()]} | {:error, term()}
+  def list_tax_rates_for_admin(%AdminTaxRatesQuery{limit: limit}, actor) when is_map(actor) do
+    query =
+      TaxRate
+      |> Ash.Query.for_read(:admin_index, %{limit: limit}, actor: actor)
+
+    Ash.read(query, domain: __MODULE__, actor: actor)
+  end
+
+  @spec get_tax_rate_for_admin(Ecto.UUID.t(), map()) ::
+          {:ok, TaxRate.t() | nil} | {:error, term()}
+  def get_tax_rate_for_admin(id, actor) when is_binary(id) and is_map(actor) do
+    query =
+      TaxRate
+      |> Ash.Query.for_read(:admin_get, %{id: id}, actor: actor)
+
+    Ash.read_one(query, domain: __MODULE__, actor: actor)
+  end
 
   @spec evaluate_quote(map(), evaluate_quote_opts()) ::
           {:ok, %{input: Contract.Input.t(), output: Contract.Output.t()}} | {:error, Error.t()}

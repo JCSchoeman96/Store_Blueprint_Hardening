@@ -10,6 +10,7 @@ defmodule Store.Payments.Interlocks do
   alias Store.Orders.Order
   alias Store.Payments.{PaymentAttempt, PaymentIntent, ProviderEvent, WebhookReceipt}
   alias Store.Repo
+  alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.Governance.Idempotency
 
@@ -82,9 +83,20 @@ defmodule Store.Payments.Interlocks do
 
   def apply_payment_success_once(%PaymentIntent{} = payment_intent, _opts) do
     with true <- is_binary(payment_intent.order_id),
-         {:ok, order} <- fetch_order(payment_intent.order_id) do
-      Repo.transaction(fn -> run_apply_payment_success_once(payment_intent, order) end)
-      |> normalize_transaction_result()
+         {:ok, order} <- fetch_order(payment_intent.order_id),
+         {:ok, result, notifications} <-
+           Repo.transaction(fn -> run_apply_payment_success_once(payment_intent, order) end)
+           |> normalize_transaction_result(),
+         :ok <-
+           AshNotifications.notify_post_commit(
+             notifications,
+             context: %{
+               flow: :apply_payment_success_once,
+               order_id: order.id,
+               payment_intent_id: payment_intent.id
+             }
+           ) do
+      {:ok, result}
     else
       false ->
         {:error,
@@ -344,11 +356,13 @@ defmodule Store.Payments.Interlocks do
     application_key = "paid_apply:order:#{order.id}"
 
     with {:ok, status} <- insert_payment_application(order.id, payment_intent.id, application_key),
-         {:ok, updated_intent} <- maybe_mark_payment_intent_succeeded(payment_intent),
-         {:ok, updated_order} <- maybe_mark_order_paid(order),
+         {:ok, updated_intent, intent_notifications} <-
+           maybe_mark_payment_intent_succeeded(payment_intent),
+         {:ok, updated_order, order_notifications} <- maybe_mark_order_paid(order),
          {:ok, _consume_result} <-
            Store.Orders.consume_reservations_for_order(order.id, context: %{system?: true}) do
-      apply_once_result(status, updated_order, updated_intent)
+      notifications = intent_notifications ++ order_notifications
+      {:ok, apply_once_result(status, updated_order, updated_intent), notifications}
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
       {:error, other} -> Repo.rollback(other)
@@ -389,13 +403,17 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp maybe_mark_payment_intent_succeeded(%PaymentIntent{state: :succeeded} = payment_intent),
-    do: {:ok, payment_intent}
+    do: {:ok, payment_intent, []}
 
   defp maybe_mark_payment_intent_succeeded(%PaymentIntent{state: state} = payment_intent)
        when state in [:submitted, :requires_action] do
     payment_intent
     |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update(payment_ash_opts([]))
+    |> Ash.update(payment_ash_opts(return_notifications?: true))
+    |> case do
+      {:ok, updated_intent, notifications} -> {:ok, updated_intent, notifications}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp maybe_mark_payment_intent_succeeded(_payment_intent) do
@@ -406,12 +424,16 @@ defmodule Store.Payments.Interlocks do
      )}
   end
 
-  defp maybe_mark_order_paid(%Order{state: :paid} = order), do: {:ok, order}
+  defp maybe_mark_order_paid(%Order{state: :paid} = order), do: {:ok, order, []}
 
   defp maybe_mark_order_paid(%Order{state: :pending_payment} = order) do
     order
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update(order_ash_opts([]))
+    |> Ash.update(order_ash_opts(return_notifications?: true))
+    |> case do
+      {:ok, updated_order, notifications} -> {:ok, updated_order, notifications}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp maybe_mark_order_paid(_order) do
@@ -438,7 +460,17 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp normalize_transaction_result({:ok, result}), do: {:ok, result}
+  defp normalize_transaction_result({:ok, {:ok, result, notifications}})
+       when is_list(notifications),
+       do: {:ok, result, notifications}
+
+  defp normalize_transaction_result({:ok, other}) do
+    {:error,
+     Error.new("INTERNAL_ERROR", "invalid transaction result shape", %{
+       result: inspect(other)
+     })}
+  end
+
   defp normalize_transaction_result({:error, reason}), do: {:error, reason}
 
   defp payment_ash_opts(opts) do

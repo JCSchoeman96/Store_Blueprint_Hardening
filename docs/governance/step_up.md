@@ -15,6 +15,7 @@ Step-up is a “recent re-authentication” requirement for sensitive operations
 Sensitive operations must refuse unless within window:
 - refunds
 - payment provider configuration changes
+- shipping/tax pricing configuration changes
 - payout/bank detail changes (if enabled)
 
 ## Error semantics (MUST)

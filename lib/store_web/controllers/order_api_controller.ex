@@ -3,21 +3,19 @@ defmodule StoreWeb.OrderApiController do
 
   use StoreWeb, :controller
 
-  import Ash.Expr
-  require Ash.Query
-
-  alias Store.Orders.Order
+  alias Store.Orders
   alias Store.Support.Errors.Error
   alias StoreWeb.API.ErrorResponder
+  alias StoreWeb.Params.OrderApiParams
 
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def show(conn, %{"id" => id}) do
+  def show(conn, params) do
     case conn.assigns[:current_user] do
       nil ->
         ErrorResponder.render(conn, Error.new("UNAUTHORIZED", "Authentication required"))
 
       actor ->
-        case fetch_order(id, actor) do
+        case fetch_order(params, actor) do
           {:ok, nil} ->
             ErrorResponder.render(conn, Error.new("NOT_FOUND", "Resource not found"))
 
@@ -30,15 +28,9 @@ defmodule StoreWeb.OrderApiController do
     end
   end
 
-  defp fetch_order(id, actor) do
-    query =
-      Order
-      |> Ash.Query.filter(expr(id == ^id))
-
-    case Ash.read(query, domain: Store.Orders, actor: actor) do
-      {:ok, [order | _]} -> {:ok, order}
-      {:ok, []} -> {:ok, nil}
-      {:error, error} -> {:error, error}
+  defp fetch_order(params, actor) do
+    with {:ok, query} <- OrderApiParams.show_query(params) do
+      Orders.fetch_order_for_api(query, actor)
     end
   end
 end

@@ -3,6 +3,8 @@ defmodule Store.Pricing.TaxRate do
   Persisted tax rate definition used for deterministic line-level tax computation.
   """
 
+  import Ash.Expr
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
@@ -82,6 +84,28 @@ defmodule Store.Pricing.TaxRate do
       primary?(true)
     end
 
+    read :admin_index do
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(20)
+        constraints(min: 1, max: 100)
+      end
+
+      prepare(fn query, _context ->
+        limit = Ash.Query.get_argument(query, :limit) || 20
+        query |> Ash.Query.sort(inserted_at: :desc, id: :asc) |> Ash.Query.limit(limit)
+      end)
+    end
+
+    read :admin_get do
+      argument :id, :uuid do
+        allow_nil?(false)
+      end
+
+      get?(true)
+      filter(expr(id == ^arg(:id)))
+    end
+
     create :create do
       accept([
         :code,
@@ -132,7 +156,7 @@ defmodule Store.Pricing.TaxRate do
   end
 
   policies do
-    policy action(:read) do
+    policy action_type(:read) do
       access_type(:runtime)
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
@@ -140,17 +164,21 @@ defmodule Store.Pricing.TaxRate do
     policy action(:create) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
-      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+
+      authorize_if(
+        {Store.Support.Governance.Checks.RoleWithStepUp,
+         roles: [:super_admin, :admin], window_minutes: 15}
+      )
     end
 
     policy action(:update) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
-      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
-    end
 
-    policy always() do
-      forbid_if(always())
+      authorize_if(
+        {Store.Support.Governance.Checks.RoleWithStepUp,
+         roles: [:super_admin, :admin], window_minutes: 15}
+      )
     end
   end
 

@@ -104,6 +104,12 @@ Note: AuditLog MUST remain append-only (create-only actions).
 | Promotion/Coupon | C/U/D | YES | YES | NO | NO | NO |
 | DiscountApplication | R | YES | YES | NO | LIMITED | SELF** |
 
+### 5.5.1 Pricing configuration (ShippingZone, ShippingRate, TaxRate)
+| Resource | Action | super_admin | admin | editor | support | customer |
+|---------|--------|-------------|-------|--------|---------|----------|
+| ShippingZone/ShippingRate/TaxRate | R | YES | YES | NO | LIMITED | NO |
+| ShippingZone/ShippingRate/TaxRate | C/U/D | YES (step-up) | YES (step-up) | NO | NO | NO |
+
 \* LIMITED support coupon read: code + validity window + usage counts only (no internal rules engine payload).
 
 ### 5.6 Orders (Orders.Order, LineItem, Adjustment)

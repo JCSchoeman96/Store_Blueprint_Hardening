@@ -54,10 +54,27 @@ defmodule Store.Admin.AuditLog do
   actions do
     defaults([:read])
 
+    read :recent_for_admin do
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(20)
+        constraints(min: 1, max: 100)
+      end
+
+      prepare(fn query, _context ->
+        limit = Ash.Query.get_argument(query, :limit) || 20
+        query |> Ash.Query.sort(inserted_at: :desc) |> Ash.Query.limit(limit)
+      end)
+    end
+
     create :create do
       accept([:actor_id, :action, :resource, :record_id, :request_id, :meta, :payload_sha256])
       change(Store.Admin.Changes.SanitizeAuditMeta)
     end
+  end
+
+  code_interface do
+    define(:recent_for_admin, action: :recent_for_admin, args: [:limit])
   end
 
   postgres do

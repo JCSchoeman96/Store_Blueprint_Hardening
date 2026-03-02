@@ -60,6 +60,15 @@ defmodule StoreWeb.Router do
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live "/account", AccountLive, :index
       live "/admin", AdminLive, :index
+      live "/admin/shipping-zones", Admin.ShippingZones.IndexLive, :index
+      live "/admin/shipping-zones/new", Admin.ShippingZones.IndexLive, :new
+      live "/admin/shipping-zones/:id/edit", Admin.ShippingZones.IndexLive, :edit
+      live "/admin/shipping-rates", Admin.ShippingRates.IndexLive, :index
+      live "/admin/shipping-rates/new", Admin.ShippingRates.IndexLive, :new
+      live "/admin/shipping-rates/:id/edit", Admin.ShippingRates.IndexLive, :edit
+      live "/admin/tax-rates", Admin.TaxRates.IndexLive, :index
+      live "/admin/tax-rates/new", Admin.TaxRates.IndexLive, :new
+      live "/admin/tax-rates/:id/edit", Admin.TaxRates.IndexLive, :edit
     end
   end
 

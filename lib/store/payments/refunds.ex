@@ -11,6 +11,7 @@ defmodule Store.Payments.Refunds do
   alias Store.Orders.{Order, OrderAdjustment, OrderLineItem, RefundAdjustment}
   alias Store.Payments.{PaymentIntent, ProviderEvent, Refund, RefundAttempt, WebhookReceipt}
   alias Store.Repo
+  alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.Governance.Idempotency
   alias Store.Support.Time
@@ -40,10 +41,22 @@ defmodule Store.Payments.Refunds do
   end
 
   defp request_refund_transaction(request, actor, context, authorize?) do
-    Repo.transaction(fn ->
-      run_locked_refund_request(request, actor, context, authorize?)
-    end)
-    |> normalize_transaction_result()
+    with {:ok, refund, notifications} <-
+           Repo.transaction(fn ->
+             run_locked_refund_request(request, actor, context, authorize?)
+           end)
+           |> normalize_transaction_result(),
+         :ok <-
+           AshNotifications.notify_post_commit(
+             notifications,
+             context: %{
+               flow: :request_refund,
+               order_id: request.order_id,
+               payment_intent_id: request.payment_intent_id
+             }
+           ) do
+      {:ok, refund}
+    end
   end
 
   defp run_locked_refund_request(request, actor, context, authorize?) do
@@ -55,7 +68,7 @@ defmodule Store.Payments.Refunds do
          :ok <- ensure_matching_currency(request.currency, payment_intent.currency),
          {:ok, existing_refund} <-
            find_refund_by_idempotency_key_for_update(request.idempotency_key),
-         {:ok, refund} <-
+         {:ok, refund, notifications} <-
            create_or_reuse_refund(
              existing_refund,
              request,
@@ -64,14 +77,24 @@ defmodule Store.Payments.Refunds do
              context,
              authorize?
            ) do
-      refund
+      {:ok, refund, notifications}
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
       {:error, other} -> Repo.rollback(other)
     end
   end
 
-  defp normalize_transaction_result({:ok, refund}), do: {:ok, refund}
+  defp normalize_transaction_result({:ok, {:ok, refund, notifications}})
+       when is_list(notifications),
+       do: {:ok, refund, notifications}
+
+  defp normalize_transaction_result({:ok, other}) do
+    {:error,
+     Error.new("INTERNAL_ERROR", "invalid transaction result shape", %{
+       result: inspect(other)
+     })}
+  end
+
   defp normalize_transaction_result({:error, %Error{} = error}), do: {:error, error}
   defp normalize_transaction_result({:error, other}), do: {:error, other}
 
@@ -160,7 +183,7 @@ defmodule Store.Payments.Refunds do
       )
 
     if request_fingerprint == existing_fingerprint do
-      {:ok, existing_refund}
+      {:ok, existing_refund, []}
     else
       {:error,
        Error.new(
@@ -201,11 +224,12 @@ defmodule Store.Payments.Refunds do
         domain: Store.Payments,
         actor: actor,
         context: context,
-        authorize?: false
+        authorize?: false,
+        return_notifications?: true
       )
       |> case do
-        {:ok, refund} ->
-          {:ok, refund}
+        {:ok, refund, notifications} ->
+          {:ok, refund, notifications}
 
         {:error, error} ->
           {:error, error}

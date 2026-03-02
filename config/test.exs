@@ -26,6 +26,8 @@ config :store, :google_oauth,
   client_secret: "test-google-client-secret",
   redirect_uri_base: "http://localhost:4000/auth"
 
+config :ash, :missed_notifications, :raise
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :store, StoreWeb.Endpoint,

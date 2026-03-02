@@ -3,6 +3,8 @@ defmodule Store.Pricing.ShippingRate do
   Persisted shipping rate definition used for deterministic shipping selection.
   """
 
+  import Ash.Expr
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
@@ -99,6 +101,41 @@ defmodule Store.Pricing.ShippingRate do
       primary?(true)
     end
 
+    read :admin_index do
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(20)
+        constraints(min: 1, max: 100)
+      end
+
+      argument :shipping_zone_id, :uuid do
+        allow_nil?(true)
+      end
+
+      prepare(fn query, _context ->
+        limit = Ash.Query.get_argument(query, :limit) || 20
+        zone_id = Ash.Query.get_argument(query, :shipping_zone_id)
+
+        query =
+          if is_binary(zone_id) do
+            Ash.Query.filter(query, expr(shipping_zone_id == ^zone_id))
+          else
+            query
+          end
+
+        query |> Ash.Query.sort(inserted_at: :desc, id: :asc) |> Ash.Query.limit(limit)
+      end)
+    end
+
+    read :admin_get do
+      argument :id, :uuid do
+        allow_nil?(false)
+      end
+
+      get?(true)
+      filter(expr(id == ^arg(:id)))
+    end
+
     create :create do
       accept([
         :code,
@@ -154,7 +191,7 @@ defmodule Store.Pricing.ShippingRate do
   end
 
   policies do
-    policy action(:read) do
+    policy action_type(:read) do
       access_type(:runtime)
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
@@ -162,17 +199,21 @@ defmodule Store.Pricing.ShippingRate do
     policy action(:create) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
-      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+
+      authorize_if(
+        {Store.Support.Governance.Checks.RoleWithStepUp,
+         roles: [:super_admin, :admin], window_minutes: 15}
+      )
     end
 
     policy action(:update) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
-      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
-    end
 
-    policy always() do
-      forbid_if(always())
+      authorize_if(
+        {Store.Support.Governance.Checks.RoleWithStepUp,
+         roles: [:super_admin, :admin], window_minutes: 15}
+      )
     end
   end
 

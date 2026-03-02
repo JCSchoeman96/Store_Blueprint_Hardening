@@ -30,13 +30,13 @@ defmodule Store.Support.Governance.Checks.StepUpRecent do
     subject_context = nested_context(context, :subject)
     changeset_context = nested_context(context, :changeset)
     query_context = nested_context(context, :query)
-    direct_context = as_map(Map.get(context, :context))
+    direct_context = as_map(get_key(context, :context))
 
-    Map.get(subject_context, :step_up_at_mono_usec) ||
-      Map.get(context, :step_up_at_mono_usec) ||
-      Map.get(changeset_context, :step_up_at_mono_usec) ||
-      Map.get(query_context, :step_up_at_mono_usec) ||
-      Map.get(direct_context, :step_up_at_mono_usec)
+    get_key(subject_context, :step_up_at_mono_usec) ||
+      get_key(context, :step_up_at_mono_usec) ||
+      get_key(changeset_context, :step_up_at_mono_usec) ||
+      get_key(query_context, :step_up_at_mono_usec) ||
+      get_key(direct_context, :step_up_at_mono_usec)
   end
 
   defp extract_step_up_at_mono_usec(_), do: nil
@@ -61,11 +61,17 @@ defmodule Store.Support.Governance.Checks.StepUpRecent do
 
   defp nested_context(context, key) do
     context
-    |> Map.get(key)
+    |> get_key(key)
     |> as_map()
-    |> Map.get(:context)
+    |> get_key(:context)
     |> as_map()
   end
+
+  defp get_key(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp get_key(_map, _key), do: nil
 
   defp as_map(%{} = value), do: value
   defp as_map(_), do: %{}

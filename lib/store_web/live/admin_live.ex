@@ -5,17 +5,16 @@ defmodule StoreWeb.AdminLive do
 
   use StoreWeb, :live_view
 
-  require Ash.Query
-
-  alias Store.Admin.AuditLog
+  alias Store.Admin
   alias Store.Admin.Authorization
+  alias StoreWeb.Params.AdminParams
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
     current_user = socket.assigns.current_user
 
     if Authorization.has_any_role?(current_user, [:super_admin, :admin]) do
-      {:ok, assign(socket, :audit_logs, load_audit_logs(current_user))}
+      {:ok, assign(socket, :audit_logs, load_audit_logs(params, current_user))}
     else
       {:ok, Phoenix.LiveView.redirect(socket, to: ~p"/")}
     end
@@ -29,6 +28,22 @@ defmodule StoreWeb.AdminLive do
         <h1 class="text-2xl font-semibold text-neutral-100">Admin Console</h1>
         <p class="mt-2 text-sm text-neutral-300">
           Role-gated admin access. This page reads append-only audit evidence.
+        </p>
+
+        <div class="mt-6 flex flex-wrap gap-2">
+          <.button id="admin-link-shipping-zones" patch={~p"/admin/shipping-zones"}>
+            Shipping Zones
+          </.button>
+          <.button id="admin-link-shipping-rates" patch={~p"/admin/shipping-rates"}>
+            Shipping Rates
+          </.button>
+          <.button id="admin-link-tax-rates" patch={~p"/admin/tax-rates"}>
+            Tax Rates
+          </.button>
+        </div>
+
+        <p :if={is_nil(@step_up_at_mono_usec)} class="mt-3 text-xs text-warning">
+          Step-up proof is missing in this session. Pricing writes will be denied until step-up is provided.
         </p>
 
         <div class="mt-6 space-y-3">
@@ -51,13 +66,11 @@ defmodule StoreWeb.AdminLive do
     """
   end
 
-  defp load_audit_logs(actor) do
-    AuditLog
-    |> Ash.Query.sort(inserted_at: :desc)
-    |> Ash.Query.limit(20)
-    |> Ash.read(domain: Store.Admin, actor: actor)
-    |> case do
-      {:ok, logs} -> logs
+  defp load_audit_logs(params, actor) do
+    with {:ok, query} <- AdminParams.recent_audit_logs_query(params),
+         {:ok, logs} <- Admin.recent_audit_logs(query, actor) do
+      logs
+    else
       _ -> []
     end
   end

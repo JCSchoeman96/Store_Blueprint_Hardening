@@ -20,6 +20,37 @@ Fail if any file under lib/store_web/** references:
 Preferred: Credo custom check (reports file+line)
 Fallback: mix task running ripgrep denylist
 
+## No Ash.Query in scoped web surfaces gate (MUST)
+Fail if any file under these paths references Ash query-construction primitives:
+- `lib/store_web/controllers/**`
+- `lib/store_web/live/**`
+- `lib/store_web/components/**`
+
+Deny patterns:
+- `require Ash.Query`
+- `Ash.Query.`
+
+Preferred: mix task with file+line reporting (`check.web_no_ash_query`)
+
+## No direct Ash calls in admin LiveViews gate (MUST)
+Fail if any `.ex`/`.exs` file under:
+- `lib/store_web/live/admin/**`
+
+contains direct Ash call-sites or Ash query/changeset primitives:
+- `Ash.create/1,2` and `Ash.create!/1,2`
+- `Ash.update/1,2` and `Ash.update!/1,2`
+- `Ash.destroy/1,2` and `Ash.destroy!/1,2`
+- `Ash.read/1,2` and `Ash.read!/1,2`
+- `Ash.Changeset`
+- `require Ash.Query`
+- `Ash.Query.*`
+
+Preferred implementation:
+- AST-based scanner for `.ex`/`.exs` so comments/docstrings do not create false positives.
+
+Rationale:
+- Admin writes must go through `AshPhoenix.Form` lifecycle and admin list reads must go through typed domain surfaces.
+
 ## moduledoc gate (MUST)
 Fail if any module under lib/** lacks @moduledoc (allow explicit @moduledoc false).
 

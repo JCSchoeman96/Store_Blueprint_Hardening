@@ -36,6 +36,15 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 |---|---|---|---|---|
 | GET | `/account` | LiveView (`StoreWeb.AccountLive :index`) | Yes | Authenticated only. |
 | GET | `/admin` | LiveView (`StoreWeb.AdminLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-zones` | LiveView (`StoreWeb.Admin.ShippingZones.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-zones/new` | LiveView (`StoreWeb.Admin.ShippingZones.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-zones/:id/edit` | LiveView (`StoreWeb.Admin.ShippingZones.IndexLive :edit`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-rates` | LiveView (`StoreWeb.Admin.ShippingRates.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-rates/new` | LiveView (`StoreWeb.Admin.ShippingRates.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-rates/:id/edit` | LiveView (`StoreWeb.Admin.ShippingRates.IndexLive :edit`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/tax-rates` | LiveView (`StoreWeb.Admin.TaxRates.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/tax-rates/new` | LiveView (`StoreWeb.Admin.TaxRates.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/tax-rates/:id/edit` | LiveView (`StoreWeb.Admin.TaxRates.IndexLive :edit`) | Yes | Restricted role surface; never index. |
 
 ## Internal / API / webhook routes
 
@@ -76,6 +85,9 @@ For each phase touching web routes, run a route smoke pass and record tested URL
 - `/register`
 - `/account` (auth required behavior)
 - `/admin` (authorization behavior)
+- `/admin/shipping-zones`
+- `/admin/shipping-rates`
+- `/admin/tax-rates`
 
 When catalog/checkout routes exist, extend this smoke pass to:
 - `/products`

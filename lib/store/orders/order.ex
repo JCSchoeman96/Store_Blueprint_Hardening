@@ -130,6 +130,14 @@ defmodule Store.Orders.Order do
   actions do
     defaults([:read])
 
+    read :for_api do
+      argument :id, :uuid do
+        allow_nil?(false)
+      end
+
+      filter(expr(id == ^arg(:id)))
+    end
+
     create :create do
       accept([:order_ref, :user_id, :checkout_key])
 
@@ -199,6 +207,10 @@ defmodule Store.Orders.Order do
         :tax_as_of
       ])
     end
+  end
+
+  code_interface do
+    define(:for_api, action: :for_api, args: [:id])
   end
 
   postgres do

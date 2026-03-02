@@ -9,6 +9,7 @@
 - https://hexdocs.pm/petal_components/readme.html
 - https://hexdocs.pm/oban/
 - https://hexdocs.pm/req/Req.html
+- https://hexdocs.pm/ash/Ash.Notifier.html
 - https://hexdocs.pm/credo/
 - https://hexdocs.pm/ex_doc/readme.html
 - https://hexdocs.pm/stream_data/StreamData.html
@@ -29,6 +30,7 @@
 - Use `mix phx.new` with `--live` and configure Bandit as the endpoint adapter.
 - Keep web concerns in `StoreWeb` and domain logic in Ash resources/actions.
 - Use Ash 3.x + AshPostgres with UUID primary keys for resources.
+- In transaction-bound Ash actions, use `return_notifications?: true` and dispatch with `Ash.Notifier.notify/1` only after commit.
 - Prefer Oban workers for retryable/side-effectful workflows.
 - Use a single HTTP wrapper around Req for outbound calls.
 - Use Credo, docs, and test gates in CI for mechanical enforcement.
@@ -43,6 +45,10 @@
   - no Repo calls in `lib/store_web/**`
   - moduledoc required (`@moduledoc` or `@moduledoc false`)
   - required docs-first phase notes present
+- Missed-notification policy:
+  - transactional action paths must collect and deliver notifications post-commit
+  - test env sets `config :ash, :missed_notifications, :raise` so drops fail CI
+  - post-commit notify failures are logged (no worker retry loop on already-committed writes)
 
 ## Version Pins / Breaking Changes
 - Requested constraint families:
@@ -75,6 +81,7 @@
 - Warm paths:
   - CI gates (`mix check`) run per PR; optimized with simple file scans.
   - Docs and credo checks are deterministic and cached by CI where available.
+  - Post-commit notification delivery adds negligible overhead versus write latency and prevents ghost-state risk.
 - Cold paths:
   - Docs generation and dialyzer are slower, mainly CI/nightly concerns.
 - Indexes:

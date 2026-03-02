@@ -18,6 +18,6 @@ defmodule StoreWeb.API.ErrorResponder do
   defp status_for_code("UNAUTHORIZED"), do: :unauthorized
   defp status_for_code("FORBIDDEN"), do: :forbidden
   defp status_for_code("NOT_FOUND"), do: :not_found
-  defp status_for_code("VALIDATION_ERROR"), do: :unprocessable_entity
+  defp status_for_code("VALIDATION_ERROR"), do: :bad_request
   defp status_for_code(_), do: :internal_server_error
 end

@@ -12,6 +12,7 @@ defmodule Store.Orders do
     InventoryReservation,
     InventoryReservations,
     Order,
+    Queries.OrderForApiQuery,
     SnapshotWriter,
     TaxShippingSnapshotWriter
   }
@@ -49,6 +50,20 @@ defmodule Store.Orders do
     ash_opts = Keyword.drop(opts, [:order_ref_generator, :max_attempts])
 
     do_create_order(attrs, generator, ash_opts, max_attempts)
+  end
+
+  @spec fetch_order_for_api(OrderForApiQuery.t(), map()) ::
+          {:ok, Order.t() | nil} | {:error, term()}
+  def fetch_order_for_api(%OrderForApiQuery{id: id}, actor) when is_map(actor) do
+    query =
+      Order
+      |> Ash.Query.for_read(:for_api, %{id: id}, actor: actor)
+
+    case Ash.read(query, domain: __MODULE__, actor: actor) do
+      {:ok, [order | _]} -> {:ok, order}
+      {:ok, []} -> {:ok, nil}
+      {:error, error} -> {:error, error}
+    end
   end
 
   @spec begin_checkout(begin_checkout_attrs(), keyword()) ::
