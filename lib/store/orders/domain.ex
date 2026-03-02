@@ -3,7 +3,7 @@ defmodule Store.Orders do
   Orders domain for lifecycle state-machine resources and inventory reservations.
   """
 
-  use Ash.Domain
+  use Ash.Domain, extensions: [AshJsonApi.Domain]
 
   import Ash.Expr
   require Ash.Query
@@ -12,7 +12,6 @@ defmodule Store.Orders do
     InventoryReservation,
     InventoryReservations,
     Order,
-    Queries.OrderForApiQuery,
     SnapshotWriter,
     TaxShippingSnapshotWriter
   }
@@ -34,6 +33,23 @@ defmodule Store.Orders do
     resource(Store.Orders.PaymentApplication)
   end
 
+  json_api do
+    prefix("/api/v1")
+    show_raised_errors?(false)
+
+    routes do
+      base_route("/orders", Order) do
+        index(:read_for_user, derive_filter?: false, derive_sort?: false)
+        get(:get_for_user, derive_filter?: false, derive_sort?: false)
+      end
+
+      base_route("/admin/orders", Order) do
+        index(:read_for_admin, derive_filter?: false, derive_sort?: false)
+        get(:get_for_admin, derive_filter?: false, derive_sort?: false)
+      end
+    end
+  end
+
   @type begin_checkout_attrs :: %{
           required(:line_items) => [map()],
           required(:currency) => String.t(),
@@ -50,20 +66,6 @@ defmodule Store.Orders do
     ash_opts = Keyword.drop(opts, [:order_ref_generator, :max_attempts])
 
     do_create_order(attrs, generator, ash_opts, max_attempts)
-  end
-
-  @spec fetch_order_for_api(OrderForApiQuery.t(), map()) ::
-          {:ok, Order.t() | nil} | {:error, term()}
-  def fetch_order_for_api(%OrderForApiQuery{id: id}, actor) when is_map(actor) do
-    query =
-      Order
-      |> Ash.Query.for_read(:for_api, %{id: id}, actor: actor)
-
-    case Ash.read(query, domain: __MODULE__, actor: actor) do
-      {:ok, [order | _]} -> {:ok, order}
-      {:ok, []} -> {:ok, nil}
-      {:error, error} -> {:error, error}
-    end
   end
 
   @spec begin_checkout(begin_checkout_attrs(), keyword()) ::

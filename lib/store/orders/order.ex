@@ -5,7 +5,7 @@ defmodule Store.Orders.Order do
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshStateMachine],
+    extensions: [AshStateMachine, AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer],
     domain: Store.Orders
 
@@ -130,7 +130,29 @@ defmodule Store.Orders.Order do
   actions do
     defaults([:read])
 
-    read :for_api do
+    read :read_for_user do
+      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 50)
+      prepare(build(sort: [inserted_at: :desc, id: :desc]))
+    end
+
+    read :get_for_user do
+      get?(true)
+
+      argument :id, :uuid do
+        allow_nil?(false)
+      end
+
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :read_for_admin do
+      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 50)
+      prepare(build(sort: [inserted_at: :desc, id: :desc]))
+    end
+
+    read :get_for_admin do
+      get?(true)
+
       argument :id, :uuid do
         allow_nil?(false)
       end
@@ -209,8 +231,11 @@ defmodule Store.Orders.Order do
     end
   end
 
-  code_interface do
-    define(:for_api, action: :for_api, args: [:id])
+  json_api do
+    type("order")
+    includes([])
+    derive_filter?(false)
+    derive_sort?(false)
   end
 
   postgres do
@@ -232,7 +257,7 @@ defmodule Store.Orders.Order do
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 
-    policy action_type(:read) do
+    policy action([:read, :read_for_user, :get_for_user]) do
       authorize_if(expr(user_id == ^actor(:id)))
     end
 

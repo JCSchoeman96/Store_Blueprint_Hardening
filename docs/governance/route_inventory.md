@@ -3,7 +3,7 @@
 Purpose: define the canonical public URL surface for QA and search indexing, and separate it from auth/internal routes.
 
 Source of truth used for this inventory:
-- `mix phx.routes` (captured on 2026-02-24)
+- `mix phx.routes` (captured on 2026-03-02)
 - `lib/store_web/router.ex`
 
 Reference excerpt from `mix phx.routes` (auth/public slice):
@@ -50,8 +50,16 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 
 | Method | Path | Surface | Canonical | Notes |
 |---|---|---|---|---|
-| GET | `/api/orders/:id` | Controller (`StoreWeb.OrderApiController :show`) | Yes | API endpoint; not indexable. |
+| GET | `/api/v1/orders` | JSON:API (`StoreWeb.JsonApiRouter`, `Store.Orders.read_for_user`) | Yes | Customer scoped list read; not indexable. |
+| GET | `/api/v1/orders/:id` | JSON:API (`StoreWeb.JsonApiRouter`, `Store.Orders.get_for_user`) | Yes | Customer scoped get read; not indexable. |
+| GET | `/api/v1/admin/orders` | JSON:API (`StoreWeb.JsonApiRouter`, `Store.Orders.read_for_admin`) | Yes | Admin/support scoped read; not indexable. |
+| GET | `/api/v1/admin/orders/:id` | JSON:API (`StoreWeb.JsonApiRouter`, `Store.Orders.get_for_admin`) | Yes | Admin/support scoped get; not indexable. |
+| GET | `/api/v1/admin/payment-intents` | JSON:API (`StoreWeb.JsonApiRouter`, `Store.Payments.PaymentIntent.read_for_admin`) | Yes | Admin/support scoped read; not indexable. |
+| GET | `/api/v1/admin/payment-intents/:id` | JSON:API (`StoreWeb.JsonApiRouter`, `Store.Payments.PaymentIntent.get_for_admin`) | Yes | Admin/support scoped get; not indexable. |
+| GET | `/api/v1/open_api` | JSON:API Router OpenAPI endpoint | Yes | Admin-only contract endpoint; not indexable. |
+| GET | `/api/v1/json_schema` | JSON:API Router JSON Schema endpoint | Yes | Admin-only contract endpoint; not indexable. |
 | POST | `/api/webhooks/:provider` | Controller (`StoreWeb.WebhookController :create`) | Yes | Webhook receiver; never index. |
+| POST | `/api/payments/:provider/callback` | Controller (`StoreWeb.PaymentCallbackController :create`) | Yes | Payment callback enqueue-only route; never index. |
 | * | `/auth/**` | AshAuthentication action endpoints | Yes | Auth internals; never index. |
 | GET | `/dev/dashboard*` | LiveDashboard | Yes | Dev-only internal tooling. |
 | * | `/dev/mailbox` | Swoosh preview | Yes | Dev-only internal tooling. |

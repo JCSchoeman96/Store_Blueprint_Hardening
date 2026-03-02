@@ -32,6 +32,18 @@ Deny patterns:
 
 Preferred: mix task with file+line reporting (`check.web_no_ash_query`)
 
+## One public API surface gates (MUST)
+
+### No `ash_graphql` dependency gate
+- CI must fail if `ash_graphql` appears in `mix.exs` or `mix.lock` while v1 public API is JSON:API-only.
+- Gate: `check.no_ash_graphql_dep`.
+
+### API v1 forward-only gate
+- Under `/api/v1`, the only allowed public routing is forwarding to `StoreWeb.JsonApiRouter`.
+- Gate must fail if custom `/api/v1` routes are introduced in Phoenix router files.
+- Allowlist is explicit and minimal.
+- Gate: `check.api_v1_forward_only`.
+
 ## No direct Ash calls in admin LiveViews gate (MUST)
 Fail if any `.ex`/`.exs` file under:
 - `lib/store_web/live/admin/**`

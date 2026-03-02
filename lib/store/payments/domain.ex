@@ -3,7 +3,7 @@ defmodule Store.Payments do
   Payments domain for payment lifecycle, provider events, and refunds.
   """
 
-  use Ash.Domain
+  use Ash.Domain, extensions: [AshJsonApi.Domain]
 
   alias Store.Payments.{Interlocks, Refunds}
 
@@ -14,6 +14,18 @@ defmodule Store.Payments do
     resource(Store.Payments.Refund)
     resource(Store.Payments.RefundAttempt)
     resource(Store.Payments.WebhookReceipt)
+  end
+
+  json_api do
+    prefix("/api/v1")
+    show_raised_errors?(false)
+
+    routes do
+      base_route("/admin/payment-intents", Store.Payments.PaymentIntent) do
+        index(:read_for_admin, derive_filter?: false, derive_sort?: false)
+        get(:get_for_admin, derive_filter?: false, derive_sort?: false)
+      end
+    end
   end
 
   @spec request_refund(map(), keyword()) :: {:ok, Store.Payments.Refund.t()} | {:error, term()}

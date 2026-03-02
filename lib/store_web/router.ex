@@ -18,9 +18,10 @@ defmodule StoreWeb.Router do
   end
 
   pipeline :api do
-    plug :accepts, ["json"]
+    plug :accepts, ["json", "jsonapi"]
     plug :load_from_bearer
     plug :set_actor, :user
+    plug StoreWeb.Plugs.ApiV1JsonApiGuard
   end
 
   scope "/", StoreWeb do
@@ -73,12 +74,12 @@ defmodule StoreWeb.Router do
   end
 
   # Other scopes may use custom stacks.
-  scope "/api", StoreWeb do
+  scope "/api" do
     pipe_through :api
 
-    get "/orders/:id", OrderApiController, :show
-    post "/webhooks/:provider", WebhookController, :create
-    post "/payments/:provider/callback", PaymentCallbackController, :create
+    forward "/v1", StoreWeb.JsonApiRouter
+    post "/webhooks/:provider", StoreWeb.WebhookController, :create
+    post "/payments/:provider/callback", StoreWeb.PaymentCallbackController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

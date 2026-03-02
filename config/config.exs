@@ -24,7 +24,7 @@ config :store, StoreWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [html: StoreWeb.ErrorHTML, json: StoreWeb.ErrorJSON],
+    formats: [html: StoreWeb.ErrorHTML, json: StoreWeb.ErrorJSON, jsonapi: StoreWeb.ErrorJSON],
     layout: false
   ],
   pubsub_server: Store.PubSub,
@@ -78,6 +78,11 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
+
+# JSON:API media type support for accepts/content-negotiation.
+config :mime, :types, %{
+  "application/vnd.api+json" => ["jsonapi"]
+}
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

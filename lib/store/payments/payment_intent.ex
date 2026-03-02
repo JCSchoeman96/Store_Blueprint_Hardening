@@ -5,7 +5,7 @@ defmodule Store.Payments.PaymentIntent do
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshStateMachine],
+    extensions: [AshStateMachine, AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer],
     domain: Store.Payments
 
@@ -73,6 +73,21 @@ defmodule Store.Payments.PaymentIntent do
   actions do
     defaults([:read])
 
+    read :read_for_admin do
+      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 50)
+      prepare(build(sort: [inserted_at: :desc, id: :desc]))
+    end
+
+    read :get_for_admin do
+      get?(true)
+
+      argument :id, :uuid do
+        allow_nil?(false)
+      end
+
+      filter(expr(id == ^arg(:id)))
+    end
+
     create :create do
       accept([:order_id, :amount_received_minor, :currency, :payment_intent_key])
     end
@@ -115,6 +130,13 @@ defmodule Store.Payments.PaymentIntent do
       accept([])
       change({Store.Support.Governance.TransitionState, target: :cancelled})
     end
+  end
+
+  json_api do
+    type("payment_intent")
+    includes([])
+    derive_filter?(false)
+    derive_sort?(false)
   end
 
   postgres do
@@ -174,10 +196,6 @@ defmodule Store.Payments.PaymentIntent do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
-    end
-
-    policy always() do
-      forbid_if(always())
     end
   end
 end
