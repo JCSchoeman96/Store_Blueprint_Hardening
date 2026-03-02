@@ -119,6 +119,10 @@ Implement a strict Ash 3.x interface spine with dedicated facade modules, typed 
 - `mix test test/store/contracts/phase_18_contracts_test.exs test/store/governance/web_no_direct_ash_calls_test.exs test/store/governance/surface_naming_test.exs`
 - `mix check`
 
+## OBSERVATIONS
+
+- Intermittent `Postgrex.Protocol` disconnect log during tests; no failures; likely test process exit timing.
+
 ## GATES
 
 - Docs-first requirement satisfied prior to implementation code mutations.

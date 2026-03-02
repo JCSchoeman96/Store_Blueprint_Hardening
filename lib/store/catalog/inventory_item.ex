@@ -1,6 +1,6 @@
 defmodule Store.Catalog.InventoryItem do
   @moduledoc """
-  Inventory counters per variant for strict no-oversell reservation flows.
+  Inventory counters per variant. Phase 19 does not enforce hold/reservation semantics.
   """
 
   use Ash.Resource,
@@ -46,6 +46,17 @@ defmodule Store.Catalog.InventoryItem do
     update_timestamp(:updated_at)
   end
 
+  relationships do
+    belongs_to :variant, Store.Catalog.Variant do
+      source_attribute(:variant_id)
+      destination_attribute(:id)
+      define_attribute?(false)
+      public?(true)
+      allow_nil?(false)
+      attribute_writable?(false)
+    end
+  end
+
   identities do
     identity(:unique_variant_id, [:variant_id])
   end
@@ -53,12 +64,44 @@ defmodule Store.Catalog.InventoryItem do
   actions do
     defaults([:read])
 
+    read :read_for_admin do
+      prepare(fn query, _context ->
+        Ash.Query.sort(query, inserted_at: :desc, id: :asc)
+      end)
+    end
+
     create :create do
       accept([:variant_id, :stock_on_hand, :reserved_count, :allow_oversell])
     end
 
     update :update_counts do
       accept([:stock_on_hand, :reserved_count, :allow_oversell])
+    end
+
+    update :set_on_hand do
+      require_atomic?(false)
+      accept([:stock_on_hand, :allow_oversell])
+    end
+
+    update :adjust_on_hand do
+      require_atomic?(false)
+      accept([:allow_oversell])
+
+      argument :delta, :integer do
+        allow_nil?(false)
+      end
+
+      change(fn changeset, _context ->
+        current = changeset.data.stock_on_hand || 0
+        delta = Ash.Changeset.get_argument(changeset, :delta) || 0
+        next_value = current + delta
+
+        if next_value < 0 do
+          Ash.Changeset.add_error(changeset, field: :stock_on_hand, message: "must be >= 0")
+        else
+          Ash.Changeset.change_attribute(changeset, :stock_on_hand, next_value)
+        end
+      end)
     end
   end
 
@@ -77,7 +120,7 @@ defmodule Store.Catalog.InventoryItem do
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 
-    policy action([:create, :update_counts]) do
+    policy action([:create, :update_counts, :set_on_hand, :adjust_on_hand]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

@@ -1,257 +1,166 @@
-# Phase 19 — Catalog (Simple Products Only)
+# Phase 19 — Catalog (Simple Products, Variant-First Identity)
 
 ## Objective
-Establish a **production-grade product catalog** for a single-tenant ecommerce store using **Ash 3.x** as the source of truth for:
+Establish a production-grade catalog in `Store.Catalog` for simple products while preserving sellable identity laws for later variant phases.
 
-- Product lifecycle (draft → published → archived)
-- Pricing inputs for checkout (not order truth — orders remain snapshot-based)
-- Inventory-on-hand inputs for reservation logic
-- Storefront-safe read surfaces (no ad-hoc querying in `store_web/**`)
-
-This phase unlocks a working storefront for **simple physical products** (no variants, no digital delivery, no subscriptions yet).
-
----
+Phase 19 must deliver:
+- Product lifecycle (`draft -> published -> archived`) with precise publish semantics.
+- Storefront-safe read surfaces (`/shop`, `/shop/:slug`) via domain facades only.
+- Variant-first inventory identity now (base variant per product), without introducing Phase 20/21 hold semantics.
 
 ## Scope
 ### In-scope
-- Catalog domain with simple products
-- Categories and images/media references
-- Inventory-on-hand per product (as an input to reservation/availability)
-- Admin CRUD surfaces (forms pattern), but **keep the UI minimal**
-- Storefront read surfaces: list/search/view product
+- Product, base Variant, Category, ProductImage resources.
+- Product create flow that atomically creates one default/base variant and one inventory item.
+- Admin CRUD surfaces (minimal) and storefront list/detail surfaces.
+- Typed query/input contracts and additive governance gates/tests.
 
-### Explicitly out-of-scope (later phases)
-- Digital products (license / download grants)
-- Variable products (variants)
-- Subscriptions
-- Promotions/discounts beyond existing pricing determinism rules
-- Full-text search engine (use Postgres ILIKE + indexes for now)
-
----
+### Out-of-scope
+- Variant selection UX and multiple variants per product (Phase 25).
+- Persistent cart domain and merge semantics (Phase 20).
+- Reservation/hold enforcement in cart/add-to-cart (Phase 21).
+- Stock messaging in storefront UI.
 
 ## Domain Model
 
-### Domain
-- `Store.Catalog` (new)
-
-### Resources
-
-#### `Store.Catalog.Product`
-Simple product that can be sold as a line item.
-
-**Key fields (suggested):**
-- `id` (UUIDv7 PK)
-- `slug` (unique, lowercase, URL-safe)
-- `sku` (unique, optional but recommended)
+### `Store.Catalog.Product`
+Key fields:
+- `id` (UUIDv7)
+- `slug` (required, lowercase, URL-safe, unique)
 - `title` (required)
 - `subtitle` (optional)
-- `description` (optional; store as plain text or sanitized HTML)
-- `status` (state machine: `:draft | :published | :archived`)
-- `currency_code` (ISO 4217)
-- `list_price_minor` (integer; minor units, e.g. cents)
-- `compare_at_price_minor` (optional)
-- `taxable?` (boolean)
-- `requires_shipping?` (boolean; true for physical)
-- `weight_grams` (optional)
-- `is_featured?` (boolean)
-- `published_at` (nullable; set on publish)
-
-**Relationships:**
-- `belongs_to :category, Store.Catalog.Category`
-- `has_many :images, Store.Catalog.ProductImage`
-- `has_one :inventory_item, Store.Catalog.InventoryItem`
-
-#### `Store.Catalog.Category`
-Product grouping.
-
-**Key fields (suggested):**
-- `id`
-- `slug` (unique)
-- `name`
-- `position` (integer; for ordering)
-- `is_active?` (boolean)
+- `description` (optional)
+- `status` (`:draft | :published | :archived`)
+- `published_at` (`utc_datetime_usec`, nullable)
+- `category_id` (nullable)
+- `default_variant_id` (required once created)
 
 Relationships:
-- `has_many :products, Store.Catalog.Product`
+- `belongs_to :category`
+- `belongs_to :default_variant, Store.Catalog.Variant`
+- `has_many :variants`
+- `has_many :images`
 
-#### `Store.Catalog.ProductImage`
-Media reference.
+### `Store.Catalog.Variant`
+Phase 19 uses exactly one base/default variant per product.
 
-**Key fields (suggested):**
-- `id`
-- `product_id`
-- `url` (string)
-- `alt` (string)
-- `position` (int)
+Key fields:
+- `id` (UUIDv7)
+- `product_id` (required)
+- `is_default` (required boolean)
+- `sku` (required, unique)
+- `title` (optional)
+- `currency_code` (required ISO 4217)
+- `price_minor` (required integer minor units)
+- `compare_at_price_minor` (optional integer minor units)
+- `status` (`:active | :archived`)
 
-#### `Store.Catalog.InventoryItem`
-On-hand quantity for a product.
+Relationships:
+- `belongs_to :product`
+- `has_one :inventory_item, Store.Catalog.InventoryItem` (via `variant_id`)
 
-**Key fields (suggested):**
-- `id`
-- `product_id` (unique; 1:1)
-- `on_hand` (int; >= 0)
-- `track_inventory?` (boolean)
+### `Store.Catalog.Category`
+Key fields:
+- `id`, `slug`, `name`, `position`, `is_active`
 
-**Important:** Inventory reservation/holds are governed elsewhere (Phase 11). This resource is the *input state* used to decide whether reservations can be created.
+### `Store.Catalog.ProductImage`
+Key fields:
+- `id`, `product_id`, `url`, `alt`, `position`
 
----
+### `Store.Catalog.InventoryItem`
+Inventory identity remains `variant_id` (no `product_id` identity path).
 
-## Lifecycle & State Machines
+## Lifecycle Rules
 
-### Product status
-Use `ash_state_machine` for an explicit lifecycle (simple and auditable):
+### Product publish semantics (pinned)
+- Storefront visibility: `status == :published AND published_at IS NOT NULL`.
+- `publish`: sets `status = :published` and `published_at = now()`.
+- `unpublish`: sets `status = :draft` and `published_at = NULL`.
+- `archive`: allowed from `:draft`/`:published`, terminal afterward.
 
-- `:draft` → `:published` (action: `publish`)
-- `:published` → `:draft` (action: `unpublish`) **only if no active carts/reservations** (enforced via check)
-- `:draft` → `:archived` (action: `archive`)
-- `:published` → `:archived` (action: `archive`)
-- `:archived` is terminal
+No hold/reservation blockers are added in Phase 19 lifecycle transitions.
 
-**Why terminal archive?** Traditional and safe: you never “resurrect” historical catalog identities; if you must reintroduce a product, create a new SKU/slug.
+## Slug and SKU Laws
+- `products.slug` is required, lowercase, URL-safe, unique.
+- `variants.sku` is required and unique in Phase 19 (no nullable SKU behavior).
+- Storefront product detail lookup resolves by slug only.
 
----
+## Variant-First Identity Law
+- Product create action must atomically create:
+  - Product
+  - Exactly one base Variant (`is_default = true`)
+  - InventoryItem linked to that variant (`inventory_items.variant_id` unique)
+- Action sets `products.default_variant_id` from the created variant.
+- Web must not orchestrate multi-step create logic.
 
-## Actions
+## Default Variant Invariants
+- `variants.is_default` is required.
+- DB partial unique index enforces exactly one default variant per product:
+  - unique on `variants(product_id)` where `is_default = true`.
+- Domain validation enforces `products.default_variant_id` belongs to the same product.
 
-### Product actions
-**Write (admin only):**
-- `create_draft`
-- `update_draft`
-- `publish`
-- `unpublish`
-- `archive`
+## Interfaces and Query Contracts
+Web boundary remains adapter-only:
+1) parse params
+2) build typed struct
+3) call domain facade
+4) render
 
-**Read surfaces (public/user/admin):**
-- `read_for_storefront` (published only)
-- `read_for_admin` (all statuses)
-- `list_for_storefront` (published only, pagination)
-- `list_for_admin` (filterable/pagination)
+Facade reads:
+- `Store.Catalog.Facade.list_products_for_public/2`
+- `Store.Catalog.Facade.get_product_for_public/2`
+- `Store.Catalog.Facade.list_products_for_admin/2`
+- `Store.Catalog.Facade.get_product_for_admin/2`
 
-### Inventory actions
-- `set_on_hand` (admin)
-- `adjust_on_hand` (admin; +/−)
+Query structs:
+- `Store.Catalog.Queries.ProductIndexQuery`
+- `Store.Catalog.Queries.ProductAdminIndexQuery`
 
-### Category actions
-- CRUD + activate/deactivate
+Input struct:
+- `Store.Catalog.Inputs.CartLineInput`
+  - accepts `variant_id` or `product_id`
+  - if both are present, they must match ownership or return `VALIDATION_ERROR`
+  - normalized output is always `variant_id`
 
-### Image actions
-- add/update/remove/reorder
+## Storefront Surfaces
+- `/shop` (list)
+- `/shop/:slug` (detail)
 
----
+UI scope in Phase 19:
+- product title, price, images, metadata
+- no stock messaging
+- no reservation/hold behavior
 
-## Interfaces & Query Contracts (MANDATORY)
+## Data Integrity (DB)
+- `products.slug` unique index
+- `products.default_variant_id` is `NOT NULL` with deferred FK to `variants(id)` so product + base variant can be created atomically in one transaction while enforcing referential integrity at commit
+- `variants.sku` unique index
+- `variants(product_id)` index
+- partial unique index on `variants(product_id)` for `is_default = true`
+- `products.category_id` index
+- `products.status` index
+- `product_images(product_id, position)` unique
+- `inventory_items.variant_id` unique (existing authoritative index)
 
-### Rule
-`lib/store_web/**` must not build queries. Web can only:
-
-1) Parse params → typed query struct
-2) Call domain facade
-
-### Domain facades (examples)
-Add canonical read/write entrypoints:
-
-- `Store.Catalog.list_products_for_storefront(actor, %Store.Catalog.Queries.ProductIndex{})`
-- `Store.Catalog.get_product_for_storefront(actor, slug_or_id)`
-- `Store.Catalog.list_products_for_admin(actor, %Store.Catalog.Queries.ProductAdminIndex{})`
-
-### Query structs
-Create typed query structs in domain:
-
-- `Store.Catalog.Queries.ProductIndex`
-  - `q` (search string)
-  - `category` (slug)
-  - `sort` (enum: newest/price_asc/price_desc)
-  - `page` / `page_size`
-
-- `Store.Catalog.Queries.ProductAdminIndex`
-  - includes status filters
-
-**No arbitrary filter passthrough.** Only allow a bounded set of filters/sorts.
-
----
-
-## Storefront Surfaces (Minimum to be “working ecommerce”)
-
-You do not need a fancy theme yet. You need **real flows**.
-
-### Public pages
-- `/shop` — product list (paged)
-- `/shop/:slug` — product detail
-
-### Cart integration
-- Add-to-cart should reference `product_id` (simple) and create/update cart line.
-- Availability check uses:
-  - `Product.status == :published`
-  - `InventoryItem.on_hand` (if `track_inventory?`)
-
-**Reminder:** Do not decrement on-hand here. Reservations/holds belong to the inventory system (Phase 11) and checkout interlocks (Phase 14).
-
----
-
-## Data Integrity (DB constraints + indexes)
-
-### Product
-- unique index: `slug`
-- unique index: `sku` (nullable unique)
-- index: `category_id`
-- index: `status`
-- optional: trigram index on `title` if you want fast search later
-
-### ProductImage
-- index: `product_id`
-- unique: `(product_id, position)`
-
-### InventoryItem
-- unique index: `product_id`
-- constraint: `on_hand >= 0`
-
----
-
-## Performance & Scaling Review
-Single-tenant does not mean low traffic. Keep reads fast.
-
-- Storefront reads should be cache-friendly:
-  - **Hot**: ETS/Cachex for most-hit product list pages (short TTL)
-  - **Warm**: Redis cache for product list + product detail (30–300s TTL)
-  - **Cold**: Postgres
-- Avoid heavy loads:
-  - Storefront list should not `load` deep relationships by default
-  - Product detail loads images; avoid category->products recursion
-- Pagination required. No “load everything” pages.
-
----
-
-## Tests (additive)
-
-### Governance/behavior tests
-- Only `:published` products appear in storefront read/list
-- Archived products are never purchasable
-- `unpublish` fails if there are active holds/reservations (stub check if holds not yet wired)
-- Inventory on-hand cannot go negative
-
-### Gate alignment
-- No `Ash.Query` and no direct `Ash.*` in `store_web/**` for catalog surfaces
-
----
+## Tests (must exist)
+- publish/unpublish/archive transition matrix + storefront visibility predicate
+- slug validation/uniqueness + slug detail lookup
+- SKU required + unique enforcement
+- exactly one default variant invariant
+- atomic product create flow (product + base variant + inventory + default_variant_id)
+- cart line normalization/mismatch rejection (`VALIDATION_ERROR`)
+- no web-boundary drift (`Ash.Query`/direct `Ash.*` in scoped web paths)
 
 ## Acceptance Criteria
-This phase is complete when:
-
-- Admin can create a draft product, set price/currency, add images, set on-hand
-- Admin can publish/unpublish/archive products
-- Storefront list and detail pages display **published** products only
-- Add-to-cart uses product_id and validates published + available
-- All access goes through domain facades + typed query structs
-- Tests cover storefront visibility + lifecycle + non-negative inventory
-
----
+Phase 19 is complete when:
+- Admin can create/update/publish/unpublish/archive products.
+- Product create flow consistently creates one default variant and one inventory item.
+- Storefront `/shop` and `/shop/:slug` show published products only.
+- Cart-line normalization resolves product identifiers to variant identifiers only.
+- Governance and gate tests pass with additive surface naming constraints.
 
 ## Governance Impact
-No new global governance document changes are required **if** this phase follows existing rules:
-
-- Web boundary discipline (Phase 15/18)
-- Pricing determinism via order snapshots (Phase 10)
-- Inventory reservations remain the only decrement/hold mechanism (Phase 11)
-
-If you later introduce product-type branching or bypass reservations, that becomes a governance update (and a new enforcement gate).
+This phase updates governance documentation and tests to pin:
+- variant-first identity for simple products
+- canonical `/shop` storefront routing
+- additive `_for_public` facade naming allowance only for catalog surfaces

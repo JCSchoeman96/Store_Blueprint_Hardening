@@ -3,33 +3,55 @@ defmodule Store.Support.Governance.SurfaceRegistry do
   Authoritative registry of allowed public facade surfaces for governance checks.
   """
 
-  @consumer_suffix_pattern ~r/_for_(user|admin|support|system)$/
+  @consumer_suffix_pattern ~r/_for_(public|user|admin|support|system)$/
 
   @registry %{
-    Store.Orders.Facade => [
-      {:list_orders_for_user, 2},
-      {:list_orders_for_admin, 2},
-      {:get_order_for_user, 2},
-      {:get_order_for_admin, 2}
-    ],
-    Store.Payments.Facade => [
-      {:list_payment_intents_for_admin, 2},
-      {:get_payment_intent_for_admin, 2},
-      {:ingest_webhook_receipt_for_system, 1},
-      {:get_webhook_receipt_for_system, 1},
-      {:process_payment_webhook_receipt_for_system, 1},
-      {:process_refund_webhook_receipt_for_system, 1}
-    ],
-    Store.Pricing.Facade => [
-      {:list_shipping_zones_for_admin, 2},
-      {:get_shipping_zone_for_admin, 2},
-      {:create_shipping_zone_for_admin, 3},
-      {:update_shipping_zone_for_admin, 4},
-      {:list_shipping_rates_for_admin, 2},
-      {:get_shipping_rate_for_admin, 2},
-      {:list_tax_rates_for_admin, 2},
-      {:get_tax_rate_for_admin, 2}
-    ]
+    Store.Orders.Facade => %{
+      allowed_consumers: [:user, :admin],
+      exports: [
+        {:list_orders_for_user, 2},
+        {:list_orders_for_admin, 2},
+        {:get_order_for_user, 2},
+        {:get_order_for_admin, 2}
+      ]
+    },
+    Store.Payments.Facade => %{
+      allowed_consumers: [:admin, :system],
+      exports: [
+        {:list_payment_intents_for_admin, 2},
+        {:get_payment_intent_for_admin, 2},
+        {:ingest_webhook_receipt_for_system, 1},
+        {:get_webhook_receipt_for_system, 1},
+        {:process_payment_webhook_receipt_for_system, 1},
+        {:process_refund_webhook_receipt_for_system, 1}
+      ]
+    },
+    Store.Pricing.Facade => %{
+      allowed_consumers: [:admin],
+      exports: [
+        {:list_shipping_zones_for_admin, 2},
+        {:get_shipping_zone_for_admin, 2},
+        {:create_shipping_zone_for_admin, 3},
+        {:update_shipping_zone_for_admin, 4},
+        {:list_shipping_rates_for_admin, 2},
+        {:get_shipping_rate_for_admin, 2},
+        {:list_tax_rates_for_admin, 2},
+        {:get_tax_rate_for_admin, 2}
+      ]
+    },
+    Store.Catalog.Facade => %{
+      allowed_consumers: [:public, :admin],
+      exports: [
+        {:list_products_for_public, 2},
+        {:get_product_for_public, 2},
+        {:normalize_cart_line_for_public, 1},
+        {:list_products_for_admin, 2},
+        {:get_product_for_admin, 2},
+        {:publish_product_for_admin, 2},
+        {:unpublish_product_for_admin, 2},
+        {:archive_product_for_admin, 2}
+      ]
+    }
   }
 
   @type facade_export :: {atom(), arity()}
@@ -38,7 +60,18 @@ defmodule Store.Support.Governance.SurfaceRegistry do
   def registry, do: @registry
 
   @spec allowed_exports(module()) :: [facade_export()]
-  def allowed_exports(module) when is_atom(module), do: Map.get(@registry, module, [])
+  def allowed_exports(module) when is_atom(module) do
+    @registry
+    |> Map.get(module, %{exports: []})
+    |> Map.get(:exports, [])
+  end
+
+  @spec allowed_consumers(module()) :: [atom()]
+  def allowed_consumers(module) when is_atom(module) do
+    @registry
+    |> Map.get(module, %{allowed_consumers: []})
+    |> Map.get(:allowed_consumers, [])
+  end
 
   @spec facade_modules() :: [module()]
   def facade_modules, do: Map.keys(@registry)
@@ -48,5 +81,23 @@ defmodule Store.Support.Governance.SurfaceRegistry do
     name
     |> Atom.to_string()
     |> String.match?(@consumer_suffix_pattern)
+  end
+
+  @spec consumer_surface?(module(), {atom(), arity()}) :: boolean()
+  def consumer_surface?(module, {name, _arity}) when is_atom(module) and is_atom(name) do
+    case extract_consumer(name) do
+      {:ok, consumer} -> consumer in allowed_consumers(module)
+      :error -> false
+    end
+  end
+
+  defp extract_consumer(name) when is_atom(name) do
+    name
+    |> Atom.to_string()
+    |> String.split("_for_")
+    |> case do
+      [_prefix, consumer] -> {:ok, String.to_atom(consumer)}
+      _ -> :error
+    end
   end
 end

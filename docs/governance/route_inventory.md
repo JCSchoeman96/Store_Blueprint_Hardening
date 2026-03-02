@@ -19,6 +19,14 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 |---|---|---|---|---|
 | GET | `/` | Controller (`StoreWeb.PageController :home`) | Yes | Home page; included in sitemap. |
 
+## Planned public routes (phase 19 target)
+
+| Method | Path | Surface | Canonical | Notes |
+|---|---|---|---|---|
+| GET | `/shop` | LiveView (`StoreWeb.ShopLive.Index :index`) | Yes | Catalog storefront list route for simple products. |
+| GET | `/shop/:slug` | LiveView (`StoreWeb.ShopLive.Show :show`) | Yes | Catalog storefront product detail by slug. |
+| GET | `/products` | LiveView alias (optional future) | No | Optional compatibility alias; must redirect to `/shop` when enabled. |
+
 ## Public routes (not for sitemap / not indexable)
 
 | Method | Path | Surface | Canonical | Notes |
@@ -71,8 +79,8 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 
 ## Planned canonical redirects (not implemented yet)
 
-- `/shop` -> `/products`
-- `/catalog` -> `/products`
+- `/products` -> `/shop`
+- `/catalog` -> `/shop`
 
 ## Sitemap inclusion policy
 
@@ -98,7 +106,8 @@ For each phase touching web routes, run a route smoke pass and record tested URL
 - `/admin/tax-rates`
 
 When catalog/checkout routes exist, extend this smoke pass to:
-- `/products`
+- `/shop`
+- `/shop/:slug` (sample known slug)
 - `/cart`
 - `/checkout`
 - legal routes (for example `/terms`, `/privacy`)

@@ -43,7 +43,7 @@ defmodule Mix.Tasks.Check.SurfaceNaming do
 
         non_consumer =
           allowed
-          |> Enum.reject(&consumer_surface?(registry_module, &1))
+          |> Enum.reject(&consumer_surface?(registry_module, module, &1))
           |> Enum.sort()
 
         []
@@ -104,7 +104,15 @@ defmodule Mix.Tasks.Check.SurfaceNaming do
     end
   end
 
-  defp consumer_surface?(registry_module, export) do
+  defp consumer_surface?(registry_module, module, export) do
+    if function_exported?(registry_module, :consumer_surface?, 2) do
+      registry_module.consumer_surface?(module, export)
+    else
+      fallback_consumer_surface?(registry_module, export)
+    end
+  end
+
+  defp fallback_consumer_surface?(registry_module, export) do
     if function_exported?(registry_module, :consumer_surface?, 1) do
       registry_module.consumer_surface?(export)
     else

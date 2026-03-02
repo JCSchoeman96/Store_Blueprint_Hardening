@@ -57,10 +57,19 @@ defmodule StoreWeb.Router do
   scope "/", StoreWeb do
     pipe_through :browser
 
+    ash_authentication_live_session :current_user,
+      on_mount: [{StoreWeb.LiveUserAuth, :live_user_optional}] do
+      live "/shop", ShopLive.Index, :index
+      live "/shop/:slug", ShopLive.Show, :show
+    end
+
     ash_authentication_live_session :authentication_required,
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live "/account", AccountLive, :index
       live "/admin", AdminLive, :index
+      live "/admin/products", Admin.Products.IndexLive, :index
+      live "/admin/products/new", Admin.Products.IndexLive, :new
+      live "/admin/products/:id/edit", Admin.Products.IndexLive, :edit
       live "/admin/shipping-zones", Admin.ShippingZones.IndexLive, :index
       live "/admin/shipping-zones/new", Admin.ShippingZones.IndexLive, :new
       live "/admin/shipping-zones/:id/edit", Admin.ShippingZones.IndexLive, :edit

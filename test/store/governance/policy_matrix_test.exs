@@ -6,6 +6,7 @@ defmodule Store.Governance.PolicyMatrixTest do
 
   alias Ecto.Adapters.SQL
   alias Store.Admin.SiteSetting
+  alias Store.Catalog.Product
   alias Store.Orders.Order
   alias Store.Payments.{PaymentIntent, ProviderEvent, WebhookReceipt}
   alias Store.Support.Time
@@ -225,10 +226,59 @@ defmodule Store.Governance.PolicyMatrixTest do
     assert Exception.message(error) =~ "forbidden"
   end
 
+  test "catalog public reads include published products only" do
+    _draft = create_catalog_product_snapshot!(%{slug: "catalog-draft-a", status: :draft})
+
+    published =
+      create_catalog_product_snapshot!(%{slug: "catalog-published-a", status: :published})
+
+    assert {:ok, products} =
+             Product
+             |> Ash.Query.for_read(:read_for_public, %{}, actor: nil)
+             |> Ash.read(domain: Store.Catalog, actor: nil)
+
+    assert Enum.map(products, & &1.id) == [published.id]
+  end
+
+  test "support can read admin catalog surfaces" do
+    support = TestFixtures.register_user!(email: TestFixtures.unique_email("support_catalog"))
+    _role = TestFixtures.assign_role!(support, :support)
+    product = create_catalog_product_snapshot!(%{slug: "catalog-support-a", status: :draft})
+
+    assert {:ok, [result]} =
+             Product
+             |> Ash.Query.for_read(:read_for_admin, %{}, actor: support)
+             |> Ash.Query.filter(expr(id == ^product.id))
+             |> Ash.read(domain: Store.Catalog, actor: support)
+
+    assert result.id == product.id
+  end
+
+  test "editor cannot mutate catalog product resources" do
+    editor = TestFixtures.register_user!(email: TestFixtures.unique_email("editor_catalog"))
+    _role = TestFixtures.assign_role!(editor, :editor)
+
+    assert {:error, error} =
+             Product
+             |> Ash.Changeset.for_create(
+               :create_draft,
+               %{
+                 slug: "editor-denied",
+                 title: "Denied",
+                 base_variant_sku: "EDITOR-DENIED-001",
+                 base_variant_currency_code: "USD",
+                 base_variant_price_minor: 1_000,
+                 base_variant_stock_on_hand: 1
+               }
+             )
+             |> Ash.create(domain: Store.Catalog, actor: editor)
+
+    assert Exception.message(error) =~ "forbidden"
+  end
+
   test "deferred resource checks are resource-aware" do
     deferred_resources = [
       Store.Content.Post,
-      Store.Catalog.Product,
       Store.Pricing.PriceBook
     ]
 
@@ -287,5 +337,42 @@ defmodule Store.Governance.PolicyMatrixTest do
     WebhookReceipt
     |> Ash.Changeset.for_create(:ingest, attrs)
     |> Ash.create!(domain: Store.Payments, authorize?: false)
+  end
+
+  defp create_catalog_product_snapshot!(overrides) do
+    attrs =
+      %{
+        slug: "catalog-product-#{System.unique_integer([:positive])}",
+        title: "Catalog Product",
+        status: :draft
+      }
+      |> Map.merge(Enum.into(overrides, %{}))
+
+    product =
+      Product
+      |> Ash.Changeset.for_create(:create_draft, %{
+        slug: attrs.slug,
+        title: attrs.title,
+        base_variant_sku: "SKU-#{System.unique_integer([:positive])}",
+        base_variant_currency_code: "USD",
+        base_variant_price_minor: 1_000,
+        base_variant_stock_on_hand: 10
+      })
+      |> Ash.create!(domain: Store.Catalog, authorize?: false)
+
+    case Map.get(attrs, :status, :draft) |> to_string() do
+      "published" ->
+        product
+        |> Ash.Changeset.for_update(:publish, %{})
+        |> Ash.update!(domain: Store.Catalog, authorize?: false)
+
+      "archived" ->
+        product
+        |> Ash.Changeset.for_update(:archive, %{})
+        |> Ash.update!(domain: Store.Catalog, authorize?: false)
+
+      _ ->
+        product
+    end
   end
 end

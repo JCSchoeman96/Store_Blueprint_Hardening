@@ -31,6 +31,9 @@ defmodule StoreWeb.AdminLive do
         </p>
 
         <div class="mt-6 flex flex-wrap gap-2">
+          <.button id="admin-link-products" patch={~p"/admin/products"}>
+            Products
+          </.button>
           <.button id="admin-link-shipping-zones" patch={~p"/admin/shipping-zones"}>
             Shipping Zones
           </.button>

@@ -84,14 +84,18 @@ Note: AuditLog MUST remain append-only (create-only actions).
 | Post | X(publish/unpublish) | YES | YES | YES | NO | NO |
 | Category/Tag | C/U/D | YES | YES | YES | NO | NO |
 
-### 5.4 Catalog (Catalog.Product, Variant, Category, joins, InventoryItem)
+### 5.4 Catalog (Catalog.Product, Catalog.Variant, Catalog.Category, Catalog.ProductImage, Catalog.InventoryItem)
 | Resource | Action | super_admin | admin | editor | support | customer |
 |---------|--------|-------------|-------|--------|---------|----------|
-| Product | R(active) | YES | YES | YES | YES | YES |
+| Product | R(published) | YES | YES | YES | YES | YES |
 | Product | R(draft/archived) | YES | YES | NO | NO | NO |
-| Product | C/U/D | YES | YES | NO | NO | NO |
+| Product | C/U | YES | YES | NO | NO | NO |
+| Product | X(archive) | YES | YES | NO | NO | NO |
 | Product | X(publish/unpublish) | YES | YES | NO | NO | NO |
-| Variant | C/U/D | YES | YES | NO | NO | NO |
+| Variant | C/U | YES | YES | NO | NO | NO |
+| Variant | X(archive) | YES | YES | NO | NO | NO |
+| Category | C/U/D | YES | YES | NO | NO | NO |
+| ProductImage | C/U/D | YES | YES | NO | NO | NO |
 | InventoryItem | R | YES | YES | NO | LIMITED | NO |
 | InventoryItem | U | YES | YES | NO | NO | NO |
 
