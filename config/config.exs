@@ -13,6 +13,8 @@ config :store,
     Store.Accounts,
     Store.Admin,
     Store.Catalog,
+    Store.Carts,
+    Store.Checkout,
     Store.Orders,
     Store.Payments,
     Store.Pricing

@@ -137,6 +137,18 @@ Note: AuditLog MUST remain append-only (create-only actions).
 | WebhookReceipt | R | YES | YES | NO | NO | NO |
 | ProviderEvent | R | YES | YES | NO | NO | NO |
 
+### 5.8 Carts & Checkout Drafts (Carts.Cart, Carts.CartItem, Checkout.CheckoutDraft)
+| Resource | Action | super_admin | admin | editor | support | customer |
+|---------|--------|-------------|-------|--------|---------|----------|
+| Cart | R(own active cart) | YES | YES | NO | LIMITED | SELF** |
+| Cart | X(get_or_create/add/update/remove/merge) | YES | YES | NO | NO | SELF** |
+| CartItem | R(own cart items) | YES | YES | NO | LIMITED | SELF** |
+| CartItem | X(add/update/remove) | YES | YES | NO | NO | SELF** |
+| CheckoutDraft | R(own checkout drafts) | YES | YES | NO | LIMITED | SELF** |
+| CheckoutDraft | X(start_from_cart) | YES | YES | NO | NO | SELF** |
+
+CheckoutDraft access: user drafts require matching actor.user_id; guest drafts require matching cart_token. checkout_key is not bearer auth.
+
 ---
 
 ## 6) Test gates (MUST)
@@ -147,6 +159,8 @@ Implement a **pinned policy matrix test suite** that asserts:
 4) Admin can manage catalog/pricing/orders (but refund requires step-up).
 5) SiteSetting/provider config requires step-up for admin and super_admin.
 6) AuditLog has no update/destroy actions (separate test).
+7) Customer cannot read another customer's cart or checkout draft.
+8) Support cannot mutate carts or checkout drafts.
 
 Tests MUST fail loudly when drift happens.
 

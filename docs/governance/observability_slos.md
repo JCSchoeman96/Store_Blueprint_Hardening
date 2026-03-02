@@ -92,7 +92,9 @@ Use `:telemetry.execute/3` (or equivalent) with consistent naming.
 - `[:store, :catalog, :product_detail]` — duration, cache=hit/miss
 
 ### Cart/Checkout
+- `[:store, :carts, :get]` — duration, actor_scope=guest/user, result=hit/miss
 - `[:store, :carts, :mutate]` — action=add/remove/update/merge/convert, duration, success?
+- `[:store, :carts, :merge]` — duration, source=guest_token, outcome=merged/noop
 - `[:store, :checkout, :start_from_cart]` — duration, totals_hash
 - `[:store, :checkout, :create_payment_intent]` — provider, duration, success?
 

@@ -5,13 +5,18 @@ defmodule StoreWeb.ShopLive.Show do
 
   use StoreWeb, :live_view
 
+  alias Store.Carts.Facade, as: CartsFacade
   alias Store.Catalog.Facade, as: CatalogFacade
+  alias StoreWeb.Params.Carts.CartItemParams
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    cart_token = Map.get(session, "cart_token")
+
     {:ok,
      socket
      |> assign(:product, nil)
+     |> assign(:cart_token, cart_token)
      |> assign(:form, to_form(%{"quantity" => "1"}, as: :cart_line))}
   end
 
@@ -40,17 +45,27 @@ defmodule StoreWeb.ShopLive.Show do
   @impl true
   def handle_event("queue_cart_line", %{"cart_line" => %{"quantity" => quantity}}, socket) do
     product = socket.assigns.product
+    actor = socket.assigns[:current_user]
 
     params = %{
-      "product_id" => product.id,
-      "quantity" => quantity
+      "variant_id" => product.default_variant_id,
+      "qty" => quantity
     }
 
-    case CatalogFacade.normalize_cart_line_for_public(params) do
-      {:ok, _normalized} ->
-        {:noreply, put_flash(socket, :info, "Line normalized for checkout handoff")}
+    case CartItemParams.input(params) do
+      {:ok, input} ->
+        case CartsFacade.add_item_for_user(actor, socket.assigns.cart_token, input) do
+          {:ok, _cart} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Added to cart")
+             |> push_navigate(to: ~p"/cart")}
 
-      {:error, _} ->
+          {:error, _error} ->
+            {:noreply, put_flash(socket, :error, "Unable to add item to cart")}
+        end
+
+      {:error, _error} ->
         {:noreply, put_flash(socket, :error, "Invalid cart line input")}
     end
   end

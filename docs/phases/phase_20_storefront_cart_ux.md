@@ -2,13 +2,13 @@
 
 ## Goal
 
-Deliver a **usable storefront** (browse → product detail → cart → start checkout) that is:
-- **Ash-first** (resource actions + code interfaces as the truth)
-- **Web-thin** (no authorization-meaningful query logic in `store_web`)
-- **Deterministic** (cart → order snapshot is stable and replay-safe)
-- **Enterprise-safe** (no side effects in cart flows; checkout start is idempotent)
+Deliver a usable storefront flow (browse -> product detail -> cart -> checkout draft handoff) that is:
+- Ash-first (resource actions + code interfaces are the truth)
+- Web-thin (no authorization-meaningful query logic in `store_web`)
+- Deterministic (cart mutation + merge + draft idempotency are replay-safe)
+- Enterprise-safe (no side effects in cart flows; no payment/order finalization in web)
 
-This phase intentionally targets **simple products only** (from Phase 19). Digital, variants, and subscriptions come later.
+This phase targets simple products from Phase 19 only.
 
 ---
 
@@ -16,42 +16,47 @@ This phase intentionally targets **simple products only** (from Phase 19). Digit
 
 ### In scope
 - Public storefront pages (LiveView):
-  - `/shop` product listing (search/sort/filter within a vetted “browse query contract”)
+  - `/shop` product listing
   - `/shop/:slug` product detail
   - `/cart` cart view + quantity update + remove line
 - Cart persistence:
-  - Guest carts via `cart_token` cookie
-  - User carts via `user_id` linkage (merge guest → user on login)
-- Checkout start (handoff):
-  - “Start checkout” creates an **Order draft** (immutable line snapshots) from cart and transitions into the existing checkout interlock pipeline (Phase 14).
-- Inventory safety:
-  - **No inventory decrement** during browsing/cart
-  - **Inventory reservation** created at checkout start (Phase 11 semantics), with expiration
+  - guest carts via `cart_token` cookie
+  - authenticated carts via `user_id`
+  - deterministic guest -> user merge
+- Checkout start handoff:
+  - cart "Start checkout" creates/reuses a checkout draft keyed by `(cart_id, cart_version)`
+  - returns random opaque `checkout_key`
+  - redirects to `/checkout?checkout_key=...`
+- `/checkout` placeholder LiveView:
+  - read-only draft summary
+  - no pricing/shipping/payment logic
 
-### Out of scope (explicit)
-- Payment provider UI/redirect screens (gateway-specific) — Phase 21+
-- Digital delivery, variants, subscriptions — later phases
-- Advanced promotions/coupons — later phases
-- Multi-tenant marketplace behaviors — not applicable (single-tenant blueprint)
+### Out of scope
+- Inventory reservations/holds at checkout start (Phase 21)
+- Priced order snapshots at checkout start (Phase 21)
+- Cart conversion/locking on checkout start (Phase 21)
+- Payment provider redirect/intent path (Phase 21+)
+- Digital delivery, variants, subscriptions
 
 ---
 
 ## Architectural Laws (must hold)
 
-1. **No ad-hoc querying in web**
-   - `lib/store_web/**` must not construct `Ash.Query` or call `Ash.read/create/update/destroy` directly.
-   - Web converts params → domain query contract struct → calls domain facade functions.
+1. No ad-hoc querying in web
+   - `lib/store_web/**` must not construct `Ash.Query` or call direct `Ash.read/create/update/destroy`.
+   - Web converts params -> typed query/input struct -> domain facade.
 
-2. **Cart has zero side effects**
-   - Cart actions must never enqueue Oban jobs, send HTTP, or send email.
-   - Cart must not mutate payment/order state.
+2. Cart has zero side effects
+   - Cart actions must not enqueue Oban jobs, send HTTP, or send email.
 
-3. **Order is created once**
-   - Checkout start must be **idempotent** per cart + actor (e.g., `idempotency_key` or `cart_id` uniqueness on “converted”).
+3. Checkout draft idempotency is DB-keyed
+   - Unique `(cart_id, cart_version)` in `checkout_drafts`.
+   - `checkout_key` is random opaque token and never derived from cart lines.
 
-4. **Reservations are created at checkout start**
-   - Reservations expire.
-   - Payment success interlock must confirm reservation validity (or fail safely).
+4. Cart versioning is mutation-only
+   - `version` increments in the same transaction on add/update/remove/merge.
+   - Reads never increment `version`.
+   - Optimistic lock law applies (`where version = old_version`).
 
 ---
 
@@ -62,66 +67,61 @@ This phase intentionally targets **simple products only** (from Phase 19). Digit
 **Resources**
 - `Store.Carts.Cart`
   - `id` (uuid v7)
-  - `token` (string, unique; used for guests)
+  - `token` (string; guest lookup key)
   - `user_id` (nullable)
-  - `status` (`:active | :converted | :abandoned`)
-  - `converted_order_id` (nullable)
+  - `status` (`:active | :abandoned`)
+  - `merged_into_cart_id` (nullable)
+  - `version` (integer; starts at 1)
   - `inserted_at/updated_at`
 - `Store.Carts.CartItem`
   - `id` (uuid v7)
   - `cart_id`
-  - `product_id`
-  - `qty` (integer, >= 1)
-  - Uniqueness: `unique(cart_id, product_id)`
+  - `variant_id`
+  - `qty` (integer, 1..99)
+  - uniqueness: `unique(cart_id, variant_id)`
+
+### New Domain: `Store.Checkout`
+
+**Resources**
+- `Store.Checkout.CheckoutDraft`
+  - `id` (uuid v7)
+  - `checkout_key` (unique random opaque token)
+  - `cart_id`
+  - `cart_version`
+  - `user_id` (nullable)
+  - `status` (`:open | :consumed | :expired`)
+  - `inserted_at/updated_at`
 
 **Key invariants**
-- CartItem.qty must be >= 1
-- CartItem.qty must not exceed a configured max per line (anti-abuse, e.g., 99)
-- Only one active cart per user (optional but recommended)
-- Only one active cart per token (required)
-
-**Policies**
-- Guest access: token-scoped only (actor may be nil, token proves scope)
-- User access: user owns cart
-- Admin: read-only (unless you want support tooling later)
-
-### Query Contracts (domain-owned)
-
-- `Store.Catalog.Queries.ProductBrowseQuery`
-  - `q` (search string)
-  - `category_slug`
-  - `sort` (`:newest | :price_asc | :price_desc`)
-  - `page`, `page_size` (bounded)
-- `Store.Carts.Queries.CartLoadQuery`
-  - `token`
-  - `preload` (strict allowlist: items + product minimal fields)
-
-Web modules parse/normalize params into these structs. Domain validates them.
+- Active cart lookup rule:
+  - authenticated actor: load by `user_id`
+  - guest actor: load by `token`
+- Merge law:
+  - merge by `variant_id`
+  - sum qty and clamp to max per line
+  - idempotent via `guest_cart.merged_into_cart_id`
+- Draft idempotency law:
+  - unique `(cart_id, cart_version)`
 
 ---
 
 ## Canonical Domain Facades (entrypoints)
 
-These functions are the only things the web layer should call.
-
 ### Catalog read surfaces
-- `Store.Catalog.list_products_for_storefront(actor, %ProductBrowseQuery{})`
-- `Store.Catalog.get_product_for_storefront(actor, slug)`
+- `Store.Catalog.Facade.list_products_for_public(actor, query)`
+- `Store.Catalog.Facade.get_product_for_public(actor, slug)`
 
 ### Cart surfaces
-- `Store.Carts.get_or_create_cart_for_token(actor, token)`
-- `Store.Carts.merge_cart_token_into_user(token, user)` (on login)
-- `Store.Carts.add_item(actor, token, product_id, qty)`
-- `Store.Carts.update_item_qty(actor, token, product_id, qty)`
-- `Store.Carts.remove_item(actor, token, product_id)`
-- `Store.Carts.get_cart_view(actor, token)` (returns read model for rendering)
+- `Store.Carts.Facade.get_cart_for_user(actor, token)`
+- `Store.Carts.Facade.get_cart_view_for_user(actor, token, %CartLoadQuery{})`
+- `Store.Carts.Facade.add_item_for_user(actor, token, %CartItemInput{})`
+- `Store.Carts.Facade.update_item_qty_for_user(actor, token, %CartItemInput{})`
+- `Store.Carts.Facade.remove_item_for_user(actor, token, variant_id)`
+- `Store.Carts.Facade.merge_token_into_user_for_user(user, token)`
 
-### Checkout handoff surface
+### Checkout draft surfaces
 - `Store.Checkout.start_from_cart(actor, token, %CheckoutStartInput{})`
-  - Creates order snapshots from cart
-  - Creates inventory reservations for each line
-  - Marks cart as converted (idempotent)
-  - Returns `order_id` + next-step metadata
+- `Store.Checkout.get_draft_for_user(actor, checkout_key)`
 
 ---
 
@@ -129,94 +129,82 @@ These functions are the only things the web layer should call.
 
 ### Storefront
 - `StoreWeb.ShopLive.Index`
-  - Uses `StoreWeb.Params.ProductBrowseParams` → `%ProductBrowseQuery{}`
-  - Calls `Store.Catalog.list_products_for_storefront/2`
 - `StoreWeb.ShopLive.Show`
-  - Calls `Store.Catalog.get_product_for_storefront/2`
 
 ### Cart
 - `StoreWeb.CartLive`
-  - Ensures `cart_token` cookie exists (generate if missing)
-  - Reads cart via `Store.Carts.get_cart_view/2`
-  - Uses AshPhoenix.Forms **only** if it reduces duplication (qty update/remove). Otherwise call domain facade functions.
+  - ensures `cart_token` cookie exists
+  - reads cart via cart facade
+  - add/update/remove via typed params + facades
 
-### Checkout start
-- Cart “Start checkout” action calls `Store.Checkout.start_from_cart/3`
-- Redirect to checkout route you already have (or a placeholder if not yet built)
+### Checkout placeholder
+- `StoreWeb.CheckoutLive.Placeholder`
+  - read-only `checkout_key` lookup
+  - no payment mutations
 
----
-
-## Reservation Strategy (Phase 11 alignment)
-
-At checkout start:
-- Create one reservation per order line:
-  - `reservation_scope`: `product_id`
-  - `qty`
-  - `expires_at` (e.g., 10–15 minutes)
-  - `order_id` reference
-
-On payment success:
-- The payment interlock must:
-  - verify reservations exist and are not expired
-  - atomically convert reservations → decrements (or finalize inventory ledger entries)
-  - only then mark order paid
-
-Failure mode:
-- If payment succeeds after reservation expiry:
-  - the interlock must **not** mark order paid
-  - follow refund flow or mark payment as “requires_review” (policy choice)
+### Auth merge trigger
+- Merge guest cart into user via shared auth hook path (not controller-only).
 
 ---
 
-## Performance & Caching (pragmatic defaults)
+## Cookie Security Pins
 
-Storefront reads will be hot.
+`cart_token` cookie must use:
+- `http_only: true`
+- `same_site: "Lax"`
+- finite `max_age`
+- `secure: true` in production
+- random non-guessable token
 
-- Cache product listing results (hot cache) for short TTL (e.g., 10–30s)
-- Cache product detail by slug for short TTL (e.g., 30–120s)
-- Invalidation triggers:
-  - product publish/unpublish
-  - price change
-  - inventory on_hand change (only if you display stock counts)
+---
 
-Avoid caching anything actor-sensitive unless the actor is part of the cache key.
+## Telemetry (essential)
+
+- `[:store, :carts, :get]`
+- `[:store, :carts, :mutate]`
+- `[:store, :carts, :merge]`
+- `[:store, :checkout, :start_from_cart]`
+
+No cache layer implementation is required in this phase.
 
 ---
 
 ## Tests (minimum)
 
 ### Governance-level tests
-- Web boundary (already gated): ensure no `Ash.Query` in web.
-- Cart has no side effects: no Oban enqueue, no HTTP client in cart flows (static gate + test optional).
+- Web boundary gates remain green.
+- Uniqueness registry includes cart and checkout draft constraints.
+- Policy matrix includes cart and checkout draft access rows.
 
 ### Functional tests
-- Guest cart token creates cart and is stable across requests.
-- Add/update/remove cart items works and validates qty.
-- Merge guest cart into user on login:
-  - merges quantities (defined rule) or prefers user cart (defined rule), but deterministic.
-- Checkout start is idempotent:
-  - repeated calls return same `order_id` and do not duplicate reservations or order lines.
-- Checkout start fails if:
-  - product is unpublished
-  - requested qty exceeds available/reservable inventory
+- Guest cart token creates stable cart.
+- Add/update/remove cart items validates qty bounds.
+- Merge guest cart into user is deterministic and replay-safe.
+- Cart version increments on mutation only.
+- Checkout draft start is idempotent for same `(cart_id, cart_version)`.
+- Cart mutation yields a new checkout draft for next start.
+- Checkout start rejects empty cart or unpublished sellables.
+
+### Regression tests
+- Checkout start creates no reservations.
+- Checkout start writes no priced snapshot.
+- Checkout start does not convert/lock cart.
 
 ---
 
 ## Acceptance Criteria (Definition of Done)
 
-- `/shop` lists published products with paging and stable sorting.
-- `/shop/:slug` shows product detail for published products.
-- `/cart` supports guest + user, add/update/remove items.
-- “Start checkout” produces:
-  - an Order with immutable snapshots (Phase 09)
-  - Reservations created (Phase 11)
-  - Cart marked converted with a stable `converted_order_id`
-- No missed notifications regressions in checkout path (already gated).
-- No `Ash.Query` or direct `Ash.*` calls exist in `lib/store_web/**`.
+- `/shop` and `/shop/:slug` render published products.
+- `/cart` supports guest + user add/update/remove.
+- Start checkout returns stable `checkout_key` for same cart version and redirects to `/checkout`.
+- `/checkout` placeholder is read-only.
+- No `Ash.Query` or direct `Ash.*` calls in `lib/store_web/**`.
+- `mix check` passes.
 
 ---
 
 ## Governance Impact
 
-- No new global governance laws required **if** you follow existing boundary rules and gates.
-- If you later add “inventory display” or “low-stock warnings” to storefront, consider adding a **cache invalidation policy** to governance docs.
+No new global law is required if this phase follows existing web-boundary and side-effects-quarantine rules.
+
+Phase 21 will own reservation/snapshot/payment semantics.

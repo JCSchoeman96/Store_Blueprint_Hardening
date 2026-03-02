@@ -18,13 +18,15 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 | Method | Path | Surface | Canonical | Notes |
 |---|---|---|---|---|
 | GET | `/` | Controller (`StoreWeb.PageController :home`) | Yes | Home page; included in sitemap. |
+| GET | `/shop` | LiveView (`StoreWeb.ShopLive.Index :index`) | Yes | Catalog storefront list route for simple products. |
+| GET | `/shop/:slug` | LiveView (`StoreWeb.ShopLive.Show :show`) | Yes | Catalog storefront product detail by slug. |
+| GET | `/cart` | LiveView (`StoreWeb.CartLive :index`) | Yes | Cart management route (guest + user). |
+| GET | `/checkout` | LiveView (`StoreWeb.CheckoutLive.Placeholder :index`) | Yes | Phase 20 read-only checkout placeholder by `checkout_key`. |
 
-## Planned public routes (phase 19 target)
+## Planned public routes
 
 | Method | Path | Surface | Canonical | Notes |
 |---|---|---|---|---|
-| GET | `/shop` | LiveView (`StoreWeb.ShopLive.Index :index`) | Yes | Catalog storefront list route for simple products. |
-| GET | `/shop/:slug` | LiveView (`StoreWeb.ShopLive.Show :show`) | Yes | Catalog storefront product detail by slug. |
 | GET | `/products` | LiveView alias (optional future) | No | Optional compatibility alias; must redirect to `/shop` when enabled. |
 
 ## Public routes (not for sitemap / not indexable)
@@ -109,5 +111,5 @@ When catalog/checkout routes exist, extend this smoke pass to:
 - `/shop`
 - `/shop/:slug` (sample known slug)
 - `/cart`
-- `/checkout`
+- `/checkout?checkout_key=<known draft key>`
 - legal routes (for example `/terms`, `/privacy`)

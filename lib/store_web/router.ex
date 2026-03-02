@@ -11,6 +11,8 @@ defmodule StoreWeb.Router do
     plug :fetch_session
     plug :load_from_session
     plug :set_actor, :user
+    plug StoreWeb.Plugs.EnsureCartToken
+    plug StoreWeb.Plugs.MergeCartOnAuth
     plug :fetch_live_flash
     plug :put_root_layout, html: {StoreWeb.Layouts, :root}
     plug :protect_from_forgery
@@ -61,6 +63,8 @@ defmodule StoreWeb.Router do
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_optional}] do
       live "/shop", ShopLive.Index, :index
       live "/shop/:slug", ShopLive.Show, :show
+      live "/cart", CartLive, :index
+      live "/checkout", CheckoutLive.Placeholder, :index
     end
 
     ash_authentication_live_session :authentication_required,

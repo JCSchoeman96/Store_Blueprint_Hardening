@@ -6,18 +6,23 @@ defmodule StoreWeb.LiveUserAuth do
   import Phoenix.Component
   use StoreWeb, :verified_routes
   alias AshAuthentication.Phoenix.LiveSession
+  alias Store.Carts.Facade, as: CartsFacade
 
   def on_mount(:current_user, _params, session, socket) do
     socket =
       socket
       |> LiveSession.assign_new_resources(session)
       |> put_step_up_assign(session)
+      |> maybe_merge_cart_token(session)
 
     {:cont, socket}
   end
 
   def on_mount(:live_user_optional, _params, session, socket) do
-    socket = put_step_up_assign(socket, session)
+    socket =
+      socket
+      |> put_step_up_assign(session)
+      |> maybe_merge_cart_token(session)
 
     if socket.assigns[:current_user] do
       {:cont, socket}
@@ -27,7 +32,10 @@ defmodule StoreWeb.LiveUserAuth do
   end
 
   def on_mount(:live_user_required, _params, session, socket) do
-    socket = put_step_up_assign(socket, session)
+    socket =
+      socket
+      |> put_step_up_assign(session)
+      |> maybe_merge_cart_token(session)
 
     if socket.assigns[:current_user] do
       {:cont, socket}
@@ -37,7 +45,10 @@ defmodule StoreWeb.LiveUserAuth do
   end
 
   def on_mount(:live_no_user, _params, session, socket) do
-    socket = put_step_up_assign(socket, session)
+    socket =
+      socket
+      |> put_step_up_assign(session)
+      |> maybe_merge_cart_token(session)
 
     if socket.assigns[:current_user] do
       {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/")}
@@ -62,4 +73,18 @@ defmodule StoreWeb.LiveUserAuth do
   end
 
   defp parse_step_up(_), do: nil
+
+  defp maybe_merge_cart_token(socket, session) when is_map(session) do
+    user = socket.assigns[:current_user]
+    token = Map.get(session, "cart_token")
+
+    if is_map(user) and is_binary(token) do
+      _ = CartsFacade.merge_token_into_user_for_user(user, token)
+      socket
+    else
+      socket
+    end
+  end
+
+  defp maybe_merge_cart_token(socket, _session), do: socket
 end

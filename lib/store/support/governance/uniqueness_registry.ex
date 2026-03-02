@@ -106,6 +106,36 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       table: "refund_adjustments",
       columns: ["refund_id"],
       mode: :active_now
+    },
+    %{
+      key: :carts_active_token,
+      table: "carts",
+      columns: ["token"],
+      mode: :active_now
+    },
+    %{
+      key: :carts_active_user_id,
+      table: "carts",
+      columns: ["user_id"],
+      mode: :active_now
+    },
+    %{
+      key: :cart_items_cart_variant,
+      table: "cart_items",
+      columns: ["cart_id", "variant_id"],
+      mode: :active_now
+    },
+    %{
+      key: :checkout_drafts_checkout_key,
+      table: "checkout_drafts",
+      columns: ["checkout_key"],
+      mode: :active_now
+    },
+    %{
+      key: :checkout_drafts_cart_id_cart_version,
+      table: "checkout_drafts",
+      columns: ["cart_id", "cart_version"],
+      mode: :active_now
     }
   ]
 

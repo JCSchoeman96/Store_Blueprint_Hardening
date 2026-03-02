@@ -51,6 +51,17 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:unpublish_product_for_admin, 2},
         {:archive_product_for_admin, 2}
       ]
+    },
+    Store.Carts.Facade => %{
+      allowed_consumers: [:user],
+      exports: [
+        {:get_cart_for_user, 2},
+        {:get_cart_view_for_user, 3},
+        {:add_item_for_user, 3},
+        {:update_item_qty_for_user, 3},
+        {:remove_item_for_user, 3},
+        {:merge_token_into_user_for_user, 2}
+      ]
     }
   }
 
