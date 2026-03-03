@@ -8,6 +8,7 @@ defmodule Store.MixProject do
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
+      preferred_cli_env: [precommit: :test, check: :test, "check.ci": :test, "check.types": :test],
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
@@ -22,12 +23,6 @@ defmodule Store.MixProject do
     [
       mod: {Store.Application, []},
       extra_applications: [:logger, :runtime_tools]
-    ]
-  end
-
-  def cli do
-    [
-      preferred_envs: [precommit: :test, check: :test, "check.ci": :test]
     ]
   end
 
@@ -81,7 +76,7 @@ defmodule Store.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.37", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.1"},
-      {:dialyxir, "~> 1.4", only: :dev, runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -124,6 +119,7 @@ defmodule Store.MixProject do
         "docs"
       ],
       "check.ci": ["check"],
+      "check.types": ["dialyzer --format short"],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end

@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  check:
+    name: mix check
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup BEAM
+        id: setup-beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+
+      - name: Cache Mix build and deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix
+          key: ${{ runner.os }}-beam-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('.tool-versions') }}
+          restore-keys: |
+            ${{ runner.os }}-beam-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch deps
+        run: mix deps.get
+
+      - name: Run check gate
+        run: mix check
+
+  dialyzer:
+    name: mix dialyzer (advisory)
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup BEAM
+        id: setup-beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+
+      - name: Cache Mix build and deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix
+          key: ${{ runner.os }}-beam-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('.tool-versions') }}
+          restore-keys: |
+            ${{ runner.os }}-beam-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch deps
+        run: mix deps.get
+
+      - name: Run Dialyzer (advisory)
+        # TODO: remove --ignore-exit-status after baseline cleanup to make Dialyzer required.
+        run: mix dialyzer --format github --format short --ignore-exit-status

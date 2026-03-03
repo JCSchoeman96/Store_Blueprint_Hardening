@@ -92,3 +92,13 @@
   - No cache invalidation in Phase 00.
 - PubSub:
   - Phoenix PubSub baseline only; no domain PubSub contracts yet.
+
+## Dialyzer Cold Path (Update)
+- `mix check.types` is a separate cold-path check and is not part of `mix check`.
+- `mix check.types` runs in `MIX_ENV=test` via Mix `preferred_envs` mapping, matching main gate compilation surface.
+- Local bootstrap and usage:
+  - `MIX_ENV=test mix dialyzer --plt` (one-time/bootstrap when PLT cache is cold)
+  - `mix check.types` (normal local run)
+- CI policy:
+  - Dialyzer runs advisory first (`--ignore-exit-status`).
+  - Move to required after baseline cleanup by removing `--ignore-exit-status`.
