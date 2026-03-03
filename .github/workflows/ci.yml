@@ -22,6 +22,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           version-file: .tool-versions
+          version-type: strict
 
       - name: Cache Mix build and deps
         uses: actions/cache@v4
@@ -80,6 +81,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           version-file: .tool-versions
+          version-type: strict
 
       - name: Cache Mix build and deps
         uses: actions/cache@v4
@@ -131,6 +133,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           version-file: .tool-versions
+          version-type: strict
 
       - name: Cache Mix build, deps, and PLTs
         uses: actions/cache@v4
