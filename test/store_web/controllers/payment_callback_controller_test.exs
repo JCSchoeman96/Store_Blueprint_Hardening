@@ -15,11 +15,13 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
        } do
     order = create_order!()
     payment_intent = create_submitted_payment_intent!(order.id)
-    raw_body = Jason.encode!(%{"payment_intent_id" => payment_intent.id})
+    raw_body = stripe_payment_event_raw_body(payment_intent)
+    signature = stripe_signature(raw_body)
 
     conn =
       conn
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature)
       |> post(~p"/api/payments/stripe/callback", raw_body)
 
     assert %{"data" => %{"webhook_receipt_id" => webhook_receipt_id}} = json_response(conn, 202)
@@ -38,6 +40,38 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
     assert receipt.raw_body == raw_body
     assert :submitted == fetch_payment_intent!(payment_intent.id).state
     assert :pending_payment == fetch_order!(order.id).state
+  end
+
+  test "callback rejects missing stripe signature", %{conn: conn} do
+    order = create_order!()
+    payment_intent = create_submitted_payment_intent!(order.id)
+    raw_body = stripe_payment_event_raw_body(payment_intent, "evt_callback_missing_sig")
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post(~p"/api/payments/stripe/callback", raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_MISSING"}} = json_response(conn, 401)
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
+  end
+
+  test "callback signature verification is bound to raw body bytes", %{conn: conn} do
+    order = create_order!()
+    payment_intent = create_submitted_payment_intent!(order.id)
+
+    compact_raw_body = stripe_payment_event_raw_body(payment_intent, "evt_callback_raw_bytes")
+    modified_raw_body = Jason.encode!(Jason.decode!(compact_raw_body), pretty: true)
+    signature_for_compact = stripe_signature(compact_raw_body)
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature_for_compact)
+      |> post(~p"/api/payments/stripe/callback", modified_raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_INVALID"}} = json_response(conn, 401)
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
   end
 
   defp create_order! do
@@ -73,5 +107,31 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
              |> Ash.read(domain: Store.Payments, authorize?: false)
 
     payment_intent
+  end
+
+  defp stripe_payment_event_raw_body(payment_intent, event_id \\ "evt_callback_001") do
+    Jason.encode!(%{
+      "id" => event_id,
+      "type" => "payment_intent.succeeded",
+      "data" => %{
+        "object" => %{
+          "id" => payment_intent.id,
+          "amount_received" => payment_intent.amount_received_minor,
+          "currency" => String.downcase(payment_intent.currency || "USD"),
+          "metadata" => %{}
+        }
+      }
+    })
+  end
+
+  defp stripe_signature(raw_body, secret \\ "whsec_dev_only_change_me") do
+    timestamp = DateTime.utc_now() |> DateTime.to_unix()
+    payload = "#{timestamp}.#{raw_body}"
+
+    signature =
+      :crypto.mac(:hmac, :sha256, secret, payload)
+      |> Base.encode16(case: :lower)
+
+    "t=#{timestamp},v1=#{signature}"
   end
 end

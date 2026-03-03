@@ -13,76 +13,24 @@ defmodule Store.Pricing do
     Coupon,
     Evaluator,
     Promotion,
-    Queries.AdminShippingRatesQuery,
-    Queries.AdminShippingZonesQuery,
     Queries.AdminTaxRatesQuery,
-    ShippingRate,
-    ShippingZone,
     TaxRate,
     TaxShippingContract,
     TaxShippingEvaluator
   }
+
+  alias Store.Shipping
+  alias Store.Shipping.{ShippingRateRule, ShippingZone}
 
   alias Store.Support.Errors.Error
 
   resources do
     resource(Store.Pricing.Coupon)
     resource(Store.Pricing.Promotion)
-    resource(Store.Pricing.ShippingZone)
-    resource(Store.Pricing.ShippingRate)
     resource(Store.Pricing.TaxRate)
   end
 
   @type evaluate_quote_opts :: [authorize?: boolean(), actor: term(), context: map()]
-
-  @spec list_shipping_zones_for_admin(AdminShippingZonesQuery.t(), map()) ::
-          {:ok, [ShippingZone.t()]} | {:error, term()}
-  def list_shipping_zones_for_admin(%AdminShippingZonesQuery{limit: limit}, actor)
-      when is_map(actor) do
-    query =
-      ShippingZone
-      |> Ash.Query.for_read(:admin_index, %{limit: limit}, actor: actor)
-
-    Ash.read(query, domain: __MODULE__, actor: actor)
-  end
-
-  @spec get_shipping_zone_for_admin(Ecto.UUID.t(), map()) ::
-          {:ok, ShippingZone.t() | nil} | {:error, term()}
-  def get_shipping_zone_for_admin(id, actor) when is_binary(id) and is_map(actor) do
-    query =
-      ShippingZone
-      |> Ash.Query.for_read(:admin_get, %{id: id}, actor: actor)
-
-    Ash.read_one(query, domain: __MODULE__, actor: actor)
-  end
-
-  @spec list_shipping_rates_for_admin(AdminShippingRatesQuery.t(), map()) ::
-          {:ok, [ShippingRate.t()]} | {:error, term()}
-  def list_shipping_rates_for_admin(
-        %AdminShippingRatesQuery{limit: limit, shipping_zone_id: shipping_zone_id},
-        actor
-      )
-      when is_map(actor) do
-    query =
-      ShippingRate
-      |> Ash.Query.for_read(
-        :admin_index,
-        %{limit: limit, shipping_zone_id: shipping_zone_id},
-        actor: actor
-      )
-
-    Ash.read(query, domain: __MODULE__, actor: actor)
-  end
-
-  @spec get_shipping_rate_for_admin(Ecto.UUID.t(), map()) ::
-          {:ok, ShippingRate.t() | nil} | {:error, term()}
-  def get_shipping_rate_for_admin(id, actor) when is_binary(id) and is_map(actor) do
-    query =
-      ShippingRate
-      |> Ash.Query.for_read(:admin_get, %{id: id}, actor: actor)
-
-    Ash.read_one(query, domain: __MODULE__, actor: actor)
-  end
 
   @spec list_tax_rates_for_admin(AdminTaxRatesQuery.t(), map()) ::
           {:ok, [TaxRate.t()]} | {:error, term()}
@@ -336,10 +284,14 @@ defmodule Store.Pricing do
   end
 
   defp fetch_shipping_rate_candidates(currency, opts) do
-    query = Ash.Query.filter(ShippingRate, expr(currency == ^currency))
+    query = Ash.Query.filter(ShippingRateRule, expr(currency == ^currency and active == true))
 
     with {:ok, rates} <-
-           Ash.read(query, domain: __MODULE__, authorize?: Keyword.get(opts, :authorize?, false)),
+           Ash.read(query,
+             domain: Shipping,
+             authorize?: Keyword.get(opts, :authorize?, false),
+             context: %{system?: true}
+           ),
          {:ok, zones_by_id} <- fetch_shipping_zones_by_id(rates, opts) do
       rates
       |> Enum.map(&shipping_candidate_from_rate(&1, zones_by_id))
@@ -363,11 +315,12 @@ defmodule Store.Pricing do
         {:ok, %{}}
 
       ids ->
-        query = Ash.Query.filter(ShippingZone, expr(id in ^ids))
+        query = Ash.Query.filter(ShippingZone, expr(id in ^ids and active == true))
 
         case Ash.read(query,
-               domain: __MODULE__,
-               authorize?: Keyword.get(opts, :authorize?, false)
+               domain: Shipping,
+               authorize?: Keyword.get(opts, :authorize?, false),
+               context: %{system?: true}
              ) do
           {:ok, zones} -> {:ok, Map.new(zones, &{&1.id, &1})}
           {:error, reason} -> {:error, reason}
@@ -378,29 +331,24 @@ defmodule Store.Pricing do
   defp shipping_candidate_from_rate(rate, zones_by_id) do
     zone = Map.get(zones_by_id, rate.shipping_zone_id)
 
-    cond do
-      rate.shipping_zone_id != nil and zone == nil ->
-        nil
-
-      rate.shipping_zone_id != nil and zone.active != true ->
-        nil
-
-      true ->
-        %TaxShippingContract.ShippingRateCandidate{
-          id: rate.id,
-          code: rate.code,
-          shipping_cost_minor: rate.shipping_cost_minor,
-          country_code: zone && zone.country_code,
-          region_code: zone && zone.region_code,
-          weight_min_grams: rate.weight_min_grams,
-          weight_max_grams: rate.weight_max_grams,
-          free_over_subtotal_minor: rate.free_over_subtotal_minor,
-          allow_free_shipping_coupon: rate.allow_free_shipping_coupon,
-          starts_at: rate.starts_at,
-          ends_at: rate.ends_at,
-          active?: rate.active,
-          precedence_rank: rate.precedence_rank
-        }
+    if rate.shipping_zone_id != nil and zone == nil do
+      nil
+    else
+      %TaxShippingContract.ShippingRateCandidate{
+        id: rate.id,
+        code: rate.code,
+        shipping_cost_minor: rate.shipping_cost_minor,
+        country_code: zone && zone.country_code,
+        region_code: zone && zone.region_code,
+        weight_min_grams: rate.weight_min_grams,
+        weight_max_grams: rate.weight_max_grams,
+        free_over_subtotal_minor: rate.free_over_subtotal_minor,
+        allow_free_shipping_coupon: rate.allow_free_shipping_coupon,
+        starts_at: rate.starts_at,
+        ends_at: rate.ends_at,
+        active?: rate.active,
+        precedence_rank: rate.precedence_rank
+      }
     end
   end
 

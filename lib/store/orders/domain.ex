@@ -74,11 +74,13 @@ defmodule Store.Orders do
              order: Order.t(),
              checkout_key: String.t(),
              cart_fingerprint: String.t(),
-             duplicate?: boolean()
+             duplicate?: boolean(),
+             notifications: [Ash.Notifier.Notification.t()]
            }}
           | {:error, Error.t() | term()}
   def begin_checkout(attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
-    ash_opts = Keyword.drop(opts, [:pricing_contract_version])
+    return_notifications? = Keyword.get(opts, :return_notifications?, false)
+    ash_opts = Keyword.drop(opts, [:pricing_contract_version, :return_notifications?])
 
     with {:ok, request} <- normalize_begin_checkout_request(attrs, opts),
          cart_fingerprint <-
@@ -90,14 +92,15 @@ defmodule Store.Orders do
              request.tax_shipping_inputs
            ),
          checkout_key <- Idempotency.checkout_key(request.user_id, cart_fingerprint),
-         {:ok, order, duplicate?} <-
-           create_or_reuse_checkout_order(request, checkout_key, ash_opts) do
+         {:ok, order, duplicate?, notifications} <-
+           create_or_reuse_checkout_order(request, checkout_key, ash_opts, return_notifications?) do
       {:ok,
        %{
          order: order,
          checkout_key: checkout_key,
          cart_fingerprint: cart_fingerprint,
-         duplicate?: duplicate?
+         duplicate?: duplicate?,
+         notifications: notifications
        }}
     end
   rescue
@@ -219,11 +222,11 @@ defmodule Store.Orders do
     end
   end
 
-  defp create_or_reuse_checkout_order(request, checkout_key, ash_opts) do
+  defp create_or_reuse_checkout_order(request, checkout_key, ash_opts, return_notifications?) do
     with {:ok, existing_order} <- find_order_by_checkout_key(checkout_key, ash_opts) do
       case existing_order do
         %Order{state: :pending_payment} = order ->
-          {:ok, order, true}
+          {:ok, order, true, []}
 
         %Order{} ->
           {:error,
@@ -233,22 +236,36 @@ defmodule Store.Orders do
            )}
 
         nil ->
-          create_checkout_order(request.user_id, checkout_key, ash_opts)
+          create_checkout_order(request.user_id, checkout_key, ash_opts, return_notifications?)
       end
     end
   end
 
-  defp create_checkout_order(user_id, checkout_key, ash_opts) do
+  defp create_checkout_order(user_id, checkout_key, ash_opts, return_notifications?) do
     create_attrs = %{user_id: user_id, checkout_key: checkout_key}
+
+    create_ash_opts =
+      if return_notifications? do
+        Keyword.put(ash_opts, :return_notifications?, true)
+      else
+        ash_opts
+      end
 
     Order
     |> Ash.Changeset.for_create(:begin_checkout, create_attrs, context: %{system?: true})
-    |> Ash.create(checkout_ash_opts(ash_opts))
+    |> Ash.create(checkout_ash_opts(create_ash_opts))
     |> case do
       {:ok, %Order{state: :pending_payment} = order} ->
-        {:ok, order, false}
+        {:ok, order, false, []}
+
+      {:ok, %Order{state: :pending_payment} = order, notifications} when is_list(notifications) ->
+        {:ok, order, false, notifications}
 
       {:ok, %Order{}} ->
+        {:error,
+         Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
+
+      {:ok, %Order{}, _notifications} ->
         {:error,
          Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
 

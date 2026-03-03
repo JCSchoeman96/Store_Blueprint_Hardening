@@ -34,11 +34,17 @@ defmodule StoreWeb.AdminLive do
           <.button id="admin-link-products" patch={~p"/admin/products"}>
             Products
           </.button>
+          <.button id="admin-link-shipping-methods" patch={~p"/admin/shipping-methods"}>
+            Shipping Methods
+          </.button>
           <.button id="admin-link-shipping-zones" patch={~p"/admin/shipping-zones"}>
             Shipping Zones
           </.button>
           <.button id="admin-link-shipping-rates" patch={~p"/admin/shipping-rates"}>
             Shipping Rates
+          </.button>
+          <.button id="admin-link-fulfillment" patch={~p"/admin/fulfillment"}>
+            Fulfillment Queue
           </.button>
           <.button id="admin-link-tax-rates" patch={~p"/admin/tax-rates"}>
             Tax Rates

@@ -6,11 +6,12 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
   use StoreWeb, :live_view
 
   alias Store.Admin.Authorization
-  alias Store.Pricing.Facade, as: PricingFacade
-  alias Store.Pricing.Queries.AdminShippingZonesQuery
+  alias Store.Shipping.Facade, as: ShippingFacade
+  alias Store.Shipping.Queries.{AdminShippingMethodsQuery, AdminShippingZonesQuery}
   alias StoreWeb.Admin.ShippingRates.FormComponent
   alias StoreWeb.Params.Admin.ShippingRatesParams
 
+  @method_options_limit 100
   @zone_options_limit 100
 
   @impl true
@@ -22,6 +23,7 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
        socket
        |> assign(:query, nil)
        |> assign(:zone_options, [])
+       |> assign(:method_options, [])
        |> assign(:selected_shipping_rate, nil)
        |> stream(:shipping_rates, [])}
     else
@@ -34,13 +36,15 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
     actor = socket.assigns.current_user
 
     with {:ok, query} <- ShippingRatesParams.index_query(extract_query_params(uri)),
-         {:ok, shipping_rates} <- PricingFacade.list_shipping_rates_for_admin(actor, query),
+         {:ok, shipping_rates} <- ShippingFacade.list_shipping_rate_rules_for_admin(actor, query),
          {:ok, zone_options} <- load_zone_options(actor),
+         {:ok, method_options} <- load_method_options(actor),
          {:ok, selected_shipping_rate} <- load_selected(socket.assigns.live_action, params, actor) do
       {:noreply,
        socket
        |> assign(:query, query)
        |> assign(:zone_options, zone_options)
+       |> assign(:method_options, method_options)
        |> assign(:selected_shipping_rate, selected_shipping_rate)
        |> stream(:shipping_rates, shipping_rates, reset: true)}
     else
@@ -54,11 +58,12 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
   end
 
   @impl true
-  def handle_event("filter_zone", %{"shipping_zone_id" => shipping_zone_id}, socket) do
+  def handle_event("filter", params, socket) do
     params =
       socket.assigns.query
       |> query_to_params()
-      |> put_zone_filter(shipping_zone_id)
+      |> put_zone_filter(Map.get(params, "shipping_zone_id"))
+      |> put_method_filter(Map.get(params, "shipping_method_id"))
 
     {:noreply, push_patch(socket, to: ~p"/admin/shipping-rates?#{params}")}
   end
@@ -89,18 +94,34 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
           <.button id="new-shipping-rate" patch={~p"/admin/shipping-rates/new"}>New Rate</.button>
         </div>
 
-        <form id="shipping-rate-filter-form" phx-change="filter_zone">
-          <label class="label mb-1 text-sm font-medium">Filter by Zone</label>
-          <select name="shipping_zone_id" class="select w-full max-w-sm">
-            <option value="">All Zones</option>
-            <option
-              :for={{label, value} <- @zone_options}
-              value={value}
-              selected={to_string(@query && @query.shipping_zone_id) == to_string(value)}
-            >
-              {label}
-            </option>
-          </select>
+        <form id="shipping-rate-filter-form" phx-change="filter" class="grid gap-3 lg:grid-cols-2">
+          <div>
+            <label class="label mb-1 text-sm font-medium">Filter by Zone</label>
+            <select name="shipping_zone_id" class="select w-full">
+              <option value="">All Zones</option>
+              <option
+                :for={{label, value} <- @zone_options}
+                value={value}
+                selected={to_string(@query && @query.shipping_zone_id) == to_string(value)}
+              >
+                {label}
+              </option>
+            </select>
+          </div>
+
+          <div>
+            <label class="label mb-1 text-sm font-medium">Filter by Method</label>
+            <select name="shipping_method_id" class="select w-full">
+              <option value="">All Methods</option>
+              <option
+                :for={{label, value} <- @method_options}
+                value={value}
+                selected={to_string(@query && @query.shipping_method_id) == to_string(value)}
+              >
+                {label}
+              </option>
+            </select>
+          </div>
         </form>
 
         <.table
@@ -111,6 +132,7 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
         >
           <:col :let={shipping_rate} label="Code">{shipping_rate.code}</:col>
           <:col :let={shipping_rate} label="Currency">{shipping_rate.currency}</:col>
+          <:col :let={shipping_rate} label="Method">{shipping_rate.shipping_method_id}</:col>
           <:col :let={shipping_rate} label="Zone">{shipping_rate.shipping_zone_id || "GLOBAL"}</:col>
           <:col :let={shipping_rate} label="Cost">{shipping_rate.shipping_cost_minor}</:col>
           <:col :let={shipping_rate} label="Active">
@@ -136,6 +158,7 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
             step_up_at_mono_usec={@step_up_at_mono_usec}
             shipping_rate={@selected_shipping_rate}
             zone_options={@zone_options}
+            method_options={@method_options}
             patch={~p"/admin/shipping-rates"}
           />
         </section>
@@ -146,13 +169,20 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
 
   defp load_zone_options(actor) do
     with {:ok, query} <- AdminShippingZonesQuery.new(%{"limit" => @zone_options_limit}),
-         {:ok, zones} <- PricingFacade.list_shipping_zones_for_admin(actor, query) do
+         {:ok, zones} <- ShippingFacade.list_shipping_zones_for_admin(actor, query) do
       {:ok, Enum.map(zones, &{"#{&1.code} (#{&1.country_code})", &1.id})}
     end
   end
 
+  defp load_method_options(actor) do
+    with {:ok, query} <- AdminShippingMethodsQuery.new(%{"limit" => @method_options_limit}),
+         {:ok, methods} <- ShippingFacade.list_shipping_methods_for_admin(actor, query) do
+      {:ok, Enum.map(methods, &{"#{&1.name} (#{&1.code})", &1.id})}
+    end
+  end
+
   defp load_selected(:edit, %{"id" => id}, actor) do
-    case PricingFacade.get_shipping_rate_for_admin(actor, id) do
+    case ShippingFacade.get_shipping_rate_rule_for_admin(actor, id) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, shipping_rate} -> {:ok, shipping_rate}
       {:error, _error} -> {:error, :not_found}
@@ -166,6 +196,7 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
   defp query_to_params(query) do
     %{"limit" => to_string(query.limit)}
     |> put_zone_filter(query.shipping_zone_id)
+    |> put_method_filter(query.shipping_method_id)
   end
 
   defp put_zone_filter(params, nil), do: Map.delete(params, "shipping_zone_id")
@@ -173,6 +204,12 @@ defmodule StoreWeb.Admin.ShippingRates.IndexLive do
 
   defp put_zone_filter(params, shipping_zone_id),
     do: Map.put(params, "shipping_zone_id", shipping_zone_id)
+
+  defp put_method_filter(params, nil), do: Map.delete(params, "shipping_method_id")
+  defp put_method_filter(params, ""), do: Map.delete(params, "shipping_method_id")
+
+  defp put_method_filter(params, shipping_method_id),
+    do: Map.put(params, "shipping_method_id", shipping_method_id)
 
   defp shipping_rate_form_id(:new, _shipping_rate), do: "shipping-rate-form-new"
   defp shipping_rate_form_id(:edit, %{id: id}), do: "shipping-rate-form-#{id}"

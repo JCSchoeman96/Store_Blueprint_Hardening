@@ -16,12 +16,43 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
                   :idempotency_key,
                   "payload_sha256",
                   :payload_sha256,
+                  "verification_status",
+                  :verification_status,
+                  "processing_status",
+                  :processing_status,
+                  "provider_event_id",
+                  :provider_event_id,
+                  "event_type",
+                  :event_type,
+                  "error_code",
+                  :error_code,
+                  "error_detail",
+                  :error_detail,
+                  "verified_at",
+                  :verified_at,
+                  "processed_at",
+                  :processed_at,
                   "received_at",
                   :received_at
                 ])
 
   @enforce_keys [:provider, :raw_body, :headers]
-  defstruct [:provider, :raw_body, :headers, :idempotency_key, :payload_sha256, :received_at]
+  defstruct [
+    :provider,
+    :raw_body,
+    :headers,
+    :idempotency_key,
+    :payload_sha256,
+    :verification_status,
+    :processing_status,
+    :provider_event_id,
+    :event_type,
+    :error_code,
+    :error_detail,
+    :verified_at,
+    :processed_at,
+    :received_at
+  ]
 
   @type t :: %__MODULE__{
           provider: String.t(),
@@ -29,6 +60,14 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
           headers: map(),
           idempotency_key: String.t() | nil,
           payload_sha256: String.t() | nil,
+          verification_status: String.t() | nil,
+          processing_status: String.t() | nil,
+          provider_event_id: String.t() | nil,
+          event_type: String.t() | nil,
+          error_code: String.t() | nil,
+          error_detail: String.t() | nil,
+          verified_at: DateTime.t() | nil,
+          processed_at: DateTime.t() | nil,
           received_at: DateTime.t() | nil
         }
 
@@ -40,6 +79,14 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
          {:ok, headers} <- parse_headers(params),
          {:ok, idempotency_key} <- parse_optional_string(params, :idempotency_key),
          {:ok, payload_sha256} <- parse_optional_string(params, :payload_sha256),
+         {:ok, verification_status} <- parse_optional_string(params, :verification_status),
+         {:ok, processing_status} <- parse_optional_string(params, :processing_status),
+         {:ok, provider_event_id} <- parse_optional_string(params, :provider_event_id),
+         {:ok, event_type} <- parse_optional_string(params, :event_type),
+         {:ok, error_code} <- parse_optional_string(params, :error_code),
+         {:ok, error_detail} <- parse_optional_string(params, :error_detail),
+         {:ok, verified_at} <- parse_optional_datetime(params, :verified_at),
+         {:ok, processed_at} <- parse_optional_datetime(params, :processed_at),
          {:ok, received_at} <- parse_optional_datetime(params, :received_at) do
       {:ok,
        %__MODULE__{
@@ -48,6 +95,14 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
          headers: headers,
          idempotency_key: idempotency_key,
          payload_sha256: payload_sha256,
+         verification_status: verification_status,
+         processing_status: processing_status,
+         provider_event_id: provider_event_id,
+         event_type: event_type,
+         error_code: error_code,
+         error_detail: error_detail,
+         verified_at: verified_at,
+         processed_at: processed_at,
          received_at: received_at
        }}
     end

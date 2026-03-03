@@ -28,6 +28,48 @@ defmodule Store.Payments.WebhookReceipt do
       public?(true)
     end
 
+    attribute :verification_status, :string do
+      allow_nil?(false)
+      default("verified")
+      public?(true)
+    end
+
+    attribute :processing_status, :string do
+      allow_nil?(false)
+      default("new")
+      public?(true)
+    end
+
+    attribute :provider_event_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :event_type, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :error_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :error_detail, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :verified_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :processed_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :raw_body, :string do
       allow_nil?(false)
       default("")
@@ -52,6 +94,7 @@ defmodule Store.Payments.WebhookReceipt do
 
   identities do
     identity(:unique_idempotency_key, [:idempotency_key])
+    identity(:unique_provider_event, [:provider, :provider_event_id])
   end
 
   actions do
@@ -68,7 +111,22 @@ defmodule Store.Payments.WebhookReceipt do
     end
 
     create :ingest do
-      accept([:provider, :idempotency_key, :payload_sha256, :raw_body, :headers, :received_at])
+      accept([
+        :provider,
+        :idempotency_key,
+        :payload_sha256,
+        :verification_status,
+        :processing_status,
+        :provider_event_id,
+        :event_type,
+        :error_code,
+        :error_detail,
+        :verified_at,
+        :processed_at,
+        :raw_body,
+        :headers,
+        :received_at
+      ])
 
       change(fn changeset, _context ->
         provider = Ash.Changeset.get_attribute(changeset, :provider)
@@ -86,6 +144,21 @@ defmodule Store.Payments.WebhookReceipt do
       upsert_fields([])
       return_skipped_upsert?(true)
     end
+
+    update :mark_processing do
+      accept([])
+      change(set_attribute(:processing_status, "processing"))
+    end
+
+    update :mark_processed do
+      accept([:processed_at])
+      change(set_attribute(:processing_status, "processed"))
+    end
+
+    update :mark_failed do
+      accept([:error_code, :error_detail, :processed_at])
+      change(set_attribute(:processing_status, "failed"))
+    end
   end
 
   code_interface do
@@ -99,6 +172,9 @@ defmodule Store.Payments.WebhookReceipt do
     custom_indexes do
       index([:provider], name: "webhook_receipts_provider_index")
       index([:received_at], name: "webhook_receipts_received_at_index")
+      index([:verification_status], name: "webhook_receipts_verification_status_index")
+      index([:processing_status], name: "webhook_receipts_processing_status_index")
+      index([:provider_event_id], name: "webhook_receipts_provider_event_id_index")
     end
   end
 
@@ -114,6 +190,11 @@ defmodule Store.Payments.WebhookReceipt do
     end
 
     policy action(:get_for_system) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+    end
+
+    policy action([:mark_processing, :mark_processed, :mark_failed]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
     end

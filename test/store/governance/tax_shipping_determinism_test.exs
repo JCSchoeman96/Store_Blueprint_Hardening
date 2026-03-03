@@ -8,12 +8,12 @@ defmodule Store.Governance.TaxShippingDeterminismTest do
   alias Store.Pricing
 
   alias Store.Pricing.{
-    ShippingRate,
-    ShippingZone,
     TaxRate,
     TaxShippingContract,
     TaxShippingEvaluator
   }
+
+  alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
 
   alias Store.Support.Errors.Error
 
@@ -179,6 +179,16 @@ defmodule Store.Governance.TaxShippingDeterminismTest do
       })
       |> Ash.create!(domain: Store.Orders, authorize?: false)
 
+    shipping_method =
+      ShippingMethod
+      |> Ash.Changeset.for_create(:create, %{
+        code: "GROUND_US_CA_METHOD",
+        name: "Ground US CA",
+        active: true,
+        sort_order: 100
+      })
+      |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
+
     zone =
       ShippingZone
       |> Ash.Changeset.for_create(:create, %{
@@ -187,18 +197,19 @@ defmodule Store.Governance.TaxShippingDeterminismTest do
         region_code: "CA",
         active: true
       })
-      |> Ash.create!(domain: Pricing, authorize?: false)
+      |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
 
     shipping_rate =
-      ShippingRate
+      ShippingRateRule
       |> Ash.Changeset.for_create(:create, %{
-        code: "GROUND_US_CA",
+        code: "GROUND_US_CA_RULE",
         currency: "USD",
         shipping_zone_id: zone.id,
+        shipping_method_id: shipping_method.id,
         shipping_cost_minor: 899,
         active: true
       })
-      |> Ash.create!(domain: Pricing, authorize?: false)
+      |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
 
     tax_rate =
       TaxRate
@@ -244,7 +255,7 @@ defmodule Store.Governance.TaxShippingDeterminismTest do
       |> Ash.Changeset.for_update(:update, %{shipping_cost_minor: 1_499},
         context: %{system?: true}
       )
-      |> Ash.update!(domain: Pricing, authorize?: false, context: %{system?: true})
+      |> Ash.update!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
 
     _tax_rate_updated =
       tax_rate

@@ -13,11 +13,13 @@ defmodule StoreWeb.WebhookControllerTest do
     conn: conn
   } do
     payment_intent = create_submitted_payment_intent!()
-    raw_body = Jason.encode!(%{"payment_intent_id" => payment_intent.id})
+    raw_body = stripe_payment_event_raw_body(payment_intent)
+    signature = stripe_signature(raw_body)
 
     conn =
       conn
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature)
       |> post(~p"/api/webhooks/stripe", raw_body)
 
     assert %{"data" => %{"webhook_receipt_id" => webhook_receipt_id}} = json_response(conn, 202)
@@ -41,18 +43,21 @@ defmodule StoreWeb.WebhookControllerTest do
 
   test "duplicate payload ingest is idempotent and reuses receipt record", %{conn: conn} do
     payment_intent = create_submitted_payment_intent!()
-    raw_body = Jason.encode!(%{"payment_intent_id" => payment_intent.id})
-    expected_key = sha256_hex("stripe\n" <> raw_body)
+    raw_body = stripe_payment_event_raw_body(payment_intent, "evt_payment_duplicate_001")
+    signature = stripe_signature(raw_body)
+    expected_key = "stripe:evt_payment_duplicate_001"
 
     conn1 =
       conn
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature)
       |> post(~p"/api/webhooks/stripe", raw_body)
 
     conn2 =
       conn
       |> recycle()
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature)
       |> post(~p"/api/webhooks/stripe", raw_body)
 
     receipt_id_1 = json_response(conn1, 202)["data"]["webhook_receipt_id"]
@@ -71,14 +76,23 @@ defmodule StoreWeb.WebhookControllerTest do
   test "refund event payload routes to dedicated refund worker", %{conn: conn} do
     raw_body =
       Jason.encode!(%{
-        "event_type" => "refund.succeeded",
-        "provider_event_id" => "evt_refund_route_001",
-        "refund" => %{"idempotency_key" => "refund:route:test"}
+        "id" => "evt_refund_route_001",
+        "type" => "refund.succeeded",
+        "data" => %{
+          "object" => %{
+            "id" => "pi_refund_route_001",
+            "amount" => 0,
+            "currency" => "usd"
+          }
+        }
       })
+
+    signature = stripe_signature(raw_body)
 
     conn =
       conn
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature)
       |> post(~p"/api/webhooks/stripe", raw_body)
 
     assert %{"data" => %{"webhook_receipt_id" => webhook_receipt_id}} = json_response(conn, 202)
@@ -88,6 +102,58 @@ defmodule StoreWeb.WebhookControllerTest do
       args: %{"webhook_receipt_id" => webhook_receipt_id},
       queue: "refunds"
     )
+  end
+
+  test "missing stripe signature is rejected", %{conn: conn} do
+    payment_intent = create_submitted_payment_intent!()
+    raw_body = stripe_payment_event_raw_body(payment_intent, "evt_sig_missing_001")
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post(~p"/api/webhooks/stripe", raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_MISSING"}} = json_response(conn, 401)
+
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    refute_enqueued(worker: ProcessRefundWebhookReceiptWorker)
+  end
+
+  test "invalid stripe signature is rejected", %{conn: conn} do
+    payment_intent = create_submitted_payment_intent!()
+    raw_body = stripe_payment_event_raw_body(payment_intent, "evt_sig_invalid_001")
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", "t=1,v1=bad")
+      |> post(~p"/api/webhooks/stripe", raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_INVALID"}} = json_response(conn, 401)
+
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    refute_enqueued(worker: ProcessRefundWebhookReceiptWorker)
+  end
+
+  test "signature verification uses exact raw body bytes", %{conn: conn} do
+    payment_intent = create_submitted_payment_intent!()
+
+    compact_raw_body = stripe_payment_event_raw_body(payment_intent, "evt_raw_bytes_001")
+
+    modified_raw_body =
+      Jason.encode!(Jason.decode!(compact_raw_body), pretty: true)
+
+    signature_for_compact = stripe_signature(compact_raw_body)
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("stripe-signature", signature_for_compact)
+      |> post(~p"/api/webhooks/stripe", modified_raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_INVALID"}} = json_response(conn, 401)
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    refute_enqueued(worker: ProcessRefundWebhookReceiptWorker)
   end
 
   defp create_submitted_payment_intent! do
@@ -110,8 +176,29 @@ defmodule StoreWeb.WebhookControllerTest do
     payment_intent
   end
 
-  defp sha256_hex(value) do
-    :crypto.hash(:sha256, value)
-    |> Base.encode16(case: :lower)
+  defp stripe_payment_event_raw_body(payment_intent, event_id \\ "evt_payment_webhook_001") do
+    Jason.encode!(%{
+      "id" => event_id,
+      "type" => "payment_intent.succeeded",
+      "data" => %{
+        "object" => %{
+          "id" => payment_intent.id,
+          "amount_received" => payment_intent.amount_received_minor,
+          "currency" => String.downcase(payment_intent.currency || "USD"),
+          "metadata" => %{}
+        }
+      }
+    })
+  end
+
+  defp stripe_signature(raw_body, secret \\ "whsec_dev_only_change_me") do
+    timestamp = DateTime.utc_now() |> DateTime.to_unix()
+    payload = "#{timestamp}.#{raw_body}"
+
+    signature =
+      :crypto.mac(:hmac, :sha256, secret, payload)
+      |> Base.encode16(case: :lower)
+
+    "t=#{timestamp},v1=#{signature}"
   end
 end

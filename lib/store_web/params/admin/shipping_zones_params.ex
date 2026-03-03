@@ -3,7 +3,7 @@ defmodule StoreWeb.Params.Admin.ShippingZonesParams do
   Params adapter for shipping-zone admin list contracts.
   """
 
-  alias Store.Pricing.Queries.AdminShippingZonesQuery
+  alias Store.Shipping.Queries.AdminShippingZonesQuery
   alias Store.Support.Errors.Error
 
   @spec index_query(map()) :: {:ok, AdminShippingZonesQuery.t()} | {:error, Error.t()}

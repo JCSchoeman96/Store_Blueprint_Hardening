@@ -12,7 +12,8 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_orders_for_user, 2},
         {:list_orders_for_admin, 2},
         {:get_order_for_user, 2},
-        {:get_order_for_admin, 2}
+        {:get_order_for_admin, 2},
+        {:get_order_detail_for_user, 2}
       ]
     },
     Store.Payments.Facade => %{
@@ -61,6 +62,40 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:update_item_qty_for_user, 3},
         {:remove_item_for_user, 3},
         {:merge_token_into_user_for_user, 2}
+      ]
+    },
+    Store.Shipping.Facade => %{
+      allowed_consumers: [:admin, :system],
+      exports: [
+        {:list_shipping_zones_for_admin, 2},
+        {:get_shipping_zone_for_admin, 2},
+        {:create_shipping_zone_for_admin, 3},
+        {:update_shipping_zone_for_admin, 4},
+        {:list_shipping_methods_for_admin, 2},
+        {:get_shipping_method_for_admin, 2},
+        {:create_shipping_method_for_admin, 3},
+        {:update_shipping_method_for_admin, 4},
+        {:list_shipping_rate_rules_for_admin, 2},
+        {:get_shipping_rate_rule_for_admin, 2},
+        {:create_shipping_rate_rule_for_admin, 3},
+        {:update_shipping_rate_rule_for_admin, 4},
+        {:quote_options_for_system, 1},
+        {:quote_options_for_system, 2}
+      ]
+    },
+    Store.Fulfillment.Facade => %{
+      allowed_consumers: [:admin, :support, :system],
+      exports: [
+        {:list_fulfillment_orders_for_admin, 2},
+        {:get_fulfillment_order_for_admin, 2},
+        {:mark_packed_for_support, 2},
+        {:mark_shipped_for_support, 3},
+        {:mark_delivered_for_support, 2},
+        {:cancel_fulfillment_for_admin, 2},
+        {:cancel_fulfillment_for_admin, 3},
+        {:ensure_paid_order_fulfillment_for_system, 1},
+        {:enqueue_paid_order_fulfillment_for_system, 1},
+        {:get_fulfillment_by_order_id_for_system, 1}
       ]
     }
   }

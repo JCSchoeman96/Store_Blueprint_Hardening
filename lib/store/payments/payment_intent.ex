@@ -30,6 +30,32 @@ defmodule Store.Payments.PaymentIntent do
       public?(true)
     end
 
+    attribute :provider, :string do
+      allow_nil?(false)
+      default("stripe")
+      public?(true)
+    end
+
+    attribute :provider_payment_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_session_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_checkout_url, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_client_secret, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :payment_intent_key, :string do
       allow_nil?(true)
       public?(true)
@@ -89,16 +115,48 @@ defmodule Store.Payments.PaymentIntent do
     end
 
     create :create do
-      accept([:order_id, :amount_received_minor, :currency, :payment_intent_key])
+      accept([
+        :order_id,
+        :amount_received_minor,
+        :currency,
+        :provider,
+        :provider_payment_id,
+        :provider_session_id,
+        :provider_checkout_url,
+        :provider_client_secret,
+        :payment_intent_key
+      ])
     end
 
     create :create_or_reuse do
-      accept([:order_id, :amount_received_minor, :currency, :payment_intent_key])
+      accept([
+        :order_id,
+        :amount_received_minor,
+        :currency,
+        :provider,
+        :provider_payment_id,
+        :provider_session_id,
+        :provider_checkout_url,
+        :provider_client_secret,
+        :payment_intent_key
+      ])
 
       upsert?(true)
       upsert_identity(:unique_payment_intent_key)
       upsert_fields([])
       return_skipped_upsert?(true)
+    end
+
+    update :set_provider_reference do
+      require_atomic?(false)
+
+      accept([
+        :provider,
+        :provider_payment_id,
+        :provider_session_id,
+        :provider_checkout_url,
+        :provider_client_secret
+      ])
     end
 
     update :submit do
@@ -152,6 +210,9 @@ defmodule Store.Payments.PaymentIntent do
       index([:state], name: "payment_intents_state_index")
       index([:order_id], name: "payment_intents_order_id_index")
       index([:payment_intent_key], name: "payment_intents_payment_intent_key_index")
+      index([:provider], name: "payment_intents_provider_index")
+      index([:provider_payment_id], name: "payment_intents_provider_payment_id_index")
+      index([:provider_session_id], name: "payment_intents_provider_session_id_index")
     end
   end
 
@@ -198,6 +259,12 @@ defmodule Store.Payments.PaymentIntent do
     end
 
     policy action(:cancel) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:set_provider_reference) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

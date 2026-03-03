@@ -136,6 +136,78 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       table: "checkout_drafts",
       columns: ["cart_id", "cart_version"],
       mode: :active_now
+    },
+    %{
+      key: :checkout_drafts_order_id,
+      table: "checkout_drafts",
+      columns: ["order_id"],
+      mode: :active_now
+    },
+    %{
+      key: :payment_intents_provider_provider_payment_id,
+      table: "payment_intents",
+      columns: ["provider", "provider_payment_id"],
+      mode: :active_now
+    },
+    %{
+      key: :payment_intents_provider_provider_session_id,
+      table: "payment_intents",
+      columns: ["provider", "provider_session_id"],
+      mode: :active_now
+    },
+    %{
+      key: :webhook_receipts_provider_provider_event_id,
+      table: "webhook_receipts",
+      columns: ["provider", "provider_event_id"],
+      mode: :active_now
+    },
+    %{
+      key: :email_outboxes_idempotency_key,
+      table: "email_outboxes",
+      columns: ["idempotency_key"],
+      mode: :active_now
+    },
+    %{
+      key: :email_outboxes_order_id_template_kind,
+      table: "email_outboxes",
+      columns: ["order_id", "template_kind"],
+      mode: :active_now
+    },
+    %{
+      key: :shipping_methods_code,
+      table: "shipping_methods",
+      columns: ["code"],
+      mode: :active_now
+    },
+    %{
+      key: :shipping_rates_code,
+      table: "shipping_rates",
+      columns: ["code"],
+      mode: :active_now
+    },
+    %{
+      key: :order_adjustments_shipping_order_id,
+      table: "order_adjustments",
+      columns: ["order_id"],
+      mode: :active_now
+    },
+    %{
+      key: :fulfillment_orders_order_id,
+      table: "fulfillment_orders",
+      columns: ["order_id"],
+      mode: :active_now
+    },
+    %{
+      key: :shipments_tracking_ref,
+      table: "shipments",
+      columns: ["tracking_ref"],
+      mode: :active_now
+    },
+    %{
+      key: :fulfillment_items_fulfillment_order_line_item,
+      table: "fulfillment_items",
+      columns: ["fulfillment_order_id", "order_line_item_id"],
+      mode: :active_now
     }
   ]
 

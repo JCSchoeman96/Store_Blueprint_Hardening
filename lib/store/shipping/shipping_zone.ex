@@ -1,4 +1,4 @@
-defmodule Store.Pricing.ShippingZone do
+defmodule Store.Shipping.ShippingZone do
   @moduledoc """
   Persisted shipping destination zone used for deterministic shipping eligibility.
   """
@@ -8,7 +8,7 @@ defmodule Store.Pricing.ShippingZone do
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    domain: Store.Pricing
+    domain: Store.Shipping
 
   attributes do
     uuid_v7_primary_key(:id)
@@ -41,7 +41,7 @@ defmodule Store.Pricing.ShippingZone do
   end
 
   relationships do
-    has_many :shipping_rates, Store.Pricing.ShippingRate do
+    has_many :shipping_rate_rules, Store.Shipping.ShippingRateRule do
       destination_attribute(:shipping_zone_id)
       public?(true)
     end
@@ -112,6 +112,7 @@ defmodule Store.Pricing.ShippingZone do
   policies do
     policy action_type(:read) do
       access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 

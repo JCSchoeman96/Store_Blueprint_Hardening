@@ -2,7 +2,8 @@ defmodule Store.Governance.PricingWriteStepUpTest do
   use Store.DataCase, async: false
 
   alias Store.Admin.Authorization
-  alias Store.Pricing.{ShippingRate, ShippingZone, TaxRate}
+  alias Store.Pricing.TaxRate
+  alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Support.Time
   alias Store.TestFixtures
 
@@ -13,14 +14,14 @@ defmodule Store.Governance.PricingWriteStepUpTest do
     assert {:error, error} =
              ShippingZone
              |> Ash.Changeset.for_create(:create, shipping_zone_attrs())
-             |> Ash.create(domain: Store.Pricing, actor: admin)
+             |> Ash.create(domain: Store.Shipping, actor: admin)
 
     assert Exception.message(error) =~ "forbidden"
 
     assert {:ok, zone} =
              ShippingZone
              |> Ash.Changeset.for_create(:create, shipping_zone_attrs())
-             |> Ash.create(domain: Store.Pricing, actor: admin, context: step_up_context())
+             |> Ash.create(domain: Store.Shipping, actor: admin, context: step_up_context())
 
     assert zone.code =~ "ZONE_"
   end
@@ -51,11 +52,12 @@ defmodule Store.Governance.PricingWriteStepUpTest do
 
   test "support cannot create shipping rate even with step-up context" do
     support = support_actor()
+    method = shipping_method_for_system!()
 
     assert {:error, error} =
-             ShippingRate
-             |> Ash.Changeset.for_create(:create, shipping_rate_attrs())
-             |> Ash.create(domain: Store.Pricing, actor: support, context: step_up_context())
+             ShippingRateRule
+             |> Ash.Changeset.for_create(:create, shipping_rate_attrs(method.id))
+             |> Ash.create(domain: Store.Shipping, actor: support, context: step_up_context())
 
     assert Exception.message(error) =~ "forbidden"
   end
@@ -89,13 +91,14 @@ defmodule Store.Governance.PricingWriteStepUpTest do
     %{code: "ZONE_#{suffix}", country_code: "US", region_code: "CA", active: true}
   end
 
-  defp shipping_rate_attrs do
+  defp shipping_rate_attrs(shipping_method_id) do
     suffix = System.unique_integer([:positive])
 
     %{
       code: "RATE_#{suffix}",
       currency: "USD",
       shipping_cost_minor: 1000,
+      shipping_method_id: shipping_method_id,
       active: true,
       precedence_rank: 100
     }
@@ -118,5 +121,17 @@ defmodule Store.Governance.PricingWriteStepUpTest do
 
   defp step_up_context do
     %{step_up_at_mono_usec: Time.now_mono_usec()}
+  end
+
+  defp shipping_method_for_system! do
+    suffix = System.unique_integer([:positive])
+
+    ShippingMethod
+    |> Ash.Changeset.for_create(
+      :create,
+      %{code: "STEPUP_METHOD_#{suffix}", name: "StepUp Method #{suffix}"},
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
   end
 end

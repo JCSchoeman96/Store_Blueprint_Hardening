@@ -5,21 +5,22 @@ defmodule StoreWeb.WebhookController do
 
   alias Store.Payments.Facade, as: PaymentsFacade
   alias Store.Payments.Inputs.WebhookReceiptIngestInput
+  alias Store.Payments.Providers
   alias Store.Support.Errors.Error
   alias Store.Workers.ProcessRefundWebhookReceiptWorker
   alias Store.Workers.ProcessWebhookReceiptWorker
   alias StoreWeb.API.ErrorResponder
 
-  @max_body_length 8_000_000
-  @read_length 1_000_000
-  @read_timeout 15_000
-
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, %{"provider" => provider}) when is_binary(provider) do
     with {:ok, raw_body, conn} <- extract_raw_body(conn),
          headers <- headers_to_map(conn.req_headers),
-         {:ok, receipt} <- ingest_receipt(provider, raw_body, headers),
-         {:ok, _job} <- enqueue_processing_job(receipt.id, raw_body) do
+         normalized_provider = provider_name(provider),
+         {:ok, payload} <- Providers.verify_webhook(normalized_provider, headers, raw_body, []),
+         {:ok, canonical_receipt} <- Providers.normalize_webhook(normalized_provider, payload),
+         {:ok, receipt} <-
+           ingest_receipt(normalized_provider, raw_body, headers, canonical_receipt),
+         {:ok, _job} <- enqueue_processing_job(receipt.id, canonical_receipt.event_type) do
       conn
       |> put_status(:accepted)
       |> json(%{data: %{webhook_receipt_id: receipt.id}})
@@ -42,14 +43,29 @@ defmodule StoreWeb.WebhookController do
         {:ok, raw_body, conn}
 
       _ ->
-        read_raw_body(conn)
+        {:error,
+         Error.new(
+           "PAYMENT_PAYLOAD_INVALID",
+           "raw webhook body was not captured; ensure Plug.Parsers body_reader is configured"
+         )}
     end
   end
 
-  defp ingest_receipt(provider, raw_body, headers) do
+  defp ingest_receipt(provider, raw_body, headers, canonical_receipt) do
+    idempotency_key =
+      canonical_receipt.provider_idempotency_key ||
+        "#{provider}:#{canonical_receipt.provider_event_id}"
+
     with {:ok, input} <-
            WebhookReceiptIngestInput.new(%{
              provider: provider,
+             idempotency_key: idempotency_key,
+             payload_sha256: sha256_hex(raw_body),
+             verification_status: "verified",
+             processing_status: "new",
+             provider_event_id: canonical_receipt.provider_event_id,
+             event_type: canonical_receipt.event_type,
+             verified_at: DateTime.utc_now() |> DateTime.truncate(:microsecond),
              raw_body: raw_body,
              headers: headers
            }) do
@@ -57,33 +73,27 @@ defmodule StoreWeb.WebhookController do
     end
   end
 
-  defp enqueue_processing_job(webhook_receipt_id, raw_body) do
-    worker = processing_worker(raw_body)
+  defp enqueue_processing_job(webhook_receipt_id, event_type) do
+    worker = processing_worker(event_type)
 
     %{"webhook_receipt_id" => webhook_receipt_id}
     |> worker.new()
     |> Oban.insert()
   end
 
-  defp processing_worker(raw_body) do
-    if refund_event_payload?(raw_body) do
+  defp processing_worker(event_type) when is_binary(event_type) do
+    if refund_event_type?(event_type) do
       ProcessRefundWebhookReceiptWorker
     else
       ProcessWebhookReceiptWorker
     end
   end
 
-  defp refund_event_payload?(raw_body) when is_binary(raw_body) do
-    with {:ok, payload} <- Jason.decode(raw_body),
-         event_type when is_binary(event_type) <-
-           Map.get(payload, "event_type") || Map.get(payload, "type") do
-      String.starts_with?(event_type, "refund.") or event_type == "charge.refunded"
-    else
-      _ -> false
-    end
-  end
+  defp processing_worker(_event_type), do: ProcessWebhookReceiptWorker
 
-  defp refund_event_payload?(_raw_body), do: false
+  defp refund_event_type?(event_type) do
+    String.starts_with?(event_type, "refund.") or event_type == "charge.refunded"
+  end
 
   defp headers_to_map(headers) when is_list(headers) do
     headers
@@ -93,22 +103,14 @@ defmodule StoreWeb.WebhookController do
     |> Enum.into(%{}, fn {key, values} -> {key, Enum.reverse(values)} end)
   end
 
-  defp read_raw_body(conn, acc \\ "")
+  defp provider_name(provider) do
+    provider
+    |> Providers.normalize_provider()
+    |> Atom.to_string()
+  end
 
-  defp read_raw_body(conn, acc) do
-    case read_body(conn,
-           length: @max_body_length,
-           read_length: @read_length,
-           read_timeout: @read_timeout
-         ) do
-      {:ok, body, conn} ->
-        {:ok, acc <> body, conn}
-
-      {:more, chunk, conn} ->
-        read_raw_body(conn, acc <> chunk)
-
-      {:error, _reason} ->
-        {:discard, "unable to read webhook body"}
-    end
+  defp sha256_hex(value) when is_binary(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
   end
 end

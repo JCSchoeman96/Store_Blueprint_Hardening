@@ -12,7 +12,20 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   test "worker performs apply-once payment success transition and order effects" do
     order = create_order!()
     payment_intent = create_submitted_payment_intent!(order.id)
-    raw_body = Jason.encode!(%{"payment_intent_id" => payment_intent.id})
+
+    raw_body =
+      Jason.encode!(%{
+        "id" => "evt_worker_payment_success_001",
+        "type" => "payment_intent.succeeded",
+        "data" => %{
+          "object" => %{
+            "id" => payment_intent.id,
+            "amount_received" => payment_intent.amount_received_minor,
+            "currency" => String.downcase(payment_intent.currency || "USD"),
+            "metadata" => %{}
+          }
+        }
+      })
 
     receipt =
       WebhookReceipt
@@ -20,6 +33,10 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
         :ingest,
         %{
           provider: "stripe",
+          provider_event_id: "evt_worker_payment_success_001",
+          event_type: "payment_intent.succeeded",
+          verification_status: "verified",
+          processing_status: "new",
           raw_body: raw_body,
           headers: %{"content-type" => ["application/json"]}
         }
@@ -58,9 +75,23 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   end
 
   defp create_order! do
-    Order
-    |> Ash.Changeset.for_create(:create, %{})
-    |> Ash.create!(domain: Store.Orders, authorize?: false)
+    order =
+      Order
+      |> Ash.Changeset.for_create(:create, %{})
+      |> Ash.create!(domain: Store.Orders, authorize?: false)
+
+    order
+    |> Ash.Changeset.for_update(
+      :finalize_checkout_totals,
+      %{
+        currency_code: "USD",
+        grand_total_minor: 0,
+        items_subtotal_minor: 0,
+        shipping_total_minor: 0
+      },
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
   end
 
   defp fetch_order!(id) do

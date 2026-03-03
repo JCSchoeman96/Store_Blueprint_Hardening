@@ -30,6 +30,36 @@ defmodule Store.Workers.ExpireInventoryReservationsWorkerTest do
     assert inventory.stock_on_hand == 3
   end
 
+  test "expired holds no longer block subsequent reservation attempts" do
+    variant_id = UUIDv7.generate()
+    first_order = create_order!()
+    second_order = create_order!()
+    create_inventory_item!(variant_id, 1)
+
+    past_now = DateTime.add(DateTime.utc_now(), -120, :second) |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _reserved} =
+             Store.Orders.reserve_inventory(
+               first_order.id,
+               [%{variant_id: variant_id, quantity: 1}],
+               now: past_now,
+               ttl_seconds: 1
+             )
+
+    assert :ok = perform_job(ExpireInventoryReservationsWorker, %{})
+
+    assert {:ok, second_reserve} =
+             Store.Orders.reserve_inventory(second_order.id, [
+               %{variant_id: variant_id, quantity: 1}
+             ])
+
+    assert length(second_reserve.reservations) == 1
+
+    inventory = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory.reserved_count == 1
+    assert inventory.stock_on_hand == 1
+  end
+
   defp create_order! do
     Order
     |> Ash.Changeset.for_create(:create, %{})

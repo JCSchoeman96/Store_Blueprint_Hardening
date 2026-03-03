@@ -48,6 +48,13 @@ defmodule Store.Catalog.Variant do
       public?(true)
     end
 
+    attribute :weight_grams, :integer do
+      allow_nil?(false)
+      constraints(min: 0)
+      default(0)
+      public?(true)
+    end
+
     attribute :status, Store.Catalog.Types.VariantStatus do
       allow_nil?(false)
       default(:active)
@@ -92,6 +99,7 @@ defmodule Store.Catalog.Variant do
         :currency_code,
         :price_minor,
         :compare_at_price_minor,
+        :weight_grams,
         :status
       ])
 
@@ -108,6 +116,7 @@ defmodule Store.Catalog.Variant do
         :currency_code,
         :price_minor,
         :compare_at_price_minor,
+        :weight_grams,
         :status
       ])
 
@@ -128,6 +137,7 @@ defmodule Store.Catalog.Variant do
         :currency_code,
         :price_minor,
         :compare_at_price_minor,
+        :weight_grams,
         :status
       ])
 

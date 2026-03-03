@@ -61,6 +61,11 @@ defmodule Store.Orders.OrderLineItem do
       public?(true)
     end
 
+    attribute :variant_id_snapshot, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :discount_allocated_minor, :integer do
       allow_nil?(false)
       default(0)
@@ -157,6 +162,7 @@ defmodule Store.Orders.OrderLineItem do
         :sku_snapshot,
         :product_title_snapshot,
         :variant_title_snapshot,
+        :variant_id_snapshot,
         :discount_allocated_minor,
         :net_line_total_minor,
         :tax_category_snapshot,
@@ -175,6 +181,7 @@ defmodule Store.Orders.OrderLineItem do
     custom_indexes do
       index([:order_id], name: "order_line_items_order_id_index")
       index([:tax_rate_id_snapshot], name: "order_line_items_tax_rate_id_snapshot_index")
+      index([:variant_id_snapshot], name: "order_line_items_variant_id_snapshot_index")
     end
   end
 

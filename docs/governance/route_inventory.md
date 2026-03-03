@@ -3,7 +3,7 @@
 Purpose: define the canonical public URL surface for QA and search indexing, and separate it from auth/internal routes.
 
 Source of truth used for this inventory:
-- `mix phx.routes` (captured on 2026-03-02)
+- `mix phx.routes` (captured on 2026-03-03)
 - `lib/store_web/router.ex`
 
 Reference excerpt from `mix phx.routes` (auth/public slice):
@@ -21,7 +21,9 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 | GET | `/shop` | LiveView (`StoreWeb.ShopLive.Index :index`) | Yes | Catalog storefront list route for simple products. |
 | GET | `/shop/:slug` | LiveView (`StoreWeb.ShopLive.Show :show`) | Yes | Catalog storefront product detail by slug. |
 | GET | `/cart` | LiveView (`StoreWeb.CartLive :index`) | Yes | Cart management route (guest + user). |
-| GET | `/checkout` | LiveView (`StoreWeb.CheckoutLive.Placeholder :index`) | Yes | Phase 20 read-only checkout placeholder by `checkout_key`. |
+| GET | `/checkout` | LiveView (`StoreWeb.CheckoutLive.Placeholder :index`) | Yes | Phase 21 checkout flow by `checkout_key` (shipping, totals finalization, payment handoff). |
+| GET | `/checkout/return` | LiveView (`StoreWeb.CheckoutLive.Placeholder :return`) | Yes | Payment return route, read-only status view by `checkout_key`; never marks paid. |
+| GET | `/checkout/cancel` | LiveView (`StoreWeb.CheckoutLive.Placeholder :cancel`) | Yes | Payment cancel route, read-only status view by `checkout_key`; never mutates payment/order state. |
 
 ## Planned public routes
 

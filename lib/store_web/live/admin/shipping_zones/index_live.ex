@@ -6,7 +6,7 @@ defmodule StoreWeb.Admin.ShippingZones.IndexLive do
   use StoreWeb, :live_view
 
   alias Store.Admin.Authorization
-  alias Store.Pricing.Facade, as: PricingFacade
+  alias Store.Shipping.Facade, as: ShippingFacade
   alias StoreWeb.Admin.ShippingZones.FormComponent
   alias StoreWeb.Params.Admin.ShippingZonesParams
 
@@ -30,7 +30,7 @@ defmodule StoreWeb.Admin.ShippingZones.IndexLive do
     actor = socket.assigns.current_user
 
     with {:ok, query} <- ShippingZonesParams.index_query(extract_query_params(uri)),
-         {:ok, shipping_zones} <- PricingFacade.list_shipping_zones_for_admin(actor, query),
+         {:ok, shipping_zones} <- ShippingFacade.list_shipping_zones_for_admin(actor, query),
          {:ok, selected_shipping_zone} <- load_selected(socket.assigns.live_action, params, actor) do
       {:noreply,
        socket
@@ -113,7 +113,7 @@ defmodule StoreWeb.Admin.ShippingZones.IndexLive do
   end
 
   defp load_selected(:edit, %{"id" => id}, actor) do
-    case PricingFacade.get_shipping_zone_for_admin(actor, id) do
+    case ShippingFacade.get_shipping_zone_for_admin(actor, id) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, shipping_zone} -> {:ok, shipping_zone}
       {:error, _error} -> {:error, :not_found}

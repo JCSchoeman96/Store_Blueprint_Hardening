@@ -65,15 +65,80 @@ defmodule Store.Payments.Facade do
   @spec process_payment_webhook_receipt_for_system(WebhookReceipt.t()) ::
           :ok | {:discard, String.t()} | {:error, term()}
   def process_payment_webhook_receipt_for_system(%WebhookReceipt{} = receipt) do
-    Store.Payments.process_payment_webhook_receipt(receipt, context: %{system?: true})
+    with {:ok, processing_receipt} <- mark_processing(receipt),
+         result <-
+           Store.Payments.process_payment_webhook_receipt(processing_receipt,
+             context: %{system?: true}
+           ),
+         :ok <- mark_terminal_status(processing_receipt, result) do
+      result
+    else
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
   end
 
   @spec process_refund_webhook_receipt_for_system(WebhookReceipt.t()) ::
           :ok | {:discard, String.t()} | {:error, term()}
   def process_refund_webhook_receipt_for_system(%WebhookReceipt{} = receipt) do
-    Store.Payments.process_refund_webhook_receipt(receipt, context: %{system?: true})
+    with {:ok, processing_receipt} <- mark_processing(receipt),
+         result <-
+           Store.Payments.process_refund_webhook_receipt(processing_receipt,
+             context: %{system?: true}
+           ),
+         :ok <- mark_terminal_status(processing_receipt, result) do
+      result
+    else
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
   end
 
   defp normalize_result({:ok, result}), do: {:ok, result}
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}
+
+  defp mark_processing(%WebhookReceipt{processing_status: "processed"} = receipt),
+    do: {:ok, receipt}
+
+  defp mark_processing(%WebhookReceipt{} = receipt) do
+    receipt
+    |> Ash.Changeset.for_update(:mark_processing, %{}, context: %{system?: true})
+    |> Ash.update(domain: Store.Payments, context: %{system?: true}, authorize?: false)
+  end
+
+  defp mark_terminal_status(receipt, :ok), do: mark_processed(receipt)
+  defp mark_terminal_status(receipt, {:discard, _reason}), do: mark_processed(receipt)
+
+  defp mark_terminal_status(receipt, {:error, reason}) do
+    normalized = Normalize.normalize(reason)
+    mark_failed(receipt, normalized)
+  end
+
+  defp mark_processed(%WebhookReceipt{} = receipt) do
+    receipt
+    |> Ash.Changeset.for_update(
+      :mark_processed,
+      %{processed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)},
+      context: %{system?: true}
+    )
+    |> Ash.update(domain: Store.Payments, context: %{system?: true}, authorize?: false)
+    |> case do
+      {:ok, _receipt} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp mark_failed(%WebhookReceipt{} = receipt, normalized_error) do
+    attrs = %{
+      error_code: normalized_error.code,
+      error_detail: normalized_error.message,
+      processed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    }
+
+    receipt
+    |> Ash.Changeset.for_update(:mark_failed, attrs, context: %{system?: true})
+    |> Ash.update(domain: Store.Payments, context: %{system?: true}, authorize?: false)
+    |> case do
+      {:ok, _receipt} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
 end

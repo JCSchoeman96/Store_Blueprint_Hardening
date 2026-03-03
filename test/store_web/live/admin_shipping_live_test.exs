@@ -6,7 +6,7 @@ defmodule StoreWeb.AdminShippingLiveTest do
   require Ash.Query
 
   alias AshAuthentication.Plug.Helpers
-  alias Store.Pricing.{ShippingRate, ShippingZone}
+  alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Support.Time
   alias Store.TestFixtures
 
@@ -38,7 +38,7 @@ defmodule StoreWeb.AdminShippingLiveTest do
     assert {:ok, [zone]} =
              ShippingZone
              |> Ash.Query.filter(expr(code == ^code))
-             |> Ash.read(domain: Store.Pricing, authorize?: false)
+             |> Ash.read(domain: Store.Shipping, authorize?: false)
 
     assert zone.country_code == "US"
   end
@@ -64,6 +64,7 @@ defmodule StoreWeb.AdminShippingLiveTest do
 
   test "shipping rate form renders resource validation errors", %{conn: conn} do
     conn = signed_in_admin_conn(conn, step_up?: true)
+    method = create_shipping_method!()
 
     {:ok, view, _html} = live(conn, ~p"/admin/shipping-rates/new")
 
@@ -75,6 +76,7 @@ defmodule StoreWeb.AdminShippingLiveTest do
           "code" => "RATE_LV_INVALID",
           "currency" => "USD",
           "shipping_zone_id" => "",
+          "shipping_method_id" => method.id,
           "shipping_cost_minor" => "1000",
           "weight_min_grams" => "100",
           "weight_max_grams" => "10",
@@ -92,6 +94,7 @@ defmodule StoreWeb.AdminShippingLiveTest do
 
   test "admin with step-up can create a shipping rate", %{conn: conn} do
     conn = signed_in_admin_conn(conn, step_up?: true)
+    method = create_shipping_method!()
 
     {:ok, view, _html} = live(conn, ~p"/admin/shipping-rates/new")
 
@@ -105,6 +108,7 @@ defmodule StoreWeb.AdminShippingLiveTest do
         "code" => code,
         "currency" => "USD",
         "shipping_zone_id" => "",
+        "shipping_method_id" => method.id,
         "shipping_cost_minor" => "1500",
         "weight_min_grams" => "",
         "weight_max_grams" => "",
@@ -121,9 +125,9 @@ defmodule StoreWeb.AdminShippingLiveTest do
     assert render(view) =~ code
 
     assert {:ok, [rate]} =
-             ShippingRate
+             ShippingRateRule
              |> Ash.Query.filter(expr(code == ^code))
-             |> Ash.read(domain: Store.Pricing, authorize?: false)
+             |> Ash.read(domain: Store.Shipping, authorize?: false)
 
     assert rate.currency == "USD"
   end
@@ -148,4 +152,21 @@ defmodule StoreWeb.AdminShippingLiveTest do
     do: Plug.Conn.put_session(conn, "step_up_at_mono_usec", Time.now_mono_usec())
 
   defp maybe_put_step_up(conn, false), do: conn
+
+  defp create_shipping_method! do
+    unique = System.unique_integer([:positive])
+
+    ShippingMethod
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        code: "LV_METHOD_#{unique}",
+        name: "Live Method #{unique}",
+        active: true,
+        sort_order: 100
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
+  end
 end

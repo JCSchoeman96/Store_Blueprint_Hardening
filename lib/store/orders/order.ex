@@ -45,6 +45,81 @@ defmodule Store.Orders.Order do
       public?(true)
     end
 
+    attribute :shipping_quote_hash, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_quote_currency_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_quote_amount_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :shipping_weight_grams, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :shipping_method_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_rule_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_zone_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_effective_from, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_effective_to, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :currency_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :items_subtotal_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :shipping_total_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :grand_total_minor, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    attribute :totals_finalized_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :shipping_cost_minor_original, :integer do
       allow_nil?(false)
       default(0)
@@ -91,6 +166,31 @@ defmodule Store.Orders.Order do
     end
 
     attribute :shipping_postal_code, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_recipient_name, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_address_line1, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_address_line2, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_city, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :shipping_phone, :string do
       allow_nil?(true)
       public?(true)
     end
@@ -143,6 +243,16 @@ defmodule Store.Orders.Order do
       end
 
       filter(expr(id == ^arg(:id)))
+    end
+
+    read :get_for_user_by_ref do
+      get?(true)
+
+      argument :order_ref, :string do
+        allow_nil?(false)
+      end
+
+      filter(expr(order_ref == ^arg(:order_ref)))
     end
 
     read :read_for_admin do
@@ -229,11 +339,61 @@ defmodule Store.Orders.Order do
         :tax_as_of
       ])
     end
+
+    update :set_shipping_address do
+      require_atomic?(false)
+
+      accept([
+        :shipping_country_code,
+        :shipping_region_code,
+        :shipping_postal_code,
+        :shipping_recipient_name,
+        :shipping_address_line1,
+        :shipping_address_line2,
+        :shipping_city,
+        :shipping_phone
+      ])
+    end
+
+    update :set_shipping_method do
+      require_atomic?(false)
+      accept([:shipping_rate_id, :shipping_rate_code])
+    end
+
+    update :set_shipping_quote_evidence do
+      require_atomic?(false)
+
+      accept([
+        :shipping_quote_hash,
+        :shipping_quote_currency_code,
+        :shipping_quote_amount_minor,
+        :shipping_weight_grams,
+        :shipping_method_code,
+        :shipping_rule_id,
+        :shipping_zone_id,
+        :shipping_effective_from,
+        :shipping_effective_to
+      ])
+    end
+
+    update :finalize_checkout_totals do
+      require_atomic?(false)
+      accept([:currency_code, :items_subtotal_minor, :shipping_total_minor, :grand_total_minor])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(
+          changeset,
+          :totals_finalized_at,
+          DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        )
+      end)
+    end
   end
 
   code_interface do
     define(:list_for_user, action: :read_for_user)
     define(:get_for_user, action: :get_for_user, args: [:id])
+    define(:get_for_user_by_ref, action: :get_for_user_by_ref, args: [:order_ref])
     define(:list_for_admin, action: :read_for_admin)
     define(:get_for_admin, action: :get_for_admin, args: [:id])
   end
@@ -255,6 +415,8 @@ defmodule Store.Orders.Order do
       index([:user_id], name: "orders_user_id_index")
       index([:shipping_rate_id], name: "orders_shipping_rate_id_index")
       index([:tax_as_of], name: "orders_tax_as_of_index")
+      index([:currency_code], name: "orders_currency_code_index")
+      index([:totals_finalized_at], name: "orders_totals_finalized_at_index")
     end
   end
 
@@ -264,7 +426,7 @@ defmodule Store.Orders.Order do
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 
-    policy action([:read, :read_for_user, :get_for_user]) do
+    policy action([:read, :read_for_user, :get_for_user, :get_for_user_by_ref]) do
       authorize_if(expr(user_id == ^actor(:id)))
     end
 
@@ -309,6 +471,24 @@ defmodule Store.Orders.Order do
     end
 
     policy action(:write_tax_shipping_snapshot) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:set_shipping_address) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:finalize_checkout_totals) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:set_shipping_method) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

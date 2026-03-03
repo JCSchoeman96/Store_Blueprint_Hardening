@@ -6,8 +6,8 @@ defmodule StoreWeb.Admin.ShippingZones.FormComponent do
   use StoreWeb, :live_component
 
   alias AshPhoenix.Form
-  alias Store.Pricing
-  alias Store.Pricing.ShippingZone
+  alias Store.Shipping
+  alias Store.Shipping.ShippingZone
 
   @impl true
   def update(assigns, socket) do
@@ -81,7 +81,7 @@ defmodule StoreWeb.Admin.ShippingZones.FormComponent do
   defp build_form(%{action: :new} = assigns, socket) do
     Form.for_create(ShippingZone, :create,
       actor: assigns.current_user,
-      domain: Pricing,
+      domain: Shipping,
       context: form_context(socket),
       as: "shipping_zone",
       warn_on_unhandled_errors?: false
@@ -92,7 +92,7 @@ defmodule StoreWeb.Admin.ShippingZones.FormComponent do
        when not is_nil(shipping_zone) do
     Form.for_update(shipping_zone, :update,
       actor: assigns.current_user,
-      domain: Pricing,
+      domain: Shipping,
       context: form_context(socket),
       as: "shipping_zone",
       warn_on_unhandled_errors?: false

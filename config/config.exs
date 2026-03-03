@@ -14,9 +14,12 @@ config :store,
     Store.Admin,
     Store.Catalog,
     Store.Carts,
+    Store.Comms,
     Store.Checkout,
     Store.Orders,
     Store.Payments,
+    Store.Fulfillment,
+    Store.Shipping,
     Store.Pricing
   ],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
@@ -41,6 +44,18 @@ config :store, StoreWeb.Endpoint,
 # at the `config/runtime.exs`.
 config :store, Store.Mailer, adapter: Swoosh.Adapters.Local
 
+config :store, :payments,
+  checkout: [
+    return_base_url: "http://localhost:4000/checkout/return",
+    cancel_base_url: "http://localhost:4000/checkout/cancel"
+  ],
+  stripe: [
+    checkout_base_url: "https://checkout.stripe.example",
+    webhook_secret: "whsec_dev_only_change_me"
+  ]
+
+config :store, :shipping, quote_hash_secret: "phase22-dev-only-change-me"
+
 config :store, Oban,
   repo: Store.Repo,
   plugins: [
@@ -50,7 +65,7 @@ config :store, Oban,
        {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker}
      ]}
   ],
-  queues: [webhooks: 10, inventory: 10, refunds: 10]
+  queues: [webhooks: 10, inventory: 10, refunds: 10, comms: 10, fulfillment: 10]
 
 # Configure esbuild (the version is required)
 config :esbuild,

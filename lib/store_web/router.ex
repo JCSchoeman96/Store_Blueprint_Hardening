@@ -65,21 +65,28 @@ defmodule StoreWeb.Router do
       live "/shop/:slug", ShopLive.Show, :show
       live "/cart", CartLive, :index
       live "/checkout", CheckoutLive.Placeholder, :index
+      live "/checkout/return", CheckoutLive.Placeholder, :return
+      live "/checkout/cancel", CheckoutLive.Placeholder, :cancel
     end
 
     ash_authentication_live_session :authentication_required,
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live "/account", AccountLive, :index
+      live "/account/orders/:order_ref", Orders.ShowLive, :show
       live "/admin", AdminLive, :index
       live "/admin/products", Admin.Products.IndexLive, :index
       live "/admin/products/new", Admin.Products.IndexLive, :new
       live "/admin/products/:id/edit", Admin.Products.IndexLive, :edit
+      live "/admin/shipping-methods", Admin.ShippingMethods.IndexLive, :index
+      live "/admin/shipping-methods/new", Admin.ShippingMethods.IndexLive, :new
+      live "/admin/shipping-methods/:id/edit", Admin.ShippingMethods.IndexLive, :edit
       live "/admin/shipping-zones", Admin.ShippingZones.IndexLive, :index
       live "/admin/shipping-zones/new", Admin.ShippingZones.IndexLive, :new
       live "/admin/shipping-zones/:id/edit", Admin.ShippingZones.IndexLive, :edit
       live "/admin/shipping-rates", Admin.ShippingRates.IndexLive, :index
       live "/admin/shipping-rates/new", Admin.ShippingRates.IndexLive, :new
       live "/admin/shipping-rates/:id/edit", Admin.ShippingRates.IndexLive, :edit
+      live "/admin/fulfillment", Admin.Fulfillment.IndexLive, :index
       live "/admin/tax-rates", Admin.TaxRates.IndexLive, :index
       live "/admin/tax-rates/new", Admin.TaxRates.IndexLive, :new
       live "/admin/tax-rates/:id/edit", Admin.TaxRates.IndexLive, :edit

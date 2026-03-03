@@ -6,12 +6,14 @@ defmodule Store.Orders.SnapshotWriter do
   for an order, writes are treated as idempotent no-op reads.
   """
 
+  alias Ecto.Changeset
   import Ash.Expr
   require Ash.Query
 
   alias Store.Orders.{OrderAdjustment, OrderLineItem}
   alias Store.Pricing.Contract
   alias Store.Pricing.Evaluator
+  alias Store.Repo
   alias Store.Support.Errors.Error
 
   @type write_result ::
@@ -65,7 +67,7 @@ defmodule Store.Orders.SnapshotWriter do
     end
   end
 
-  defp create_line_items(order_id, %Contract.Output{} = output, ash_opts) do
+  defp create_line_items(order_id, %Contract.Output{} = output, _ash_opts) do
     created =
       output.lines
       |> Enum.sort_by(& &1.line_no)
@@ -80,6 +82,7 @@ defmodule Store.Orders.SnapshotWriter do
           sku_snapshot: line.sku_snapshot,
           product_title_snapshot: line.product_title_snapshot,
           variant_title_snapshot: line.variant_title_snapshot,
+          variant_id_snapshot: line.line_id,
           discount_allocated_minor: line.discount_allocated_minor,
           net_line_total_minor: line.net_line_total_minor,
           tax_category_snapshot: Map.get(line, :tax_category_snapshot, "STANDARD"),
@@ -89,15 +92,15 @@ defmodule Store.Orders.SnapshotWriter do
           tax_minor: Map.get(line, :tax_minor, 0)
         }
 
-        OrderLineItem
-        |> Ash.Changeset.for_create(:create, attrs)
-        |> Ash.create(ash_opts)
+        %OrderLineItem{}
+        |> Changeset.change(attrs)
+        |> Repo.insert()
       end)
 
     collect_create_results(created, "Unable to persist line-item snapshot")
   end
 
-  defp create_adjustments(order_id, %Contract.Output{} = output, ash_opts) do
+  defp create_adjustments(order_id, %Contract.Output{} = output, _ash_opts) do
     created =
       output.applied_adjustments
       |> Enum.sort_by(&Evaluator.applied_adjustment_tuple/1)
@@ -116,9 +119,9 @@ defmodule Store.Orders.SnapshotWriter do
           precedence_rank: adjustment.precedence_rank
         }
 
-        OrderAdjustment
-        |> Ash.Changeset.for_create(:create, attrs)
-        |> Ash.create(ash_opts)
+        %OrderAdjustment{}
+        |> Changeset.change(attrs)
+        |> Repo.insert()
       end)
 
     collect_create_results(created, "Unable to persist adjustment snapshot")

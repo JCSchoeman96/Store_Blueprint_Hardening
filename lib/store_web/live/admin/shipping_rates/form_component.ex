@@ -6,8 +6,8 @@ defmodule StoreWeb.Admin.ShippingRates.FormComponent do
   use StoreWeb, :live_component
 
   alias AshPhoenix.Form
-  alias Store.Pricing
-  alias Store.Pricing.ShippingRate
+  alias Store.Shipping
+  alias Store.Shipping.ShippingRateRule
 
   @impl true
   def update(assigns, socket) do
@@ -72,6 +72,13 @@ defmodule StoreWeb.Admin.ShippingRates.FormComponent do
           options={@zone_options}
         />
         <.input
+          field={@form[:shipping_method_id]}
+          type="select"
+          label="Shipping Method"
+          options={@method_options}
+          required
+        />
+        <.input
           field={@form[:shipping_cost_minor]}
           type="number"
           label="Shipping Cost (minor)"
@@ -106,9 +113,9 @@ defmodule StoreWeb.Admin.ShippingRates.FormComponent do
   end
 
   defp build_form(%{action: :new} = assigns, socket) do
-    Form.for_create(ShippingRate, :create,
+    Form.for_create(ShippingRateRule, :create,
       actor: assigns.current_user,
-      domain: Pricing,
+      domain: Shipping,
       context: form_context(socket),
       as: "shipping_rate",
       warn_on_unhandled_errors?: false
@@ -119,7 +126,7 @@ defmodule StoreWeb.Admin.ShippingRates.FormComponent do
        when not is_nil(shipping_rate) do
     Form.for_update(shipping_rate, :update,
       actor: assigns.current_user,
-      domain: Pricing,
+      domain: Shipping,
       context: form_context(socket),
       as: "shipping_rate",
       warn_on_unhandled_errors?: false

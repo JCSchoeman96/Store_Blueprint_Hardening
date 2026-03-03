@@ -5,10 +5,13 @@ defmodule Store.Payments.Interlocks do
 
   import Ash.Expr
   require Ash.Query
+  require Logger
 
   alias Ecto.Adapters.SQL
+  alias Store.Fulfillment.Facade, as: FulfillmentFacade
   alias Store.Orders.Order
-  alias Store.Payments.{PaymentAttempt, PaymentIntent, ProviderEvent, WebhookReceipt}
+  alias Store.Payments.{PaymentAttempt, PaymentIntent, ProviderEvent, Providers, WebhookReceipt}
+  alias Store.Payments.Types.CanonicalReceipt
   alias Store.Repo
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
@@ -49,28 +52,18 @@ defmodule Store.Payments.Interlocks do
   @spec process_payment_webhook_receipt(WebhookReceipt.t(), keyword()) ::
           :ok | {:discard, String.t()} | {:error, term()}
   def process_payment_webhook_receipt(%WebhookReceipt{} = receipt, _opts \\ []) do
-    with {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
-         {:ok, payment_intent_id} <- extract_payment_intent_id(payload),
-         {:ok, event_type} <- extract_payment_event_type(payload),
-         true <- success_event?(event_type),
-         {:ok, payment_intent} <- fetch_payment_intent(payment_intent_id),
-         {:ok, provider_event_id} <- extract_provider_event_id(payload, receipt.id),
-         {:ok, provider_event_key} <-
-           ingest_provider_event(receipt, payload, event_type, provider_event_id),
+    with :ok <- ensure_receipt_verified(receipt),
+         {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
+         {:ok, canonical} <- normalize_canonical_receipt(receipt.provider, payload),
+         {:ok, payment_intent} <- fetch_payment_intent_for_canonical(canonical),
+         {:ok, order} <- fetch_order(payment_intent.order_id),
+         :ok <- ensure_canonical_totals_match_order(canonical, order),
+         {:ok, provider_event_key} <- ingest_provider_event(receipt, canonical),
          {:ok, _attempt} <-
-           record_payment_attempt(
-             payment_intent,
-             receipt,
-             provider_event_id,
-             provider_event_key,
-             event_type,
-             payload
-           ),
-         {:ok, _result} <-
-           apply_payment_success_once(payment_intent, provider_event_key: provider_event_key) do
+           record_payment_attempt(payment_intent, receipt, canonical, provider_event_key),
+         {:ok, _result} <- apply_canonical_receipt(payment_intent, canonical, provider_event_key) do
       :ok
     else
-      false -> {:discard, "not a payment success event"}
       {:discard, reason} -> {:discard, reason}
       {:error, reason} -> {:error, reason}
     end
@@ -95,7 +88,9 @@ defmodule Store.Payments.Interlocks do
                order_id: order.id,
                payment_intent_id: payment_intent.id
              }
-           ) do
+           ),
+         :ok <- maybe_enqueue_fulfillment(result),
+         :ok <- maybe_enqueue_order_receipt(result) do
       {:ok, result}
     else
       false ->
@@ -115,7 +110,10 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp normalize_payment_intent_request(attrs) do
-    provider = attr(attrs, :provider, "stripe")
+    provider =
+      attrs
+      |> attr(:provider, "stripe")
+      |> provider_name()
 
     order_id = attr(attrs, :order_id)
     amount_received_minor = attr(attrs, :amount_received_minor)
@@ -170,6 +168,7 @@ defmodule Store.Payments.Interlocks do
       order_id: request.order_id,
       amount_received_minor: request.amount_received_minor,
       currency: String.upcase(request.currency),
+      provider: request.provider,
       payment_intent_key: request.payment_intent_key
     }
 
@@ -258,54 +257,139 @@ defmodule Store.Payments.Interlocks do
 
   defp decode_webhook_payload(_raw_body), do: {:discard, "invalid webhook payload"}
 
-  defp extract_payment_intent_id(payload) when is_map(payload) do
-    payment_intent_id =
-      Map.get(payload, "payment_intent_id") ||
-        get_in(payload, ["data", "object", "id"]) ||
-        get_in(payload, ["payment_intent", "id"])
+  defp ensure_receipt_verified(%WebhookReceipt{verification_status: "verified"}), do: :ok
 
-    case payment_intent_id do
-      value when is_binary(value) -> {:ok, value}
-      _ -> {:discard, "missing payment_intent_id in webhook payload"}
+  defp ensure_receipt_verified(%WebhookReceipt{}) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "webhook receipt must be signature-verified before processing"
+     )}
+  end
+
+  defp normalize_canonical_receipt(provider, payload)
+       when is_binary(provider) and is_map(payload) do
+    provider
+    |> Providers.normalize_provider()
+    |> Providers.normalize_webhook(payload)
+  end
+
+  defp normalize_canonical_receipt(_provider, _payload) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "unable to normalize provider receipt")}
+  end
+
+  defp fetch_payment_intent_for_canonical(%CanonicalReceipt{} = canonical) do
+    provider = canonical.provider |> provider_name()
+    provider_session_id = canonical.provider_session_id
+    provider_payment_id = canonical.provider_payment_id
+
+    with {:ok, by_provider_session_id} <-
+           fetch_payment_intent_by_provider_session_id(provider, provider_session_id),
+         {:ok, by_provider_payment_id} <-
+           fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id) do
+      cond do
+        match?(%PaymentIntent{}, by_provider_session_id) ->
+          {:ok, by_provider_session_id}
+
+        match?(%PaymentIntent{}, by_provider_payment_id) ->
+          {:ok, by_provider_payment_id}
+
+        true ->
+          fallback_fetch_payment_intent(provider_payment_id || provider_session_id)
+      end
     end
   end
 
-  defp extract_payment_intent_id(_payload), do: {:discard, "invalid webhook payload"}
+  defp fetch_payment_intent_by_provider_session_id(provider, provider_session_id)
+       when is_binary(provider) and is_binary(provider_session_id) do
+    query =
+      PaymentIntent
+      |> Ash.Query.filter(
+        expr(provider == ^provider and provider_session_id == ^provider_session_id)
+      )
 
-  defp extract_payment_event_type(payload) when is_map(payload) do
-    event_type =
-      Map.get(payload, "event_type") || Map.get(payload, "type") || "payment_intent.succeeded"
-
-    case event_type do
-      value when is_binary(value) -> {:ok, value}
-      _ -> {:discard, "missing event_type"}
+    case Ash.read(query, payment_ash_opts([])) do
+      {:ok, [payment_intent | _]} -> {:ok, payment_intent}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp extract_payment_event_type(_payload), do: {:discard, "invalid webhook payload"}
+  defp fetch_payment_intent_by_provider_session_id(_provider, _provider_session_id),
+    do: {:ok, nil}
 
-  defp success_event?(event_type) when is_binary(event_type) do
-    event_type in ["payment_intent.succeeded", "charge.succeeded"]
-  end
+  defp fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id)
+       when is_binary(provider) and is_binary(provider_payment_id) do
+    query =
+      PaymentIntent
+      |> Ash.Query.filter(
+        expr(provider == ^provider and provider_payment_id == ^provider_payment_id)
+      )
 
-  defp extract_provider_event_id(payload, fallback_receipt_id) do
-    event_id =
-      Map.get(payload, "provider_event_id") || Map.get(payload, "event_id") ||
-        Map.get(payload, "id")
-
-    case event_id do
-      value when is_binary(value) -> {:ok, value}
-      _ -> {:ok, "receipt:#{fallback_receipt_id}"}
+    case Ash.read(query, payment_ash_opts([])) do
+      {:ok, [payment_intent | _]} -> {:ok, payment_intent}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp ingest_provider_event(receipt, payload, event_type, provider_event_id) do
+  defp fetch_payment_intent_by_provider_payment_id(_provider, _provider_payment_id),
+    do: {:ok, nil}
+
+  defp fallback_fetch_payment_intent(payment_intent_id) when is_binary(payment_intent_id) do
+    case fetch_payment_intent(payment_intent_id) do
+      {:ok, %PaymentIntent{} = payment_intent} -> {:ok, payment_intent}
+      {:discard, _reason} -> {:discard, "payment intent not found"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fallback_fetch_payment_intent(_payment_intent_id),
+    do: {:discard, "payment intent not found"}
+
+  defp ensure_canonical_totals_match_order(%CanonicalReceipt{} = canonical, %Order{} = order) do
+    order_amount = non_neg_int(order.grand_total_minor)
+    order_currency = order.currency_code |> normalize_currency()
+    receipt_currency = canonical.currency |> normalize_currency()
+
+    cond do
+      canonical.amount_minor != order_amount ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "receipt amount mismatch for finalized order totals"
+         )}
+
+      order_currency == nil or receipt_currency == nil ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "receipt/order currency must be present"
+         )}
+
+      order_currency != receipt_currency ->
+        {:error, Error.new("CURRENCY_MISMATCH", "receipt currency does not match order totals")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ingest_provider_event(receipt, canonical) do
+    payload_hash =
+      canonical.raw_payload
+      |> Idempotency.payload_hash()
+
     attrs = %{
-      provider: receipt.provider,
-      provider_event_id: provider_event_id,
-      provider_event_key: Idempotency.provider_event_key(receipt.provider, provider_event_id),
-      event_type: event_type,
-      payload_sha256: Idempotency.payload_hash(payload),
+      provider: provider_name(canonical.provider || receipt.provider),
+      provider_event_id: canonical.provider_event_id,
+      provider_event_key:
+        Idempotency.provider_event_key(
+          provider_name(canonical.provider || receipt.provider),
+          canonical.provider_event_id
+        ),
+      event_type: canonical.event_type,
+      payload_sha256: payload_hash,
       received_at: receipt.received_at
     }
 
@@ -318,22 +402,20 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp record_payment_attempt(
-         payment_intent,
-         receipt,
-         provider_event_id,
-         provider_event_key,
-         event_type,
-         payload
-       ) do
+  defp record_payment_attempt(payment_intent, receipt, canonical, provider_event_key) do
+    payload_hash =
+      canonical.raw_payload
+      |> Idempotency.payload_hash()
+
     attrs = %{
       payment_intent_id: payment_intent.id,
-      provider: receipt.provider,
-      provider_event_id: provider_event_id,
+      provider: provider_name(canonical.provider || receipt.provider),
+      provider_event_id: canonical.provider_event_id,
       provider_event_key: provider_event_key,
-      attempt_key: payment_attempt_key(provider_event_key, payment_intent.id, event_type),
-      outcome: payment_attempt_outcome(event_type),
-      payload_sha256: Idempotency.payload_hash(payload),
+      attempt_key:
+        payment_attempt_key(provider_event_key, payment_intent.id, canonical.event_type),
+      outcome: payment_attempt_outcome(canonical.status),
+      payload_sha256: payload_hash,
       attempted_at: DateTime.utc_now()
     }
 
@@ -346,11 +428,29 @@ defmodule Store.Payments.Interlocks do
     "pay_attempt:#{provider_event_key}:pi:#{payment_intent_id}:event:#{event_type}"
   end
 
-  defp payment_attempt_outcome(event_type)
-       when event_type in ["payment_intent.succeeded", "charge.succeeded"],
-       do: "succeeded"
+  defp payment_attempt_outcome(:succeeded), do: "succeeded"
+  defp payment_attempt_outcome(:failed), do: "failed"
+  defp payment_attempt_outcome(_), do: "ignored"
 
-  defp payment_attempt_outcome(_event_type), do: "ignored"
+  defp apply_canonical_receipt(
+         payment_intent,
+         %CanonicalReceipt{status: :succeeded},
+         provider_event_key
+       ) do
+    apply_payment_success_once(payment_intent, provider_event_key: provider_event_key)
+  end
+
+  defp apply_canonical_receipt(
+         payment_intent,
+         %CanonicalReceipt{status: :failed},
+         _provider_event_key
+       ) do
+    maybe_mark_payment_intent_failed(payment_intent)
+  end
+
+  defp apply_canonical_receipt(_payment_intent, _canonical, _provider_event_key) do
+    {:discard, "webhook event does not require payment state transition"}
+  end
 
   defp run_apply_payment_success_once(payment_intent, order) do
     application_key = "paid_apply:order:#{order.id}"
@@ -424,6 +524,21 @@ defmodule Store.Payments.Interlocks do
      )}
   end
 
+  defp maybe_mark_payment_intent_failed(%PaymentIntent{state: :failed}), do: {:ok, :noop}
+
+  defp maybe_mark_payment_intent_failed(%PaymentIntent{state: state} = payment_intent)
+       when state in [:submitted, :requires_action] do
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_failed, %{}, context: %{system?: true})
+    |> Ash.update(payment_ash_opts([]))
+    |> case do
+      {:ok, _updated_intent} -> {:ok, :updated}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_mark_payment_intent_failed(%PaymentIntent{}), do: {:ok, :noop}
+
   defp maybe_mark_order_paid(%Order{state: :paid} = order), do: {:ok, order, []}
 
   defp maybe_mark_order_paid(%Order{state: :pending_payment} = order) do
@@ -459,6 +574,38 @@ defmodule Store.Payments.Interlocks do
       {:error, error} -> {:error, error}
     end
   end
+
+  defp maybe_enqueue_order_receipt(%{applied?: true, order: %Order{} = order}) do
+    case Store.Comms.enqueue_order_receipt_for_system(order.id) do
+      {:ok, _outbox} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "order_receipt_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_enqueue_order_receipt(_result), do: :ok
+
+  defp maybe_enqueue_fulfillment(%{applied?: true, order: %Order{} = order}) do
+    case FulfillmentFacade.enqueue_paid_order_fulfillment_for_system(order.id) do
+      {:ok, _job} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "ensure_fulfillment_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_enqueue_fulfillment(_result), do: :ok
 
   defp normalize_transaction_result({:ok, {:ok, result, notifications}})
        when is_list(notifications),
@@ -505,6 +652,20 @@ defmodule Store.Payments.Interlocks do
 
   defp require_non_negative_integer(_value, message),
     do: {:error, Error.new("VALIDATION_ERROR", message)}
+
+  defp provider_name(value) when is_atom(value),
+    do: value |> Atom.to_string() |> String.downcase()
+
+  defp provider_name(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
+  defp provider_name(_), do: "stripe"
+
+  defp normalize_currency(value) when is_binary(value),
+    do: value |> String.trim() |> String.upcase()
+
+  defp normalize_currency(_), do: nil
+
+  defp non_neg_int(value) when is_integer(value) and value >= 0, do: value
+  defp non_neg_int(_), do: 0
 
   defp attr(attrs, key, default \\ nil) do
     Map.get(attrs, key, Map.get(attrs, Atom.to_string(key), default))

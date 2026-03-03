@@ -36,6 +36,11 @@ defmodule Store.Checkout.CheckoutDraft do
       public?(true)
     end
 
+    attribute :order_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -46,18 +51,31 @@ defmodule Store.Checkout.CheckoutDraft do
       attribute_writable?(true)
       public?(true)
     end
+
+    belongs_to :order, Store.Orders.Order do
+      source_attribute(:order_id)
+      destination_attribute(:id)
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(true)
+    end
   end
 
   identities do
     identity(:unique_checkout_key, [:checkout_key])
     identity(:unique_cart_id_cart_version, [:cart_id, :cart_version])
+    identity(:unique_order_id, [:order_id])
   end
 
   actions do
     defaults([:read])
 
     create :create do
-      accept([:checkout_key, :cart_id, :cart_version, :user_id, :status])
+      accept([:checkout_key, :cart_id, :cart_version, :user_id, :status, :order_id])
+    end
+
+    update :attach_order do
+      accept([:order_id])
     end
 
     read :get_by_checkout_key do
@@ -79,6 +97,7 @@ defmodule Store.Checkout.CheckoutDraft do
       index([:cart_id], name: "checkout_drafts_cart_id_index")
       index([:user_id], name: "checkout_drafts_user_id_index")
       index([:status], name: "checkout_drafts_status_index")
+      index([:order_id], name: "checkout_drafts_order_id_index")
     end
   end
 
@@ -91,6 +110,12 @@ defmodule Store.Checkout.CheckoutDraft do
     end
 
     policy action(:create) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:attach_order) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

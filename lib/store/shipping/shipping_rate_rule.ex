@@ -1,14 +1,15 @@
-defmodule Store.Pricing.ShippingRate do
+defmodule Store.Shipping.ShippingRateRule do
   @moduledoc """
-  Persisted shipping rate definition used for deterministic shipping selection.
+  Persisted shipping quote rule used for deterministic quote options.
   """
 
   import Ash.Expr
+  require Ash.Query
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    domain: Store.Pricing
+    domain: Store.Shipping
 
   attributes do
     uuid_v7_primary_key(:id)
@@ -83,8 +84,14 @@ defmodule Store.Pricing.ShippingRate do
   end
 
   relationships do
-    belongs_to :shipping_zone, Store.Pricing.ShippingZone do
+    belongs_to :shipping_zone, Store.Shipping.ShippingZone do
       allow_nil?(true)
+      public?(true)
+      attribute_writable?(true)
+    end
+
+    belongs_to :shipping_method, Store.Shipping.ShippingMethod do
+      allow_nil?(false)
       public?(true)
       attribute_writable?(true)
     end
@@ -112,18 +119,23 @@ defmodule Store.Pricing.ShippingRate do
         allow_nil?(true)
       end
 
+      argument :shipping_method_id, :uuid do
+        allow_nil?(true)
+      end
+
       prepare(fn query, _context ->
         limit = Ash.Query.get_argument(query, :limit) || 20
         zone_id = Ash.Query.get_argument(query, :shipping_zone_id)
+        method_id = Ash.Query.get_argument(query, :shipping_method_id)
 
         query =
-          if is_binary(zone_id) do
-            Ash.Query.filter(query, expr(shipping_zone_id == ^zone_id))
-          else
-            query
-          end
+          query
+          |> maybe_filter_zone(zone_id)
+          |> maybe_filter_method(method_id)
 
-        query |> Ash.Query.sort(inserted_at: :desc, id: :asc) |> Ash.Query.limit(limit)
+        query
+        |> Ash.Query.sort(inserted_at: :desc, id: :asc)
+        |> Ash.Query.limit(limit)
       end)
     end
 
@@ -141,6 +153,7 @@ defmodule Store.Pricing.ShippingRate do
         :code,
         :currency,
         :shipping_zone_id,
+        :shipping_method_id,
         :shipping_cost_minor,
         :weight_min_grams,
         :weight_max_grams,
@@ -163,6 +176,7 @@ defmodule Store.Pricing.ShippingRate do
         :code,
         :currency,
         :shipping_zone_id,
+        :shipping_method_id,
         :shipping_cost_minor,
         :weight_min_grams,
         :weight_max_grams,
@@ -180,7 +194,11 @@ defmodule Store.Pricing.ShippingRate do
   end
 
   code_interface do
-    define(:list_for_admin, action: :admin_index, args: [:limit, :shipping_zone_id])
+    define(:list_for_admin,
+      action: :admin_index,
+      args: [:limit, :shipping_zone_id, :shipping_method_id]
+    )
+
     define(:get_for_admin, action: :admin_get, args: [:id])
     define(:create_for_admin, action: :create)
     define(:update_for_admin, action: :update)
@@ -194,12 +212,19 @@ defmodule Store.Pricing.ShippingRate do
       index([:currency, :active], name: "shipping_rates_currency_active_index")
       index([:starts_at, :ends_at], name: "shipping_rates_window_index")
       index([:shipping_zone_id], name: "shipping_rates_shipping_zone_id_index")
+
+      index([:shipping_zone_id, :shipping_method_id, :active],
+        name: "shipping_rates_zone_method_active_index"
+      )
+
+      index([:shipping_zone_id, :active], name: "shipping_rates_zone_active_index")
     end
   end
 
   policies do
     policy action_type(:read) do
       access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 
@@ -223,6 +248,16 @@ defmodule Store.Pricing.ShippingRate do
       )
     end
   end
+
+  defp maybe_filter_zone(query, zone_id) when is_binary(zone_id),
+    do: Ash.Query.filter(query, expr(shipping_zone_id == ^zone_id))
+
+  defp maybe_filter_zone(query, _zone_id), do: query
+
+  defp maybe_filter_method(query, method_id) when is_binary(method_id),
+    do: Ash.Query.filter(query, expr(shipping_method_id == ^method_id))
+
+  defp maybe_filter_method(query, _method_id), do: query
 
   defp normalize_fields(changeset, _context) do
     changeset

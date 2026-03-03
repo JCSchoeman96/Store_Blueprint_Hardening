@@ -32,13 +32,17 @@ Two exceptions are allowed by this blueprint:
 ### 4.1 Webhook controller enqueue-only
 `lib/store_web/controllers/webhook_controller.ex` MAY:
 - read and preserve raw webhook evidence (`raw_body` + headers)
+- verify webhook signatures inline using raw body + provider signature headers (pure computation only)
 - create a `Payments.WebhookReceipt` via an Ash action (preferred)
 - enqueue a single Oban job to process the receipt
 
 It MUST NOT:
-- verify signatures inline
 - apply payment state transitions inline
 - call outbound HTTP inline
+
+Webhook signature pin (Phase 21):
+- verification MUST use the cached raw body bytes from Plug body reader
+- parsed/decoded request payload is never accepted as signature evidence
 
 Phase 08 deterministic idempotency baseline:
 - `idempotency_key = sha256("#{provider}\n" <> raw_body)`
