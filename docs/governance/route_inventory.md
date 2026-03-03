@@ -47,7 +47,22 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 | Method | Path | Surface | Canonical | Notes |
 |---|---|---|---|---|
 | GET | `/account` | LiveView (`StoreWeb.AccountLive :index`) | Yes | Authenticated only. |
+| GET | `/account/orders/:order_ref` | LiveView (`StoreWeb.Orders.ShowLive :show`) | Yes | Authenticated only. |
+| GET | `/account/downloads` | LiveView (`StoreWeb.Digital.DownloadsLive :index`) | Yes | Authenticated digital grant listing. |
+| GET | `/account/downloads/:grant_id/request` | Controller (`StoreWeb.DigitalDownloadController :create`) | Yes | Authenticated signed URL issuance + external redirect. |
 | GET | `/admin` | LiveView (`StoreWeb.AdminLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/products` | LiveView (`StoreWeb.Admin.Products.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/products/new` | LiveView (`StoreWeb.Admin.Products.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/products/:id/edit` | LiveView (`StoreWeb.Admin.Products.IndexLive :edit`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/digital-assets` | LiveView (`StoreWeb.Admin.DigitalAssets.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/digital-assets/new` | LiveView (`StoreWeb.Admin.DigitalAssets.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/digital-assets/:id/edit` | LiveView (`StoreWeb.Admin.DigitalAssets.IndexLive :edit`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/product-digital-links` | LiveView (`StoreWeb.Admin.ProductDigitalLinks.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/product-digital-links/new` | LiveView (`StoreWeb.Admin.ProductDigitalLinks.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/product-digital-links/:id/edit` | LiveView (`StoreWeb.Admin.ProductDigitalLinks.IndexLive :edit`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-methods` | LiveView (`StoreWeb.Admin.ShippingMethods.IndexLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-methods/new` | LiveView (`StoreWeb.Admin.ShippingMethods.IndexLive :new`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/shipping-methods/:id/edit` | LiveView (`StoreWeb.Admin.ShippingMethods.IndexLive :edit`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/shipping-zones` | LiveView (`StoreWeb.Admin.ShippingZones.IndexLive :index`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/shipping-zones/new` | LiveView (`StoreWeb.Admin.ShippingZones.IndexLive :new`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/shipping-zones/:id/edit` | LiveView (`StoreWeb.Admin.ShippingZones.IndexLive :edit`) | Yes | Restricted role surface; never index. |
@@ -106,6 +121,7 @@ For each phase touching web routes, run a route smoke pass and record tested URL
 - `/register`
 - `/account` (auth required behavior)
 - `/admin` (authorization behavior)
+- `/account/downloads`
 - `/admin/shipping-zones`
 - `/admin/shipping-rates`
 - `/admin/tax-rates`

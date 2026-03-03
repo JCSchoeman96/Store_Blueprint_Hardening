@@ -17,6 +17,11 @@ defmodule StoreWeb.AccountLive do
         <h1 class="mt-2 text-2xl font-semibold text-neutral-100">
           Signed in as {@current_user.email}
         </h1>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <.link navigate={~p"/account/downloads"} class="btn btn-sm">
+            Downloads
+          </.link>
+        </div>
       </section>
     </Layouts.app>
     """

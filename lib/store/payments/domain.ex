@@ -6,6 +6,7 @@ defmodule Store.Payments do
   use Ash.Domain, extensions: [AshJsonApi.Domain]
 
   alias Store.Checkout
+  alias Store.Digital.Facade, as: DigitalFacade
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Payments.{Interlocks, Providers, Refunds}
   alias Store.Support.Errors.{Error, Normalize}
@@ -78,6 +79,7 @@ defmodule Store.Payments do
 
     result =
       with {:ok, checkout} <- Checkout.get_checkout_for_user(actor, checkout_key),
+           :ok <- DigitalFacade.ensure_checkout_actor_allowed_for_system(actor, checkout.order_id),
            :ok <- ensure_totals_finalized(checkout),
            :ok <- ensure_order_pending_payment(checkout),
            :ok <- ensure_payable_total(checkout),

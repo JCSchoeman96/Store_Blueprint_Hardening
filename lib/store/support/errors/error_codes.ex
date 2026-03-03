@@ -41,7 +41,13 @@ defmodule Store.Support.Errors.ErrorCodes do
     "PAYMENT_PROCESSING_FAILED",
     "PAYMENT_EVENT_UNVERIFIED",
     "SLUG_TAKEN",
-    "SKU_TAKEN"
+    "SKU_TAKEN",
+    "DIGITAL_GRANT_NOT_FOUND",
+    "DIGITAL_GRANT_DENIED",
+    "DIGITAL_GRANT_EXPIRED",
+    "DIGITAL_GRANT_REVOKED",
+    "DIGITAL_REDIRECT_UNSAFE",
+    "DIGITAL_DOWNLOAD_RATE_LIMITED"
   ]
 
   @compile {:inline, exists?: 1}

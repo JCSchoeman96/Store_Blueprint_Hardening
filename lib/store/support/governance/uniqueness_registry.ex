@@ -214,6 +214,30 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       table: "fulfillment_items",
       columns: ["fulfillment_order_id", "order_line_item_id"],
       mode: :active_now
+    },
+    %{
+      key: :digital_assets_key,
+      table: "digital_assets",
+      columns: ["key"],
+      mode: :active_now
+    },
+    %{
+      key: :product_digital_links_product_digital_asset,
+      table: "product_digital_links",
+      columns: ["product_id", "digital_asset_id"],
+      mode: :active_now
+    },
+    %{
+      key: :product_digital_links_variant_digital_asset,
+      table: "product_digital_links",
+      columns: ["variant_id", "digital_asset_id"],
+      mode: :active_now
+    },
+    %{
+      key: :download_grants_order_line_item_digital_asset,
+      table: "download_grants",
+      columns: ["order_line_item_id", "digital_asset_id"],
+      mode: :active_now
     }
   ]
 

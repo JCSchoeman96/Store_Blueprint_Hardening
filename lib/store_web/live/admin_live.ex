@@ -34,6 +34,12 @@ defmodule StoreWeb.AdminLive do
           <.button id="admin-link-products" patch={~p"/admin/products"}>
             Products
           </.button>
+          <.button id="admin-link-digital-assets" patch={~p"/admin/digital-assets"}>
+            Digital Assets
+          </.button>
+          <.button id="admin-link-product-digital-links" patch={~p"/admin/product-digital-links"}>
+            Product Digital Links
+          </.button>
           <.button id="admin-link-shipping-methods" patch={~p"/admin/shipping-methods"}>
             Shipping Methods
           </.button>

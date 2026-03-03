@@ -73,10 +73,17 @@ defmodule StoreWeb.Router do
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live "/account", AccountLive, :index
       live "/account/orders/:order_ref", Orders.ShowLive, :show
+      live "/account/downloads", Digital.DownloadsLive, :index
       live "/admin", AdminLive, :index
       live "/admin/products", Admin.Products.IndexLive, :index
       live "/admin/products/new", Admin.Products.IndexLive, :new
       live "/admin/products/:id/edit", Admin.Products.IndexLive, :edit
+      live "/admin/digital-assets", Admin.DigitalAssets.IndexLive, :index
+      live "/admin/digital-assets/new", Admin.DigitalAssets.IndexLive, :new
+      live "/admin/digital-assets/:id/edit", Admin.DigitalAssets.IndexLive, :edit
+      live "/admin/product-digital-links", Admin.ProductDigitalLinks.IndexLive, :index
+      live "/admin/product-digital-links/new", Admin.ProductDigitalLinks.IndexLive, :new
+      live "/admin/product-digital-links/:id/edit", Admin.ProductDigitalLinks.IndexLive, :edit
       live "/admin/shipping-methods", Admin.ShippingMethods.IndexLive, :index
       live "/admin/shipping-methods/new", Admin.ShippingMethods.IndexLive, :new
       live "/admin/shipping-methods/:id/edit", Admin.ShippingMethods.IndexLive, :edit
@@ -92,6 +99,8 @@ defmodule StoreWeb.Router do
       live "/admin/tax-rates/new", Admin.TaxRates.IndexLive, :new
       live "/admin/tax-rates/:id/edit", Admin.TaxRates.IndexLive, :edit
     end
+
+    get "/account/downloads/:grant_id/request", DigitalDownloadController, :create
   end
 
   # Other scopes may use custom stacks.

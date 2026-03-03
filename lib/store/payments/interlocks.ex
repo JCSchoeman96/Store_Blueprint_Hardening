@@ -8,6 +8,7 @@ defmodule Store.Payments.Interlocks do
   require Logger
 
   alias Ecto.Adapters.SQL
+  alias Store.Digital.Facade, as: DigitalFacade
   alias Store.Fulfillment.Facade, as: FulfillmentFacade
   alias Store.Orders.Order
   alias Store.Payments.{PaymentAttempt, PaymentIntent, ProviderEvent, Providers, WebhookReceipt}
@@ -90,6 +91,7 @@ defmodule Store.Payments.Interlocks do
              }
            ),
          :ok <- maybe_enqueue_fulfillment(result),
+         :ok <- maybe_enqueue_digital_grants(result),
          :ok <- maybe_enqueue_order_receipt(result) do
       {:ok, result}
     else
@@ -606,6 +608,22 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp maybe_enqueue_fulfillment(_result), do: :ok
+
+  defp maybe_enqueue_digital_grants(%{applied?: true, order: %Order{} = order}) do
+    case DigitalFacade.enqueue_paid_order_download_grants_for_system(order.id) do
+      {:ok, _job} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "issue_digital_grants_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_enqueue_digital_grants(_result), do: :ok
 
   defp normalize_transaction_result({:ok, {:ok, result, notifications}})
        when is_list(notifications),

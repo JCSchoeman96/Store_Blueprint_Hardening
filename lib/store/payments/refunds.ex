@@ -9,12 +9,14 @@ defmodule Store.Payments.Refunds do
 
   alias Ecto.Adapters.SQL
   alias Store.Admin.Authorization
+  alias Store.Digital.Facade, as: DigitalFacade
   alias Store.Orders.{Order, OrderAdjustment, OrderLineItem, RefundAdjustment}
   alias Store.Payments.{PaymentIntent, ProviderEvent, Refund, RefundAttempt, WebhookReceipt}
   alias Store.Repo
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.Governance.Idempotency
+  alias Store.Support.ID.BinaryUuidSort
   alias Store.Support.Time
 
   @step_up_window_minutes 15
@@ -25,7 +27,8 @@ defmodule Store.Payments.Refunds do
           required(:requested_amount_minor) => integer(),
           required(:currency) => String.t(),
           optional(:reason) => String.t(),
-          optional(:line_item_ids) => [String.t()]
+          optional(:line_item_ids) => [String.t()],
+          optional(:scope_kind) => :full_refund | :partial_refund | :shipping_refund | String.t()
         }
 
   @spec request_refund(request_attrs(), keyword()) ::
@@ -173,7 +176,8 @@ defmodule Store.Payments.Refunds do
         request.scope_hash,
         request.requested_amount_minor,
         request.currency,
-        request.reason
+        request.reason,
+        request.scope_kind
       )
 
     existing_fingerprint =
@@ -181,7 +185,8 @@ defmodule Store.Payments.Refunds do
         existing_refund.scope_hash,
         existing_refund.requested_amount_minor,
         existing_refund.currency,
-        existing_refund.reason
+        existing_refund.reason,
+        existing_refund.scope_kind
       )
 
     if request_fingerprint == existing_fingerprint do
@@ -215,6 +220,8 @@ defmodule Store.Payments.Refunds do
         currency: request.currency,
         reason: request.reason,
         scope_hash: request.scope_hash,
+        scope_kind: request.scope_kind,
+        line_item_ids: request.line_item_ids,
         idempotency_key: request.idempotency_key,
         requested_by_user_id: actor && Map.get(actor, :id),
         requested_at: DateTime.utc_now()
@@ -410,7 +417,8 @@ defmodule Store.Payments.Refunds do
   defp apply_refund_event(_refund, _payload, _event_type), do: :ok
 
   defp finalize_refund_success(%Refund{state: :succeeded} = refund, _payload) do
-    with :ok <- maybe_mark_order_refunded(refund.order_id, refund.payment_intent_id) do
+    with :ok <- maybe_mark_order_refunded(refund.order_id, refund.payment_intent_id),
+         :ok <- maybe_apply_digital_revocation(refund) do
       maybe_enqueue_refund_processed(refund)
     end
   end
@@ -424,7 +432,8 @@ defmodule Store.Payments.Refunds do
     with {:ok, updated_refund} <- update_refund(refund, :mark_succeeded, attrs),
          :ok <- ensure_refund_adjustment(updated_refund),
          :ok <-
-           maybe_mark_order_refunded(updated_refund.order_id, updated_refund.payment_intent_id) do
+           maybe_mark_order_refunded(updated_refund.order_id, updated_refund.payment_intent_id),
+         :ok <- maybe_apply_digital_revocation(updated_refund) do
       maybe_enqueue_refund_processed(updated_refund)
     end
   end
@@ -586,7 +595,8 @@ defmodule Store.Payments.Refunds do
       reason: attr(attrs, :reason, "unspecified"),
       provider: attr(attrs, :provider, "stripe"),
       provided_idempotency_key: attr(attrs, :idempotency_key),
-      line_item_ids: attr(attrs, :line_item_ids, [])
+      line_item_ids: attr(attrs, :line_item_ids, []),
+      scope_kind: attr(attrs, :scope_kind, :partial_refund)
     }
   end
 
@@ -601,13 +611,17 @@ defmodule Store.Payments.Refunds do
       require_binary(fields.currency, "currency is required"),
       require_binary(fields.reason, "reason must be a string"),
       require_binary(fields.provider, "provider must be a string"),
-      require_list(fields.line_item_ids, "line_item_ids must be a list")
+      require_list(fields.line_item_ids, "line_item_ids must be a list"),
+      validate_scope_kind(fields.scope_kind),
+      validate_line_item_ids(fields.line_item_ids)
     ]
     |> Enum.find(:ok, &(&1 != :ok))
   end
 
   defp finalize_request_fields(fields) do
-    scope_hash = Idempotency.refund_scope_hash(fields.line_item_ids)
+    normalized_line_item_ids = normalize_line_item_ids(fields.line_item_ids)
+    scope_kind = normalize_scope_kind(fields.scope_kind)
+    scope_hash = Idempotency.refund_scope_hash(normalized_line_item_ids)
 
     deterministic_idempotency_key =
       Idempotency.refund_idempotency_key(
@@ -632,9 +646,64 @@ defmodule Store.Payments.Refunds do
       reason: fields.reason,
       provider: fields.provider,
       scope_hash: scope_hash,
+      scope_kind: scope_kind,
+      line_item_ids: normalized_line_item_ids,
       idempotency_key: idempotency_key
     }
   end
+
+  defp validate_scope_kind(scope_kind)
+       when scope_kind in [:full_refund, :partial_refund, :shipping_refund],
+       do: :ok
+
+  defp validate_scope_kind(scope_kind) when is_binary(scope_kind) do
+    case String.trim(scope_kind) do
+      "full_refund" -> :ok
+      "partial_refund" -> :ok
+      "shipping_refund" -> :ok
+      _ -> {:error, Error.new("VALIDATION_ERROR", "scope_kind is invalid")}
+    end
+  end
+
+  defp validate_scope_kind(_scope_kind),
+    do: {:error, Error.new("VALIDATION_ERROR", "scope_kind is invalid")}
+
+  defp validate_line_item_ids(line_item_ids) when is_list(line_item_ids) do
+    case Enum.find(line_item_ids, &(not valid_uuid?(&1))) do
+      nil -> :ok
+      _invalid -> {:error, Error.new("VALIDATION_ERROR", "line_item_ids must contain UUIDs")}
+    end
+  end
+
+  defp validate_line_item_ids(_line_item_ids),
+    do: {:error, Error.new("VALIDATION_ERROR", "line_item_ids must contain UUIDs")}
+
+  defp normalize_scope_kind(scope_kind)
+       when scope_kind in [:full_refund, :partial_refund, :shipping_refund],
+       do: scope_kind
+
+  defp normalize_scope_kind(scope_kind) when is_binary(scope_kind) do
+    case String.trim(scope_kind) do
+      "full_refund" -> :full_refund
+      "partial_refund" -> :partial_refund
+      "shipping_refund" -> :shipping_refund
+      _ -> :partial_refund
+    end
+  end
+
+  defp normalize_scope_kind(_scope_kind), do: :partial_refund
+
+  defp normalize_line_item_ids(line_item_ids) when is_list(line_item_ids) do
+    line_item_ids
+    |> Enum.filter(&valid_uuid?/1)
+    |> BinaryUuidSort.sort_uuids()
+    |> Enum.uniq()
+  end
+
+  defp normalize_line_item_ids(_line_item_ids), do: []
+
+  defp valid_uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+  defp valid_uuid?(_value), do: false
 
   defp require_binary(value, _message) when is_binary(value), do: :ok
 
@@ -845,6 +914,20 @@ defmodule Store.Payments.Refunds do
         )
 
         :ok
+    end
+  end
+
+  defp maybe_apply_digital_revocation(%Refund{} = refund) do
+    case DigitalFacade.apply_refund_revocation_for_system(refund) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "refund_digital_revocation_failed refund_id=#{refund.id} reason=#{inspect(reason)}"
+        )
+
+        {:error, reason}
     end
   end
 end

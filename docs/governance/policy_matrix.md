@@ -137,6 +137,21 @@ Note: AuditLog MUST remain append-only (create-only actions).
 | WebhookReceipt | R | YES | YES | NO | NO | NO |
 | ProviderEvent | R | YES | YES | NO | NO | NO |
 
+### 5.10 Digital Fulfillment (DigitalAsset, ProductDigitalLink, DownloadGrant)
+| Resource | Action | super_admin | admin | editor | support | customer |
+|---------|--------|-------------|-------|--------|---------|----------|
+| DigitalAsset | R | YES | YES | NO | LIMITED | NO |
+| DigitalAsset | C/U/D | YES | YES | NO | NO | NO |
+| ProductDigitalLink | R | YES | YES | NO | LIMITED | NO |
+| ProductDigitalLink | C/U/D | YES | YES | NO | NO | NO |
+| DownloadGrant | R(admin/system) | YES | YES | NO | LIMITED | NO |
+| DownloadGrant | R(own grants) | NO | NO | NO | NO | SELF** |
+| DownloadGrant | X(issue grants for paid order) | SYSTEM | SYSTEM | SYSTEM | SYSTEM | SYSTEM |
+| DownloadGrant | X(revoke on refund policy) | SYSTEM | SYSTEM | SYSTEM | SYSTEM | SYSTEM |
+| DownloadGrant | X(issue signed URL) | NO | NO | NO | NO | SELF** |
+
+Digital checkout rule: customer-facing payment-intent creation is denied for guest actors when the order contains digital-linked items.
+
 ### 5.9 Comms (Comms.EmailOutbox)
 | Resource | Action | super_admin | admin | editor | support | customer |
 |---------|--------|-------------|-------|--------|---------|----------|

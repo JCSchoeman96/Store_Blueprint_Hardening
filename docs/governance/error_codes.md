@@ -64,6 +64,14 @@ Catalog/Content:
 - SLUG_TAKEN
 - SKU_TAKEN
 
+Digital fulfillment:
+- DIGITAL_GRANT_NOT_FOUND
+- DIGITAL_GRANT_DENIED
+- DIGITAL_GRANT_EXPIRED
+- DIGITAL_GRANT_REVOKED
+- DIGITAL_REDIRECT_UNSAFE
+- DIGITAL_DOWNLOAD_RATE_LIMITED
+
 ## Drift protocol (MUST)
 1) Update registry first.
 2) Update tests.

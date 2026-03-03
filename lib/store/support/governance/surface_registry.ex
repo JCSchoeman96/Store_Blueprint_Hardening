@@ -104,6 +104,23 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_email_outboxes_for_admin, 2},
         {:get_email_outbox_for_admin, 2}
       ]
+    },
+    Store.Digital.Facade => %{
+      allowed_consumers: [:admin, :user, :system],
+      exports: [
+        {:list_digital_assets_for_admin, 2},
+        {:get_digital_asset_for_admin, 2},
+        {:list_product_digital_links_for_admin, 2},
+        {:get_product_digital_link_for_admin, 2},
+        {:list_download_grants_for_user, 2},
+        {:issue_signed_download_url_for_user, 2},
+        {:issue_signed_download_url_for_user, 3},
+        {:ensure_paid_order_download_grants_for_system, 1},
+        {:enqueue_paid_order_download_grants_for_system, 1},
+        {:order_has_digital_assets_for_system, 1},
+        {:ensure_checkout_actor_allowed_for_system, 2},
+        {:apply_refund_revocation_for_system, 1}
+      ]
     }
   }
 

@@ -15,6 +15,7 @@ config :store,
     Store.Catalog,
     Store.Carts,
     Store.Comms,
+    Store.Digital,
     Store.Checkout,
     Store.Orders,
     Store.Payments,
@@ -65,6 +66,20 @@ config :store, :comms,
     from_email: "no-reply@store.local"
   ]
 
+config :store, :digital,
+  storage_provider: :fake,
+  signed_url_ttl_seconds: 120,
+  default_grant_ttl_days: 30,
+  default_max_downloads: nil,
+  refund_revocation_policy: :strict_line_scoped,
+  fake_host: "downloads.local",
+  allowed_redirect_hosts: ["downloads.local"]
+
+config :store, :rate_limit,
+  backend: Store.Support.RateLimit.EtsBackend,
+  signed_download_limit: 10,
+  signed_download_window_seconds: 60
+
 config :store, Oban,
   repo: Store.Repo,
   plugins: [
@@ -75,7 +90,7 @@ config :store, Oban,
        {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker}
      ]}
   ],
-  queues: [webhooks: 10, inventory: 10, refunds: 10, comms: 10, fulfillment: 10]
+  queues: [webhooks: 10, inventory: 10, refunds: 10, comms: 10, fulfillment: 10, digital: 10]
 
 # Configure esbuild (the version is required)
 config :esbuild,

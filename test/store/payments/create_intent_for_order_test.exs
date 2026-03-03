@@ -5,6 +5,7 @@ defmodule Store.Payments.CreateIntentForOrderTest do
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Checkout
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
+  alias Store.Digital.{DigitalAsset, ProductDigitalLink}
   alias Store.Payments
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Pricing.TaxRate
@@ -108,6 +109,61 @@ defmodule Store.Payments.CreateIntentForOrderTest do
     assert second.duplicate? == true
   end
 
+  test "create_intent_for_order denies guest actor when checkout includes digital-linked items" do
+    token = Ash.UUIDv7.generate()
+    guest_actor = %{cart_token: token}
+    {variant_id, _admin, _product} = published_variant_with_admin!()
+    create_digital_link_for_variant!(variant_id)
+    create_pricing_rules!()
+
+    assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
+
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, checkout_start} = Checkout.start_from_cart(nil, token, start_input)
+
+    selection =
+      quote_selection!(%{
+        destination_country_code: "US",
+        destination_region_code: "CA",
+        destination_postal_code: "94105",
+        currency_code: "USD",
+        shipping_weight_grams: 0
+      })
+
+    assert {:ok, shipping_input} =
+             CheckoutShippingInput.new(%{
+               "recipient_name" => "Digital Guest",
+               "address_line1" => "1 Main St",
+               "city" => "San Francisco",
+               "country_code" => "US",
+               "region_code" => "CA",
+               "postal_code" => "94105",
+               "phone" => "555-555-1212",
+               "quote_hash" => selection.quote_hash,
+               "shipping_method_code" => selection.shipping_method_code
+             })
+
+    assert {:ok, _checkout_with_shipping} =
+             Checkout.set_shipping(guest_actor, checkout_start.checkout_key, shipping_input)
+
+    assert {:ok, finalize_input} = CheckoutFinalizeInput.new(%{})
+
+    assert {:ok, _finalized_checkout} =
+             Checkout.finalize_totals(guest_actor, checkout_start.checkout_key, finalize_input)
+
+    assert {:ok, create_intent_input} = CreateIntentForOrderInput.new(%{"provider" => "stripe"})
+
+    assert {:error, error} =
+             Payments.create_intent_for_order(
+               guest_actor,
+               checkout_start.checkout_key,
+               create_intent_input
+             )
+
+    assert error.code == "DIGITAL_GRANT_DENIED"
+  end
+
   defp create_pricing_rules! do
     unique = System.unique_integer([:positive])
     method_code = "GROUND-#{unique}"
@@ -206,5 +262,33 @@ defmodule Store.Payments.CreateIntentForOrderTest do
       |> Ash.update!(domain: Store.Catalog, actor: admin)
 
     {published.default_variant_id, admin, published}
+  end
+
+  defp create_digital_link_for_variant!(variant_id) do
+    digital_asset =
+      DigitalAsset
+      |> Ash.Changeset.for_create(:create, %{
+        key: "phase24-digital-link-#{System.unique_integer([:positive])}",
+        title: "Phase 24 Digital Link",
+        content_type: "application/pdf",
+        byte_size: 1024,
+        storage_provider: "s3",
+        storage_bucket: "downloads-bucket",
+        storage_object_key: "assets/phase24.pdf",
+        status: :active
+      })
+      |> Ash.create!(domain: Store.Digital, authorize?: false, context: %{system?: true})
+
+    ProductDigitalLink
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        variant_id: variant_id,
+        digital_asset_id: digital_asset.id,
+        position: 0
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Digital, authorize?: false, context: %{system?: true})
   end
 end

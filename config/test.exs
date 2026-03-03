@@ -30,6 +30,20 @@ config :store, :payments, stripe: [webhook_secret: "whsec_test_only_change_me"]
 
 config :store, :shipping, quote_hash_secret: "phase22-test-only-change-me"
 
+config :store, :digital,
+  storage_provider: :fake,
+  signed_url_ttl_seconds: 120,
+  default_grant_ttl_days: 30,
+  default_max_downloads: nil,
+  refund_revocation_policy: :strict_line_scoped,
+  fake_host: "downloads.local",
+  allowed_redirect_hosts: ["downloads.local"]
+
+config :store, :rate_limit,
+  backend: Store.Support.RateLimit.EtsBackend,
+  signed_download_limit: 10,
+  signed_download_window_seconds: 60
+
 config :ash, :missed_notifications, :raise
 
 # We don't run a server during test. If one is required,

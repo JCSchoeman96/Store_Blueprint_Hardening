@@ -123,6 +123,64 @@ if config_env() == :prod do
       from_email: System.get_env("STORE_COMMS_FROM_EMAIL", "no-reply@example.com")
     ]
 
+  digital_provider =
+    case System.get_env("STORE_DIGITAL_STORAGE_PROVIDER", "s3") do
+      "s3" -> :s3
+      "fake" -> :fake
+      value -> raise "invalid STORE_DIGITAL_STORAGE_PROVIDER value: #{value}"
+    end
+
+  digital_allowed_hosts =
+    System.get_env("STORE_DIGITAL_ALLOWED_REDIRECT_HOSTS", "downloads.example.com")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+
+  refund_revocation_policy =
+    case System.get_env("STORE_DIGITAL_REFUND_REVOCATION_POLICY", "strict_line_scoped") do
+      "strict_line_scoped" -> :strict_line_scoped
+      "strict_order_scoped" -> :strict_order_scoped
+      "threshold" -> :threshold
+      value -> raise "invalid STORE_DIGITAL_REFUND_REVOCATION_POLICY value: #{value}"
+    end
+
+  config :store, :digital,
+    storage_provider: digital_provider,
+    signed_url_ttl_seconds:
+      String.to_integer(System.get_env("STORE_DIGITAL_SIGNED_URL_TTL_SECONDS", "120")),
+    default_grant_ttl_days:
+      String.to_integer(System.get_env("STORE_DIGITAL_DEFAULT_GRANT_TTL_DAYS", "30")),
+    default_max_downloads: nil,
+    refund_revocation_policy: refund_revocation_policy,
+    fake_host: System.get_env("STORE_DIGITAL_FAKE_HOST", "downloads.local"),
+    allowed_redirect_hosts: digital_allowed_hosts,
+    s3: [
+      region: System.get_env("STORE_DIGITAL_S3_REGION", "us-east-1"),
+      access_key_id: System.get_env("STORE_DIGITAL_S3_ACCESS_KEY_ID"),
+      secret_access_key: System.get_env("STORE_DIGITAL_S3_SECRET_ACCESS_KEY"),
+      host: System.get_env("STORE_DIGITAL_S3_HOST"),
+      scheme: System.get_env("STORE_DIGITAL_S3_SCHEME"),
+      port:
+        case System.get_env("STORE_DIGITAL_S3_PORT") do
+          nil -> nil
+          value -> String.to_integer(value)
+        end
+    ]
+
+  rate_limit_backend =
+    case System.get_env("STORE_RATE_LIMIT_BACKEND", "ets") do
+      "ets" -> Store.Support.RateLimit.EtsBackend
+      "redis" -> Store.Support.RateLimit.RedisBackend
+      value -> raise "invalid STORE_RATE_LIMIT_BACKEND value: #{value}"
+    end
+
+  config :store, :rate_limit,
+    backend: rate_limit_backend,
+    signed_download_limit:
+      String.to_integer(System.get_env("STORE_DIGITAL_SIGNED_DOWNLOAD_LIMIT", "10")),
+    signed_download_window_seconds:
+      String.to_integer(System.get_env("STORE_DIGITAL_SIGNED_DOWNLOAD_WINDOW_SECONDS", "60"))
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key

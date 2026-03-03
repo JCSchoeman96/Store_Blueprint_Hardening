@@ -80,11 +80,27 @@ defmodule Store.Support.Governance.Idempotency do
     "refund:order:#{order_id}:amount:#{amount_minor}:reason:#{reason}:scope:#{scope_hash}"
   end
 
-  @spec refund_request_fingerprint(String.t(), integer(), String.t(), String.t()) :: String.t()
-  def refund_request_fingerprint(scope_hash, amount_minor, currency, reason)
+  @spec refund_request_fingerprint(
+          String.t(),
+          integer(),
+          String.t(),
+          String.t(),
+          atom() | String.t()
+        ) :: String.t()
+  def refund_request_fingerprint(
+        scope_hash,
+        amount_minor,
+        currency,
+        reason,
+        scope_kind \\ :partial_refund
+      )
+
+  def refund_request_fingerprint(scope_hash, amount_minor, currency, reason, scope_kind)
       when is_binary(scope_hash) and is_integer(amount_minor) and is_binary(currency) and
              is_binary(reason) do
-    hash_sha256("#{scope_hash}|#{amount_minor}|#{currency}|#{reason}")
+    hash_sha256(
+      "#{scope_hash}|#{amount_minor}|#{currency}|#{reason}|#{normalize_scope_kind(scope_kind)}"
+    )
   end
 
   @spec payload_hash(term()) :: String.t() | nil
@@ -164,4 +180,8 @@ defmodule Store.Support.Governance.Idempotency do
     :crypto.hash(:sha256, binary)
     |> Base.encode16(case: :lower)
   end
+
+  defp normalize_scope_kind(scope_kind) when is_atom(scope_kind), do: Atom.to_string(scope_kind)
+  defp normalize_scope_kind(scope_kind) when is_binary(scope_kind), do: scope_kind
+  defp normalize_scope_kind(_scope_kind), do: "partial_refund"
 end

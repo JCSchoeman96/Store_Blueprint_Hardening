@@ -51,6 +51,18 @@ defmodule Store.Payments.Refund do
       public?(true)
     end
 
+    attribute :scope_kind, Store.Payments.Types.RefundScopeKind do
+      allow_nil?(false)
+      default(:partial_refund)
+      public?(true)
+    end
+
+    attribute :line_item_ids, {:array, :uuid} do
+      allow_nil?(false)
+      default([])
+      public?(true)
+    end
+
     attribute :idempotency_key, :string do
       allow_nil?(false)
       public?(true)
@@ -130,6 +142,8 @@ defmodule Store.Payments.Refund do
         :currency,
         :reason,
         :scope_hash,
+        :scope_kind,
+        :line_item_ids,
         :idempotency_key,
         :requested_by_user_id,
         :requested_at
