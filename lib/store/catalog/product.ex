@@ -84,6 +84,11 @@ defmodule Store.Catalog.Product do
       public?(true)
     end
 
+    has_many :options, Store.Catalog.ProductOption do
+      destination_attribute(:product_id)
+      public?(true)
+    end
+
     has_many :images, Store.Catalog.ProductImage do
       destination_attribute(:product_id)
       public?(true)

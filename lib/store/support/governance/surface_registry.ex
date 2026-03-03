@@ -45,12 +45,27 @@ defmodule Store.Support.Governance.SurfaceRegistry do
       exports: [
         {:list_products_for_public, 2},
         {:get_product_for_public, 2},
+        {:get_product_detail_for_public, 2},
         {:normalize_cart_line_for_public, 1},
         {:list_products_for_admin, 2},
         {:get_product_for_admin, 2},
         {:publish_product_for_admin, 2},
         {:unpublish_product_for_admin, 2},
-        {:archive_product_for_admin, 2}
+        {:archive_product_for_admin, 2},
+        {:list_product_options_for_admin, 2},
+        {:create_product_option_for_admin, 3},
+        {:update_product_option_for_admin, 3},
+        {:delete_product_option_for_admin, 2},
+        {:create_product_option_value_for_admin, 3},
+        {:update_product_option_value_for_admin, 3},
+        {:delete_product_option_value_for_admin, 2},
+        {:list_variants_for_admin, 2},
+        {:list_variant_selections_for_admin, 2},
+        {:create_variant_for_admin, 3},
+        {:update_variant_for_admin, 3},
+        {:archive_variant_for_admin, 2},
+        {:set_variant_selection_for_admin, 4},
+        {:delete_variant_selection_for_admin, 2}
       ]
     },
     Store.Carts.Facade => %{

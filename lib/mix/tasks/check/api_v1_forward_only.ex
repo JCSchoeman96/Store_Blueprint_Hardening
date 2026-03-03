@@ -6,10 +6,10 @@ defmodule Mix.Tasks.Check.ApiV1ForwardOnly do
   @shortdoc "Fails when /api/v1 routes are anything other than the JSON:API forward"
 
   @default_glob "lib/store_web/**/*router*.ex"
-  @allowed_forward ~r/^\s*forward\s+"\/v1"\s*,\s*StoreWeb\.JsonApiRouter\b/
-  @forbidden_v1_route ~r/^\s*(get|post|put|patch|delete|options|head|match|live|resources)\s+"\/v1(?:\/|")/
-  @forbidden_api_v1_route ~r/^\s*(get|post|put|patch|delete|options|head|match|live|resources|forward)\s+"\/api\/v1(?:\/|")/
-  @forward_v1 ~r/^\s*forward\s+"\/v1"\s*,\s*([A-Za-z0-9_.]+)/
+  @allowed_forward ~r/^\s*forward\s*\(?\s*"\/v1"\s*,\s*StoreWeb\.JsonApiRouter\b/
+  @forbidden_v1_route ~r/^\s*(get|post|put|patch|delete|options|head|match|live|resources)\s*\(?\s*"\/v1(?:\/|")/
+  @forbidden_api_v1_route ~r/^\s*(get|post|put|patch|delete|options|head|match|live|resources|forward)\s*\(?\s*"\/api\/v1(?:\/|")/
+  @forward_v1 ~r/^\s*forward\s*\(?\s*"\/v1"\s*,\s*([A-Za-z0-9_.]+)/
 
   @impl Mix.Task
   def run(_args) do

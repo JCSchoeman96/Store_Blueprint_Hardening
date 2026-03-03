@@ -9,7 +9,7 @@ defmodule Store.Carts.Facade do
   alias Store.Carts.{Cart, CartItem}
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Carts.Queries.CartLoadQuery
-  alias Store.Catalog.{Product, Variant}
+  alias Store.Catalog.{Product, ProductOption, StockFastPath, Variant, VariantOptionSelection}
   alias Store.Repo
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.ID.{BinaryUuidSort, UUIDv7}
@@ -54,7 +54,7 @@ defmodule Store.Carts.Facade do
 
     result =
       with {:ok, cart} <- get_cart_for_user(actor, token),
-           :ok <- ensure_variant_exists(input.variant_id) do
+           :ok <- ensure_variant_sellable(input.variant_id) do
         add_item_transaction(cart, input)
       end
 
@@ -68,7 +68,8 @@ defmodule Store.Carts.Facade do
     started_at = System.monotonic_time()
 
     result =
-      with {:ok, cart} <- get_cart_for_user(actor, token) do
+      with {:ok, cart} <- get_cart_for_user(actor, token),
+           :ok <- ensure_variant_sellable(input.variant_id) do
         update_qty_transaction(cart, input)
       end
 
@@ -292,6 +293,8 @@ defmodule Store.Carts.Facade do
     Repo.transaction(fn ->
       locked_cart = lock_cart!(cart_id)
       locked_item = lock_cart_item(cart_id, input.variant_id)
+      desired_qty = desired_add_qty(locked_item, input.qty)
+      :ok = ensure_fast_stock!(input.variant_id, desired_qty)
 
       mutation? = add_or_merge_item!(locked_cart.id, locked_item, input)
 
@@ -312,6 +315,7 @@ defmodule Store.Carts.Facade do
           Repo.rollback(Error.new("NOT_FOUND", "cart item not found"))
 
         %CartItem{} = item ->
+          :ok = ensure_fast_stock_for_update!(input.variant_id, item.qty, input.qty)
           mutation? = maybe_update_item_qty!(item.id, item.qty, input.qty)
 
           bumped_cart = maybe_bump_version!(locked_cart, mutation?)
@@ -544,9 +548,76 @@ defmodule Store.Carts.Facade do
   end
 
   defp ensure_variant_exists(variant_id) do
-    case Repo.get(Variant, variant_id) do
-      %Variant{} -> :ok
-      nil -> {:error, Error.new("NOT_FOUND", "variant not found")}
+    query =
+      from(variant in Variant,
+        join: product in Product,
+        on: product.id == variant.product_id,
+        where: variant.id == ^variant_id,
+        select:
+          {variant.id, variant.product_id, variant.status, variant.selection_signature,
+           product.status, product.published_at}
+      )
+
+    case Repo.one(query) do
+      {variant_id, product_id, :active, signature, :published, %DateTime{}}
+      when is_binary(signature) ->
+        if required_complete?(variant_id, product_id) do
+          :ok
+        else
+          {:error, Error.new("VALIDATION_ERROR", "variant is not fully configured")}
+        end
+
+      {_variant_id, _product_id, :active, _signature, :published, %DateTime{}} ->
+        {:error, Error.new("VALIDATION_ERROR", "variant is not fully configured")}
+
+      {_variant_id, _product_id, _variant_status, _signature, _product_status, _published_at} ->
+        {:error, Error.new("NOT_FOUND", "variant not sellable")}
+
+      nil ->
+        {:error, Error.new("NOT_FOUND", "variant not found")}
+    end
+  end
+
+  defp ensure_variant_sellable(variant_id), do: ensure_variant_exists(variant_id)
+
+  defp ensure_fast_stock!(variant_id, desired_qty) do
+    case StockFastPath.precheck_variant_qty(variant_id, desired_qty) do
+      :ok -> :ok
+      {:error, %Error{} = error} -> Repo.rollback(error)
+      {:error, _} -> Repo.rollback(Error.new("OUT_OF_STOCK", "Insufficient available inventory"))
+    end
+  end
+
+  defp ensure_fast_stock_for_update!(_variant_id, current_qty, desired_qty)
+       when desired_qty <= current_qty,
+       do: :ok
+
+  defp ensure_fast_stock_for_update!(variant_id, _current_qty, desired_qty),
+    do: ensure_fast_stock!(variant_id, desired_qty)
+
+  defp desired_add_qty(nil, add_qty), do: add_qty
+
+  defp desired_add_qty(%CartItem{} = item, add_qty),
+    do: min(item.qty + add_qty, CartItemInput.max_qty())
+
+  defp required_complete?(variant_id, product_id) do
+    required_option_ids =
+      ProductOption
+      |> where([option], option.product_id == ^product_id and option.selection_required == true)
+      |> select([option], option.id)
+      |> Repo.all()
+
+    if required_option_ids == [] do
+      true
+    else
+      selected_required_count =
+        VariantOptionSelection
+        |> where([selection], selection.variant_id == ^variant_id)
+        |> where([selection], selection.product_option_id in ^required_option_ids)
+        |> select([selection], count(fragment("DISTINCT ?", selection.product_option_id)))
+        |> Repo.one() || 0
+
+      selected_required_count == length(required_option_ids)
     end
   end
 

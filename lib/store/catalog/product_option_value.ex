@@ -1,7 +1,9 @@
-defmodule Store.Catalog.ProductImage do
+defmodule Store.Catalog.ProductOptionValue do
   @moduledoc """
-  Product image metadata for storefront rendering.
+  Per-option value record used to define variant selections.
   """
+
+  import Ash.Expr
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
@@ -11,19 +13,21 @@ defmodule Store.Catalog.ProductImage do
   attributes do
     uuid_v7_primary_key(:id)
 
-    attribute :url, :string do
+    attribute :name, :string do
       allow_nil?(false)
       constraints(min_length: 1)
       public?(true)
     end
 
-    attribute :alt, :string do
-      allow_nil?(true)
+    attribute :slug, :string do
+      allow_nil?(false)
+      constraints(min_length: 1, match: ~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
       public?(true)
     end
 
     attribute :position, :integer do
       allow_nil?(false)
+      constraints(min: 0)
       default(0)
       public?(true)
     end
@@ -33,20 +37,20 @@ defmodule Store.Catalog.ProductImage do
   end
 
   relationships do
-    belongs_to :product, Store.Catalog.Product do
+    belongs_to :product_option, Store.Catalog.ProductOption do
       allow_nil?(false)
       attribute_writable?(true)
       public?(true)
     end
 
-    has_many :variants, Store.Catalog.Variant do
-      destination_attribute(:image_id)
+    has_many :variant_option_selections, Store.Catalog.VariantOptionSelection do
+      destination_attribute(:product_option_value_id)
       public?(true)
     end
   end
 
   identities do
-    identity(:unique_product_position, [:product_id, :position])
+    identity(:unique_option_slug, [:product_option_id, :slug])
   end
 
   actions do
@@ -56,14 +60,20 @@ defmodule Store.Catalog.ProductImage do
       primary?(true)
     end
 
+    read :read_for_option do
+      argument(:product_option_id, :uuid, allow_nil?: false)
+      filter(expr(product_option_id == ^arg(:product_option_id)))
+      prepare(build(sort: [position: :asc, id: :asc]))
+    end
+
     create :create do
-      accept([:product_id, :url, :alt, :position])
+      accept([:product_option_id, :name, :slug, :position])
       change(&normalize_fields/2)
     end
 
     update :update do
       require_atomic?(false)
-      accept([:url, :alt, :position])
+      accept([:name, :slug, :position])
       change(&normalize_fields/2)
     end
 
@@ -71,8 +81,14 @@ defmodule Store.Catalog.ProductImage do
   end
 
   postgres do
-    table("product_images")
+    table("product_option_values")
     repo(Store.Repo)
+
+    custom_indexes do
+      index([:product_option_id, :position, :id],
+        name: "product_option_values_option_position_index"
+      )
+    end
   end
 
   policies do
@@ -82,27 +98,25 @@ defmodule Store.Catalog.ProductImage do
 
     policy action_type([:create, :update, :destroy]) do
       access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
     end
   end
 
   defp normalize_fields(changeset, _context) do
     changeset
-    |> normalize_attr(:url)
-    |> normalize_attr(:alt)
+    |> normalize_attr(:name, & &1)
+    |> normalize_attr(:slug, &String.downcase/1)
   end
 
-  defp normalize_attr(changeset, attr) do
+  defp normalize_attr(changeset, attr, transform) do
     case Ash.Changeset.get_attribute(changeset, attr) do
       value when is_binary(value) ->
-        value = String.trim(value)
-        Ash.Changeset.change_attribute(changeset, attr, empty_to_nil(value))
+        normalized = value |> String.trim() |> transform.()
+        Ash.Changeset.change_attribute(changeset, attr, normalized)
 
       _ ->
         changeset
     end
   end
-
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(value), do: value
 end

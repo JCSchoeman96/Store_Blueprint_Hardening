@@ -8,6 +8,7 @@ defmodule StoreWeb.ShopLive.Show do
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Catalog.Facade, as: CatalogFacade
   alias StoreWeb.Params.Carts.CartItemParams
+  alias StoreWeb.Params.Catalog.ProductDetailParams
 
   @impl true
   def mount(_params, session, socket) do
@@ -15,87 +16,91 @@ defmodule StoreWeb.ShopLive.Show do
 
     {:ok,
      socket
-     |> assign(:product, nil)
+     |> assign(:detail, nil)
      |> assign(:cart_token, cart_token)
-     |> assign(:form, to_form(%{"quantity" => "1"}, as: :cart_line))}
+     |> assign(:selector_form, to_form(%{}, as: :selection))
+     |> assign(:quantity_form, to_form(%{"quantity" => "1"}, as: :cart_line))}
   end
 
   @impl true
-  def handle_params(%{"slug" => slug}, _uri, socket) do
+  def handle_params(params, _uri, socket) do
     actor = socket.assigns[:current_user]
 
-    case CatalogFacade.get_product_for_public(actor, slug) do
-      {:ok, nil} ->
+    with {:ok, query} <- ProductDetailParams.query(params),
+         {:ok, detail} <- CatalogFacade.get_product_detail_for_public(actor, query) do
+      {:noreply,
+       socket
+       |> assign(:detail, detail)
+       |> assign(:selector_form, selector_form(detail))}
+    else
+      {:error, _reason} ->
         {:noreply,
          socket
          |> put_flash(:error, "Product not found")
          |> push_navigate(to: ~p"/shop")}
-
-      {:ok, product} ->
-        {:noreply, assign(socket, :product, product)}
-
-      {:error, _} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Unable to load product")
-         |> push_navigate(to: ~p"/shop")}
     end
   end
 
   @impl true
-  def handle_event("queue_cart_line", %{"cart_line" => %{"quantity" => quantity}}, socket) do
-    product = socket.assigns.product
-    actor = socket.assigns[:current_user]
+  def handle_event("select_options", %{"selection" => selection}, socket) do
+    slug = socket.assigns.detail.product.slug
 
-    params = %{
-      "variant_id" => product.default_variant_id,
-      "qty" => quantity
-    }
+    query =
+      selection
+      |> Enum.reduce(%{}, fn {option_slug, value_slug}, acc ->
+        value_slug = to_string(value_slug || "") |> String.trim()
 
-    case CartItemParams.input(params) do
-      {:ok, input} ->
-        case CartsFacade.add_item_for_user(actor, socket.assigns.cart_token, input) do
-          {:ok, _cart} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "Added to cart")
-             |> push_navigate(to: ~p"/cart")}
-
-          {:error, _error} ->
-            {:noreply, put_flash(socket, :error, "Unable to add item to cart")}
+        if value_slug == "" do
+          acc
+        else
+          Map.put(acc, option_slug, value_slug)
         end
+      end)
 
-      {:error, _error} ->
-        {:noreply, put_flash(socket, :error, "Invalid cart line input")}
-    end
+    path =
+      if map_size(query) == 0 do
+        "/shop/#{slug}"
+      else
+        "/shop/#{slug}?" <> URI.encode_query(query)
+      end
+
+    {:noreply, push_patch(socket, to: path)}
+  end
+
+  @impl true
+  def handle_event("queue_cart_line", %{"cart_line" => %{"quantity" => quantity}}, socket) do
+    actor = socket.assigns[:current_user]
+    {:noreply, queue_cart_line(socket, actor, quantity)}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
-      <section :if={@product} id="shop-show" class="space-y-6">
+      <section :if={@detail} id="shop-show" class="space-y-6">
         <header class="space-y-2">
-          <p class="text-xs uppercase tracking-wide text-base-content/60">{@product.slug}</p>
-          <h1 class="text-2xl font-semibold">{@product.title}</h1>
-          <p :if={@product.subtitle} class="text-sm text-base-content/70">{@product.subtitle}</p>
+          <p class="text-xs uppercase tracking-wide text-base-content/60">{@detail.product.slug}</p>
+          <h1 class="text-2xl font-semibold">{@detail.product.title}</h1>
+          <p :if={@detail.product.subtitle} class="text-sm text-base-content/70">
+            {@detail.product.subtitle}
+          </p>
         </header>
 
         <div class="grid gap-6 lg:grid-cols-2">
           <div class="space-y-3">
             <div
-              :for={image <- Enum.sort_by(@product.images || [], &{&1.position, &1.id})}
+              :for={image <- display_images(@detail)}
               class="rounded-xl border border-base-300 bg-base-200/50 p-3"
             >
               <img
                 src={image.url}
-                alt={image.alt || @product.title}
+                alt={image.alt || @detail.product.title}
                 class="h-56 w-full rounded-lg object-cover"
               />
             </div>
 
             <div
-              :if={@product.images == []}
+              :if={display_images(@detail) == []}
               class="rounded-xl border border-base-300 bg-base-200/50 p-6 text-sm"
             >
               No product images available.
@@ -103,17 +108,43 @@ defmodule StoreWeb.ShopLive.Show do
           </div>
 
           <div class="space-y-4 rounded-xl border border-base-300 bg-base-200/50 p-5">
-            <p class="text-sm font-semibold">
-              {format_money(@product.default_variant && @product.default_variant.price_minor)}
+            <p class="text-sm font-semibold">{format_money(current_price_minor(@detail))}</p>
+
+            <p :if={@detail.product.description} class="text-sm leading-6 text-base-content/80">
+              {@detail.product.description}
             </p>
 
-            <p :if={@product.description} class="text-sm leading-6 text-base-content/80">
-              {@product.description}
+            <.form
+              :if={@detail.options != []}
+              for={@selector_form}
+              id="variant-selector-form"
+              phx-change="select_options"
+            >
+              <div class="space-y-3">
+                <div :for={option <- @detail.options}>
+                  <.input
+                    field={@selector_form[option.slug]}
+                    type="select"
+                    label={option.name}
+                    prompt={prompt_for_option(option)}
+                    options={Enum.map(option.values, &{&1.name, &1.slug})}
+                  />
+                </div>
+              </div>
+            </.form>
+
+            <p :if={resolution_message(@detail)} class="text-sm text-error">
+              {resolution_message(@detail)}
             </p>
 
-            <.form for={@form} id="cart-line-form" phx-submit="queue_cart_line">
-              <.input field={@form[:quantity]} type="number" min="1" label="Quantity" />
-              <.button id="add-to-cart-handoff" type="submit" class="mt-3">
+            <.form for={@quantity_form} id="cart-line-form" phx-submit="queue_cart_line">
+              <.input field={@quantity_form[:quantity]} type="number" min="1" label="Quantity" />
+              <.button
+                id="add-to-cart-handoff"
+                type="submit"
+                class="mt-3"
+                disabled={!add_to_cart_enabled?(@detail)}
+              >
                 Add to Cart
               </.button>
             </.form>
@@ -122,6 +153,104 @@ defmodule StoreWeb.ShopLive.Show do
       </section>
     </Layouts.app>
     """
+  end
+
+  defp selector_form(detail) do
+    selected_by_option_slug =
+      Enum.reduce(detail.options, %{}, fn option, acc ->
+        selected_value_id = Map.get(detail.selected, option.id)
+        selected_slug = selected_value_slug(option.values, selected_value_id)
+
+        Map.put(acc, option.slug, selected_slug)
+      end)
+
+    to_form(selected_by_option_slug, as: :selection)
+  end
+
+  defp queue_cart_line(socket, actor, quantity) do
+    case resolved_variant_id(socket.assigns.detail) do
+      nil ->
+        put_flash(socket, :error, "Please choose a valid in-stock variant first")
+
+      variant_id ->
+        queue_cart_line_for_variant(socket, actor, variant_id, quantity)
+    end
+  end
+
+  defp queue_cart_line_for_variant(socket, actor, variant_id, quantity) do
+    params = %{"variant_id" => variant_id, "qty" => quantity}
+
+    case CartItemParams.input(params) do
+      {:ok, input} -> add_cart_line_to_cart(socket, actor, input)
+      {:error, _error} -> put_flash(socket, :error, "Invalid cart line input")
+    end
+  end
+
+  defp add_cart_line_to_cart(socket, actor, input) do
+    case CartsFacade.add_item_for_user(actor, socket.assigns.cart_token, input) do
+      {:ok, _cart} ->
+        socket
+        |> put_flash(:info, "Added to cart")
+        |> push_navigate(to: ~p"/cart")
+
+      {:error, _error} ->
+        put_flash(socket, :error, "Unable to add item to cart")
+    end
+  end
+
+  defp selected_value_slug(values, selected_value_id) do
+    case Enum.find(values, &(&1.id == selected_value_id)) do
+      nil -> ""
+      value -> value.slug
+    end
+  end
+
+  defp prompt_for_option(%{selection_required: true, name: name}), do: "Select #{name}"
+  defp prompt_for_option(%{name: name}), do: "Any #{name}"
+
+  defp add_to_cart_enabled?(%{resolution: %{status: :ok}}), do: true
+  defp add_to_cart_enabled?(_detail), do: false
+
+  defp resolved_variant_id(%{resolution: %{status: :ok, variant_id: variant_id}}), do: variant_id
+  defp resolved_variant_id(_detail), do: nil
+
+  defp current_price_minor(%{resolution: %{status: :ok, variant: variant}})
+       when is_map(variant) and is_integer(variant.price_minor),
+       do: variant.price_minor
+
+  defp current_price_minor(%{product: product}) do
+    case product.default_variant do
+      %{price_minor: minor} when is_integer(minor) -> minor
+      _ -> nil
+    end
+  end
+
+  defp resolution_message(%{resolution: %{status: :ok}}), do: nil
+
+  defp resolution_message(%{resolution: %{reason: :invalid_selection}}),
+    do: "Invalid option combination. Choose valid option values."
+
+  defp resolution_message(%{resolution: %{reason: :selection_ambiguous}}),
+    do: "Selection is ambiguous. Choose additional options to continue."
+
+  defp resolution_message(%{resolution: %{reason: :out_of_stock}}),
+    do: "Selected variant is out of stock."
+
+  defp resolution_message(_detail), do: nil
+
+  defp display_images(%{product: product} = detail) do
+    sorted_images = Enum.sort_by(product.images || [], &{&1.position, &1.id})
+
+    case detail do
+      %{resolution: %{status: :ok, variant: %{image_id: image_id}}} when is_binary(image_id) ->
+        case Enum.split_with(sorted_images, &(&1.id == image_id)) do
+          {[selected_image], rest} -> [selected_image | rest]
+          _ -> sorted_images
+        end
+
+      _ ->
+        sorted_images
+    end
   end
 
   defp format_money(nil), do: "Price unavailable"

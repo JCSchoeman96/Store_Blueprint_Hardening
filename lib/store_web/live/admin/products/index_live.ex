@@ -93,6 +93,9 @@ defmodule StoreWeb.Admin.Products.IndexLive do
           <:action :let={product}>
             <div class="flex flex-wrap gap-2">
               <.link patch={~p"/admin/products/#{product.id}/edit"} class="btn btn-xs">Edit</.link>
+              <.link navigate={~p"/admin/products/#{product.id}/variants"} class="btn btn-xs">
+                Variants
+              </.link>
               <.button
                 :if={product.status == :draft}
                 id={"publish-#{product.id}"}

@@ -150,8 +150,10 @@ defmodule Store.Governance.CatalogPhase19Test do
              )
              |> Ash.create(domain: Store.Catalog, actor: admin)
 
-    assert Exception.message(duplicate_default_error) =~
-             "variants_unique_default_per_product_index"
+    message = Exception.message(duplicate_default_error)
+
+    assert message =~ "variants_unique_default_per_product_index" or
+             message =~ "active variant option combination must be unique per product"
   end
 
   test "cart line normalization resolves product to variant and rejects mismatches" do

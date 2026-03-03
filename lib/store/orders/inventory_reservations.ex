@@ -4,7 +4,7 @@ defmodule Store.Orders.InventoryReservations do
   import Ecto.Query
 
   alias Ecto.Changeset
-  alias Store.Catalog.InventoryItem
+  alias Store.Catalog.{AvailabilityCache, InventoryItem, StockFastPath, Variant}
   alias Store.Orders.InventoryReservation
   alias Store.Repo
   alias Store.Support.Errors.Error
@@ -29,6 +29,7 @@ defmodule Store.Orders.InventoryReservations do
           reserve_variants(order_id, variant_ids, desired_quantities, expires_at, now)
         end)
         |> unwrap_transaction_error("Reservation transaction failed")
+        |> maybe_invalidate_after_reserve()
 
       {:error, error} ->
         {:error, error}
@@ -47,6 +48,7 @@ defmodule Store.Orders.InventoryReservations do
 
     Repo.transaction(fn -> consume_for_order_transaction(order_id, now) end)
     |> unwrap_transaction_result()
+    |> maybe_invalidate_after_consume_or_expire()
   end
 
   @spec expire_reservations(DateTime.t(), keyword()) ::
@@ -70,6 +72,7 @@ defmodule Store.Orders.InventoryReservations do
       |> finalize_expire_result()
     end)
     |> unwrap_transaction_result()
+    |> maybe_invalidate_after_consume_or_expire()
   end
 
   defp reserve_variants(order_id, variant_ids, desired_quantities, expires_at, now) do
@@ -631,4 +634,40 @@ defmodule Store.Orders.InventoryReservations do
 
   defp unwrap_transaction_result({:ok, result}), do: {:ok, result}
   defp unwrap_transaction_result({:error, error}), do: {:error, error}
+
+  defp maybe_invalidate_after_reserve({:ok, %{inventory_items: inventory_items} = result}) do
+    variant_ids = Enum.map(inventory_items, & &1.variant_id)
+    invalidate_variant_availability(variant_ids)
+    {:ok, result}
+  end
+
+  defp maybe_invalidate_after_reserve({:error, _} = error), do: error
+
+  defp maybe_invalidate_after_consume_or_expire({:ok, %{reservations: reservations} = result}) do
+    variant_ids = Enum.map(reservations, & &1.variant_id)
+    invalidate_variant_availability(variant_ids)
+    {:ok, result}
+  end
+
+  defp maybe_invalidate_after_consume_or_expire({:error, _} = error), do: error
+
+  defp invalidate_variant_availability(variant_ids) do
+    variant_ids =
+      variant_ids
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    _ = StockFastPath.invalidate_variant_ids(variant_ids)
+
+    product_ids =
+      Variant
+      |> where([variant], variant.id in ^variant_ids)
+      |> select([variant], variant.product_id)
+      |> Repo.all()
+      |> Enum.uniq()
+
+    _ = AvailabilityCache.invalidate_products(product_ids)
+
+    :ok
+  end
 end

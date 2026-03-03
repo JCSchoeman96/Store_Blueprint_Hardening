@@ -3,10 +3,15 @@ defmodule Store.Catalog.InventoryItem do
   Inventory counters per variant. Phase 19 does not enforce hold/reservation semantics.
   """
 
+  import Ecto.Query
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
     domain: Store.Catalog
+
+  alias Store.Catalog.{AvailabilityCache, StockFastPath, Variant}
+  alias Store.Repo
 
   attributes do
     uuid_v7_primary_key(:id)
@@ -72,15 +77,19 @@ defmodule Store.Catalog.InventoryItem do
 
     create :create do
       accept([:variant_id, :stock_on_hand, :reserved_count, :allow_oversell])
+      change(&invalidate_after_action/2)
     end
 
     update :update_counts do
+      require_atomic?(false)
       accept([:stock_on_hand, :reserved_count, :allow_oversell])
+      change(&invalidate_after_action/2)
     end
 
     update :set_on_hand do
       require_atomic?(false)
       accept([:stock_on_hand, :allow_oversell])
+      change(&invalidate_after_action/2)
     end
 
     update :adjust_on_hand do
@@ -102,6 +111,8 @@ defmodule Store.Catalog.InventoryItem do
           Ash.Changeset.change_attribute(changeset, :stock_on_hand, next_value)
         end
       end)
+
+      change(&invalidate_after_action/2)
     end
   end
 
@@ -129,5 +140,23 @@ defmodule Store.Catalog.InventoryItem do
     policy always() do
       forbid_if(always())
     end
+  end
+
+  defp invalidate_after_action(changeset, _context) do
+    Ash.Changeset.after_action(changeset, fn _changeset, inventory_item ->
+      _ = StockFastPath.invalidate_variant_ids([inventory_item.variant_id])
+
+      product_id =
+        Variant
+        |> where([variant], variant.id == ^inventory_item.variant_id)
+        |> select([variant], variant.product_id)
+        |> Repo.one()
+
+      if is_binary(product_id) do
+        _ = AvailabilityCache.invalidate_product(product_id)
+      end
+
+      {:ok, inventory_item}
+    end)
   end
 end

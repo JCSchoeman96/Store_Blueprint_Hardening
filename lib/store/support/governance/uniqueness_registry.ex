@@ -238,6 +238,30 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       table: "download_grants",
       columns: ["order_line_item_id", "digital_asset_id"],
       mode: :active_now
+    },
+    %{
+      key: :product_options_product_slug,
+      table: "product_options",
+      columns: ["product_id", "slug"],
+      mode: :active_now
+    },
+    %{
+      key: :product_option_values_option_slug,
+      table: "product_option_values",
+      columns: ["product_option_id", "slug"],
+      mode: :active_now
+    },
+    %{
+      key: :variant_option_selections_variant_option,
+      table: "variant_option_selections",
+      columns: ["variant_id", "product_option_id"],
+      mode: :active_now
+    },
+    %{
+      key: :variants_active_selection_signature,
+      table: "variants",
+      columns: ["product_id", "selection_signature"],
+      mode: :active_now
     }
   ]
 

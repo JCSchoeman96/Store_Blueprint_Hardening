@@ -6,7 +6,8 @@ defmodule StoreWeb.ShopLive.Index do
   use StoreWeb, :live_view
 
   alias Store.Catalog.Facade, as: CatalogFacade
-  alias StoreWeb.Params.Catalog.ProductIndexParams
+  alias Store.Catalog.Queries.ShopQuery
+  alias StoreWeb.Params.Catalog.ShopQueryParams
 
   @impl true
   def mount(_params, _session, socket) do
@@ -20,8 +21,11 @@ defmodule StoreWeb.ShopLive.Index do
   def handle_params(params, _uri, socket) do
     actor = socket.assigns[:current_user]
 
-    with {:ok, query} <- ProductIndexParams.index_query(params),
-         {:ok, products} <- CatalogFacade.list_products_for_public(actor, query) do
+    with {:ok, query} <- ShopQueryParams.query(params),
+         {:ok, products} <-
+           query
+           |> ShopQuery.to_product_index_query()
+           |> then(&CatalogFacade.list_products_for_public(actor, &1)) do
       {:noreply, assign(socket, query: query, products: products)}
     else
       _ ->

@@ -155,6 +155,7 @@ If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
 # Beads (MANDATORY — HARD MODE)
 - NO WORK WITHOUT A BEAD (code/docs/config/tests)
+- Use normal bd create (no --sandbox) for parent/children.
 
 ## Session start (EVERY SESSION)
 1) `bd dolt test`

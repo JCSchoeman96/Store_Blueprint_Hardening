@@ -4,11 +4,15 @@ defmodule Store.Catalog.Variant do
   """
 
   import Ash.Expr
+  import Ecto.Query
 
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
     domain: Store.Catalog
+
+  alias Store.Catalog.{ProductImage, ProductOption, VariantOptionSelection, VariantSignature}
+  alias Store.Repo
 
   attributes do
     uuid_v7_primary_key(:id)
@@ -55,6 +59,16 @@ defmodule Store.Catalog.Variant do
       public?(true)
     end
 
+    attribute :image_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :selection_signature, :binary do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :status, Store.Catalog.Types.VariantStatus do
       allow_nil?(false)
       default(:active)
@@ -69,6 +83,19 @@ defmodule Store.Catalog.Variant do
     belongs_to :product, Store.Catalog.Product do
       allow_nil?(false)
       attribute_writable?(true)
+      public?(true)
+    end
+
+    belongs_to :image, Store.Catalog.ProductImage do
+      source_attribute(:image_id)
+      destination_attribute(:id)
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(true)
+    end
+
+    has_many :option_selections, Store.Catalog.VariantOptionSelection do
+      destination_attribute(:variant_id)
       public?(true)
     end
   end
@@ -100,11 +127,16 @@ defmodule Store.Catalog.Variant do
         :price_minor,
         :compare_at_price_minor,
         :weight_grams,
+        :image_id,
         :status
       ])
 
       change(&normalize_fields/2)
       validate(&validate_compare_at/2)
+      validate(&validate_image_belongs_to_product/2)
+      validate(&validate_active_required_completeness/2)
+      validate(&validate_active_signature_uniqueness/2)
+      change(&sync_signature_after_action/2)
     end
 
     create :create_for_product do
@@ -117,6 +149,7 @@ defmodule Store.Catalog.Variant do
         :price_minor,
         :compare_at_price_minor,
         :weight_grams,
+        :image_id,
         :status
       ])
 
@@ -125,6 +158,10 @@ defmodule Store.Catalog.Variant do
       change(&force_id_from_argument/2)
       change(&normalize_fields/2)
       validate(&validate_compare_at/2)
+      validate(&validate_image_belongs_to_product/2)
+      validate(&validate_active_required_completeness/2)
+      validate(&validate_active_signature_uniqueness/2)
+      change(&sync_signature_after_action/2)
     end
 
     update :update do
@@ -138,17 +175,23 @@ defmodule Store.Catalog.Variant do
         :price_minor,
         :compare_at_price_minor,
         :weight_grams,
+        :image_id,
         :status
       ])
 
       change(&normalize_fields/2)
       validate(&validate_compare_at/2)
+      validate(&validate_image_belongs_to_product/2)
+      validate(&validate_active_required_completeness/2)
+      validate(&validate_active_signature_uniqueness/2)
+      change(&sync_signature_after_action/2)
     end
 
     update :archive do
       require_atomic?(false)
       accept([])
       change(set_attribute(:status, :archived))
+      change(&sync_signature_after_action/2)
     end
   end
 
@@ -159,6 +202,7 @@ defmodule Store.Catalog.Variant do
     custom_indexes do
       index([:product_id], name: "variants_product_id_index")
       index([:is_default], name: "variants_is_default_index")
+      index([:image_id], name: "variants_image_id_index")
     end
   end
 
@@ -223,10 +267,149 @@ defmodule Store.Catalog.Variant do
     end
   end
 
+  defp validate_image_belongs_to_product(changeset, _context) do
+    image_id = Ash.Changeset.get_attribute(changeset, :image_id)
+    product_id = Ash.Changeset.get_attribute(changeset, :product_id) || changeset.data.product_id
+
+    cond do
+      is_nil(image_id) ->
+        :ok
+
+      not is_binary(product_id) ->
+        {:error, field: :product_id, message: "product_id is required"}
+
+      true ->
+        case Repo.get(ProductImage, image_id) do
+          %ProductImage{product_id: ^product_id} ->
+            :ok
+
+          %ProductImage{} ->
+            {:error, field: :image_id, message: "image must belong to the same product"}
+
+          nil ->
+            {:error, field: :image_id, message: "image must exist"}
+        end
+    end
+  end
+
+  defp validate_active_required_completeness(changeset, _context) do
+    status = Ash.Changeset.get_attribute(changeset, :status) || changeset.data.status
+
+    if status != :active do
+      :ok
+    else
+      product_id =
+        Ash.Changeset.get_attribute(changeset, :product_id) || changeset.data.product_id
+
+      variant_id = changeset.data.id
+
+      product_id
+      |> required_option_ids_for_product()
+      |> validate_required_selections_for_active_variant(variant_id)
+    end
+  end
+
+  defp validate_active_signature_uniqueness(changeset, _context) do
+    status = Ash.Changeset.get_attribute(changeset, :status) || changeset.data.status
+
+    if status != :active do
+      :ok
+    else
+      product_id =
+        Ash.Changeset.get_attribute(changeset, :product_id) || changeset.data.product_id
+
+      variant_id = changeset.data.id
+      signature = selection_signature_for_validation(product_id, variant_id)
+
+      if is_binary(signature) and active_signature_conflict?(product_id, variant_id, signature) do
+        {:error,
+         field: :status, message: "active variant option combination must be unique per product"}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp selection_signature_for_validation(product_id, variant_id) do
+    options = VariantSignature.ordered_options_for_product(product_id)
+
+    selections =
+      if is_binary(variant_id) do
+        VariantOptionSelection
+        |> where([selection], selection.variant_id == ^variant_id)
+        |> Repo.all()
+      else
+        []
+      end
+
+    case VariantSignature.build_signature(options, selections) do
+      {:ok, signature} -> signature
+      {:incomplete_required, _missing} -> nil
+    end
+  end
+
+  defp active_signature_conflict?(product_id, variant_id, signature) do
+    query =
+      __MODULE__
+      |> where([variant], variant.product_id == ^product_id and variant.status == :active)
+      |> where([variant], variant.selection_signature == ^signature)
+
+    query =
+      if is_binary(variant_id) do
+        where(query, [variant], variant.id != ^variant_id)
+      else
+        query
+      end
+
+    Repo.exists?(query)
+  end
+
   defp force_id_from_argument(changeset, _context) do
     case Ash.Changeset.get_argument(changeset, :forced_id) do
       nil -> changeset
       id -> Ash.Changeset.force_change_attribute(changeset, :id, id)
+    end
+  end
+
+  defp sync_signature_after_action(changeset, _context) do
+    Ash.Changeset.after_action(changeset, fn _changeset, variant ->
+      case VariantSignature.sync_variant_signature(variant.id) do
+        :ok -> {:ok, variant}
+        {:error, error} -> {:error, error}
+      end
+    end)
+  end
+
+  defp required_option_ids_for_product(product_id) do
+    ProductOption
+    |> where([option], option.product_id == ^product_id and option.selection_required == true)
+    |> select([option], option.id)
+    |> Repo.all()
+  end
+
+  defp validate_required_selections_for_active_variant([], _variant_id), do: :ok
+
+  defp validate_required_selections_for_active_variant(_required_option_ids, nil) do
+    {:error,
+     field: :status,
+     message:
+       "active variant requires required option selections before activation; create archived first"}
+  end
+
+  defp validate_required_selections_for_active_variant(required_option_ids, variant_id) do
+    selected_required_count =
+      VariantOptionSelection
+      |> where([selection], selection.variant_id == ^variant_id)
+      |> where([selection], selection.product_option_id in ^required_option_ids)
+      |> select([selection], count(fragment("DISTINCT ?", selection.product_option_id)))
+      |> Repo.one() || 0
+
+    if selected_required_count == length(required_option_ids) do
+      :ok
+    else
+      {:error,
+       field: :status,
+       message: "active variant must include exactly one selection for each required option"}
     end
   end
 

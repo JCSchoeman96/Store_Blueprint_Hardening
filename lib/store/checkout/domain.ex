@@ -14,7 +14,7 @@ defmodule Store.Checkout do
   alias Store.Carts.Cart
   alias Store.Carts.CartItem
   alias Store.Carts.Facade, as: CartsFacade
-  alias Store.Catalog.{Product, Variant}
+  alias Store.Catalog.{Product, ProductOption, Variant, VariantOptionSelection}
   alias Store.Checkout.CheckoutDraft
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
   alias Store.Orders.{Order, OrderAdjustment, OrderLineItem}
@@ -1052,6 +1052,11 @@ defmodule Store.Checkout do
         variant.status != :active ->
           Repo.rollback(Error.new("VALIDATION_ERROR", "cart contains inactive variant"))
 
+        not required_complete?(variant.id, variant.product_id) ->
+          Repo.rollback(
+            Error.new("VALIDATION_ERROR", "cart contains incomplete variant selection")
+          )
+
         is_nil(product) ->
           Repo.rollback(Error.new("NOT_FOUND", "product not found for cart item"))
 
@@ -1180,6 +1185,27 @@ defmodule Store.Checkout do
       _ ->
         false
     end)
+  end
+
+  defp required_complete?(variant_id, product_id) do
+    required_option_ids =
+      ProductOption
+      |> where([option], option.product_id == ^product_id and option.selection_required == true)
+      |> select([option], option.id)
+      |> Repo.all()
+
+    if required_option_ids == [] do
+      true
+    else
+      selected_required_count =
+        VariantOptionSelection
+        |> where([selection], selection.variant_id == ^variant_id)
+        |> where([selection], selection.product_option_id in ^required_option_ids)
+        |> select([selection], count(fragment("DISTINCT ?", selection.product_option_id)))
+        |> Repo.one() || 0
+
+      selected_required_count == length(required_option_ids)
+    end
   end
 
   defp normalize_result({:ok, _} = result), do: result
