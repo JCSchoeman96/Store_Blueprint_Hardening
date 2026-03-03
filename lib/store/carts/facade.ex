@@ -554,23 +554,18 @@ defmodule Store.Carts.Facade do
         on: product.id == variant.product_id,
         where: variant.id == ^variant_id,
         select:
-          {variant.id, variant.product_id, variant.status, variant.selection_signature,
-           product.status, product.published_at}
+          {variant.id, variant.product_id, variant.status, product.status, product.published_at}
       )
 
     case Repo.one(query) do
-      {variant_id, product_id, :active, signature, :published, %DateTime{}}
-      when is_binary(signature) ->
+      {variant_id, product_id, :active, :published, %DateTime{}} ->
         if required_complete?(variant_id, product_id) do
           :ok
         else
           {:error, Error.new("VALIDATION_ERROR", "variant is not fully configured")}
         end
 
-      {_variant_id, _product_id, :active, _signature, :published, %DateTime{}} ->
-        {:error, Error.new("VALIDATION_ERROR", "variant is not fully configured")}
-
-      {_variant_id, _product_id, _variant_status, _signature, _product_status, _published_at} ->
+      {_variant_id, _product_id, _variant_status, _product_status, _published_at} ->
         {:error, Error.new("NOT_FOUND", "variant not sellable")}
 
       nil ->

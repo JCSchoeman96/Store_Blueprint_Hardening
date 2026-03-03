@@ -10,7 +10,8 @@ defmodule Store.Governance.CatalogPhase25Test do
     ProductOption,
     ProductOptionValue,
     Variant,
-    VariantOptionSelection
+    VariantOptionSelection,
+    VariantSignature
   }
 
   alias Store.Catalog.Facade, as: CatalogFacade
@@ -160,6 +161,43 @@ defmodule Store.Governance.CatalogPhase25Test do
              CatalogFacade.update_variant_for_admin(admin, variant_b.id, %{status: :active})
 
     assert error.code == "VALIDATION_ERROR"
+  end
+
+  test "no-options products keep nil signatures and skip option-combination uniqueness" do
+    admin = admin_actor!()
+    product = published_product!(admin, "phase25-no-options", "P25-NOOPT-BASE")
+    default_variant = Repo.get!(Variant, product.default_variant_id)
+
+    assert {:ok, nil} = VariantSignature.build_signature([], [])
+    assert is_nil(default_variant.selection_signature)
+
+    assert {:ok, second_active} =
+             Variant
+             |> Ash.Changeset.for_create(:create, %{
+               product_id: product.id,
+               sku: "P25-NOOPT-SECOND-#{System.unique_integer([:positive])}",
+               currency_code: "USD",
+               price_minor: 2_000,
+               status: :active
+             })
+             |> Ash.create(domain: Store.Catalog, actor: admin)
+
+    second_active = Repo.get!(Variant, second_active.id)
+    assert is_nil(second_active.selection_signature)
+
+    assert {:ok, third_active} =
+             Variant
+             |> Ash.Changeset.for_create(:create, %{
+               product_id: product.id,
+               sku: "P25-NOOPT-THIRD-#{System.unique_integer([:positive])}",
+               currency_code: "USD",
+               price_minor: 2_100,
+               status: :active
+             })
+             |> Ash.create(domain: Store.Catalog, actor: admin)
+
+    third_active = Repo.get!(Variant, third_active.id)
+    assert is_nil(third_active.selection_signature)
   end
 
   test "cart stock pre-check blocks qty above fast sellable qty" do

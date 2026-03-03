@@ -17,7 +17,7 @@ defmodule Store.Catalog.VariantSignature do
   alias Store.Support.Errors.Error
   alias Store.Support.ID.BinaryUuidSort
 
-  @type signature :: binary()
+  @type signature :: binary() | nil
 
   @spec sync_variant_signature(Ecto.UUID.t()) :: :ok | {:error, Error.t()}
   def sync_variant_signature(variant_id) when is_binary(variant_id) do
@@ -46,39 +46,9 @@ defmodule Store.Catalog.VariantSignature do
           {:ok, signature()} | {:incomplete_required, [Ecto.UUID.t()]}
   def build_signature(product_options, selections)
       when is_list(product_options) and is_list(selections) do
-    ordered_options = canonical_sort_options(product_options)
-
-    selections_by_option_id =
-      Map.new(selections, fn selection ->
-        {selection.product_option_id, selection.product_option_value_id}
-      end)
-
-    {missing_required, signature_parts} =
-      Enum.reduce(ordered_options, {[], []}, fn option, {missing, parts} ->
-        selection_value_id = Map.get(selections_by_option_id, option.id)
-
-        cond do
-          is_binary(selection_value_id) ->
-            pair =
-              [
-                BinaryUuidSort.normalize_raw16!(option.id),
-                BinaryUuidSort.normalize_raw16!(selection_value_id)
-              ]
-
-            {missing, [pair | parts]}
-
-          option.selection_required ->
-            {[option.id | missing], parts}
-
-          true ->
-            {missing, parts}
-        end
-      end)
-
-    case Enum.reverse(missing_required) do
-      [] -> {:ok, signature_parts |> Enum.reverse() |> IO.iodata_to_binary()}
-      missing -> {:incomplete_required, missing}
-    end
+    product_options
+    |> canonical_sort_options()
+    |> build_signature_from_options(selections)
   end
 
   def build_signature(_product_options, _selections), do: {:incomplete_required, []}
@@ -98,6 +68,48 @@ defmodule Store.Catalog.VariantSignature do
       {option.position || 0, BinaryUuidSort.normalize_raw16!(option.id)}
     end)
   end
+
+  defp build_signature_from_options([], _selections), do: {:ok, nil}
+
+  defp build_signature_from_options(ordered_options, selections) do
+    selections_by_option_id =
+      Map.new(selections, fn selection ->
+        {selection.product_option_id, selection.product_option_value_id}
+      end)
+
+    {missing_required, signature_parts} =
+      Enum.reduce(ordered_options, {[], []}, fn option, acc ->
+        reduce_signature_option(option, selections_by_option_id, acc)
+      end)
+
+    case Enum.reverse(missing_required) do
+      [] -> {:ok, signature_from_parts(signature_parts)}
+      missing -> {:incomplete_required, missing}
+    end
+  end
+
+  defp reduce_signature_option(option, selections_by_option_id, {missing, parts}) do
+    selection_value_id = Map.get(selections_by_option_id, option.id)
+
+    cond do
+      is_binary(selection_value_id) ->
+        pair = [
+          BinaryUuidSort.normalize_raw16!(option.id),
+          BinaryUuidSort.normalize_raw16!(selection_value_id)
+        ]
+
+        {missing, [pair | parts]}
+
+      option.selection_required ->
+        {[option.id | missing], parts}
+
+      true ->
+        {missing, parts}
+    end
+  end
+
+  defp signature_from_parts([]), do: nil
+  defp signature_from_parts(parts), do: parts |> Enum.reverse() |> IO.iodata_to_binary()
 
   defp selections_for_variant(variant_id) do
     VariantOptionSelection

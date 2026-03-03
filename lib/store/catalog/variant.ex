@@ -310,41 +310,39 @@ defmodule Store.Catalog.Variant do
   end
 
   defp validate_active_signature_uniqueness(changeset, _context) do
-    status = Ash.Changeset.get_attribute(changeset, :status) || changeset.data.status
+    case active_signature_candidate(changeset) do
+      {:candidate, product_id, variant_id, signature} ->
+        if active_signature_conflict?(product_id, variant_id, signature) do
+          {:error,
+           field: :status, message: "active variant option combination must be unique per product"}
+        else
+          :ok
+        end
 
-    if status != :active do
-      :ok
-    else
-      product_id =
-        Ash.Changeset.get_attribute(changeset, :product_id) || changeset.data.product_id
-
-      variant_id = changeset.data.id
-      signature = selection_signature_for_validation(product_id, variant_id)
-
-      if is_binary(signature) and active_signature_conflict?(product_id, variant_id, signature) do
-        {:error,
-         field: :status, message: "active variant option combination must be unique per product"}
-      else
+      :skip ->
         :ok
-      end
     end
   end
 
   defp selection_signature_for_validation(product_id, variant_id) do
     options = VariantSignature.ordered_options_for_product(product_id)
 
-    selections =
-      if is_binary(variant_id) do
-        VariantOptionSelection
-        |> where([selection], selection.variant_id == ^variant_id)
-        |> Repo.all()
-      else
-        []
-      end
+    if options == [] do
+      nil
+    else
+      selections =
+        if is_binary(variant_id) do
+          VariantOptionSelection
+          |> where([selection], selection.variant_id == ^variant_id)
+          |> Repo.all()
+        else
+          []
+        end
 
-    case VariantSignature.build_signature(options, selections) do
-      {:ok, signature} -> signature
-      {:incomplete_required, _missing} -> nil
+      case VariantSignature.build_signature(options, selections) do
+        {:ok, signature} -> signature
+        {:incomplete_required, _missing} -> nil
+      end
     end
   end
 
@@ -386,6 +384,37 @@ defmodule Store.Catalog.Variant do
     |> select([option], option.id)
     |> Repo.all()
   end
+
+  defp active_signature_candidate(changeset) do
+    status = Ash.Changeset.get_attribute(changeset, :status) || changeset.data.status
+    product_id = Ash.Changeset.get_attribute(changeset, :product_id) || changeset.data.product_id
+    variant_id = changeset.data.id
+
+    cond do
+      status != :active ->
+        :skip
+
+      not product_has_options?(product_id) ->
+        :skip
+
+      true ->
+        signature = selection_signature_for_validation(product_id, variant_id)
+
+        if is_binary(signature) and byte_size(signature) > 0 do
+          {:candidate, product_id, variant_id, signature}
+        else
+          :skip
+        end
+    end
+  end
+
+  defp product_has_options?(product_id) when is_binary(product_id) do
+    ProductOption
+    |> where([option], option.product_id == ^product_id)
+    |> Repo.exists?()
+  end
+
+  defp product_has_options?(_product_id), do: false
 
   defp validate_required_selections_for_active_variant([], _variant_id), do: :ok
 
