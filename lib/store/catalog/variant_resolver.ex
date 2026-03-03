@@ -194,20 +194,37 @@ defmodule Store.Catalog.VariantResolver do
   end
 
   defp resolve_normalized_selection(payload, normalized_selection) do
-    matching_rows = matching_rows(payload.variant_rows, normalized_selection)
+    if payload.options == [] do
+      resolve_no_options_default(payload)
+    else
+      matching_rows = matching_rows(payload.variant_rows, normalized_selection)
 
-    case matching_rows do
-      [] ->
-        {:error, :invalid_selection}
+      case matching_rows do
+        [] ->
+          {:error, :invalid_selection}
 
-      [%{in_stock?: true, variant: variant}] ->
+        [%{in_stock?: true, variant: variant}] ->
+          {:ok, variant}
+
+        [%{in_stock?: false}] ->
+          {:error, :out_of_stock}
+
+        [_ | _] ->
+          {:error, :selection_ambiguous}
+      end
+    end
+  end
+
+  defp resolve_no_options_default(%{product: %Product{} = product, variant_rows: variant_rows}) do
+    case Enum.find(variant_rows, fn row -> row.variant.id == product.default_variant_id end) do
+      %{sellable?: true, in_stock?: true, variant: variant} ->
         {:ok, variant}
 
-      [%{in_stock?: false}] ->
+      %{sellable?: true, in_stock?: false} ->
         {:error, :out_of_stock}
 
-      [_ | _] ->
-        {:error, :selection_ambiguous}
+      _ ->
+        {:error, :invalid_selection}
     end
   end
 

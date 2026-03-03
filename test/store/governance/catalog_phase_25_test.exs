@@ -198,6 +198,21 @@ defmodule Store.Governance.CatalogPhase25Test do
 
     third_active = Repo.get!(Variant, third_active.id)
     assert is_nil(third_active.selection_signature)
+
+    assert {:ok, detail} = VariantResolver.build_product_detail(product, %{})
+    assert detail.resolution.status == :ok
+    assert detail.resolution.variant_id == product.default_variant_id
+
+    default_inventory = inventory_by_variant!(product.default_variant_id)
+
+    assert {:ok, _updated_inventory} =
+             default_inventory
+             |> Ash.Changeset.for_update(:set_on_hand, %{stock_on_hand: 0, allow_oversell: false})
+             |> Ash.update(domain: Store.Catalog, authorize?: false, context: %{system?: true})
+
+    assert {:ok, detail_oos} = VariantResolver.build_product_detail(product, %{})
+    assert detail_oos.resolution.status == :error
+    assert detail_oos.resolution.reason == :out_of_stock
   end
 
   test "cart stock pre-check blocks qty above fast sellable qty" do
