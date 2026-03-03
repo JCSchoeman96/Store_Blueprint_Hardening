@@ -39,6 +39,14 @@ if config_env() == :prod do
     System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE") ||
       raise "environment variable STORE_GOOGLE_REDIRECT_URI_BASE is missing."
 
+  stripe_webhook_secret =
+    System.get_env("STORE_STRIPE_WEBHOOK_SECRET") ||
+      raise "environment variable STORE_STRIPE_WEBHOOK_SECRET is missing."
+
+  quote_hash_secret =
+    System.get_env("STORE_QUOTE_HASH_SECRET") ||
+      raise "environment variable STORE_QUOTE_HASH_SECRET is missing."
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """
@@ -90,12 +98,18 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
+  comms_provider_env = System.get_env("STORE_COMMS_PROVIDER", "swoosh")
+
   comms_provider =
-    case System.get_env("STORE_COMMS_PROVIDER", "swoosh") do
+    case comms_provider_env do
       "swoosh" -> :swoosh
       "req_postmark" -> :req_postmark
-      _ -> :swoosh
+      value -> raise "invalid STORE_COMMS_PROVIDER value: #{value}"
     end
+
+  config :store, :payments, stripe: [webhook_secret: stripe_webhook_secret]
+
+  config :store, :shipping, quote_hash_secret: quote_hash_secret
 
   config :store, :comms,
     default_provider: comms_provider,

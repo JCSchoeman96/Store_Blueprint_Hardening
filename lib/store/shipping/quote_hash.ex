@@ -18,7 +18,7 @@ defmodule Store.Shipping.QuoteHash do
   defp quote_hash_secret do
     :store
     |> Application.get_env(:shipping, [])
-    |> Keyword.get(:quote_hash_secret, "phase22-dev-only-change-me")
+    |> Keyword.fetch!(:quote_hash_secret)
   end
 
   defp canonical_term(%DateTime{} = value), do: DateTime.to_iso8601(value)

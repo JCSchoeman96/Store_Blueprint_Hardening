@@ -191,7 +191,8 @@ defmodule StoreWeb.WebhookControllerTest do
     })
   end
 
-  defp stripe_signature(raw_body, secret \\ "whsec_dev_only_change_me") do
+  defp stripe_signature(raw_body, secret \\ nil) do
+    secret = secret || stripe_webhook_secret()
     timestamp = DateTime.utc_now() |> DateTime.to_unix()
     payload = "#{timestamp}.#{raw_body}"
 
@@ -200,5 +201,12 @@ defmodule StoreWeb.WebhookControllerTest do
       |> Base.encode16(case: :lower)
 
     "t=#{timestamp},v1=#{signature}"
+  end
+
+  defp stripe_webhook_secret do
+    :store
+    |> Application.get_env(:payments, [])
+    |> Keyword.get(:stripe, [])
+    |> Keyword.fetch!(:webhook_secret)
   end
 end

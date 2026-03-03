@@ -50,11 +50,8 @@ config :store, :payments,
     cancel_base_url: "http://localhost:4000/checkout/cancel"
   ],
   stripe: [
-    checkout_base_url: "https://checkout.stripe.example",
-    webhook_secret: "whsec_dev_only_change_me"
+    checkout_base_url: "https://checkout.stripe.example"
   ]
-
-config :store, :shipping, quote_hash_secret: "phase22-dev-only-change-me"
 
 config :store, :comms,
   default_provider: :swoosh,

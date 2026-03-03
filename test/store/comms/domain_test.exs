@@ -85,6 +85,18 @@ defmodule Store.Comms.DomainTest do
     assert Exception.message(error) =~ "provider"
   end
 
+  test "enqueue rejects non-enum provider input" do
+    user =
+      TestFixtures.register_user!(
+        email: TestFixtures.unique_email("phase23_provider_string_user")
+      )
+
+    order = create_finalized_order!(user.id)
+
+    assert {:error, :invalid_provider} =
+             Store.Comms.enqueue_order_receipt_for_system(order.id, provider: "req_postmark")
+  end
+
   test "CAS delivery claim prevents duplicate sends and increments attempts once" do
     user = TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_cas_user"))
     order = create_finalized_order!(user.id)

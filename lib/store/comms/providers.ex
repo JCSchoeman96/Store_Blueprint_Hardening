@@ -5,25 +5,27 @@ defmodule Store.Comms.Providers do
 
   alias Store.Comms.Providers.{ReqPostmarkAdapter, SwooshAdapter}
 
-  @type provider :: :swoosh | :req_postmark | String.t() | atom()
+  @type provider :: :swoosh | :req_postmark
 
-  @spec default_provider() :: :swoosh | :req_postmark
+  @spec default_provider() :: provider()
   def default_provider do
     Application.get_env(:store, :comms, [])
     |> Keyword.get(:default_provider, :swoosh)
-    |> normalize_provider!()
+    |> normalize_runtime_provider!()
   end
 
-  @spec normalize_provider(provider()) :: {:ok, :swoosh | :req_postmark} | {:error, term()}
+  @spec normalize_provider(term()) :: {:ok, provider()} | {:error, :invalid_provider}
   def normalize_provider(provider) do
-    {:ok, normalize_provider!(provider)}
-  rescue
-    _ -> {:error, :invalid_provider}
+    case provider do
+      :swoosh -> {:ok, :swoosh}
+      :req_postmark -> {:ok, :req_postmark}
+      _ -> {:error, :invalid_provider}
+    end
   end
 
   @spec adapter(provider()) :: module()
   def adapter(provider) do
-    case normalize_provider!(provider) do
+    case provider do
       :swoosh -> SwooshAdapter
       :req_postmark -> ReqPostmarkAdapter
     end
@@ -35,12 +37,13 @@ defmodule Store.Comms.Providers do
     adapter(provider).deliver_email(payload, opts)
   end
 
-  defp normalize_provider!(provider) when provider in [:swoosh, "swoosh", "SWOOSH"], do: :swoosh
+  defp normalize_runtime_provider!(provider) when provider in [:swoosh, "swoosh", "SWOOSH"],
+    do: :swoosh
 
-  defp normalize_provider!(provider)
+  defp normalize_runtime_provider!(provider)
        when provider in [:req_postmark, "req_postmark", "REQ_POSTMARK"] do
     :req_postmark
   end
 
-  defp normalize_provider!(_provider), do: raise(ArgumentError, "invalid provider")
+  defp normalize_runtime_provider!(_provider), do: raise(ArgumentError, "invalid provider")
 end

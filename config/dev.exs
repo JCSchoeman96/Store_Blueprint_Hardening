@@ -21,6 +21,14 @@ config :store, :google_oauth,
   redirect_uri_base:
     System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE", "http://localhost:4000/auth")
 
+config :store, :payments,
+  stripe: [
+    webhook_secret: System.get_env("STORE_STRIPE_WEBHOOK_SECRET", "whsec_dev_only_change_me")
+  ]
+
+config :store, :shipping,
+  quote_hash_secret: System.get_env("STORE_QUOTE_HASH_SECRET", "phase22-dev-only-change-me")
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #
