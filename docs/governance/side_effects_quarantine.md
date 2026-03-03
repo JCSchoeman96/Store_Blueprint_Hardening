@@ -44,9 +44,23 @@ Webhook signature pin (Phase 21):
 - verification MUST use the cached raw body bytes from Plug body reader
 - parsed/decoded request payload is never accepted as signature evidence
 
-Phase 08 deterministic idempotency baseline:
-- `idempotency_key = sha256("#{provider}\n" <> raw_body)`
-- duplicate ingest MUST be NOOP-safe (receipt dedupe)
+### Webhook Receipt Idempotency (Canonical)
+
+Webhook controllers must compute a deterministic receipt idempotency key and persist the receipt before enqueue.
+
+**Canonical idempotency key precedence:**
+1. If the provider payload includes an explicit idempotency key -> use it (`provider_idempotency_key`).
+2. Otherwise use the provider event identity -> `"{provider}:{provider_event_id}"`.
+
+**Persistence requirements:**
+- Always persist `provider_event_id` (required).
+- Always persist `payload_sha256` (sha256 of the raw request body) for audit/debug.
+- Enforce uniqueness via DB constraints/identities:
+  - unique `idempotency_key`
+  - unique `(provider, provider_event_id)`
+
+**Reject rule:**
+- If `provider_event_id` is missing, the receipt is invalid and must be rejected/discarded (do not fall back to sha-only keys).
 
 ### 4.2 Payment callback controller enqueue-only
 `lib/store_web/controllers/payment_callback_controller.ex` MAY:
