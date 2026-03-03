@@ -1,0 +1,6 @@
+<h1>Refund processed for order <%= @order_ref %></h1>
+<p>Your refund has been processed.</p>
+<p><strong>Refund amount:</strong> <%= @refund_amount %></p>
+<p><strong>Reason:</strong> <%= @refund_reason %></p>
+<p><strong>Current refund state:</strong> <%= @refund_state %></p>
+<p>Need help? <%= @support_email %></p>

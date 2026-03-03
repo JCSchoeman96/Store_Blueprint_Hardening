@@ -97,6 +97,13 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:enqueue_paid_order_fulfillment_for_system, 1},
         {:get_fulfillment_by_order_id_for_system, 1}
       ]
+    },
+    Store.Comms.Facade => %{
+      allowed_consumers: [:admin],
+      exports: [
+        {:list_email_outboxes_for_admin, 2},
+        {:get_email_outbox_for_admin, 2}
+      ]
     }
   }
 

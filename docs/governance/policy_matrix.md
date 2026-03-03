@@ -137,6 +137,12 @@ Note: AuditLog MUST remain append-only (create-only actions).
 | WebhookReceipt | R | YES | YES | NO | NO | NO |
 | ProviderEvent | R | YES | YES | NO | NO | NO |
 
+### 5.9 Comms (Comms.EmailOutbox)
+| Resource | Action | super_admin | admin | editor | support | customer |
+|---------|--------|-------------|-------|--------|---------|----------|
+| EmailOutbox | R | YES | YES | NO | YES | NO |
+| EmailOutbox | C/U (enqueue + worker updates) | SYSTEM | SYSTEM | SYSTEM | SYSTEM | SYSTEM |
+
 ### 5.8 Carts & Checkout Drafts (Carts.Cart, Carts.CartItem, Checkout.CheckoutDraft)
 | Resource | Action | super_admin | admin | editor | support | customer |
 |---------|--------|-------------|-------|--------|---------|----------|

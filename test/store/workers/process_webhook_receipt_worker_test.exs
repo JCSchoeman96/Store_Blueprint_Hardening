@@ -5,8 +5,10 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Comms.EmailOutbox
   alias Store.Orders.{Order, PaymentApplication}
   alias Store.Payments.{PaymentIntent, WebhookReceipt}
+  alias Store.TestFixtures
   alias Store.Workers.ProcessWebhookReceiptWorker
 
   test "worker performs apply-once payment success transition and order effects" do
@@ -54,6 +56,11 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              |> Ash.Query.filter(expr(order_id == ^order.id))
              |> Ash.count!(domain: Store.Orders, authorize?: false)
 
+    assert 1 ==
+             EmailOutbox
+             |> Ash.Query.filter(expr(order_id == ^order.id and template_kind == :order_receipt))
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
     assert :ok =
              perform_job(ProcessWebhookReceiptWorker, %{"webhook_receipt_id" => receipt.id})
 
@@ -61,6 +68,11 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              PaymentApplication
              |> Ash.Query.filter(expr(order_id == ^order.id))
              |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+    assert 1 ==
+             EmailOutbox
+             |> Ash.Query.filter(expr(order_id == ^order.id and template_kind == :order_receipt))
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
   end
 
   defp create_submitted_payment_intent!(order_id) do
@@ -75,9 +87,12 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   end
 
   defp create_order! do
+    user =
+      TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_worker_receipt_user"))
+
     order =
       Order
-      |> Ash.Changeset.for_create(:create, %{})
+      |> Ash.Changeset.for_create(:create, %{user_id: user.id})
       |> Ash.create!(domain: Store.Orders, authorize?: false)
 
     order

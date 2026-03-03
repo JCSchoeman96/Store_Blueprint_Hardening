@@ -56,13 +56,26 @@ config :store, :payments,
 
 config :store, :shipping, quote_hash_secret: "phase22-dev-only-change-me"
 
+config :store, :comms,
+  default_provider: :swoosh,
+  from_name: "Store",
+  from_email: "no-reply@store.local",
+  support_email: "support@store.local",
+  req_postmark: [
+    url: "https://api.postmarkapp.com/email",
+    server_token: nil,
+    from_name: "Store",
+    from_email: "no-reply@store.local"
+  ]
+
 config :store, Oban,
   repo: Store.Repo,
   plugins: [
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24},
     {Oban.Plugins.Cron,
      crontab: [
-       {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker}
+       {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker},
+       {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker}
      ]}
   ],
   queues: [webhooks: 10, inventory: 10, refunds: 10, comms: 10, fulfillment: 10]

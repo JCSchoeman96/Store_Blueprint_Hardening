@@ -174,6 +174,12 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       mode: :active_now
     },
     %{
+      key: :email_outboxes_refund_id_template_kind,
+      table: "email_outboxes",
+      columns: ["refund_id", "template_kind"],
+      mode: :active_now
+    },
+    %{
       key: :shipping_methods_code,
       table: "shipping_methods",
       columns: ["code"],

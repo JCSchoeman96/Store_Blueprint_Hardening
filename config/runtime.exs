@@ -90,6 +90,25 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
+  comms_provider =
+    case System.get_env("STORE_COMMS_PROVIDER", "swoosh") do
+      "swoosh" -> :swoosh
+      "req_postmark" -> :req_postmark
+      _ -> :swoosh
+    end
+
+  config :store, :comms,
+    default_provider: comms_provider,
+    from_name: System.get_env("STORE_COMMS_FROM_NAME", "Store"),
+    from_email: System.get_env("STORE_COMMS_FROM_EMAIL", "no-reply@example.com"),
+    support_email: System.get_env("STORE_COMMS_SUPPORT_EMAIL", "support@example.com"),
+    req_postmark: [
+      url: System.get_env("STORE_POSTMARK_URL", "https://api.postmarkapp.com/email"),
+      server_token: System.get_env("STORE_POSTMARK_SERVER_TOKEN"),
+      from_name: System.get_env("STORE_COMMS_FROM_NAME", "Store"),
+      from_email: System.get_env("STORE_COMMS_FROM_EMAIL", "no-reply@example.com")
+    ]
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key

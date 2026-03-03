@@ -13,7 +13,7 @@ defmodule Store.Comms.EmailOutbox do
   attributes do
     uuid_v7_primary_key(:id)
 
-    attribute :template_kind, :string do
+    attribute :template_kind, Store.Comms.Types.EmailTemplateKind do
       allow_nil?(false)
       public?(true)
     end
@@ -32,6 +32,7 @@ defmodule Store.Comms.EmailOutbox do
     attribute :body_text, :string do
       allow_nil?(false)
       default("")
+      constraints(allow_empty?: true)
       public?(true)
     end
 
@@ -40,8 +41,25 @@ defmodule Store.Comms.EmailOutbox do
       public?(true)
     end
 
+    attribute :template_assigns, :map do
+      allow_nil?(false)
+      default(%{})
+      public?(true)
+    end
+
     attribute :idempotency_key, :string do
       allow_nil?(false)
+      public?(true)
+    end
+
+    attribute :provider, Store.Comms.Types.EmailProvider do
+      allow_nil?(false)
+      default(:swoosh)
+      public?(true)
+    end
+
+    attribute :provider_message_id, :string do
+      allow_nil?(true)
       public?(true)
     end
 
@@ -68,6 +86,11 @@ defmodule Store.Comms.EmailOutbox do
       public?(true)
     end
 
+    attribute :processing_started_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -78,11 +101,16 @@ defmodule Store.Comms.EmailOutbox do
       public?(true)
       attribute_writable?(true)
     end
+
+    belongs_to :refund, Store.Payments.Refund do
+      allow_nil?(true)
+      public?(true)
+      attribute_writable?(true)
+    end
   end
 
   identities do
     identity(:unique_idempotency_key, [:idempotency_key])
-    identity(:unique_order_template_kind, [:order_id, :template_kind])
   end
 
   actions do
@@ -98,40 +126,52 @@ defmodule Store.Comms.EmailOutbox do
       filter(expr(id == ^arg(:id)))
     end
 
+    read :read_for_admin do
+      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 100)
+      prepare(build(sort: [inserted_at: :desc, id: :desc]))
+    end
+
     create :enqueue do
       accept([
         :order_id,
+        :refund_id,
         :template_kind,
         :to_email,
         :subject,
         :body_text,
         :body_html,
+        :template_assigns,
         :idempotency_key,
+        :provider,
         :state,
         :attempt_count
       ])
 
+      change(&validate_template_refund_coherence/2)
+
       upsert?(true)
-      upsert_identity(:unique_order_template_kind)
+      upsert_identity(:unique_idempotency_key)
       upsert_fields([])
       return_skipped_upsert?(true)
     end
 
-    update :mark_processing do
-      accept([:attempt_count])
-      change(set_attribute(:state, :processing))
-      change(set_attribute(:last_error, nil))
-    end
-
     update :mark_sent do
-      accept([:attempt_count, :sent_at])
+      accept([:provider_message_id, :sent_at])
       change(set_attribute(:state, :sent))
       change(set_attribute(:last_error, nil))
+      change(set_attribute(:processing_started_at, nil))
     end
 
     update :mark_failed do
-      accept([:attempt_count, :last_error])
+      accept([:last_error])
       change(set_attribute(:state, :failed))
+      change(set_attribute(:processing_started_at, nil))
+    end
+
+    update :mark_pending_retry do
+      accept([:last_error])
+      change(set_attribute(:state, :pending))
+      change(set_attribute(:processing_started_at, nil))
     end
   end
 
@@ -145,8 +185,13 @@ defmodule Store.Comms.EmailOutbox do
 
     custom_indexes do
       index([:order_id], name: "email_outboxes_order_id_index")
-      index([:state], name: "email_outboxes_state_index")
-      index([:template_kind], name: "email_outboxes_template_kind_index")
+      index([:state, :inserted_at], name: "email_outboxes_state_inserted_at_index")
+
+      index([:template_kind, :inserted_at],
+        name: "email_outboxes_template_kind_inserted_at_index"
+      )
+
+      index([:refund_id], name: "email_outboxes_refund_id_index")
     end
   end
 
@@ -157,13 +202,33 @@ defmodule Store.Comms.EmailOutbox do
       authorize_if(context_equals(:system?, true))
     end
 
-    policy action([:enqueue, :mark_processing, :mark_sent, :mark_failed, :get_for_system]) do
+    policy action([:enqueue, :mark_sent, :mark_failed, :mark_pending_retry, :get_for_system]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
     end
 
     policy always() do
       forbid_if(always())
+    end
+  end
+
+  defp validate_template_refund_coherence(changeset, _context) do
+    template_kind = Ash.Changeset.get_attribute(changeset, :template_kind)
+    refund_id = Ash.Changeset.get_attribute(changeset, :refund_id)
+
+    cond do
+      is_nil(refund_id) and template_kind == :order_receipt ->
+        changeset
+
+      is_binary(refund_id) and template_kind in [:refund_requested, :refund_processed] ->
+        changeset
+
+      true ->
+        Ash.Changeset.add_error(
+          changeset,
+          field: :template_kind,
+          message: "template_kind/refund_id combination is invalid"
+        )
     end
   end
 end

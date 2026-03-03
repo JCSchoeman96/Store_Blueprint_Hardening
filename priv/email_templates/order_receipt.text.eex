@@ -1,0 +1,18 @@
+Order <%= @order_ref %> receipt
+
+Thanks for your purchase.
+Grand total: <%= @grand_total %>
+
+Items:
+<%= for item <- @line_items do %>- <%= item.quantity %>x <%= item.title %> (<%= item.line_total %>)
+<% end %>
+
+Shipping:
+Recipient: <%= @shipping_recipient %>
+Address 1: <%= @shipping_address_line1 %>
+<%= if @shipping_address_line2 do %>Address 2: <%= @shipping_address_line2 %>
+<% end %><%= if @shipping_city do %>City: <%= @shipping_city %>
+<% end %><%= if @shipping_region_code do %>Region: <%= @shipping_region_code %>
+<% end %><%= if @shipping_postal_code do %>Postal: <%= @shipping_postal_code %>
+<% end %>
+Need help? <%= @support_email %>

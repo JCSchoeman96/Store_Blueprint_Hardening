@@ -4,7 +4,11 @@ defmodule Store.Workers.DeliverEmailOutboxWorker do
   use Oban.Worker,
     queue: :comms,
     max_attempts: 10,
-    unique: [period: 300, fields: [:worker, :args]]
+    unique: [
+      period: 300,
+      fields: [:worker, :args],
+      states: [:available, :scheduled, :executing, :retryable]
+    ]
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"email_outbox_id" => outbox_id}}) when is_binary(outbox_id) do

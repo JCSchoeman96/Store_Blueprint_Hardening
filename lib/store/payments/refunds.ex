@@ -5,6 +5,7 @@ defmodule Store.Payments.Refunds do
 
   import Ash.Expr
   require Ash.Query
+  require Logger
 
   alias Ecto.Adapters.SQL
   alias Store.Admin.Authorization
@@ -54,7 +55,8 @@ defmodule Store.Payments.Refunds do
                order_id: request.order_id,
                payment_intent_id: request.payment_intent_id
              }
-           ) do
+           ),
+         :ok <- maybe_enqueue_refund_requested(refund) do
       {:ok, refund}
     end
   end
@@ -408,7 +410,9 @@ defmodule Store.Payments.Refunds do
   defp apply_refund_event(_refund, _payload, _event_type), do: :ok
 
   defp finalize_refund_success(%Refund{state: :succeeded} = refund, _payload) do
-    maybe_mark_order_refunded(refund.order_id, refund.payment_intent_id)
+    with :ok <- maybe_mark_order_refunded(refund.order_id, refund.payment_intent_id) do
+      maybe_enqueue_refund_processed(refund)
+    end
   end
 
   defp finalize_refund_success(%Refund{} = refund, payload) do
@@ -418,8 +422,10 @@ defmodule Store.Payments.Refunds do
     }
 
     with {:ok, updated_refund} <- update_refund(refund, :mark_succeeded, attrs),
-         :ok <- ensure_refund_adjustment(updated_refund) do
-      maybe_mark_order_refunded(updated_refund.order_id, updated_refund.payment_intent_id)
+         :ok <- ensure_refund_adjustment(updated_refund),
+         :ok <-
+           maybe_mark_order_refunded(updated_refund.order_id, updated_refund.payment_intent_id) do
+      maybe_enqueue_refund_processed(updated_refund)
     end
   end
 
@@ -811,6 +817,34 @@ defmodule Store.Payments.Refunds do
 
       {:error, _reason} ->
         {:error, Error.new("INTERNAL_ERROR", "unable to read committed refunds")}
+    end
+  end
+
+  defp maybe_enqueue_refund_requested(%Refund{} = refund) do
+    case Store.Comms.enqueue_refund_requested_for_system(refund.id) do
+      {:ok, _outbox} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "refund_requested_enqueue_failed refund_id=#{refund.id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_enqueue_refund_processed(%Refund{} = refund) do
+    case Store.Comms.enqueue_refund_processed_for_system(refund.id) do
+      {:ok, _outbox} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "refund_processed_enqueue_failed refund_id=#{refund.id} reason=#{inspect(reason)}"
+        )
+
+        :ok
     end
   end
 end

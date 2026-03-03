@@ -57,6 +57,7 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 | GET | `/admin/tax-rates` | LiveView (`StoreWeb.Admin.TaxRates.IndexLive :index`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/tax-rates/new` | LiveView (`StoreWeb.Admin.TaxRates.IndexLive :new`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/tax-rates/:id/edit` | LiveView (`StoreWeb.Admin.TaxRates.IndexLive :edit`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/email-outbox` | LiveView (`StoreWeb.Admin.EmailOutbox.IndexLive :index`) | Yes | Restricted role surface; never index. |
 
 ## Internal / API / webhook routes
 
@@ -108,6 +109,7 @@ For each phase touching web routes, run a route smoke pass and record tested URL
 - `/admin/shipping-zones`
 - `/admin/shipping-rates`
 - `/admin/tax-rates`
+- `/admin/email-outbox`
 
 When catalog/checkout routes exist, extend this smoke pass to:
 - `/shop`

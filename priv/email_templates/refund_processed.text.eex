@@ -1,0 +1,8 @@
+Refund processed for order <%= @order_ref %>
+
+Your refund has been processed.
+Refund amount: <%= @refund_amount %>
+Reason: <%= @refund_reason %>
+Current refund state: <%= @refund_state %>
+
+Need help? <%= @support_email %>

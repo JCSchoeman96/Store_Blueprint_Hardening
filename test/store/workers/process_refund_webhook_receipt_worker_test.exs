@@ -5,6 +5,7 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Comms.EmailOutbox
   alias Store.Orders.{Order, OrderLineItem}
   alias Store.Payments.{PaymentIntent, Refund, RefundAttempt, WebhookReceipt}
   alias Store.Support.Time
@@ -32,6 +33,13 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
                actor: admin,
                context: context
              )
+
+    assert 2 ==
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(template_kind == :refund_requested and order_id == ^order.id)
+             )
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
 
     receipt_a =
       create_refund_webhook_receipt!(
@@ -66,6 +74,13 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
 
     assert attempt_count == 1
 
+    assert 1 ==
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(refund_id == ^refund_a.id and template_kind == :refund_processed)
+             )
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
     receipt_b =
       create_refund_webhook_receipt!(
         "stripe",
@@ -86,10 +101,20 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
 
     assert fetch_refund!(refund_b.id).state == :succeeded
     assert fetch_order!(order.id).state == :refunded
+
+    assert 2 ==
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(template_kind == :refund_processed and order_id == ^order.id)
+             )
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
   end
 
   defp create_refundable_order_fixture! do
-    order = create_order!()
+    customer =
+      TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_refund_customer"))
+
+    order = create_order!(customer.id)
     paid_order = mark_order_paid!(order)
     payment_intent = create_succeeded_payment_intent!(paid_order.id, 10_000, "USD")
     create_order_snapshot_line_item!(paid_order.id, 10_000, "USD")
@@ -97,9 +122,9 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
     %{order: paid_order, payment_intent: payment_intent}
   end
 
-  defp create_order! do
+  defp create_order!(user_id) do
     Order
-    |> Ash.Changeset.for_create(:create, %{order_ref: unique_order_ref()})
+    |> Ash.Changeset.for_create(:create, %{order_ref: unique_order_ref(), user_id: user_id})
     |> Ash.create!(domain: Store.Orders, authorize?: false)
   end
 

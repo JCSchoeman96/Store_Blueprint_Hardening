@@ -87,6 +87,7 @@ defmodule StoreWeb.Router do
       live "/admin/shipping-rates/new", Admin.ShippingRates.IndexLive, :new
       live "/admin/shipping-rates/:id/edit", Admin.ShippingRates.IndexLive, :edit
       live "/admin/fulfillment", Admin.Fulfillment.IndexLive, :index
+      live "/admin/email-outbox", Admin.EmailOutbox.IndexLive, :index
       live "/admin/tax-rates", Admin.TaxRates.IndexLive, :index
       live "/admin/tax-rates/new", Admin.TaxRates.IndexLive, :new
       live "/admin/tax-rates/:id/edit", Admin.TaxRates.IndexLive, :edit

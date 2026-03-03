@@ -1,0 +1,20 @@
+<h1>Order <%= @order_ref %> receipt</h1>
+<p>Thanks for your purchase.</p>
+<p><strong>Grand total:</strong> <%= @grand_total %></p>
+
+<h2>Items</h2>
+<ul>
+<%= for item <- @line_items do %>
+  <li><%= item.quantity %>x <%= item.title %> (<%= item.line_total %>)</li>
+<% end %>
+</ul>
+
+<h2>Shipping</h2>
+<p><strong>Recipient:</strong> <%= @shipping_recipient %></p>
+<p><strong>Address 1:</strong> <%= @shipping_address_line1 %></p>
+<%= if @shipping_address_line2 do %><p><strong>Address 2:</strong> <%= @shipping_address_line2 %></p><% end %>
+<%= if @shipping_city do %><p><strong>City:</strong> <%= @shipping_city %></p><% end %>
+<%= if @shipping_region_code do %><p><strong>Region:</strong> <%= @shipping_region_code %></p><% end %>
+<%= if @shipping_postal_code do %><p><strong>Postal:</strong> <%= @shipping_postal_code %></p><% end %>
+
+<p>Need help? <%= @support_email %></p>

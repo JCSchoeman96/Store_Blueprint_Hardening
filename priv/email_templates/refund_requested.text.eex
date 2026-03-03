@@ -1,0 +1,8 @@
+Refund requested for order <%= @order_ref %>
+
+We have received your refund request.
+Requested amount: <%= @refund_amount %>
+Reason: <%= @refund_reason %>
+
+We will notify you once processing is completed.
+Need help? <%= @support_email %>
