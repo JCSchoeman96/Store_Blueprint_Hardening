@@ -41,3 +41,6 @@ store-*.tar
 npm-debug.log
 /assets/node_modules/
 
+
+# never commit zip artifacts
+*.zip
