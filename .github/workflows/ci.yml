@@ -79,6 +79,8 @@ jobs:
           done
           echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
+      - name: Initialize Database
+        run: mix ash_postgres.create && mix ash_postgres.migrate
 
       - name: Run required check gate
         run: mix check
