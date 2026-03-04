@@ -64,6 +64,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:create_variant_for_admin, 3},
         {:update_variant_for_admin, 3},
         {:archive_variant_for_admin, 2},
+        {:delete_variant_for_admin, 2},
         {:set_variant_selection_for_admin, 4},
         {:delete_variant_selection_for_admin, 2}
       ]

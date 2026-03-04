@@ -45,6 +45,7 @@ defmodule Store.Support.Errors.ErrorCodes do
     "PAYMENT_PROVIDER_UNSUPPORTED",
     "SLUG_TAKEN",
     "SKU_TAKEN",
+    "VARIANT_IN_USE",
     "DIGITAL_GRANT_NOT_FOUND",
     "DIGITAL_GRANT_DENIED",
     "DIGITAL_GRANT_EXPIRED",

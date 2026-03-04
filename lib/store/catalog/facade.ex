@@ -29,6 +29,14 @@ defmodule Store.Catalog.Facade do
   alias Store.Support.Errors.Error
   alias Store.Support.Errors.Normalize
 
+  @variant_delete_blocking_constraints [
+    "products_default_variant_id_fkey",
+    "cart_items_variant_id_fkey",
+    "subscription_items_variant_id_fkey"
+  ]
+
+  @variant_delete_blocking_constraints_set MapSet.new(@variant_delete_blocking_constraints)
+
   @spec list_products_for_public(map() | nil, ProductIndexQuery.t()) ::
           {:ok, [Product.t()]} | {:error, term()}
   def list_products_for_public(actor, %ProductIndexQuery{} = query) do
@@ -378,6 +386,26 @@ defmodule Store.Catalog.Facade do
     end
   end
 
+  @spec delete_variant_for_admin(map(), Ecto.UUID.t()) :: :ok | {:error, term()}
+  def delete_variant_for_admin(actor, variant_id) when is_map(actor) and is_binary(variant_id) do
+    with %Variant{} = variant <- Repo.get(Variant, variant_id),
+         {:ok, _destroyed} <-
+           variant
+           |> Ash.Changeset.for_destroy(:destroy, %{})
+           |> Ash.destroy(domain: Catalog, actor: actor)
+           |> normalize_variant_delete_result() do
+      _ = AvailabilityCache.invalidate_product(variant.product_id)
+      _ = StockFastPath.invalidate_variant_ids([variant.id])
+      :ok
+    else
+      nil -> {:error, Error.new("NOT_FOUND", "variant not found")}
+      {:error, _} = error -> error
+    end
+  end
+
+  def delete_variant_for_admin(_actor, _variant_id),
+    do: {:error, Error.new("VALIDATION_ERROR", "actor and variant_id are required")}
+
   @spec set_variant_selection_for_admin(map(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, VariantOptionSelection.t()} | {:error, term()}
   def set_variant_selection_for_admin(actor, variant_id, option_id, value_id)
@@ -569,6 +597,76 @@ defmodule Store.Catalog.Facade do
     |> select([variant], variant.id)
     |> Repo.all()
   end
+
+  defp normalize_variant_delete_result({:ok, result}), do: {:ok, result}
+
+  defp normalize_variant_delete_result({:error, error}) do
+    case find_variant_delete_blocking_constraint(error) do
+      nil ->
+        {:error, Normalize.normalize(error)}
+
+      _constraint ->
+        {:error,
+         Error.new(
+           "VARIANT_IN_USE",
+           "variant is still referenced by existing cart or subscription records"
+         )}
+    end
+  end
+
+  defp find_variant_delete_blocking_constraint(error) do
+    error
+    |> collect_constraints(MapSet.new())
+    |> Enum.find(&MapSet.member?(@variant_delete_blocking_constraints_set, &1))
+  end
+
+  defp collect_constraints(%Ecto.ConstraintError{constraint: constraint}, acc)
+       when is_binary(constraint) do
+    MapSet.put(acc, constraint)
+  end
+
+  defp collect_constraints(%Postgrex.Error{postgres: postgres}, acc) when is_map(postgres) do
+    case {Map.get(postgres, :code), Map.get(postgres, :constraint)} do
+      {code, constraint}
+      when code in [:foreign_key_violation, "23503"] and is_binary(constraint) ->
+        MapSet.put(acc, constraint)
+
+      _ ->
+        acc
+    end
+  end
+
+  defp collect_constraints({key, constraint}, acc)
+       when key in [:constraint_name, :constraint, "constraint_name", "constraint"] and
+              is_binary(constraint) do
+    MapSet.put(acc, constraint)
+  end
+
+  defp collect_constraints(value, acc) when is_binary(value) do
+    Enum.reduce(@variant_delete_blocking_constraints, acc, fn constraint, reduced ->
+      if String.contains?(value, constraint) do
+        MapSet.put(reduced, constraint)
+      else
+        reduced
+      end
+    end)
+  end
+
+  defp collect_constraints(%{} = value, acc) do
+    Enum.reduce(Map.values(value), acc, &collect_constraints/2)
+  end
+
+  defp collect_constraints(value, acc) when is_list(value) do
+    Enum.reduce(value, acc, &collect_constraints/2)
+  end
+
+  defp collect_constraints(value, acc) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.reduce(acc, &collect_constraints/2)
+  end
+
+  defp collect_constraints(_value, acc), do: acc
 
   defp normalize_result({:ok, result}), do: {:ok, result}
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}

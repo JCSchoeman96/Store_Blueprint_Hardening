@@ -193,6 +193,10 @@ defmodule Store.Catalog.Variant do
       change(set_attribute(:status, :archived))
       change(&sync_signature_after_action/2)
     end
+
+    destroy :destroy do
+      require_atomic?(false)
+    end
   end
 
   postgres do
@@ -216,7 +220,7 @@ defmodule Store.Catalog.Variant do
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})
     end
 
-    policy action_type([:create, :update]) do
+    policy action_type([:create, :update, :destroy]) do
       access_type(:runtime)
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
     end

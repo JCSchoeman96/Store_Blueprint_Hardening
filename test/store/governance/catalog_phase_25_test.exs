@@ -1,6 +1,7 @@
 defmodule Store.Governance.CatalogPhase25Test do
   use Store.DataCase, async: false
 
+  alias Store.Carts.{Cart, CartItem}
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Carts.Inputs.CartItemInput
 
@@ -17,6 +18,7 @@ defmodule Store.Governance.CatalogPhase25Test do
   alias Store.Catalog.Facade, as: CatalogFacade
   alias Store.Catalog.VariantResolver
   alias Store.Repo
+  alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
 
   test "active variant requires required option completeness" do
@@ -234,6 +236,46 @@ defmodule Store.Governance.CatalogPhase25Test do
     assert {:ok, input_update} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 2})
     assert {:error, error} = CartsFacade.update_item_qty_for_user(nil, token, input_update)
     assert error.code == "OUT_OF_STOCK"
+  end
+
+  test "variant delete maps cart FK block to stable error" do
+    admin = admin_actor!()
+    published = published_product!(admin, "phase25-delete-variant", "P25-DEL-BASE")
+    variant = create_variant!(admin, published.id, "P25-DEL-CART", :active)
+    variant_id = variant.id
+
+    cart =
+      Cart
+      |> Ash.Changeset.for_create(:create, %{token: Ash.UUIDv7.generate()})
+      |> Ash.create!(domain: Store.Carts, authorize?: false, context: %{system?: true})
+
+    _cart_item =
+      CartItem
+      |> Ash.Changeset.for_create(:create, %{cart_id: cart.id, variant_id: variant_id, qty: 1})
+      |> Ash.create!(domain: Store.Carts, authorize?: false, context: %{system?: true})
+
+    assert {:error, error} = CatalogFacade.delete_variant_for_admin(admin, variant_id)
+    assert error.code == "VARIANT_IN_USE"
+    assert error.message == "variant is still referenced by existing cart or subscription records"
+
+    assert %Variant{id: ^variant_id} = Repo.get(Variant, variant_id)
+  end
+
+  test "variant delete maps subscription item FK block to stable error" do
+    admin = admin_actor!()
+    customer = SubscriptionsFixtures.create_customer!("phase25-delete-sub-customer")
+    %{product: product} = SubscriptionsFixtures.create_subscription_sellable!()
+    variant = create_variant!(admin, product.id, "P25-DEL-SUB", :active)
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    _subscription = SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan)
+
+    assert {:error, error} = CatalogFacade.delete_variant_for_admin(admin, variant.id)
+    assert error.code == "VARIANT_IN_USE"
+    assert error.message == "variant is still referenced by existing cart or subscription records"
+
+    variant_id = variant.id
+    assert %Variant{id: ^variant_id} = Repo.get(Variant, variant_id)
   end
 
   defp admin_actor! do

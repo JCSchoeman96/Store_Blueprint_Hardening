@@ -66,6 +66,7 @@ Payments:
 Catalog/Content:
 - SLUG_TAKEN
 - SKU_TAKEN
+- VARIANT_IN_USE
 
 Digital fulfillment:
 - DIGITAL_GRANT_NOT_FOUND
