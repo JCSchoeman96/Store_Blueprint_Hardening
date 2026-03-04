@@ -13,6 +13,11 @@ jobs:
     env:
       MIX_ENV: test
       STORE_DB_PORT: 5433
+      PGHOST: localhost
+      PGPORT: 5433
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: store_test
 
     services:
       postgres:
@@ -39,6 +44,13 @@ jobs:
         with:
           version-file: .tool-versions
           version-type: strict
+
+      - name: Install system tools (rg + pg_isready)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep postgresql-client
+          rg --version
+          pg_isready --version
 
       - name: Cache Mix build and deps
         uses: actions/cache@v4
@@ -59,13 +71,13 @@ jobs:
       - name: Fetch deps
         run: mix deps.get
 
-      - name: Wait for Postgres
+      - name: Wait for Postgres (pg_isready)
         run: |
-          for i in {1..30}; do
-            nc -z localhost 5433 && exit 0
+          for i in {1..60}; do
+            pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" && exit 0
             sleep 1
           done
-          echo "Postgres did not become ready on port 5433"
+          echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
 
       - name: Run required check gate
@@ -81,6 +93,11 @@ jobs:
     env:
       MIX_ENV: test
       STORE_DB_PORT: 5433
+      PGHOST: localhost
+      PGPORT: 5433
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: store_test
 
     services:
       postgres:
@@ -108,6 +125,12 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
+      - name: Install system tools (pg_isready)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          pg_isready --version
+
       - name: Cache Mix build and deps
         uses: actions/cache@v4
         with:
@@ -127,13 +150,13 @@ jobs:
       - name: Fetch deps
         run: mix deps.get
 
-      - name: Wait for Postgres
+      - name: Wait for Postgres (pg_isready)
         run: |
-          for i in {1..30}; do
-            nc -z localhost 5433 && exit 0
+          for i in {1..60}; do
+            pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" && exit 0
             sleep 1
           done
-          echo "Postgres did not become ready on port 5433"
+          echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
 
       - name: Run strict PR tests
