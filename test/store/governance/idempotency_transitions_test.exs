@@ -25,7 +25,7 @@ defmodule Store.Governance.IdempotencyTransitionsTest do
 
     count =
       ProviderEvent
-      |> Ash.Query.filter(expr(provider == "stripe" and provider_event_id == "evt_001"))
+      |> Ash.Query.filter(expr(provider == :stripe and provider_event_id == "evt_001"))
       |> Ash.count!(domain: Store.Payments, authorize?: false)
 
     assert count == 1

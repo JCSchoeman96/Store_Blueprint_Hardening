@@ -159,7 +159,7 @@ defmodule StoreWeb.WebhookControllerTest do
   defp create_submitted_payment_intent! do
     payment_intent =
       PaymentIntent
-      |> Ash.Changeset.for_create(:create, %{})
+      |> Ash.Changeset.for_create(:create, %{provider: :stripe})
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 
     payment_intent

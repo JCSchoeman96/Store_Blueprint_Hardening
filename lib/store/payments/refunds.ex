@@ -11,7 +11,16 @@ defmodule Store.Payments.Refunds do
   alias Store.Admin.Authorization
   alias Store.Digital.Facade, as: DigitalFacade
   alias Store.Orders.{Order, OrderAdjustment, OrderLineItem, RefundAdjustment}
-  alias Store.Payments.{PaymentIntent, ProviderEvent, Refund, RefundAttempt, WebhookReceipt}
+
+  alias Store.Payments.{
+    PaymentIntent,
+    ProviderEvent,
+    Providers,
+    Refund,
+    RefundAttempt,
+    WebhookReceipt
+  }
+
   alias Store.Repo
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
@@ -26,6 +35,7 @@ defmodule Store.Payments.Refunds do
           required(:payment_intent_id) => String.t(),
           required(:requested_amount_minor) => integer(),
           required(:currency) => String.t(),
+          required(:provider) => Providers.provider(),
           optional(:reason) => String.t(),
           optional(:line_item_ids) => [String.t()],
           optional(:scope_kind) => :full_refund | :partial_refund | :shipping_refund | String.t()
@@ -581,8 +591,10 @@ defmodule Store.Payments.Refunds do
   defp normalize_request(attrs) do
     fields = extract_request_fields(attrs)
 
-    with :ok <- validate_request_fields(fields) do
-      {:ok, finalize_request_fields(fields)}
+    with {:ok, provider} <- normalize_provider(fields.provider),
+         normalized_fields <- Map.put(fields, :provider, provider),
+         :ok <- validate_request_fields(normalized_fields) do
+      {:ok, finalize_request_fields(normalized_fields)}
     end
   end
 
@@ -593,7 +605,7 @@ defmodule Store.Payments.Refunds do
       requested_amount_minor: attr(attrs, :requested_amount_minor),
       currency: attr(attrs, :currency),
       reason: attr(attrs, :reason, "unspecified"),
-      provider: attr(attrs, :provider, "stripe"),
+      provider: attr(attrs, :provider),
       provided_idempotency_key: attr(attrs, :idempotency_key),
       line_item_ids: attr(attrs, :line_item_ids, []),
       scope_kind: attr(attrs, :scope_kind, :partial_refund)
@@ -610,7 +622,6 @@ defmodule Store.Payments.Refunds do
       ),
       require_binary(fields.currency, "currency is required"),
       require_binary(fields.reason, "reason must be a string"),
-      require_binary(fields.provider, "provider must be a string"),
       require_list(fields.line_item_ids, "line_item_ids must be a list"),
       validate_scope_kind(fields.scope_kind),
       validate_line_item_ids(fields.line_item_ids)
@@ -667,6 +678,24 @@ defmodule Store.Payments.Refunds do
 
   defp validate_scope_kind(_scope_kind),
     do: {:error, Error.new("VALIDATION_ERROR", "scope_kind is invalid")}
+
+  defp normalize_provider(nil) do
+    {:error,
+     Error.new(
+       "PAYMENT_PROVIDER_SELECTION_REQUIRED",
+       "payment provider selection is required"
+     )}
+  end
+
+  defp normalize_provider(provider_input) do
+    case Providers.normalize_provider(provider_input) do
+      known when known in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
+        {:ok, known}
+
+      :unknown ->
+        {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported")}
+    end
+  end
 
   defp validate_line_item_ids(line_item_ids) when is_list(line_item_ids) do
     case Enum.find(line_item_ids, &(not valid_uuid?(&1))) do

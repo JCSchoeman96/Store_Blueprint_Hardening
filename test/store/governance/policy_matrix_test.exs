@@ -317,6 +317,8 @@ defmodule Store.Governance.PolicyMatrixTest do
   end
 
   defp create_payment_intent!(attrs) do
+    attrs = Map.put_new(attrs, :provider, :stripe)
+
     PaymentIntent
     |> Ash.Changeset.for_create(:create, attrs)
     |> Ash.create!(domain: Store.Payments, authorize?: false)

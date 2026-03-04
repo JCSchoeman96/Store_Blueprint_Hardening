@@ -28,6 +28,7 @@ defmodule Store.Governance.PostCommitNotificationsTest do
       payment_intent_id: payment_intent.id,
       requested_amount_minor: 1000,
       currency: "USD",
+      provider: :stripe,
       reason: "requested_by_admin",
       line_item_ids: [],
       idempotency_key: "refund:notify:#{System.unique_integer([:positive])}"
@@ -66,7 +67,10 @@ defmodule Store.Governance.PostCommitNotificationsTest do
   defp create_submitted_payment_intent!(order_id) do
     intent =
       PaymentIntent
-      |> Ash.Changeset.for_create(:create, %{order_id: order_id, amount_received_minor: 1_000})
+      |> Ash.Changeset.for_create(
+        :create,
+        %{order_id: order_id, amount_received_minor: 1_000, provider: :stripe}
+      )
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 
     intent
@@ -80,7 +84,8 @@ defmodule Store.Governance.PostCommitNotificationsTest do
       |> Ash.Changeset.for_create(:create, %{
         order_id: order_id,
         amount_received_minor: amount_received_minor,
-        currency: currency
+        currency: currency,
+        provider: :stripe
       })
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 

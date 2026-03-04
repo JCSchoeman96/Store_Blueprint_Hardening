@@ -45,6 +45,12 @@ defmodule Store.Catalog.Product do
       public?(true)
     end
 
+    attribute :product_kind, Store.Catalog.Types.ProductKind do
+      allow_nil?(false)
+      default(:simple)
+      public?(true)
+    end
+
     attribute :published_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -145,7 +151,7 @@ defmodule Store.Catalog.Product do
     end
 
     create :create_draft do
-      accept([:slug, :title, :subtitle, :description, :category_id])
+      accept([:slug, :title, :subtitle, :description, :category_id, :product_kind])
 
       argument :base_variant_sku, :string do
         allow_nil?(false)
@@ -189,7 +195,7 @@ defmodule Store.Catalog.Product do
 
     update :update_draft do
       require_atomic?(false)
-      accept([:slug, :title, :subtitle, :description, :category_id])
+      accept([:slug, :title, :subtitle, :description, :category_id, :product_kind])
       validate(fn changeset, _context -> require_current_state(changeset, [:draft]) end)
       change(&normalize_fields/2)
     end
@@ -235,6 +241,7 @@ defmodule Store.Catalog.Product do
       index([:status], name: "products_status_index")
       index([:category_id], name: "products_category_id_index")
       index([:published_at], name: "products_published_at_index")
+      index([:product_kind], name: "products_product_kind_index")
     end
   end
 

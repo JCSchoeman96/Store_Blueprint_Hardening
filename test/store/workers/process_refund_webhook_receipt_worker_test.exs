@@ -140,7 +140,8 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
       |> Ash.Changeset.for_create(:create, %{
         order_id: order_id,
         amount_received_minor: amount_received_minor,
-        currency: currency
+        currency: currency,
+        provider: :stripe
       })
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 
@@ -209,6 +210,7 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
       payment_intent_id: payment_intent_id,
       requested_amount_minor: amount_minor,
       currency: "USD",
+      provider: :stripe,
       reason: reason,
       line_item_ids: []
     }

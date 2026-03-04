@@ -21,6 +21,9 @@ defmodule StoreWeb.AccountLive do
           <.link navigate={~p"/account/downloads"} class="btn btn-sm">
             Downloads
           </.link>
+          <.link navigate={~p"/account/subscriptions"} class="btn btn-sm">
+            Subscriptions
+          </.link>
         </div>
       </section>
     </Layouts.app>

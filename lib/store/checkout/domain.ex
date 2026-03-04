@@ -23,6 +23,7 @@ defmodule Store.Checkout do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.QuoteHash
   alias Store.Shipping.Types.QuoteEvidence
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias Store.Repo
   alias Store.Support.AshNotifications
@@ -118,20 +119,7 @@ defmodule Store.Checkout do
     with :ok <- ensure_priced_snapshot_and_reservations(checkout),
          {:ok, line_items} <- fetch_order_line_items(checkout.order.id),
          :ok <- ensure_line_items_present(line_items),
-         {:ok, quote_evidence} <- quote_evidence_from_order(checkout.order),
-         :ok <- validate_quote_integrity(quote_evidence),
-         {:ok, tax_rates} <- fetch_tax_rates(checkout.order.shipping_country_code),
-         {:ok, output} <-
-           evaluate_tax_shipping_from_quote_evidence(
-             line_items,
-             checkout.order,
-             quote_evidence,
-             tax_rates
-           ),
-         {:ok, _adjustment, _idempotent?} <-
-           ensure_shipping_adjustment(checkout.order, quote_evidence),
-         {:ok, _snapshot} <- Store.Orders.write_tax_shipping_snapshot(checkout.order.id, output),
-         {:ok, _updated_order} <- finalize_order_totals(checkout.order, output) do
+         {:ok, _updated_order} <- finalize_order_for_line_items(checkout.order, line_items) do
       get_checkout_for_user(actor, checkout_key)
     end
   end
@@ -156,8 +144,15 @@ defmodule Store.Checkout do
 
   defp fallback_line_items_from_cart(%{draft: %CheckoutDraft{} = draft}, []) do
     with {:ok, cart_items} <- cart_items_by_checkout_draft(draft),
-         {variants_by_id, products_by_id} <- catalog_maps(cart_items) do
-      {:ok, build_checkout_line_items_from_cart(cart_items, variants_by_id, products_by_id)}
+         {variants_by_id, products_by_id} <- catalog_maps(cart_items),
+         {:ok, plans_by_item_id} <- resolve_subscription_plans_for_items(cart_items) do
+      {:ok,
+       build_checkout_line_items_from_cart(
+         cart_items,
+         variants_by_id,
+         products_by_id,
+         plans_by_item_id
+       )}
     else
       {:error, _reason} -> {:ok, []}
     end
@@ -165,16 +160,22 @@ defmodule Store.Checkout do
 
   defp fallback_line_items_from_cart(_checkout, _line_items), do: {:ok, []}
 
-  defp build_checkout_line_items_from_cart(cart_items, variants_by_id, products_by_id) do
+  defp build_checkout_line_items_from_cart(
+         cart_items,
+         variants_by_id,
+         products_by_id,
+         plans_by_item_id
+       ) do
     cart_items
     |> Enum.with_index(1)
     |> Enum.map(fn {item, line_no} ->
       variant = Map.get(variants_by_id, item.variant_id)
       product = variant && Map.get(products_by_id, variant.product_id)
-      unit_price = if variant, do: variant.price_minor, else: 0
+      plan = Map.get(plans_by_item_id, item.id)
+      unit_price = line_unit_price_for_item(item, variant, plan)
       quantity = item.qty || 0
       line_total = unit_price * quantity
-      currency = if variant, do: variant.currency_code, else: "USD"
+      currency = line_currency_for_item(item, variant, plan) || "USD"
 
       %{
         id: item.id,
@@ -314,7 +315,8 @@ defmodule Store.Checkout do
   end
 
   defp create_checkout!(locked_cart, locked_items, variants_by_id) do
-    currency = extract_single_currency!(locked_items, variants_by_id)
+    plans_by_item_id = resolve_subscription_plans_for_items!(locked_items)
+    currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
     as_of = locked_cart.updated_at || DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     begin_attrs = %{
@@ -323,7 +325,14 @@ defmodule Store.Checkout do
       as_of: as_of,
       pricing_contract_version: "phase-21-v1",
       tax_shipping_inputs: %{},
-      line_items: Enum.map(locked_items, &%{variant_id: &1.variant_id, quantity: &1.qty})
+      line_items:
+        Enum.map(locked_items, fn item ->
+          %{
+            variant_id: item.variant_id,
+            subscription_plan_id: resolved_plan_id_for_item(item, plans_by_item_id),
+            quantity: item.qty
+          }
+        end)
     }
 
     with {:ok, begin_checkout} <-
@@ -399,7 +408,14 @@ defmodule Store.Checkout do
     |> Repo.update!()
   end
 
-  defp write_priced_snapshot(order_id, locked_items, variants_by_id, products_by_id, currency) do
+  defp write_priced_snapshot(
+         order_id,
+         locked_items,
+         variants_by_id,
+         products_by_id,
+         plans_by_item_id,
+         currency
+       ) do
     lines =
       locked_items
       |> Enum.sort_by(fn item -> BinaryUuidSort.normalize_raw16!(item.variant_id) end)
@@ -407,7 +423,9 @@ defmodule Store.Checkout do
       |> Enum.map(fn {item, line_no} ->
         variant = Map.fetch!(variants_by_id, item.variant_id)
         product = Map.fetch!(products_by_id, variant.product_id)
-        line_total = variant.price_minor * item.qty
+        plan = Map.get(plans_by_item_id, item.id)
+        unit_price_minor = line_unit_price_for_item(item, variant, plan)
+        line_total = unit_price_minor * item.qty
 
         %{
           line_id: item.variant_id,
@@ -416,8 +434,12 @@ defmodule Store.Checkout do
           product_title_snapshot: product.title,
           variant_title_snapshot: variant.title,
           quantity: item.qty,
-          unit_price_minor: variant.price_minor,
+          unit_price_minor: unit_price_minor,
           line_total_minor: line_total,
+          subscription_plan_id_snapshot: plan && plan.id,
+          subscription_plan_key_snapshot: plan && plan.key,
+          subscription_interval_unit_snapshot: plan && Atom.to_string(plan.interval_unit),
+          subscription_interval_count_snapshot: plan && plan.interval_count,
           discount_allocated_minor: 0,
           net_line_total_minor: line_total,
           tax_category_snapshot: "STANDARD",
@@ -457,8 +479,9 @@ defmodule Store.Checkout do
       :ok = ensure_cart_not_empty!(locked_items)
       {variants_by_id, products_by_id} = catalog_maps(locked_items)
       :ok = ensure_published_sellables!(locked_items, variants_by_id, products_by_id)
+      plans_by_item_id = resolve_subscription_plans_for_items!(locked_items)
 
-      currency = extract_single_currency!(locked_items, variants_by_id)
+      currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
 
       with {:ok, _snapshot} <-
              write_priced_snapshot(
@@ -466,6 +489,7 @@ defmodule Store.Checkout do
                locked_items,
                variants_by_id,
                products_by_id,
+               plans_by_item_id,
                currency
              ),
            {:ok, _reservations} <-
@@ -624,8 +648,9 @@ defmodule Store.Checkout do
 
   defp cart_currency_by_draft(%CheckoutDraft{} = draft) do
     with {:ok, cart_items} <- cart_items_by_checkout_draft(draft),
-         {variants_by_id, _products_by_id} <- catalog_maps(cart_items) do
-      infer_single_currency(cart_items, variants_by_id)
+         {variants_by_id, _products_by_id} <- catalog_maps(cart_items),
+         {:ok, plans_by_item_id} <- resolve_subscription_plans_for_items(cart_items) do
+      infer_single_currency(cart_items, variants_by_id, plans_by_item_id)
     else
       _ -> nil
     end
@@ -968,6 +993,47 @@ defmodule Store.Checkout do
     }
   end
 
+  defp finalize_order_for_line_items(order, line_items) do
+    if subscription_only_line_items?(line_items) do
+      output = subscription_only_totals_output(line_items, order)
+      finalize_order_totals(order, output)
+    else
+      with {:ok, quote_evidence} <- quote_evidence_from_order(order),
+           :ok <- validate_quote_integrity(quote_evidence),
+           {:ok, tax_rates} <- fetch_tax_rates(order.shipping_country_code),
+           {:ok, output} <-
+             evaluate_tax_shipping_from_quote_evidence(
+               line_items,
+               order,
+               quote_evidence,
+               tax_rates
+             ),
+           {:ok, _adjustment, _idempotent?} <- ensure_shipping_adjustment(order, quote_evidence),
+           {:ok, _snapshot} <- Store.Orders.write_tax_shipping_snapshot(order.id, output) do
+        finalize_order_totals(order, output)
+      end
+    end
+  end
+
+  defp subscription_only_line_items?(line_items) when is_list(line_items) do
+    line_items != [] and
+      Enum.all?(line_items, fn line_item ->
+        is_binary(Map.get(line_item, :subscription_plan_id_snapshot))
+      end)
+  end
+
+  defp subscription_only_totals_output(line_items, order) do
+    subtotal_minor = Enum.reduce(line_items, 0, &(&1.net_line_total_minor + &2))
+    currency = line_currency(line_items) || order.currency_code || "USD"
+
+    %{
+      currency: String.upcase(currency),
+      subtotal_minor: subtotal_minor,
+      shipping_cost_minor_effective: 0,
+      order_total_minor: subtotal_minor
+    }
+  end
+
   defp finalize_order_totals(order, output) do
     attrs = %{
       currency_code: output.currency,
@@ -1071,14 +1137,15 @@ defmodule Store.Checkout do
     :ok
   end
 
-  defp extract_single_currency!(items, variants_by_id) do
+  defp extract_single_currency!(items, variants_by_id, plans_by_item_id) do
     currencies =
       items
       |> Enum.map(fn item ->
-        case Map.get(variants_by_id, item.variant_id) do
-          %Variant{currency_code: code} when is_binary(code) -> String.upcase(code)
-          _ -> nil
-        end
+        line_currency_for_item(
+          item,
+          Map.get(variants_by_id, item.variant_id),
+          Map.get(plans_by_item_id, item.id)
+        )
       end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
@@ -1090,14 +1157,15 @@ defmodule Store.Checkout do
     end
   end
 
-  defp infer_single_currency(items, variants_by_id) do
+  defp infer_single_currency(items, variants_by_id, plans_by_item_id) do
     currencies =
       items
       |> Enum.map(fn item ->
-        case Map.get(variants_by_id, item.variant_id) do
-          %Variant{currency_code: code} when is_binary(code) -> String.upcase(code)
-          _ -> nil
-        end
+        line_currency_for_item(
+          item,
+          Map.get(variants_by_id, item.variant_id),
+          Map.get(plans_by_item_id, item.id)
+        )
       end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
@@ -1205,6 +1273,60 @@ defmodule Store.Checkout do
         |> Repo.one() || 0
 
       selected_required_count == length(required_option_ids)
+    end
+  end
+
+  defp resolve_subscription_plans_for_items(items) when is_list(items) do
+    Enum.reduce_while(items, {:ok, %{}}, fn item, {:ok, acc} ->
+      explicit_plan_id = Map.get(item, :subscription_plan_id)
+
+      case SubscriptionsFacade.resolve_variant_subscription_plan_for_system(
+             item.variant_id,
+             explicit_plan_id
+           ) do
+        {:ok, plan} ->
+          {:cont, {:ok, Map.put(acc, item.id, plan)}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp resolve_subscription_plans_for_items!([]), do: %{}
+
+  defp resolve_subscription_plans_for_items!(items) do
+    case resolve_subscription_plans_for_items(items) do
+      {:ok, plans_by_item_id} ->
+        plans_by_item_id
+
+      {:error, reason} ->
+        Repo.rollback(Normalize.normalize(reason))
+    end
+  end
+
+  defp line_unit_price_for_item(_item, _variant, %{amount_minor: amount_minor})
+       when is_integer(amount_minor),
+       do: amount_minor
+
+  defp line_unit_price_for_item(_item, %Variant{price_minor: price_minor}, _plan)
+       when is_integer(price_minor),
+       do: price_minor
+
+  defp line_unit_price_for_item(_item, _variant, _plan), do: 0
+
+  defp line_currency_for_item(_item, _variant, %{currency: currency}) when is_binary(currency),
+    do: String.upcase(currency)
+
+  defp line_currency_for_item(_item, %Variant{currency_code: code}, _plan) when is_binary(code),
+    do: String.upcase(code)
+
+  defp line_currency_for_item(_item, _variant, _plan), do: nil
+
+  defp resolved_plan_id_for_item(item, plans_by_item_id) do
+    case Map.get(plans_by_item_id, item.id) do
+      %{id: plan_id} -> plan_id
+      _ -> nil
     end
   end
 

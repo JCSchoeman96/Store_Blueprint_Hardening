@@ -37,6 +37,7 @@ defmodule Store.Payments.RefundsDigitalRevocationTest do
                  payment_intent_id: payment_intent.id,
                  requested_amount_minor: 1_000,
                  currency: "USD",
+                 provider: :stripe,
                  reason: "line-scoped",
                  line_item_ids: [line_a.id],
                  scope_kind: :partial_refund
@@ -82,6 +83,7 @@ defmodule Store.Payments.RefundsDigitalRevocationTest do
                  payment_intent_id: payment_intent.id,
                  requested_amount_minor: 100,
                  currency: "USD",
+                 provider: :stripe,
                  reason: "shipping-only",
                  line_item_ids: [],
                  scope_kind: :shipping_refund
@@ -186,7 +188,8 @@ defmodule Store.Payments.RefundsDigitalRevocationTest do
       |> Ash.Changeset.for_create(:create, %{
         order_id: order_id,
         amount_received_minor: amount_received_minor,
-        currency: currency
+        currency: currency,
+        provider: :stripe
       })
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 

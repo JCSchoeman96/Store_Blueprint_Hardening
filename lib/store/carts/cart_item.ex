@@ -33,17 +33,23 @@ defmodule Store.Carts.CartItem do
       attribute_writable?(true)
       public?(true)
     end
+
+    belongs_to :subscription_plan, Store.Subscriptions.SubscriptionPlan do
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(true)
+    end
   end
 
   identities do
-    identity(:unique_cart_variant, [:cart_id, :variant_id])
+    identity(:unique_cart_variant_plan, [:cart_id, :variant_id, :subscription_plan_id])
   end
 
   actions do
     defaults([:read])
 
     create :create do
-      accept([:cart_id, :variant_id, :qty])
+      accept([:cart_id, :variant_id, :subscription_plan_id, :qty])
     end
 
     update :update do
@@ -60,6 +66,7 @@ defmodule Store.Carts.CartItem do
     custom_indexes do
       index([:cart_id], name: "cart_items_cart_id_index")
       index([:variant_id], name: "cart_items_variant_id_index")
+      index([:subscription_plan_id], name: "cart_items_subscription_plan_id_index")
     end
   end
 

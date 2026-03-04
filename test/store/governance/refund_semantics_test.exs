@@ -181,7 +181,8 @@ defmodule Store.Governance.RefundSemanticsTest do
       |> Ash.Changeset.for_create(:create, %{
         order_id: order_id,
         amount_received_minor: amount_received_minor,
-        currency: currency
+        currency: currency,
+        provider: :stripe
       })
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 
@@ -219,6 +220,7 @@ defmodule Store.Governance.RefundSemanticsTest do
       payment_intent_id: payment_intent_id,
       requested_amount_minor: amount_minor,
       currency: currency,
+      provider: :stripe,
       reason: "requested_by_admin",
       line_item_ids: []
     }

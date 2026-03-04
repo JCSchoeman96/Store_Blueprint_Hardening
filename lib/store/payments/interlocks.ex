@@ -14,15 +14,17 @@ defmodule Store.Payments.Interlocks do
   alias Store.Payments.{PaymentAttempt, PaymentIntent, ProviderEvent, Providers, WebhookReceipt}
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Repo
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.Governance.Idempotency
+  alias Store.Workers.EnsureSubscriptionsForPaidOrderWorker
 
   @type payment_intent_request :: %{
           required(:order_id) => String.t(),
           required(:amount_received_minor) => integer(),
           required(:currency) => String.t(),
-          optional(:provider) => String.t(),
+          optional(:provider) => Providers.provider(),
           optional(:payment_intent_key) => String.t()
         }
 
@@ -92,6 +94,7 @@ defmodule Store.Payments.Interlocks do
            ),
          :ok <- maybe_enqueue_fulfillment(result),
          :ok <- maybe_enqueue_digital_grants(result),
+         :ok <- maybe_enqueue_subscriptions(result),
          :ok <- maybe_enqueue_order_receipt(result) do
       {:ok, result}
     else
@@ -112,44 +115,44 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp normalize_payment_intent_request(attrs) do
-    provider =
-      attrs
-      |> attr(:provider, "stripe")
-      |> provider_name()
-
     order_id = attr(attrs, :order_id)
     amount_received_minor = attr(attrs, :amount_received_minor)
     currency = attr(attrs, :currency)
+    provider_input = attr(attrs, :provider)
 
-    payment_intent_key =
-      attr(
-        attrs,
-        :payment_intent_key,
-        if(
-          is_binary(order_id) and is_integer(amount_received_minor) and is_binary(currency),
-          do: Idempotency.payment_intent_key(order_id, amount_received_minor, currency, provider),
-          else: nil
-        )
-      )
-
-    request = %{
-      order_id: order_id,
-      amount_received_minor: amount_received_minor,
-      currency: currency,
-      provider: provider,
-      payment_intent_key: payment_intent_key
-    }
-
-    with :ok <- require_binary(request.order_id, "order_id is required"),
+    with {:ok, provider} <- normalize_provider(provider_input),
+         :ok <- require_binary(order_id, "order_id is required"),
          :ok <-
            require_non_negative_integer(
-             request.amount_received_minor,
+             amount_received_minor,
              "amount_received_minor must be >= 0"
            ),
-         :ok <- require_binary(request.currency, "currency is required"),
-         :ok <- require_binary(request.provider, "provider is required"),
-         :ok <- require_binary(request.payment_intent_key, "payment_intent_key is required") do
-      {:ok, request}
+         :ok <- require_binary(currency, "currency is required"),
+         payment_intent_key =
+           attr(
+             attrs,
+             :payment_intent_key,
+             if(
+               is_binary(order_id) and is_integer(amount_received_minor) and is_binary(currency),
+               do:
+                 Idempotency.payment_intent_key(
+                   order_id,
+                   amount_received_minor,
+                   currency,
+                   provider
+                 ),
+               else: nil
+             )
+           ),
+         :ok <- require_binary(payment_intent_key, "payment_intent_key is required") do
+      {:ok,
+       %{
+         order_id: order_id,
+         amount_received_minor: amount_received_minor,
+         currency: currency,
+         provider: provider,
+         payment_intent_key: payment_intent_key
+       }}
     end
   end
 
@@ -269,11 +272,10 @@ defmodule Store.Payments.Interlocks do
      )}
   end
 
-  defp normalize_canonical_receipt(provider, payload)
-       when is_binary(provider) and is_map(payload) do
-    provider
-    |> Providers.normalize_provider()
-    |> Providers.normalize_webhook(payload)
+  defp normalize_canonical_receipt(provider, payload) when is_map(payload) do
+    with {:ok, normalized_provider} <- normalize_provider(provider) do
+      Providers.normalize_webhook(normalized_provider, payload)
+    end
   end
 
   defp normalize_canonical_receipt(_provider, _payload) do
@@ -281,11 +283,11 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp fetch_payment_intent_for_canonical(%CanonicalReceipt{} = canonical) do
-    provider = canonical.provider |> provider_name()
     provider_session_id = canonical.provider_session_id
     provider_payment_id = canonical.provider_payment_id
 
-    with {:ok, by_provider_session_id} <-
+    with {:ok, provider} <- normalize_provider(canonical.provider),
+         {:ok, by_provider_session_id} <-
            fetch_payment_intent_by_provider_session_id(provider, provider_session_id),
          {:ok, by_provider_payment_id} <-
            fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id) do
@@ -303,7 +305,7 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp fetch_payment_intent_by_provider_session_id(provider, provider_session_id)
-       when is_binary(provider) and is_binary(provider_session_id) do
+       when is_atom(provider) and is_binary(provider_session_id) do
     query =
       PaymentIntent
       |> Ash.Query.filter(
@@ -321,7 +323,7 @@ defmodule Store.Payments.Interlocks do
     do: {:ok, nil}
 
   defp fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id)
-       when is_binary(provider) and is_binary(provider_payment_id) do
+       when is_atom(provider) and is_binary(provider_payment_id) do
     query =
       PaymentIntent
       |> Ash.Query.filter(
@@ -378,52 +380,52 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp ingest_provider_event(receipt, canonical) do
-    payload_hash =
-      canonical.raw_payload
-      |> Idempotency.payload_hash()
+    with {:ok, provider} <- normalize_provider(canonical.provider || receipt.provider) do
+      payload_hash =
+        canonical.raw_payload
+        |> Idempotency.payload_hash()
 
-    attrs = %{
-      provider: provider_name(canonical.provider || receipt.provider),
-      provider_event_id: canonical.provider_event_id,
-      provider_event_key:
-        Idempotency.provider_event_key(
-          provider_name(canonical.provider || receipt.provider),
-          canonical.provider_event_id
-        ),
-      event_type: canonical.event_type,
-      payload_sha256: payload_hash,
-      received_at: receipt.received_at
-    }
+      attrs = %{
+        provider: provider,
+        provider_event_id: canonical.provider_event_id,
+        provider_event_key: Idempotency.provider_event_key(provider, canonical.provider_event_id),
+        event_type: canonical.event_type,
+        payload_sha256: payload_hash,
+        received_at: receipt.received_at
+      }
 
-    ProviderEvent
-    |> Ash.Changeset.for_create(:ingest, attrs, context: %{system?: true})
-    |> Ash.create(payment_ash_opts([]))
-    |> case do
-      {:ok, event} -> {:ok, event.provider_event_key}
-      {:error, error} -> {:error, error}
+      ProviderEvent
+      |> Ash.Changeset.for_create(:ingest, attrs, context: %{system?: true})
+      |> Ash.create(payment_ash_opts([]))
+      |> case do
+        {:ok, event} -> {:ok, event.provider_event_key}
+        {:error, error} -> {:error, error}
+      end
     end
   end
 
   defp record_payment_attempt(payment_intent, receipt, canonical, provider_event_key) do
-    payload_hash =
-      canonical.raw_payload
-      |> Idempotency.payload_hash()
+    with {:ok, provider} <- normalize_provider(canonical.provider || receipt.provider) do
+      payload_hash =
+        canonical.raw_payload
+        |> Idempotency.payload_hash()
 
-    attrs = %{
-      payment_intent_id: payment_intent.id,
-      provider: provider_name(canonical.provider || receipt.provider),
-      provider_event_id: canonical.provider_event_id,
-      provider_event_key: provider_event_key,
-      attempt_key:
-        payment_attempt_key(provider_event_key, payment_intent.id, canonical.event_type),
-      outcome: payment_attempt_outcome(canonical.status),
-      payload_sha256: payload_hash,
-      attempted_at: DateTime.utc_now()
-    }
+      attrs = %{
+        payment_intent_id: payment_intent.id,
+        provider: provider,
+        provider_event_id: canonical.provider_event_id,
+        provider_event_key: provider_event_key,
+        attempt_key:
+          payment_attempt_key(provider_event_key, payment_intent.id, canonical.event_type),
+        outcome: payment_attempt_outcome(canonical.status),
+        payload_sha256: payload_hash,
+        attempted_at: DateTime.utc_now()
+      }
 
-    PaymentAttempt
-    |> Ash.Changeset.for_create(:record, attrs, context: %{system?: true})
-    |> Ash.create(payment_ash_opts([]))
+      PaymentAttempt
+      |> Ash.Changeset.for_create(:record, attrs, context: %{system?: true})
+      |> Ash.create(payment_ash_opts([]))
+    end
   end
 
   defp payment_attempt_key(provider_event_key, payment_intent_id, event_type) do
@@ -594,13 +596,26 @@ defmodule Store.Payments.Interlocks do
   defp maybe_enqueue_order_receipt(_result), do: :ok
 
   defp maybe_enqueue_fulfillment(%{applied?: true, order: %Order{} = order}) do
-    case FulfillmentFacade.enqueue_paid_order_fulfillment_for_system(order.id) do
-      {:ok, _job} ->
+    case SubscriptionsFacade.order_is_subscription_only_for_system(order.id) do
+      {:ok, true} ->
         :ok
+
+      {:ok, false} ->
+        case FulfillmentFacade.enqueue_paid_order_fulfillment_for_system(order.id) do
+          {:ok, _job} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "ensure_fulfillment_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+            )
+
+            :ok
+        end
 
       {:error, reason} ->
         Logger.warning(
-          "ensure_fulfillment_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+          "ensure_fulfillment_precheck_failed order_id=#{order.id} reason=#{inspect(reason)}"
         )
 
         :ok
@@ -624,6 +639,38 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp maybe_enqueue_digital_grants(_result), do: :ok
+
+  defp maybe_enqueue_subscriptions(%{applied?: true, order: %Order{} = order}) do
+    case SubscriptionsFacade.order_has_subscription_lines_for_system(order.id) do
+      {:ok, true} ->
+        %{"order_id" => order.id}
+        |> EnsureSubscriptionsForPaidOrderWorker.new()
+        |> Oban.insert()
+        |> case do
+          {:ok, _job} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "ensure_subscriptions_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+            )
+
+            :ok
+        end
+
+      {:ok, false} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "ensure_subscriptions_precheck_failed order_id=#{order.id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_enqueue_subscriptions(_result), do: :ok
 
   defp normalize_transaction_result({:ok, {:ok, result, notifications}})
        when is_list(notifications),
@@ -671,11 +718,23 @@ defmodule Store.Payments.Interlocks do
   defp require_non_negative_integer(_value, message),
     do: {:error, Error.new("VALIDATION_ERROR", message)}
 
-  defp provider_name(value) when is_atom(value),
-    do: value |> Atom.to_string() |> String.downcase()
+  defp normalize_provider(nil) do
+    {:error,
+     Error.new(
+       "PAYMENT_PROVIDER_SELECTION_REQUIRED",
+       "payment provider selection is required"
+     )}
+  end
 
-  defp provider_name(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
-  defp provider_name(_), do: "stripe"
+  defp normalize_provider(provider_input) do
+    case Providers.normalize_provider(provider_input) do
+      known when known in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
+        {:ok, known}
+
+      :unknown ->
+        {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported")}
+    end
+  end
 
   defp normalize_currency(value) when is_binary(value),
     do: value |> String.trim() |> String.upcase()

@@ -29,14 +29,19 @@ defmodule Store.Contracts.Phase21ContractsTest do
   end
 
   test "create intent input accepts provider only" do
-    assert {:ok, %CreateIntentForOrderInput{provider: :stripe}} =
-             CreateIntentForOrderInput.new(%{})
+    assert {:error, missing_provider_error} = CreateIntentForOrderInput.new(%{})
+    assert missing_provider_error.code == "PAYMENT_PROVIDER_SELECTION_REQUIRED"
 
     assert {:ok, %CreateIntentForOrderInput{provider: :stripe}} =
              CreateIntentForOrderInput.new(%{"provider" => "stripe"})
 
-    assert {:error, error} = CreateIntentForOrderInput.new(%{"bad" => "x"})
-    assert error.code == "VALIDATION_ERROR"
+    assert {:error, unsupported_provider_error} =
+             CreateIntentForOrderInput.new(%{"provider" => "bogus"})
+
+    assert unsupported_provider_error.code == "PAYMENT_PROVIDER_UNSUPPORTED"
+
+    assert {:error, unknown_key_error} = CreateIntentForOrderInput.new(%{"bad" => "x"})
+    assert unknown_key_error.code == "VALIDATION_ERROR"
   end
 
   test "web params adapters return typed inputs" do

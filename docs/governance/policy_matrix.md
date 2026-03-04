@@ -170,6 +170,23 @@ Digital checkout rule: customer-facing payment-intent creation is denied for gue
 
 CheckoutDraft access: user drafts require matching actor.user_id; guest drafts require matching cart_token. checkout_key is not bearer auth.
 
+### 5.11 Subscriptions (SubscriptionPlan, Subscription, RenewalAttempt)
+| Resource | Action | super_admin | admin | editor | support | customer |
+|---------|--------|-------------|-------|--------|---------|----------|
+| SubscriptionPlan | R(active) | YES | YES | NO | LIMITED | YES |
+| SubscriptionPlan | C/U/D | YES | YES | NO | NO | NO |
+| Subscription | R | YES | YES | NO | LIMITED | SELF** |
+| Subscription | X(cancel_at_period_end/cancel_now) | YES | YES | NO | NO | SELF** |
+| Subscription | X(activate/mark_past_due/reconcile_renewal) | SYSTEM | SYSTEM | SYSTEM | SYSTEM | SYSTEM |
+| RenewalAttempt | R | YES | YES | NO | LIMITED | NO |
+| RenewalAttempt | C/U | SYSTEM | SYSTEM | SYSTEM | SYSTEM | SYSTEM |
+
+### 5.12 Entitlements (EntitlementGrant)
+| Resource | Action | super_admin | admin | editor | support | customer |
+|---------|--------|-------------|-------|--------|---------|----------|
+| EntitlementGrant | R | YES | YES | NO | LIMITED | SELF** |
+| EntitlementGrant | C/U (issue/revoke/sync) | SYSTEM | SYSTEM | SYSTEM | SYSTEM | SYSTEM |
+
 ---
 
 ## 6) Test gates (MUST)

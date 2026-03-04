@@ -8,11 +8,23 @@ defmodule Store.MixProject do
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
-      preferred_cli_env: [precommit: :test, check: :test, "check.ci": :test, "check.types": :test],
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      dialyzer: dialyzer()
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        precommit: :test,
+        check: :test,
+        "check.ci": :test,
+        "check.static": :test,
+        "check.types": :test
+      ]
     ]
   end
 
@@ -99,6 +111,25 @@ defmodule Store.MixProject do
         "esbuild store --minify",
         "phx.digest"
       ],
+      "check.static": [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "check.req_usage",
+        "check.web_no_http",
+        "check.web_no_oban_enqueue",
+        "check.web_no_ash_query",
+        "check.web_no_direct_ash_calls",
+        "check.admin_live_no_direct_ash",
+        "check.surface_naming",
+        "check.no_ash_graphql_dep",
+        "check.api_v1_forward_only",
+        "check.no_repo_in_web",
+        "check.moduledoc",
+        "check.docs_notes",
+        "check.subscriptions_docs_sync",
+        "credo --strict",
+        "docs"
+      ],
       check: [
         "format --check-formatted",
         "compile --warnings-as-errors",
@@ -114,6 +145,7 @@ defmodule Store.MixProject do
         "check.no_repo_in_web",
         "check.moduledoc",
         "check.docs_notes",
+        "check.subscriptions_docs_sync",
         "test",
         "credo --strict",
         "docs"
@@ -121,6 +153,14 @@ defmodule Store.MixProject do
       "check.ci": ["check"],
       "check.types": ["dialyzer --format short"],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+    ]
+  end
+
+  defp dialyzer do
+    [
+      plt_add_apps: [:mix, :ex_unit],
+      flags: [:error_handling, :unmatched_returns, :underspecs],
+      ignore_warnings: ".dialyzer_ignore.exs"
     ]
   end
 end

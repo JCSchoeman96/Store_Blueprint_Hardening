@@ -1,0 +1,149 @@
+name: Nightly Hardening
+
+on:
+  schedule:
+    - cron: "15 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  heavy_tests:
+    name: heavy_tests_seed_${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+      STORE_DB_PORT: 5433
+      MIX_TEST_PARTITION: 1
+
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [101, 202, 303]
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5433:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: store_test
+        options: >-
+          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup BEAM
+        id: setup-beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+
+      - name: Cache Mix build and deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix
+          key: ${{ runner.os }}-beam-nightly-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('.tool-versions') }}
+          restore-keys: |
+            ${{ runner.os }}-beam-nightly-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch deps
+        run: mix deps.get
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            nc -z localhost 5433 && exit 0
+            sleep 1
+          done
+          echo "Postgres did not become ready on port 5433"
+          exit 1
+
+      - name: Run nightly strict suite (seeded)
+        run: |
+          mkdir -p tmp/nightly
+          mix test --seed ${{ matrix.seed }} --max-failures 1 | tee tmp/nightly/tests-seed-${{ matrix.seed }}.log
+
+      - name: Run nightly replay/property/perf focus suites
+        run: |
+          mkdir -p tmp/nightly
+          mix test \
+            test/store/subscriptions/scheduler_property_test.exs \
+            test/store/subscriptions/replay_concurrency_test.exs \
+            test/store/subscriptions/performance_test.exs \
+            --seed ${{ matrix.seed }} \
+            --max-cases 1 \
+            --max-failures 1 \
+            | tee tmp/nightly/focus-seed-${{ matrix.seed }}.log
+
+      - name: Run renewal replay stress loop
+        run: |
+          mkdir -p tmp/nightly
+          for i in 1 2 3; do
+            mix test test/store/subscriptions/replay_concurrency_test.exs \
+              --seed ${{ matrix.seed }} \
+              --max-cases 1 \
+              --max-failures 1 \
+              | tee -a tmp/nightly/replay-stress-seed-${{ matrix.seed }}.log
+          done
+
+      - name: Upload nightly test diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-test-logs-seed-${{ matrix.seed }}
+          path: |
+            tmp/nightly/tests-seed-${{ matrix.seed }}.log
+            tmp/nightly/focus-seed-${{ matrix.seed }}.log
+            tmp/nightly/replay-stress-seed-${{ matrix.seed }}.log
+
+  dialyzer_nightly:
+    name: dialyzer_nightly
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup BEAM
+        id: setup-beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+
+      - name: Cache Mix build, deps, and PLTs
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix
+            priv/plts
+          key: ${{ runner.os }}-beam-nightly-dialyzer-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('.tool-versions') }}
+          restore-keys: |
+            ${{ runner.os }}-beam-nightly-dialyzer-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch deps
+        run: mix deps.get
+
+      - name: Run nightly Dialyzer gate
+        run: mix check.types

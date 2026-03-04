@@ -73,8 +73,12 @@ defmodule StoreWeb.Router do
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live("/account", AccountLive, :index)
       live("/account/orders/:order_ref", Orders.ShowLive, :show)
+      live("/account/subscriptions", SubscriptionsLive.Index, :index)
+      live("/account/subscriptions/:id", SubscriptionsLive.Show, :show)
       live("/account/downloads", Digital.DownloadsLive, :index)
       live("/admin", AdminLive, :index)
+      live("/admin/subscriptions", Admin.Subscriptions.IndexLive, :index)
+      live("/admin/subscriptions/:id", Admin.Subscriptions.ShowLive, :show)
       live("/admin/products", Admin.Products.IndexLive, :index)
       live("/admin/products/new", Admin.Products.IndexLive, :new)
       live("/admin/products/:id/edit", Admin.Products.IndexLive, :edit)

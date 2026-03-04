@@ -48,9 +48,13 @@ Reference excerpt from `mix phx.routes` (auth/public slice):
 |---|---|---|---|---|
 | GET | `/account` | LiveView (`StoreWeb.AccountLive :index`) | Yes | Authenticated only. |
 | GET | `/account/orders/:order_ref` | LiveView (`StoreWeb.Orders.ShowLive :show`) | Yes | Authenticated only. |
+| GET | `/account/subscriptions` | LiveView (`StoreWeb.SubscriptionsLive.Index :index`) | Yes | Authenticated subscriptions overview. |
+| GET | `/account/subscriptions/:id` | LiveView (`StoreWeb.SubscriptionsLive.Show :show`) | Yes | Authenticated subscription detail. |
 | GET | `/account/downloads` | LiveView (`StoreWeb.Digital.DownloadsLive :index`) | Yes | Authenticated digital grant listing. |
 | GET | `/account/downloads/:grant_id/request` | Controller (`StoreWeb.DigitalDownloadController :create`) | Yes | Authenticated signed URL issuance + external redirect. |
 | GET | `/admin` | LiveView (`StoreWeb.AdminLive :index`) | Yes | Restricted role surface; never index. |
+| GET | `/admin/subscriptions` | LiveView (`StoreWeb.Admin.Subscriptions.IndexLive :index`) | Yes | Restricted subscription operations surface; never index. |
+| GET | `/admin/subscriptions/:id` | LiveView (`StoreWeb.Admin.Subscriptions.ShowLive :show`) | Yes | Restricted subscription detail surface; never index. |
 | GET | `/admin/products` | LiveView (`StoreWeb.Admin.Products.IndexLive :index`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/products/new` | LiveView (`StoreWeb.Admin.Products.IndexLive :new`) | Yes | Restricted role surface; never index. |
 | GET | `/admin/products/:id/edit` | LiveView (`StoreWeb.Admin.Products.IndexLive :edit`) | Yes | Restricted role surface; never index. |

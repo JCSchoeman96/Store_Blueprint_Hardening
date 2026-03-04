@@ -78,7 +78,7 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   defp create_submitted_payment_intent!(order_id) do
     payment_intent =
       PaymentIntent
-      |> Ash.Changeset.for_create(:create, %{order_id: order_id})
+      |> Ash.Changeset.for_create(:create, %{order_id: order_id, provider: :stripe})
       |> Ash.create!(domain: Store.Payments, authorize?: false)
 
     payment_intent

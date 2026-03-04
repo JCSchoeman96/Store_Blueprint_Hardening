@@ -11,6 +11,7 @@ defmodule Store.Carts.Facade do
   alias Store.Carts.Queries.CartLoadQuery
   alias Store.Catalog.{Product, ProductOption, StockFastPath, Variant, VariantOptionSelection}
   alias Store.Repo
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.ID.{BinaryUuidSort, UUIDv7}
 
@@ -54,7 +55,7 @@ defmodule Store.Carts.Facade do
 
     result =
       with {:ok, cart} <- get_cart_for_user(actor, token),
-           :ok <- ensure_variant_sellable(input.variant_id) do
+           :ok <- ensure_variant_sellable(input) do
         add_item_transaction(cart, input)
       end
 
@@ -69,7 +70,7 @@ defmodule Store.Carts.Facade do
 
     result =
       with {:ok, cart} <- get_cart_for_user(actor, token),
-           :ok <- ensure_variant_sellable(input.variant_id) do
+           :ok <- ensure_variant_sellable(input) do
         update_qty_transaction(cart, input)
       end
 
@@ -202,6 +203,7 @@ defmodule Store.Carts.Facade do
         %{
           id: item.id,
           variant_id: item.variant_id,
+          subscription_plan_id: item.subscription_plan_id,
           qty: item.qty,
           sku: variant && variant.sku,
           variant_title: variant && variant.title,
@@ -292,7 +294,7 @@ defmodule Store.Carts.Facade do
 
     Repo.transaction(fn ->
       locked_cart = lock_cart!(cart_id)
-      locked_item = lock_cart_item(cart_id, input.variant_id)
+      locked_item = lock_cart_item(cart_id, input.variant_id, input.subscription_plan_id)
       desired_qty = desired_add_qty(locked_item, input.qty)
       :ok = ensure_fast_stock!(input.variant_id, desired_qty)
 
@@ -310,7 +312,7 @@ defmodule Store.Carts.Facade do
     Repo.transaction(fn ->
       locked_cart = lock_cart!(cart_id)
 
-      case lock_cart_item(cart_id, input.variant_id) do
+      case lock_cart_item(cart_id, input.variant_id, input.subscription_plan_id) do
         nil ->
           Repo.rollback(Error.new("NOT_FOUND", "cart item not found"))
 
@@ -332,7 +334,7 @@ defmodule Store.Carts.Facade do
       locked_cart = lock_cart!(cart_id)
 
       mutation? =
-        case lock_cart_item(cart_id, variant_id) do
+        case lock_cart_item_any_plan(cart_id, variant_id) do
           nil ->
             false
 
@@ -390,9 +392,15 @@ defmodule Store.Carts.Facade do
   end
 
   defp merge_guest_item_into_user_cart!(%CartItem{} = guest_item, user_cart_id) do
-    case lock_cart_item(user_cart_id, guest_item.variant_id) do
+    case lock_cart_item(user_cart_id, guest_item.variant_id, guest_item.subscription_plan_id) do
       nil ->
-        insert_cart_item!(user_cart_id, guest_item.variant_id, guest_item.qty)
+        insert_cart_item!(
+          user_cart_id,
+          guest_item.variant_id,
+          guest_item.subscription_plan_id,
+          guest_item.qty
+        )
+
         true
 
       %CartItem{} = user_item ->
@@ -484,15 +492,27 @@ defmodule Store.Carts.Facade do
     end
   end
 
-  defp lock_cart_item(cart_id, variant_id) do
+  defp lock_cart_item(cart_id, variant_id, subscription_plan_id) do
+    query =
+      CartItem
+      |> where([i], i.cart_id == ^cart_id and i.variant_id == ^variant_id)
+      |> maybe_filter_subscription_plan(subscription_plan_id)
+      |> lock("FOR UPDATE")
+
+    Repo.one(query)
+  end
+
+  defp lock_cart_item_any_plan(cart_id, variant_id) do
     CartItem
     |> where([i], i.cart_id == ^cart_id and i.variant_id == ^variant_id)
+    |> order_by([i], asc: i.inserted_at, asc: i.id)
     |> lock("FOR UPDATE")
+    |> limit(1)
     |> Repo.one()
   end
 
   defp add_or_merge_item!(cart_id, nil, %CartItemInput{} = input) do
-    insert_cart_item!(cart_id, input.variant_id, input.qty)
+    insert_cart_item!(cart_id, input.variant_id, input.subscription_plan_id, input.qty)
     true
   end
 
@@ -501,9 +521,14 @@ defmodule Store.Carts.Facade do
     maybe_update_item_qty!(item.id, item.qty, desired_qty)
   end
 
-  defp insert_cart_item!(cart_id, variant_id, qty) do
+  defp insert_cart_item!(cart_id, variant_id, subscription_plan_id, qty) do
     %CartItem{}
-    |> Changeset.change(%{cart_id: cart_id, variant_id: variant_id, qty: qty})
+    |> Changeset.change(%{
+      cart_id: cart_id,
+      variant_id: variant_id,
+      subscription_plan_id: subscription_plan_id,
+      qty: qty
+    })
     |> Repo.insert!()
   rescue
     _ -> Repo.rollback(Error.new("RESERVATION_CONFLICT", "unable to insert cart item"))
@@ -547,25 +572,32 @@ defmodule Store.Carts.Facade do
     end
   end
 
-  defp ensure_variant_exists(variant_id) do
+  defp ensure_variant_exists(%CartItemInput{
+         variant_id: variant_id,
+         subscription_plan_id: plan_id
+       }) do
     query =
       from(variant in Variant,
         join: product in Product,
         on: product.id == variant.product_id,
         where: variant.id == ^variant_id,
-        select:
-          {variant.id, variant.product_id, variant.status, product.status, product.published_at}
+        select: {
+          variant.id,
+          variant.product_id,
+          variant.status,
+          product.status,
+          product.published_at,
+          product.product_kind
+        }
       )
 
     case Repo.one(query) do
-      {variant_id, product_id, :active, :published, %DateTime{}} ->
-        if required_complete?(variant_id, product_id) do
-          :ok
-        else
-          {:error, Error.new("VALIDATION_ERROR", "variant is not fully configured")}
+      {variant_id, product_id, :active, :published, %DateTime{}, product_kind} ->
+        with :ok <- ensure_required_complete(variant_id, product_id) do
+          ensure_subscription_plan_compatibility(variant_id, product_kind, plan_id)
         end
 
-      {_variant_id, _product_id, _variant_status, _product_status, _published_at} ->
+      {_variant_id, _product_id, _variant_status, _product_status, _published_at, _product_kind} ->
         {:error, Error.new("NOT_FOUND", "variant not sellable")}
 
       nil ->
@@ -573,7 +605,7 @@ defmodule Store.Carts.Facade do
     end
   end
 
-  defp ensure_variant_sellable(variant_id), do: ensure_variant_exists(variant_id)
+  defp ensure_variant_sellable(%CartItemInput{} = input), do: ensure_variant_exists(input)
 
   defp ensure_fast_stock!(variant_id, desired_qty) do
     case StockFastPath.precheck_variant_qty(variant_id, desired_qty) do
@@ -646,8 +678,14 @@ defmodule Store.Carts.Facade do
       "carts_unique_active_user_id_index" ->
         Error.new("STALE_RECORD", "active cart already exists for user")
 
-      "cart_items_unique_cart_variant_index" ->
+      "cart_items_unique_cart_variant_no_plan_index" ->
         Error.new("STALE_RECORD", "cart item already exists for cart and variant")
+
+      "cart_items_unique_cart_variant_plan_index" ->
+        Error.new(
+          "STALE_RECORD",
+          "cart item already exists for cart, variant, and subscription plan"
+        )
 
       _ ->
         Error.new("VALIDATION_ERROR", "invalid cart mutation")
@@ -699,4 +737,59 @@ defmodule Store.Carts.Facade do
   defp telemetry_result({:ok, :merged}), do: :merged
   defp telemetry_result({:ok, _}), do: :ok
   defp telemetry_result({:error, _}), do: :error
+
+  defp maybe_filter_subscription_plan(query, nil),
+    do: where(query, [i], is_nil(i.subscription_plan_id))
+
+  defp maybe_filter_subscription_plan(query, subscription_plan_id),
+    do: where(query, [i], i.subscription_plan_id == ^subscription_plan_id)
+
+  defp ensure_required_complete(variant_id, product_id) do
+    if required_complete?(variant_id, product_id) do
+      :ok
+    else
+      {:error, Error.new("VALIDATION_ERROR", "variant is not fully configured")}
+    end
+  end
+
+  defp ensure_subscription_plan_compatibility(_variant_id, :simple, nil), do: :ok
+
+  defp ensure_subscription_plan_compatibility(_variant_id, :simple, _plan_id) do
+    {:error,
+     Error.new("VALIDATION_ERROR", "subscription_plan_id is only valid for subscription products")}
+  end
+
+  defp ensure_subscription_plan_compatibility(variant_id, :subscription, plan_id) do
+    with :ok <- ensure_subscription_purchase_enabled() do
+      case SubscriptionsFacade.resolve_variant_subscription_plan_for_system(variant_id, plan_id) do
+        {:ok, %Store.Subscriptions.SubscriptionPlan{}} ->
+          :ok
+
+        {:ok, nil} ->
+          {:error,
+           Error.new("VALIDATION_ERROR", "variant does not have an active subscription plan")}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  defp ensure_subscription_purchase_enabled do
+    if subscription_feature_enabled?(:expose_purchase?) do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "SUBSCRIPTION_PURCHASE_DISABLED",
+         "subscription purchase is currently disabled"
+       )}
+    end
+  end
+
+  defp subscription_feature_enabled?(key) when is_atom(key) do
+    :store
+    |> Application.get_env(:subscription_features, [])
+    |> Keyword.get(key, false)
+  end
 end

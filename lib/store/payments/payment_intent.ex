@@ -30,9 +30,8 @@ defmodule Store.Payments.PaymentIntent do
       public?(true)
     end
 
-    attribute :provider, :string do
+    attribute :provider, Store.Payments.Types.Provider do
       allow_nil?(false)
-      default("stripe")
       public?(true)
     end
 

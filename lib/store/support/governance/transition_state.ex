@@ -11,8 +11,12 @@ defmodule Store.Support.Governance.TransitionState do
 
   @impl true
   def change(changeset, opts, context) do
-    state_attribute = opts[:state_attribute] || :state
-    lock_attribute = opts[:lock_attribute] || :version
+    state_attribute =
+      if Keyword.has_key?(opts, :state_attribute), do: opts[:state_attribute], else: :state
+
+    lock_attribute =
+      if Keyword.has_key?(opts, :lock_attribute), do: opts[:lock_attribute], else: :version
+
     target = opts[:target]
     current = Map.get(changeset.data || %{}, state_attribute)
 
@@ -29,7 +33,7 @@ defmodule Store.Support.Governance.TransitionState do
       transition_allowed?(changeset, current, target) ->
         changeset
         |> AshStateMachine.transition_state(target)
-        |> OptimisticLock.change([attribute: lock_attribute], context)
+        |> maybe_optimistic_lock(lock_attribute, context)
 
       true ->
         Ash.Changeset.add_error(changeset,
@@ -54,4 +58,10 @@ defmodule Store.Support.Governance.TransitionState do
     wrapped = List.wrap(values)
     :* in wrapped or value in wrapped
   end
+
+  defp maybe_optimistic_lock(changeset, nil, _context), do: changeset
+  defp maybe_optimistic_lock(changeset, false, _context), do: changeset
+
+  defp maybe_optimistic_lock(changeset, lock_attribute, context),
+    do: OptimisticLock.change(changeset, [attribute: lock_attribute], context)
 end

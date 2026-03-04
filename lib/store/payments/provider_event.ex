@@ -13,7 +13,7 @@ defmodule Store.Payments.ProviderEvent do
   attributes do
     uuid_v7_primary_key(:id)
 
-    attribute :provider, :string do
+    attribute :provider, Store.Payments.Types.Provider do
       allow_nil?(false)
       public?(true)
     end
@@ -127,12 +127,18 @@ defmodule Store.Payments.ProviderEvent do
   end
 
   defp maybe_set_provider_event_key(changeset, _provider_event_key, provider, provider_event_id)
-       when is_binary(provider) and is_binary(provider_event_id) do
-    Ash.Changeset.change_attribute(
-      changeset,
-      :provider_event_key,
-      Idempotency.provider_event_key(provider, provider_event_id)
-    )
+       when is_binary(provider_event_id) do
+    case normalize_provider(provider) do
+      nil ->
+        changeset
+
+      normalized_provider ->
+        Ash.Changeset.change_attribute(
+          changeset,
+          :provider_event_key,
+          Idempotency.provider_event_key(normalized_provider, provider_event_id)
+        )
+    end
   end
 
   defp maybe_set_provider_event_key(changeset, _provider_event_key, _provider, _provider_event_id) do
@@ -154,4 +160,12 @@ defmodule Store.Payments.ProviderEvent do
   end
 
   defp maybe_set_payload_hash(changeset, _payload_hash, _payload_sha256), do: changeset
+
+  defp normalize_provider(provider) when is_atom(provider),
+    do: provider |> Atom.to_string() |> String.downcase()
+
+  defp normalize_provider(provider) when is_binary(provider),
+    do: provider |> String.trim() |> String.downcase()
+
+  defp normalize_provider(_provider), do: nil
 end

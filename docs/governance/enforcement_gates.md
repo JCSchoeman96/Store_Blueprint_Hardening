@@ -94,6 +94,14 @@ Required (at minimum for release-1):
 - docs/agent_notes/phase_02_docs.md
 - docs/agent_notes/phase_03_docs.md
 
+## Subscriptions docs sync gate (MUST for Phase 26+)
+- CI must fail when subscription governance anchors drift across docs.
+- Gate: `check.subscriptions_docs_sync`.
+- Required anchors:
+  - subscriptions + entitlements sections in `docs/governance/policy_matrix.md`
+  - customer/admin subscription routes in `docs/governance/route_inventory.md`
+  - phase note file and core sections in `docs/agent_notes/phase_26_docs.md`
+
 
 ## Policy matrix test gate (MUST)
 - The pinned policy matrix must have an accompanying test suite under `test/store/governance/`.

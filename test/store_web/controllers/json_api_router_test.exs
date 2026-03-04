@@ -186,7 +186,7 @@ defmodule StoreWeb.JsonApiRouterTest do
 
   defp create_payment_intent_for_order!(order_id) do
     PaymentIntent
-    |> Ash.Changeset.for_create(:create, %{order_id: order_id})
+    |> Ash.Changeset.for_create(:create, %{order_id: order_id, provider: :stripe})
     |> Ash.create!(domain: Store.Payments, authorize?: false)
   end
 end

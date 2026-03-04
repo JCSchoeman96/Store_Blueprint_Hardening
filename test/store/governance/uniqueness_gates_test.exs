@@ -117,7 +117,7 @@ defmodule Store.Governance.UniquenessGatesTest do
 
     count =
       ProviderEvent
-      |> Ash.Query.filter(expr(provider == "stripe" and provider_event_id == "evt_unique_001"))
+      |> Ash.Query.filter(expr(provider == :stripe and provider_event_id == "evt_unique_001"))
       |> Ash.count!(domain: Store.Payments, authorize?: false)
 
     assert count == 1

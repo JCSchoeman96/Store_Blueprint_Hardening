@@ -131,7 +131,7 @@ defmodule Store.Payments do
       order_id: checkout.order_id,
       amount_received_minor: checkout.grand_total_minor,
       currency: checkout.currency_code,
-      provider: provider_to_string(input.provider)
+      provider: input.provider
     }
 
     create_or_reuse_payment_intent(attrs, context: %{system?: true})
@@ -192,17 +192,30 @@ defmodule Store.Payments do
 
   defp update_provider_reference(payment_intent, provider_payload, provider)
        when is_map(provider_payload) do
-    attrs = %{
-      provider: Map.get(provider_payload, :provider, provider_to_string(provider)),
-      provider_payment_id: Map.get(provider_payload, :provider_payment_id),
-      provider_session_id: Map.get(provider_payload, :provider_session_id),
-      provider_checkout_url: Map.get(provider_payload, :provider_checkout_url),
-      provider_client_secret: Map.get(provider_payload, :provider_client_secret)
-    }
+    provider_value =
+      Map.get(provider_payload, :provider, provider)
 
-    payment_intent
-    |> Ash.Changeset.for_update(:set_provider_reference, attrs, context: %{system?: true})
-    |> Ash.update(domain: __MODULE__, authorize?: false, context: %{system?: true})
+    case Providers.normalize_provider(provider_value) do
+      normalized when normalized in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
+        attrs = %{
+          provider: normalized,
+          provider_payment_id: Map.get(provider_payload, :provider_payment_id),
+          provider_session_id: Map.get(provider_payload, :provider_session_id),
+          provider_checkout_url: Map.get(provider_payload, :provider_checkout_url),
+          provider_client_secret: Map.get(provider_payload, :provider_client_secret)
+        }
+
+        payment_intent
+        |> Ash.Changeset.for_update(:set_provider_reference, attrs, context: %{system?: true})
+        |> Ash.update(domain: __MODULE__, authorize?: false, context: %{system?: true})
+
+      :unknown ->
+        {:error,
+         Error.new(
+           "PAYMENT_PROVIDER_UNSUPPORTED",
+           "payment provider is not supported"
+         )}
+    end
   end
 
   defp maybe_submit_payment_intent(
@@ -232,7 +245,7 @@ defmodule Store.Payments do
       order_ref: checkout.order_ref,
       payment_intent_id: payment_intent.id,
       payment_intent_key: intent_result.payment_intent_key,
-      provider: payment_intent.provider,
+      provider: provider_to_string(payment_intent.provider),
       provider_session_id: payment_intent.provider_session_id,
       state: payment_intent.state,
       amount_minor: checkout.grand_total_minor,
@@ -284,7 +297,7 @@ defmodule Store.Payments do
   defp provider_to_string(provider) when is_binary(provider),
     do: provider |> String.trim() |> String.downcase()
 
-  defp provider_to_string(_provider), do: "stripe"
+  defp provider_to_string(_provider), do: "unknown"
 
   defp normalize_result({:ok, _} = result), do: result
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}

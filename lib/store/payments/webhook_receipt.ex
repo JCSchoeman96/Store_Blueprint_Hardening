@@ -13,7 +13,7 @@ defmodule Store.Payments.WebhookReceipt do
   attributes do
     uuid_v7_primary_key(:id)
 
-    attribute :provider, :string do
+    attribute :provider, Store.Payments.Types.Provider do
       allow_nil?(false)
       public?(true)
     end
@@ -210,12 +210,18 @@ defmodule Store.Payments.WebhookReceipt do
   end
 
   defp maybe_set_idempotency_key(changeset, _idempotency_key, provider, raw_body)
-       when is_binary(provider) and is_binary(raw_body) do
-    Ash.Changeset.change_attribute(
-      changeset,
-      :idempotency_key,
-      sha256_hex("#{provider}\n" <> raw_body)
-    )
+       when is_binary(raw_body) do
+    case normalize_provider(provider) do
+      nil ->
+        changeset
+
+      normalized_provider ->
+        Ash.Changeset.change_attribute(
+          changeset,
+          :idempotency_key,
+          sha256_hex("#{normalized_provider}\n" <> raw_body)
+        )
+    end
   end
 
   defp maybe_set_idempotency_key(changeset, _idempotency_key, _provider, _raw_body), do: changeset
@@ -235,4 +241,12 @@ defmodule Store.Payments.WebhookReceipt do
     :crypto.hash(:sha256, value)
     |> Base.encode16(case: :lower)
   end
+
+  defp normalize_provider(provider) when is_atom(provider),
+    do: provider |> Atom.to_string() |> String.downcase()
+
+  defp normalize_provider(provider) when is_binary(provider),
+    do: provider |> String.trim() |> String.downcase()
+
+  defp normalize_provider(_provider), do: nil
 end

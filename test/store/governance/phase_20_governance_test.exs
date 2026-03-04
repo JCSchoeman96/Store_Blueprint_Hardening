@@ -11,7 +11,7 @@ defmodule Store.Governance.Phase20GovernanceTest do
              MapSet.new([
                :carts_active_token,
                :carts_active_user_id,
-               :cart_items_cart_variant,
+               :cart_items_cart_variant_no_plan,
                :checkout_drafts_checkout_key,
                :checkout_drafts_cart_id_cart_version
              ]),

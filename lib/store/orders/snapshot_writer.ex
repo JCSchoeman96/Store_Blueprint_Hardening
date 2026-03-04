@@ -83,6 +83,12 @@ defmodule Store.Orders.SnapshotWriter do
           product_title_snapshot: line.product_title_snapshot,
           variant_title_snapshot: line.variant_title_snapshot,
           variant_id_snapshot: line.line_id,
+          subscription_plan_id_snapshot: Map.get(line, :subscription_plan_id_snapshot),
+          subscription_plan_key_snapshot: Map.get(line, :subscription_plan_key_snapshot),
+          subscription_interval_unit_snapshot:
+            Map.get(line, :subscription_interval_unit_snapshot),
+          subscription_interval_count_snapshot:
+            Map.get(line, :subscription_interval_count_snapshot),
           discount_allocated_minor: line.discount_allocated_minor,
           net_line_total_minor: line.net_line_total_minor,
           tax_category_snapshot: Map.get(line, :tax_category_snapshot, "STANDARD"),

@@ -7,19 +7,32 @@ defmodule Store.Carts.Inputs.CartItemInput do
   alias Store.Support.ID.UUIDv7
 
   @max_qty 99
-  @allowed_keys MapSet.new(["variant_id", :variant_id, "qty", :qty])
+  @allowed_keys MapSet.new([
+                  "variant_id",
+                  :variant_id,
+                  "subscription_plan_id",
+                  :subscription_plan_id,
+                  "qty",
+                  :qty
+                ])
 
   @enforce_keys [:variant_id, :qty]
-  defstruct [:variant_id, :qty]
+  defstruct [:variant_id, :subscription_plan_id, :qty]
 
-  @type t :: %__MODULE__{variant_id: Ecto.UUID.t(), qty: pos_integer()}
+  @type t :: %__MODULE__{
+          variant_id: Ecto.UUID.t(),
+          subscription_plan_id: Ecto.UUID.t() | nil,
+          qty: pos_integer()
+        }
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
   def new(params) when is_map(params) do
     with :ok <- validate_keys(params),
          {:ok, variant_id} <- parse_variant_id(params),
+         {:ok, subscription_plan_id} <- parse_optional_plan_id(params),
          {:ok, qty} <- parse_qty(params) do
-      {:ok, %__MODULE__{variant_id: variant_id, qty: qty}}
+      {:ok,
+       %__MODULE__{variant_id: variant_id, subscription_plan_id: subscription_plan_id, qty: qty}}
     end
   end
 
@@ -86,4 +99,24 @@ defmodule Store.Carts.Inputs.CartItemInput do
 
   defp qty_error,
     do: {:error, Error.new("VALIDATION_ERROR", "qty must be an integer from 1 to 99")}
+
+  defp parse_optional_plan_id(params) do
+    case Map.get(params, :subscription_plan_id) || Map.get(params, "subscription_plan_id") do
+      nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      plan_id when is_binary(plan_id) ->
+        if UUIDv7.valid?(plan_id) do
+          {:ok, plan_id}
+        else
+          {:error, Error.new("VALIDATION_ERROR", "subscription_plan_id must be a valid UUID")}
+        end
+
+      _ ->
+        {:error, Error.new("VALIDATION_ERROR", "subscription_plan_id must be a UUID string")}
+    end
+  end
 end

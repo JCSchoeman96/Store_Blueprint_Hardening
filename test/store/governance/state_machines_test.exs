@@ -89,7 +89,7 @@ defmodule Store.Governance.StateMachinesTest do
 
   defp create_payment_intent! do
     PaymentIntent
-    |> Ash.Changeset.for_create(:create, %{})
+    |> Ash.Changeset.for_create(:create, %{provider: :stripe})
     |> Ash.create!(domain: Store.Payments, authorize?: false)
   end
 

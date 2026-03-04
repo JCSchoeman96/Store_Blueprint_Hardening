@@ -1,6 +1,9 @@
 defmodule Store.Payments.CreateIntentForOrderTest do
   use Store.DataCase, async: false
 
+  import Ash.Expr
+  require Ash.Query
+
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Checkout
@@ -8,6 +11,7 @@ defmodule Store.Payments.CreateIntentForOrderTest do
   alias Store.Digital.{DigitalAsset, ProductDigitalLink}
   alias Store.Payments
   alias Store.Payments.Inputs.CreateIntentForOrderInput
+  alias Store.Payments.PaymentIntent
   alias Store.Pricing.TaxRate
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
@@ -162,6 +166,57 @@ defmodule Store.Payments.CreateIntentForOrderTest do
              )
 
     assert error.code == "DIGITAL_GRANT_DENIED"
+  end
+
+  test "create_intent_for_order rejects unknown provider input before persisting" do
+    token = Ash.UUIDv7.generate()
+    actor = %{cart_token: token}
+    variant_id = published_variant_id!()
+    create_pricing_rules!()
+
+    assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
+
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, checkout_start} = Checkout.start_from_cart(nil, token, start_input)
+
+    selection =
+      quote_selection!(%{
+        destination_country_code: "US",
+        destination_region_code: "CA",
+        destination_postal_code: "94105",
+        currency_code: "USD",
+        shipping_weight_grams: 0
+      })
+
+    assert {:ok, shipping_input} =
+             CheckoutShippingInput.new(%{
+               "recipient_name" => "Provider Test",
+               "address_line1" => "1 Main St",
+               "city" => "San Francisco",
+               "country_code" => "US",
+               "region_code" => "CA",
+               "postal_code" => "94105",
+               "phone" => "555-555-1212",
+               "quote_hash" => selection.quote_hash,
+               "shipping_method_code" => selection.shipping_method_code
+             })
+
+    assert {:ok, _checkout_with_shipping} =
+             Checkout.set_shipping(actor, checkout_start.checkout_key, shipping_input)
+
+    assert {:ok, finalize_input} = CheckoutFinalizeInput.new(%{})
+
+    assert {:ok, _finalized_checkout} =
+             Checkout.finalize_totals(actor, checkout_start.checkout_key, finalize_input)
+
+    assert {:error, error} = CreateIntentForOrderInput.new(%{"provider" => "not_real"})
+    assert error.code == "PAYMENT_PROVIDER_UNSUPPORTED"
+
+    assert 0 ==
+             PaymentIntent
+             |> Ash.Query.filter(expr(order_id == ^checkout_start.order_id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
   end
 
   defp create_pricing_rules! do

@@ -6,10 +6,10 @@ defmodule Store.Support.Governance.Idempotency do
   alias Store.Support.ID.BinaryUuidSort
   alias Store.Support.ID.UUIDv7
 
-  @spec provider_event_key(String.t(), String.t()) :: String.t()
+  @spec provider_event_key(String.t() | atom(), String.t()) :: String.t()
   def provider_event_key(provider, provider_event_id)
-      when is_binary(provider) and is_binary(provider_event_id) do
-    "#{provider}:#{provider_event_id}"
+      when (is_binary(provider) or is_atom(provider)) and is_binary(provider_event_id) do
+    "#{normalize_provider(provider)}:#{provider_event_id}"
   end
 
   @spec cart_fingerprint([map()], String.t(), DateTime.t() | String.t(), String.t(), map()) ::
@@ -20,7 +20,9 @@ defmodule Store.Support.Governance.Idempotency do
     normalized_lines =
       line_items
       |> normalize_checkout_lines()
-      |> Enum.sort_by(fn {raw16, _quantity} -> raw16 end)
+      |> Enum.sort_by(fn {variant_raw16, plan_raw16, _quantity} ->
+        {variant_raw16, plan_raw16 || <<>>}
+      end)
 
     payload =
       {
@@ -48,12 +50,12 @@ defmodule Store.Support.Governance.Idempotency do
     "ck:" <> hash_base32("user:#{user_scope}|cart:#{cart_fingerprint}")
   end
 
-  @spec payment_intent_key(String.t(), integer(), String.t(), String.t()) :: String.t()
+  @spec payment_intent_key(String.t(), integer(), String.t(), String.t() | atom()) :: String.t()
   def payment_intent_key(order_id, amount_minor, currency, provider)
       when is_binary(order_id) and is_integer(amount_minor) and is_binary(currency) and
-             is_binary(provider) do
+             (is_binary(provider) or is_atom(provider)) do
     {"order", order_id, "amount", amount_minor, "currency", String.upcase(currency), "provider",
-     String.downcase(provider)}
+     normalize_provider(provider)}
     |> :erlang.term_to_binary()
     |> hash_base32()
     |> then(&("pi:" <> &1))
@@ -123,23 +125,36 @@ defmodule Store.Support.Governance.Idempotency do
   defp normalize_checkout_lines(line_items) do
     line_items
     |> Enum.reduce(%{}, fn line_item, acc ->
-      id = checkout_line_id(line_item)
+      {variant_id, subscription_plan_id} = checkout_line_ids(line_item)
       quantity = checkout_line_quantity(line_item)
-      raw16 = UUIDv7.decode!(id)
-      Map.update(acc, raw16, quantity, &(&1 + quantity))
+      variant_raw16 = UUIDv7.decode!(variant_id)
+      subscription_plan_raw16 = decode_optional_uuid(subscription_plan_id)
+      composite_key = {variant_raw16, subscription_plan_raw16}
+
+      Map.update(acc, composite_key, quantity, &(&1 + quantity))
     end)
-    |> Enum.to_list()
+    |> Enum.map(fn {{variant_raw16, plan_raw16}, quantity} ->
+      {variant_raw16, plan_raw16, quantity}
+    end)
   end
 
-  defp checkout_line_id(line_item) when is_map(line_item) do
-    Map.get(line_item, :variant_id) ||
-      Map.get(line_item, "variant_id") ||
-      Map.get(line_item, :sku_id) ||
-      Map.get(line_item, "sku_id") ||
-      raise ArgumentError, "checkout line item requires variant_id or sku_id"
+  defp checkout_line_ids(line_item) when is_map(line_item) do
+    variant_id =
+      Map.get(line_item, :variant_id) ||
+        Map.get(line_item, "variant_id") ||
+        Map.get(line_item, :sku_id) ||
+        Map.get(line_item, "sku_id") ||
+        raise ArgumentError, "checkout line item requires variant_id or sku_id"
+
+    subscription_plan_id =
+      Map.get(line_item, :subscription_plan_id) ||
+        Map.get(line_item, "subscription_plan_id")
+
+    {variant_id, subscription_plan_id}
   end
 
-  defp checkout_line_id(_line_item), do: raise(ArgumentError, "checkout line item must be a map")
+  defp checkout_line_ids(_line_item),
+    do: raise(ArgumentError, "checkout line item must be a map")
 
   defp checkout_line_quantity(line_item) when is_map(line_item) do
     quantity = Map.get(line_item, :quantity) || Map.get(line_item, "quantity") || 0
@@ -184,4 +199,17 @@ defmodule Store.Support.Governance.Idempotency do
   defp normalize_scope_kind(scope_kind) when is_atom(scope_kind), do: Atom.to_string(scope_kind)
   defp normalize_scope_kind(scope_kind) when is_binary(scope_kind), do: scope_kind
   defp normalize_scope_kind(_scope_kind), do: "partial_refund"
+
+  defp normalize_provider(provider) when is_atom(provider),
+    do: provider |> Atom.to_string() |> String.downcase()
+
+  defp normalize_provider(provider) when is_binary(provider),
+    do: provider |> String.trim() |> String.downcase()
+
+  defp decode_optional_uuid(nil), do: nil
+  defp decode_optional_uuid(""), do: nil
+
+  defp decode_optional_uuid(id) when is_binary(id) do
+    UUIDv7.decode!(id)
+  end
 end

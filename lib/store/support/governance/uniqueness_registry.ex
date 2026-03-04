@@ -120,9 +120,15 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       mode: :active_now
     },
     %{
-      key: :cart_items_cart_variant,
+      key: :cart_items_cart_variant_no_plan,
       table: "cart_items",
       columns: ["cart_id", "variant_id"],
+      mode: :active_now
+    },
+    %{
+      key: :cart_items_cart_variant_plan,
+      table: "cart_items",
+      columns: ["cart_id", "variant_id", "subscription_plan_id"],
       mode: :active_now
     },
     %{
@@ -261,6 +267,54 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       key: :variants_active_selection_signature,
       table: "variants",
       columns: ["product_id", "selection_signature"],
+      mode: :active_now
+    },
+    %{
+      key: :subscription_plans_key,
+      table: "subscription_plans",
+      columns: ["key"],
+      mode: :active_now
+    },
+    %{
+      key: :variant_subscription_plans_variant_subscription_plan,
+      table: "variant_subscription_plans",
+      columns: ["variant_id", "subscription_plan_id"],
+      mode: :active_now
+    },
+    %{
+      key: :variant_subscription_plans_active_variant,
+      table: "variant_subscription_plans",
+      columns: ["variant_id"],
+      mode: :active_now
+    },
+    %{
+      key: :subscriptions_source_order_line_item_id,
+      table: "subscriptions",
+      columns: ["source_order_line_item_id"],
+      mode: :active_now
+    },
+    %{
+      key: :subscriptions_provider_provider_subscription_id,
+      table: "subscriptions",
+      columns: ["provider", "provider_subscription_id"],
+      mode: :active_now
+    },
+    %{
+      key: :subscription_items_source_order_line_item_id,
+      table: "subscription_items",
+      columns: ["source_order_line_item_id"],
+      mode: :active_now
+    },
+    %{
+      key: :renewal_attempts_subscription_renewal_key,
+      table: "renewal_attempts",
+      columns: ["subscription_id", "renewal_key"],
+      mode: :active_now
+    },
+    %{
+      key: :entitlement_grants_user_scope_source,
+      table: "entitlement_grants",
+      columns: ["user_id", "kind", "scope_key", "source_kind", "source_id"],
       mode: :active_now
     }
   ]

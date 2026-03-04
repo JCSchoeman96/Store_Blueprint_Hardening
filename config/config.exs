@@ -19,6 +19,8 @@ config :store,
     Store.Checkout,
     Store.Orders,
     Store.Payments,
+    Store.Subscriptions,
+    Store.Entitlements,
     Store.Fulfillment,
     Store.Shipping,
     Store.Pricing
@@ -54,6 +56,11 @@ config :store, :payments,
     checkout_base_url: "https://checkout.stripe.example"
   ]
 
+config :store, :subscription_features,
+  expose_purchase?: false,
+  provider_managed_mode_enabled?: false,
+  immediate_switching_enabled?: false
+
 config :store, :comms,
   default_provider: :swoosh,
   from_name: "Store",
@@ -87,10 +94,19 @@ config :store, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker},
-       {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker}
+       {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker},
+       {"*/5 * * * *", Store.Workers.RunDueSubscriptionRenewalsWorker}
      ]}
   ],
-  queues: [webhooks: 10, inventory: 10, refunds: 10, comms: 10, fulfillment: 10, digital: 10]
+  queues: [
+    webhooks: 10,
+    inventory: 10,
+    refunds: 10,
+    comms: 10,
+    fulfillment: 10,
+    digital: 10,
+    subscriptions: 10
+  ]
 
 # Configure esbuild (the version is required)
 config :esbuild,

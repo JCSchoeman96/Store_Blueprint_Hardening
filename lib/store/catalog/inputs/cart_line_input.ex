@@ -15,14 +15,20 @@ defmodule Store.Catalog.Inputs.CartLineInput do
                   :product_id,
                   "variant_id",
                   :variant_id,
+                  "subscription_plan_id",
+                  :subscription_plan_id,
                   "quantity",
                   :quantity
                 ])
 
   @enforce_keys [:variant_id, :quantity]
-  defstruct [:variant_id, :quantity]
+  defstruct [:variant_id, :subscription_plan_id, :quantity]
 
-  @type t :: %__MODULE__{variant_id: Ecto.UUID.t(), quantity: pos_integer()}
+  @type t :: %__MODULE__{
+          variant_id: Ecto.UUID.t(),
+          subscription_plan_id: Ecto.UUID.t() | nil,
+          quantity: pos_integer()
+        }
 
   @spec new(map()) :: {:ok, map()} | {:error, Error.t()}
   def new(params) when is_map(params) do
@@ -30,8 +36,14 @@ defmodule Store.Catalog.Inputs.CartLineInput do
          {:ok, quantity} <- parse_quantity(params),
          {:ok, product_id} <- parse_optional_uuid(params, :product_id),
          {:ok, variant_id} <- parse_optional_uuid(params, :variant_id),
+         {:ok, subscription_plan_id} <- parse_optional_uuid(params, :subscription_plan_id),
          {:ok, normalized_variant_id} <- normalize_variant_id(product_id, variant_id) do
-      {:ok, %__MODULE__{variant_id: normalized_variant_id, quantity: quantity}}
+      {:ok,
+       %__MODULE__{
+         variant_id: normalized_variant_id,
+         subscription_plan_id: subscription_plan_id,
+         quantity: quantity
+       }}
     end
   end
 

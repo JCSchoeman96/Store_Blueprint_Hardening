@@ -136,6 +136,35 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:ensure_checkout_actor_allowed_for_system, 2},
         {:apply_refund_revocation_for_system, 1}
       ]
+    },
+    Store.Subscriptions.Facade => %{
+      allowed_consumers: [:admin, :user, :system],
+      exports: [
+        {:list_subscriptions_for_user, 2},
+        {:get_subscription_for_user, 2},
+        {:cancel_subscription_for_user, 2},
+        {:cancel_subscription_for_user, 3},
+        {:list_subscriptions_for_admin, 2},
+        {:get_subscription_for_admin, 2},
+        {:cancel_subscription_for_admin, 2},
+        {:cancel_subscription_for_admin, 3},
+        {:resolve_variant_subscription_plan_for_system, 1},
+        {:resolve_variant_subscription_plan_for_system, 2},
+        {:order_has_subscription_lines_for_system, 1},
+        {:order_is_subscription_only_for_system, 1},
+        {:create_subscriptions_from_paid_order_for_system, 1},
+        {:run_due_renewals_for_system, 0},
+        {:run_due_renewals_for_system, 1}
+      ]
+    },
+    Store.Entitlements.Facade => %{
+      allowed_consumers: [:admin, :user, :system],
+      exports: [
+        {:list_entitlements_for_user, 2},
+        {:issue_subscription_entitlement_for_system, 2},
+        {:revoke_subscription_entitlements_for_system, 1},
+        {:revoke_subscription_entitlements_for_system, 2}
+      ]
     }
   }
 

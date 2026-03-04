@@ -146,6 +146,30 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     assert :succeeded == fetch_payment_intent!(payment_intent.id).state
   end
 
+  test "create_or_reuse_payment_intent fails closed for missing or unsupported provider" do
+    order = create_order!()
+
+    assert {:error, %Error{code: "PAYMENT_PROVIDER_SELECTION_REQUIRED"}} =
+             Store.Payments.create_or_reuse_payment_intent(%{
+               order_id: order.id,
+               amount_received_minor: 10_000,
+               currency: "USD"
+             })
+
+    assert {:error, %Error{code: "PAYMENT_PROVIDER_UNSUPPORTED"}} =
+             Store.Payments.create_or_reuse_payment_intent(%{
+               order_id: order.id,
+               amount_received_minor: 10_000,
+               currency: "USD",
+               provider: "nope"
+             })
+
+    assert 0 ==
+             PaymentIntent
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
   defp create_order! do
     Order
     |> Ash.Changeset.for_create(:create, %{})
@@ -154,7 +178,10 @@ defmodule Store.Governance.CheckoutInterlocksTest do
 
   defp create_submitted_payment_intent!(order_id) do
     PaymentIntent
-    |> Ash.Changeset.for_create(:create, %{order_id: order_id, amount_received_minor: 1_000})
+    |> Ash.Changeset.for_create(
+      :create,
+      %{order_id: order_id, amount_received_minor: 1_000, provider: :stripe}
+    )
     |> Ash.create!(domain: Store.Payments, authorize?: false)
     |> submit_payment_intent!()
   end
