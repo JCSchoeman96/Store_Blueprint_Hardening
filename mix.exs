@@ -81,6 +81,8 @@ defmodule Store.MixProject do
       {:ex_aws_s3, "~> 2.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
+      {:benchee, "~> 1.3", only: [:dev, :test]},
+      {:redix, "~> 1.5"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},

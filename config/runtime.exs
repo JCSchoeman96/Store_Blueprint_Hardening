@@ -284,8 +284,20 @@ if config_env() == :prod do
       value -> raise "invalid STORE_RATE_LIMIT_BACKEND value: #{value}"
     end
 
+  redis_tls? = System.get_env("STORE_REDIS_SSL", "false") in ~w(true 1)
+
   config :store, :rate_limit,
     backend: rate_limit_backend,
+    redis_client: Store.Support.RateLimit.RedixClient,
+    redis_name: :store_rate_limit_redis,
+    redis: [
+      host: System.get_env("STORE_REDIS_HOST", "localhost"),
+      port: String.to_integer(System.get_env("STORE_REDIS_PORT", "6379")),
+      database: String.to_integer(System.get_env("STORE_REDIS_DB", "0")),
+      username: System.get_env("STORE_REDIS_USERNAME"),
+      password: System.get_env("STORE_REDIS_PASSWORD"),
+      ssl: redis_tls?
+    ],
     signed_download_limit:
       String.to_integer(System.get_env("STORE_DIGITAL_SIGNED_DOWNLOAD_LIMIT", "10")),
     signed_download_window_seconds:

@@ -31,6 +31,29 @@ config :store, :payments,
 config :store, :shipping,
   quote_hash_secret: System.get_env("STORE_QUOTE_HASH_SECRET", "phase22-dev-only-change-me")
 
+rate_limit_backend =
+  case System.get_env("STORE_RATE_LIMIT_BACKEND", "redis") do
+    "ets" -> Store.Support.RateLimit.EtsBackend
+    "redis" -> Store.Support.RateLimit.RedisBackend
+    value -> raise "invalid STORE_RATE_LIMIT_BACKEND value: #{value}"
+  end
+
+redis_tls? = System.get_env("STORE_REDIS_SSL", "false") in ~w(true 1)
+
+config :store, :rate_limit,
+  backend: rate_limit_backend,
+  redis_client: Store.Support.RateLimit.RedixClient,
+  redis_name: :store_rate_limit_redis,
+  # For host-based dev with Docker Redis, publish the container port (e.g. -p 6379:6379).
+  redis: [
+    host: System.get_env("STORE_REDIS_HOST", "localhost"),
+    port: String.to_integer(System.get_env("STORE_REDIS_PORT", "6379")),
+    database: String.to_integer(System.get_env("STORE_REDIS_DB", "0")),
+    username: System.get_env("STORE_REDIS_USERNAME"),
+    password: System.get_env("STORE_REDIS_PASSWORD"),
+    ssl: redis_tls?
+  ]
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #
