@@ -117,6 +117,7 @@ defmodule StoreWeb.WebhookControllerTest do
 
     refute_enqueued(worker: ProcessWebhookReceiptWorker)
     refute_enqueued(worker: ProcessRefundWebhookReceiptWorker)
+    assert webhook_receipt_count() == 0
   end
 
   test "invalid stripe signature is rejected", %{conn: conn} do
@@ -133,6 +134,22 @@ defmodule StoreWeb.WebhookControllerTest do
 
     refute_enqueued(worker: ProcessWebhookReceiptWorker)
     refute_enqueued(worker: ProcessRefundWebhookReceiptWorker)
+    assert webhook_receipt_count() == 0
+  end
+
+  test "unknown provider is rejected before persistence", %{conn: conn} do
+    raw_body = Jason.encode!(%{"id" => "evt_unknown_provider"})
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post(~p"/api/webhooks/not-a-provider", raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_PROVIDER_UNSUPPORTED"}} = json_response(conn, 400)
+
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    refute_enqueued(worker: ProcessRefundWebhookReceiptWorker)
+    assert webhook_receipt_count() == 0
   end
 
   test "signature verification uses exact raw body bytes", %{conn: conn} do
@@ -208,5 +225,10 @@ defmodule StoreWeb.WebhookControllerTest do
     |> Application.get_env(:payments, [])
     |> Keyword.get(:stripe, [])
     |> Keyword.fetch!(:webhook_secret)
+  end
+
+  defp webhook_receipt_count do
+    WebhookReceipt
+    |> Ash.count!(domain: Store.Payments, authorize?: false)
   end
 end

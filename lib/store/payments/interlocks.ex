@@ -56,6 +56,7 @@ defmodule Store.Payments.Interlocks do
           :ok | {:discard, String.t()} | {:error, term()}
   def process_payment_webhook_receipt(%WebhookReceipt{} = receipt, _opts \\ []) do
     with :ok <- ensure_receipt_verified(receipt),
+         :ok <- Providers.ensure_enabled_provider(receipt.provider),
          {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
          {:ok, canonical} <- normalize_canonical_receipt(receipt.provider, payload),
          {:ok, payment_intent} <- fetch_payment_intent_for_canonical(canonical),
@@ -121,6 +122,7 @@ defmodule Store.Payments.Interlocks do
     provider_input = attr(attrs, :provider)
 
     with {:ok, provider} <- normalize_provider(provider_input),
+         :ok <- Providers.ensure_enabled_provider(provider),
          :ok <- require_binary(order_id, "order_id is required"),
          :ok <-
            require_non_negative_integer(
@@ -728,11 +730,15 @@ defmodule Store.Payments.Interlocks do
 
   defp normalize_provider(provider_input) do
     case Providers.normalize_provider(provider_input) do
-      known when known in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
-        {:ok, known}
-
       :unknown ->
         {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported")}
+
+      known ->
+        if Providers.known_provider?(known) do
+          {:ok, known}
+        else
+          {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported")}
+        end
     end
   end
 

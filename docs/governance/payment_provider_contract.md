@@ -46,6 +46,7 @@ Webhook endpoints in `store_web/**` MAY do **only** the following:
 1) **Read raw request** (headers + raw body)
 2) **Verify signature** (pure computation)
 3) **Reject invalid/missing signature** (HTTP 401/403)
+3a) **Reject unknown provider route values** (HTTP 400 `PAYMENT_PROVIDER_UNSUPPORTED`)
 4) **Normalize minimal receipt envelope** (safe fields)
 5) (Recommended) **Persist a WebhookReceipt** record (or equivalent) with verification status
 6) **Enqueue exactly one Oban worker** to process the receipt
@@ -116,6 +117,7 @@ This struct must be **the only input** to state transition orchestration.
 
 Worker must:
 - mark receipt `:processing`
+- ensure provider is enabled before transitions (`PAYMENT_PROVIDER_DISABLED` on block)
 - normalize → canonical receipt
 - apply transitions through your interlocks (already replay-safe)
 - mark receipt `:processed`
@@ -161,8 +163,10 @@ Implement a small internal error code set for payment boundaries:
 - `PAYMENT_SIGNATURE_MISSING`
 - `PAYMENT_SIGNATURE_INVALID`
 - `PAYMENT_PAYLOAD_INVALID`
-- `PAYMENT_EVENT_UNKNOWN`
 - `PAYMENT_EVENT_DUPLICATE`
+- `PAYMENT_PROVIDER_SELECTION_REQUIRED`
+- `PAYMENT_PROVIDER_UNSUPPORTED`
+- `PAYMENT_PROVIDER_DISABLED`
 - `PAYMENT_PROVIDER_DOWN`
 - `PAYMENT_PROVIDER_TIMEOUT`
 - `PAYMENT_PROCESSING_FAILED`

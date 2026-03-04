@@ -288,6 +288,12 @@ defmodule Store.Support.Governance.UniquenessRegistry do
       mode: :active_now
     },
     %{
+      key: :stored_payment_methods_provider_customer_payment_method,
+      table: "stored_payment_methods",
+      columns: ["provider", "provider_customer_ref", "provider_payment_method_ref"],
+      mode: :active_now
+    },
+    %{
       key: :subscriptions_source_order_line_item_id,
       table: "subscriptions",
       columns: ["source_order_line_item_id"],

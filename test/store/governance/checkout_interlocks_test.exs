@@ -9,6 +9,16 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   alias Store.Support.Errors.Error
   alias Store.Support.ID.UUIDv7
 
+  setup do
+    previous = Application.get_env(:store, :payments, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :payments, previous)
+    end)
+
+    :ok
+  end
+
   test "begin_checkout is idempotent for same canonical input" do
     as_of = ~U[2026-02-25 18:00:00Z]
     line_a = %{variant_id: UUIDv7.generate(), quantity: 2}
@@ -162,6 +172,28 @@ defmodule Store.Governance.CheckoutInterlocksTest do
                amount_received_minor: 10_000,
                currency: "USD",
                provider: "nope"
+             })
+
+    assert 0 ==
+             PaymentIntent
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
+  test "create_or_reuse_payment_intent fails closed for disabled providers" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [],
+      stripe: [webhook_secret: "whsec_test_only_change_me"]
+    )
+
+    order = create_order!()
+
+    assert {:error, %Error{code: "PAYMENT_PROVIDER_DISABLED"}} =
+             Store.Payments.create_or_reuse_payment_intent(%{
+               order_id: order.id,
+               amount_received_minor: 10_000,
+               currency: "USD",
+               provider: "stripe"
              })
 
     assert 0 ==

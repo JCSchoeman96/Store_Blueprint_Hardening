@@ -18,6 +18,16 @@ defmodule Store.Payments.CreateIntentForOrderTest do
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.TestFixtures
 
+  setup do
+    previous = Application.get_env(:store, :payments, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :payments, previous)
+    end)
+
+    :ok
+  end
+
   test "create_intent_for_order requires finalized totals" do
     token = Ash.UUIDv7.generate()
     actor = %{cart_token: token}
@@ -212,6 +222,70 @@ defmodule Store.Payments.CreateIntentForOrderTest do
 
     assert {:error, error} = CreateIntentForOrderInput.new(%{"provider" => "not_real"})
     assert error.code == "PAYMENT_PROVIDER_UNSUPPORTED"
+
+    assert 0 ==
+             PaymentIntent
+             |> Ash.Query.filter(expr(order_id == ^checkout_start.order_id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
+  test "create_intent_for_order rejects disabled provider and does not persist intent" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [],
+      stripe: [webhook_secret: "whsec_test_only_change_me"]
+    )
+
+    token = Ash.UUIDv7.generate()
+    actor = %{cart_token: token}
+    variant_id = published_variant_id!()
+    create_pricing_rules!()
+
+    assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
+
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, checkout_start} = Checkout.start_from_cart(nil, token, start_input)
+
+    selection =
+      quote_selection!(%{
+        destination_country_code: "US",
+        destination_region_code: "CA",
+        destination_postal_code: "94105",
+        currency_code: "USD",
+        shipping_weight_grams: 0
+      })
+
+    assert {:ok, shipping_input} =
+             CheckoutShippingInput.new(%{
+               "recipient_name" => "Provider Disabled Test",
+               "address_line1" => "1 Main St",
+               "city" => "San Francisco",
+               "country_code" => "US",
+               "region_code" => "CA",
+               "postal_code" => "94105",
+               "phone" => "555-555-1212",
+               "quote_hash" => selection.quote_hash,
+               "shipping_method_code" => selection.shipping_method_code
+             })
+
+    assert {:ok, _checkout_with_shipping} =
+             Checkout.set_shipping(actor, checkout_start.checkout_key, shipping_input)
+
+    assert {:ok, finalize_input} = CheckoutFinalizeInput.new(%{})
+
+    assert {:ok, _finalized_checkout} =
+             Checkout.finalize_totals(actor, checkout_start.checkout_key, finalize_input)
+
+    assert {:ok, create_intent_input} = CreateIntentForOrderInput.new(%{"provider" => "stripe"})
+
+    assert {:error, error} =
+             Payments.create_intent_for_order(
+               actor,
+               checkout_start.checkout_key,
+               create_intent_input
+             )
+
+    assert error.code == "PAYMENT_PROVIDER_DISABLED"
 
     assert 0 ==
              PaymentIntent

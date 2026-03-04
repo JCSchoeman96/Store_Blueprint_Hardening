@@ -21,7 +21,11 @@ defmodule StoreWeb.API.ErrorResponder do
   defp status_for_code("PAYMENT_SIGNATURE_MISSING"), do: :unauthorized
   defp status_for_code("PAYMENT_SIGNATURE_INVALID"), do: :unauthorized
   defp status_for_code("PAYMENT_PROVIDER_VERIFICATION_FAILED"), do: :unauthorized
+  defp status_for_code("PAYMENT_PROVIDER_SELECTION_REQUIRED"), do: :bad_request
+  defp status_for_code("PAYMENT_PROVIDER_UNSUPPORTED"), do: :bad_request
+  defp status_for_code("PAYMENT_PROVIDER_DISABLED"), do: :forbidden
   defp status_for_code("PAYMENT_PAYLOAD_INVALID"), do: :bad_request
+  defp status_for_code("PAYMENT_METHOD_REQUIRED"), do: :unprocessable_entity
   defp status_for_code("VALIDATION_ERROR"), do: :bad_request
   defp status_for_code("CURRENCY_MISMATCH"), do: :bad_request
   defp status_for_code("PAYMENT_EVENT_UNVERIFIED"), do: :unprocessable_entity

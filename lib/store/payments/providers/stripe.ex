@@ -53,7 +53,6 @@ defmodule Store.Payments.Providers.Stripe do
 
       {:ok,
        %{
-         provider: "stripe",
          provider_session_id: provider_session_id,
          provider_payment_id: provider_payment_id,
          provider_checkout_url: checkout_url,

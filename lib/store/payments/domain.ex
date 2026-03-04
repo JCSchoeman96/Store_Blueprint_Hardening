@@ -83,6 +83,7 @@ defmodule Store.Payments do
            :ok <- ensure_totals_finalized(checkout),
            :ok <- ensure_order_pending_payment(checkout),
            :ok <- ensure_payable_total(checkout),
+           :ok <- Providers.ensure_enabled_provider(input.provider),
            {:ok, intent_result} <- create_or_reuse_intent_for_checkout(checkout, input),
            {:ok, payment_intent} <-
              ensure_provider_reference(
@@ -196,25 +197,33 @@ defmodule Store.Payments do
       Map.get(provider_payload, :provider, provider)
 
     case Providers.normalize_provider(provider_value) do
-      normalized when normalized in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
-        attrs = %{
-          provider: normalized,
-          provider_payment_id: Map.get(provider_payload, :provider_payment_id),
-          provider_session_id: Map.get(provider_payload, :provider_session_id),
-          provider_checkout_url: Map.get(provider_payload, :provider_checkout_url),
-          provider_client_secret: Map.get(provider_payload, :provider_client_secret)
-        }
-
-        payment_intent
-        |> Ash.Changeset.for_update(:set_provider_reference, attrs, context: %{system?: true})
-        |> Ash.update(domain: __MODULE__, authorize?: false, context: %{system?: true})
-
       :unknown ->
         {:error,
          Error.new(
            "PAYMENT_PROVIDER_UNSUPPORTED",
            "payment provider is not supported"
          )}
+
+      normalized ->
+        if Providers.known_provider?(normalized) do
+          attrs = %{
+            provider: normalized,
+            provider_payment_id: Map.get(provider_payload, :provider_payment_id),
+            provider_session_id: Map.get(provider_payload, :provider_session_id),
+            provider_checkout_url: Map.get(provider_payload, :provider_checkout_url),
+            provider_client_secret: Map.get(provider_payload, :provider_client_secret)
+          }
+
+          payment_intent
+          |> Ash.Changeset.for_update(:set_provider_reference, attrs, context: %{system?: true})
+          |> Ash.update(domain: __MODULE__, authorize?: false, context: %{system?: true})
+        else
+          {:error,
+           Error.new(
+             "PAYMENT_PROVIDER_UNSUPPORTED",
+             "payment provider is not supported"
+           )}
+        end
     end
   end
 

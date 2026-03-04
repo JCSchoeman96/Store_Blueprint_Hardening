@@ -8,9 +8,20 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
   alias Store.Comms.EmailOutbox
   alias Store.Orders.{Order, OrderLineItem}
   alias Store.Payments.{PaymentIntent, Refund, RefundAttempt, WebhookReceipt}
+  alias Store.Support.Errors.Error
   alias Store.Support.Time
   alias Store.TestFixtures
   alias Store.Workers.ProcessRefundWebhookReceiptWorker
+
+  setup do
+    previous = Application.get_env(:store, :payments, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :payments, previous)
+    end)
+
+    :ok
+  end
 
   test "worker is replay-safe and marks order refunded only at refundable threshold" do
     %{order: order, payment_intent: payment_intent} = create_refundable_order_fixture!()
@@ -108,6 +119,35 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
                expr(template_kind == :refund_processed and order_id == ^order.id)
              )
              |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+  end
+
+  test "worker marks disabled provider receipts as failed without processing transitions" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [],
+      stripe: [webhook_secret: "whsec_test_only_change_me"]
+    )
+
+    receipt =
+      create_refund_webhook_receipt!(
+        :stripe,
+        %{
+          "event_type" => "refund.succeeded",
+          "provider_event_id" => "evt_refund_disabled_001",
+          "refund" => %{
+            "id" => "re_disabled_001",
+            "idempotency_key" => "refund_disabled_key"
+          }
+        }
+      )
+
+    assert {:error, %Error{code: "PAYMENT_PROVIDER_DISABLED"}} =
+             perform_job(ProcessRefundWebhookReceiptWorker, %{
+               "webhook_receipt_id" => receipt.id
+             })
+
+    updated_receipt = fetch_receipt!(receipt.id)
+    assert updated_receipt.processing_status == "failed"
+    assert updated_receipt.error_code == "PAYMENT_PROVIDER_DISABLED"
   end
 
   defp create_refundable_order_fixture! do
@@ -218,5 +258,14 @@ defmodule Store.Workers.ProcessRefundWebhookReceiptWorkerTest do
 
   defp unique_order_ref do
     "ORDRFNWRK#{System.unique_integer([:positive])}"
+  end
+
+  defp fetch_receipt!(id) do
+    assert {:ok, [receipt]} =
+             WebhookReceipt
+             |> Ash.Query.filter(expr(id == ^id))
+             |> Ash.read(domain: Store.Payments, authorize?: false)
+
+    receipt
   end
 end

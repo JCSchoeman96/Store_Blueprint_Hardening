@@ -50,11 +50,16 @@ defmodule Store.Contracts.Phase18ContractsTest do
       "headers" => %{"content-type" => ["application/json"]}
     }
 
-    assert {:ok, %WebhookReceiptIngestInput{provider: "stripe"}} =
+    assert {:ok, %WebhookReceiptIngestInput{provider: :stripe}} =
              WebhookReceiptIngestInput.new(params)
 
     assert {:error, unknown} = WebhookReceiptIngestInput.new(Map.put(params, "bad", "x"))
     assert unknown.code == "VALIDATION_ERROR"
+
+    assert {:error, unsupported} =
+             WebhookReceiptIngestInput.new(Map.put(params, "provider", "bogus"))
+
+    assert unsupported.code == "PAYMENT_PROVIDER_UNSUPPORTED"
   end
 
   test "admin query params adapters reject unknown keys" do

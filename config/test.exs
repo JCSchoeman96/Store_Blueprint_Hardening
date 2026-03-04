@@ -26,7 +26,10 @@ config :store, :google_oauth,
   client_secret: "test-google-client-secret",
   redirect_uri_base: "http://localhost:4000/auth"
 
-config :store, :payments, stripe: [webhook_secret: "whsec_test_only_change_me"]
+config :store, :payments,
+  enabled_providers: [:stripe],
+  default_purchase_provider_for_ui: :stripe,
+  stripe: [webhook_secret: "whsec_test_only_change_me"]
 
 config :store, :shipping, quote_hash_secret: "phase22-test-only-change-me"
 

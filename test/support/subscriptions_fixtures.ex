@@ -10,6 +10,7 @@ defmodule Store.SubscriptionsFixtures do
 
   alias Store.Subscriptions.{
     Scheduler,
+    StoredPaymentMethod,
     Subscription,
     SubscriptionItem,
     SubscriptionPlan,
@@ -152,13 +153,15 @@ defmodule Store.SubscriptionsFixtures do
       end)
 
     period = Scheduler.initial_period(started_at, plan)
+    provider = Map.get(overrides, :provider, :stripe)
+    stored_payment_method = maybe_create_stored_payment_method!(user_id, provider, overrides)
 
     subscription_attrs =
       %{
         user_id: user_id,
         subscription_plan_id: plan.id,
         status: Map.get(overrides, :status, :active),
-        provider: Map.get(overrides, :provider, :stripe),
+        provider: provider,
         billing_mode: Map.get(overrides, :billing_mode, :merchant_managed),
         started_at: period.current_period_start_at,
         current_period_start_at: period.current_period_start_at,
@@ -166,7 +169,15 @@ defmodule Store.SubscriptionsFixtures do
         next_renewal_at: Map.get(overrides, :next_renewal_at, period.next_renewal_at),
         source_order_id: order.id,
         source_order_line_item_id: line_item.id,
-        provider_billing_ref: Map.get(overrides, :provider_billing_ref)
+        provider_customer_ref:
+          Map.get(overrides, :provider_customer_ref) ||
+            (stored_payment_method && stored_payment_method.provider_customer_ref),
+        provider_billing_ref:
+          Map.get(overrides, :provider_billing_ref) ||
+            (stored_payment_method && stored_payment_method.provider_payment_method_ref),
+        stored_payment_method_id:
+          Map.get(overrides, :stored_payment_method_id) ||
+            (stored_payment_method && stored_payment_method.id)
       }
 
     subscription =
@@ -284,5 +295,44 @@ defmodule Store.SubscriptionsFixtures do
       tax_minor: 0
     })
     |> Ash.create!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+  end
+
+  defp maybe_create_stored_payment_method!(user_id, provider, overrides) do
+    cond do
+      is_binary(Map.get(overrides, :stored_payment_method_id)) ->
+        fetch_stored_payment_method!(Map.get(overrides, :stored_payment_method_id))
+
+      is_binary(Map.get(overrides, :provider_billing_ref)) ->
+        StoredPaymentMethod
+        |> Ash.Changeset.for_create(
+          :create_or_reuse,
+          %{
+            user_id: user_id,
+            provider: provider,
+            provider_customer_ref:
+              Map.get(overrides, :provider_customer_ref, "cust_#{String.slice(user_id, 0, 8)}"),
+            provider_payment_method_ref: Map.get(overrides, :provider_billing_ref),
+            status: Map.get(overrides, :stored_payment_method_status, :active),
+            fingerprint:
+              Map.get(
+                overrides,
+                :stored_payment_method_fingerprint,
+                "fp_#{System.unique_integer([:positive])}"
+              )
+          },
+          context: %{system?: true}
+        )
+        |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+      true ->
+        nil
+    end
+  end
+
+  defp fetch_stored_payment_method!(id) do
+    StoredPaymentMethod
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    |> List.first()
   end
 end

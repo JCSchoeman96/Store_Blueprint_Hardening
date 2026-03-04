@@ -12,6 +12,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
+      STORE_DB_PORT: 5433
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5433:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: store_test
+        options: >-
+          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -43,8 +59,17 @@ jobs:
       - name: Fetch deps
         run: mix deps.get
 
-      - name: Run static check gate
-        run: mix check.static
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            nc -z localhost 5433 && exit 0
+            sleep 1
+          done
+          echo "Postgres did not become ready on port 5433"
+          exit 1
+
+      - name: Run required check gate
+        run: mix check
 
       - name: Verify no generated drift
         run: git diff --exit-code

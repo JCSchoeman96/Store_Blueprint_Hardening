@@ -163,6 +163,8 @@ Notes:
 Every provider config must live in `runtime.exs` and be environment driven.
 
 Common required keys:
+- `enabled_providers` (backend hard gate; default fail-closed in prod)
+- `default_purchase_provider_for_ui` (optional UI hint only, never backend fallback)
 - `mode`: `:sandbox | :live`
 - `api_key` / `merchant_id` / `client_id` (provider-specific)
 - `webhook_secret` (or signing secret / token)
@@ -236,4 +238,3 @@ Before selecting a provider for a client, record:
 - provider downtime posture (grace periods, retry strategy)
 
 Store this in a client implementation note under `docs/agent_notes/`.
-

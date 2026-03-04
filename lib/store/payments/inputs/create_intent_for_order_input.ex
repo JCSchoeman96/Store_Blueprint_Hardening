@@ -43,26 +43,20 @@ defmodule Store.Payments.Inputs.CreateIntentForOrderInput do
   end
 
   defp normalize_provider(params) do
-    case Map.get(params, :provider, Map.get(params, "provider")) do
-      nil ->
-        {:error,
-         Error.new(
-           "PAYMENT_PROVIDER_SELECTION_REQUIRED",
-           "payment provider selection is required"
-         )}
+    params
+    |> Map.get(:provider, Map.get(params, "provider"))
+    |> normalize_provider_input()
+  end
 
-      provider_input ->
-        case Providers.normalize_provider(provider_input) do
-          known when known in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
-            {:ok, known}
+  defp normalize_provider_input(nil), do: {:error, Providers.selection_required_error()}
 
-          :unknown ->
-            {:error,
-             Error.new(
-               "PAYMENT_PROVIDER_UNSUPPORTED",
-               "payment provider is not supported"
-             )}
-        end
+  defp normalize_provider_input(provider_input) do
+    case Providers.normalize_provider(provider_input) do
+      :unknown ->
+        {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is not supported")}
+
+      known ->
+        {:ok, known}
     end
   end
 end

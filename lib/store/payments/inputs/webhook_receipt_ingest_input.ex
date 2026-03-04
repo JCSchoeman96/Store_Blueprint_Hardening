@@ -3,6 +3,7 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
   Typed input contract for webhook receipt ingest operations.
   """
 
+  alias Store.Payments.Providers
   alias Store.Support.Errors.Error
 
   @allowed_keys MapSet.new([
@@ -55,7 +56,7 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
   ]
 
   @type t :: %__MODULE__{
-          provider: String.t(),
+          provider: Providers.known_provider(),
           raw_body: String.t(),
           headers: map(),
           idempotency_key: String.t() | nil,
@@ -74,7 +75,7 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
   def new(params) when is_map(params) do
     with :ok <- validate_keys(params),
-         {:ok, provider} <- parse_required_string(params, :provider),
+         {:ok, provider} <- parse_required_provider(params),
          {:ok, raw_body} <- parse_required_string(params, :raw_body),
          {:ok, headers} <- parse_headers(params),
          {:ok, idempotency_key} <- parse_optional_string(params, :idempotency_key),
@@ -126,6 +127,34 @@ defmodule Store.Payments.Inputs.WebhookReceiptIngestInput do
            "VALIDATION_ERROR",
            "unknown params: #{Enum.map_join(unknown_keys, ", ", &to_string/1)}"
          )}
+    end
+  end
+
+  defp parse_required_provider(params) do
+    params
+    |> Map.get(:provider, Map.get(params, "provider"))
+    |> normalize_provider_input()
+  end
+
+  defp normalize_provider_input(nil) do
+    {:error,
+     Error.new(
+       "PAYMENT_PROVIDER_SELECTION_REQUIRED",
+       "payment provider selection is required"
+     )}
+  end
+
+  defp normalize_provider_input(provider_input) do
+    case Providers.normalize_provider(provider_input) do
+      :unknown ->
+        {:error,
+         Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported", %{
+           provider: inspect(provider_input),
+           supported_providers: Providers.known_providers() |> Enum.map(&Atom.to_string/1)
+         })}
+
+      known ->
+        {:ok, known}
     end
   end
 

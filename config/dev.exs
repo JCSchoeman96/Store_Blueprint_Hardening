@@ -22,6 +22,8 @@ config :store, :google_oauth,
     System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE", "http://localhost:4000/auth")
 
 config :store, :payments,
+  enabled_providers: [:stripe],
+  default_purchase_provider_for_ui: :stripe,
   stripe: [
     webhook_secret: System.get_env("STORE_STRIPE_WEBHOOK_SECRET", "whsec_dev_only_change_me")
   ]

@@ -35,6 +35,7 @@ defmodule Store.Governance.SubscriptionsPhase26Test do
                :subscription_plans_key,
                :variant_subscription_plans_variant_subscription_plan,
                :variant_subscription_plans_active_variant,
+               :stored_payment_methods_provider_customer_payment_method,
                :subscriptions_source_order_line_item_id,
                :subscriptions_provider_provider_subscription_id,
                :subscription_items_source_order_line_item_id,

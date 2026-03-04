@@ -48,6 +48,8 @@ config :store, StoreWeb.Endpoint,
 config :store, Store.Mailer, adapter: Swoosh.Adapters.Local
 
 config :store, :payments,
+  enabled_providers: [],
+  default_purchase_provider_for_ui: nil,
   checkout: [
     return_base_url: "http://localhost:4000/checkout/return",
     cancel_base_url: "http://localhost:4000/checkout/cancel"

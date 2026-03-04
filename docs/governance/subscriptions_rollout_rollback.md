@@ -9,6 +9,8 @@ Operational guardrails for phased subscriptions rollout, rollback, and reconcili
 - `:subscription_features, :expose_purchase?`
 - `:subscription_features, :provider_managed_mode_enabled?`
 - `:subscription_features, :immediate_switching_enabled?`
+- `:payments, :enabled_providers` (backend hard gate; fail-closed)
+- `:payments, :default_purchase_provider_for_ui` (UI hint only)
 
 Defaults are fail-closed (`false`) until each stage is validated.
 
@@ -39,8 +41,9 @@ If severe regression is detected:
 
 1. Disable `expose_purchase?` immediately.
 2. Disable `provider_managed_mode_enabled?` and `immediate_switching_enabled?`.
-3. Pause recurring worker execution by stopping `RunDueSubscriptionRenewalsWorker` cron entry.
-4. Run reconciliation command set (below).
+3. Set `enabled_providers` to an empty list (or remove the affected provider).
+4. Pause recurring worker execution by stopping `RunDueSubscriptionRenewalsWorker` cron entry.
+5. Run reconciliation command set (below).
 
 Do not run destructive state rewrites from web/controllers.
 
@@ -55,3 +58,11 @@ Use these for safe post-incident recovery:
 3. Reconcile entitlements by replaying subscription renewal/activation facades for affected subscription IDs.
 
 All reconciliation must remain worker/domain-facade driven.
+
+## Disabled Provider Webhooks (Evidence-First)
+
+When a provider is disabled:
+
+1. Known + signature-verified webhook receipts are still persisted.
+2. Worker processing is blocked and receipt is marked failed with `PAYMENT_PROVIDER_DISABLED`.
+3. No domain transitions are applied while disabled.

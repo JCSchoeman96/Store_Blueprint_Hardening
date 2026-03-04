@@ -8,8 +8,19 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   alias Store.Comms.EmailOutbox
   alias Store.Orders.{Order, PaymentApplication}
   alias Store.Payments.{PaymentIntent, WebhookReceipt}
+  alias Store.Support.Errors.Error
   alias Store.TestFixtures
   alias Store.Workers.ProcessWebhookReceiptWorker
+
+  setup do
+    previous = Application.get_env(:store, :payments, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :payments, previous)
+    end)
+
+    :ok
+  end
 
   test "worker performs apply-once payment success transition and order effects" do
     order = create_order!()
@@ -75,6 +86,56 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
   end
 
+  test "worker records disabled-provider failure without applying transitions" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [],
+      stripe: [webhook_secret: "whsec_test_only_change_me"]
+    )
+
+    order = create_order!()
+    payment_intent = create_submitted_payment_intent!(order.id)
+
+    raw_body =
+      Jason.encode!(%{
+        "id" => "evt_worker_provider_disabled_001",
+        "type" => "payment_intent.succeeded",
+        "data" => %{
+          "object" => %{
+            "id" => payment_intent.id,
+            "amount_received" => payment_intent.amount_received_minor,
+            "currency" => String.downcase(payment_intent.currency || "USD"),
+            "metadata" => %{}
+          }
+        }
+      })
+
+    receipt =
+      WebhookReceipt
+      |> Ash.Changeset.for_create(
+        :ingest,
+        %{
+          provider: :stripe,
+          provider_event_id: "evt_worker_provider_disabled_001",
+          event_type: "payment_intent.succeeded",
+          verification_status: "verified",
+          processing_status: "new",
+          raw_body: raw_body,
+          headers: %{"content-type" => ["application/json"]}
+        }
+      )
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    assert {:error, %Error{code: "PAYMENT_PROVIDER_DISABLED"}} =
+             perform_job(ProcessWebhookReceiptWorker, %{"webhook_receipt_id" => receipt.id})
+
+    updated_receipt = fetch_receipt!(receipt.id)
+    assert updated_receipt.processing_status == "failed"
+    assert updated_receipt.error_code == "PAYMENT_PROVIDER_DISABLED"
+
+    assert :submitted == fetch_payment_intent!(payment_intent.id).state
+    assert :pending_payment == fetch_order!(order.id).state
+  end
+
   defp create_submitted_payment_intent!(order_id) do
     payment_intent =
       PaymentIntent
@@ -125,5 +186,14 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              |> Ash.read(domain: Store.Payments, authorize?: false)
 
     payment_intent
+  end
+
+  defp fetch_receipt!(id) do
+    assert {:ok, [receipt]} =
+             WebhookReceipt
+             |> Ash.Query.filter(expr(id == ^id))
+             |> Ash.read(domain: Store.Payments, authorize?: false)
+
+    receipt
   end
 end

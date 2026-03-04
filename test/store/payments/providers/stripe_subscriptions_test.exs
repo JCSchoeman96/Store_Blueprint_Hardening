@@ -33,4 +33,22 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
     assert receipt.currency == "USD"
     assert receipt.status == :unknown
   end
+
+  test "create_intent response does not expose provider string field" do
+    attrs = %{
+      order_ref: "ORDP26STRIPE",
+      amount_minor: 1_999,
+      currency: "USD",
+      payment_intent_key: "pi_key_001",
+      idempotency_key: "idem_001",
+      return_url: "https://store.example/return",
+      cancel_url: "https://store.example/cancel"
+    }
+
+    assert {:ok, payload} = Stripe.create_intent(attrs, [])
+    refute Map.has_key?(payload, :provider)
+    assert is_binary(payload.provider_session_id)
+    assert is_binary(payload.provider_payment_id)
+    assert is_binary(payload.provider_checkout_url)
+  end
 end

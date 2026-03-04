@@ -122,6 +122,12 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    belongs_to :stored_payment_method, Store.Subscriptions.StoredPaymentMethod do
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(true)
+    end
+
     has_many :items, Store.Subscriptions.SubscriptionItem do
       destination_attribute(:subscription_id)
       public?(true)
@@ -223,6 +229,7 @@ defmodule Store.Subscriptions.Subscription do
         :next_renewal_at,
         :provider_customer_ref,
         :provider_billing_ref,
+        :stored_payment_method_id,
         :source_order_id,
         :source_order_line_item_id
       ])
@@ -231,8 +238,6 @@ defmodule Store.Subscriptions.Subscription do
       upsert_identity(:unique_source_order_line_item)
       upsert_fields([])
       return_skipped_upsert?(true)
-
-      change(&normalize_provider/2)
     end
 
     update :activate_now do
@@ -329,7 +334,13 @@ defmodule Store.Subscriptions.Subscription do
 
     update :set_provider_billing_reference do
       require_atomic?(false)
-      accept([:provider_customer_ref, :provider_billing_ref, :billing_status_reason])
+
+      accept([
+        :provider_customer_ref,
+        :provider_billing_ref,
+        :stored_payment_method_id,
+        :billing_status_reason
+      ])
     end
   end
 
@@ -351,6 +362,7 @@ defmodule Store.Subscriptions.Subscription do
       index([:provider, :provider_subscription_id], name: "subscriptions_provider_ref_index")
       index([:source_order_line_item_id], name: "subscriptions_source_order_line_item_id_index")
       index([:subscription_plan_id], name: "subscriptions_subscription_plan_id_index")
+      index([:stored_payment_method_id], name: "subscriptions_stored_payment_method_id_index")
     end
   end
 
@@ -377,21 +389,6 @@ defmodule Store.Subscriptions.Subscription do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
-    end
-  end
-
-  defp normalize_provider(changeset, _context) do
-    case Ash.Changeset.get_attribute(changeset, :provider) do
-      value when is_binary(value) ->
-        value =
-          value
-          |> String.trim()
-          |> String.downcase()
-
-        Ash.Changeset.change_attribute(changeset, :provider, value)
-
-      _ ->
-        changeset
     end
   end
 end

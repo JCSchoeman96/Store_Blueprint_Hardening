@@ -54,6 +54,7 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
 
     assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_MISSING"}} = json_response(conn, 401)
     refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    assert webhook_receipt_count() == 0
   end
 
   test "callback signature verification is bound to raw body bytes", %{conn: conn} do
@@ -72,6 +73,20 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
 
     assert %{"errors" => %{"code" => "PAYMENT_SIGNATURE_INVALID"}} = json_response(conn, 401)
     refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    assert webhook_receipt_count() == 0
+  end
+
+  test "callback rejects unknown provider before persistence", %{conn: conn} do
+    raw_body = Jason.encode!(%{"id" => "evt_callback_unknown_provider"})
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post(~p"/api/payments/not-a-provider/callback", raw_body)
+
+    assert %{"errors" => %{"code" => "PAYMENT_PROVIDER_UNSUPPORTED"}} = json_response(conn, 400)
+    refute_enqueued(worker: ProcessWebhookReceiptWorker)
+    assert webhook_receipt_count() == 0
   end
 
   defp create_order! do
@@ -141,5 +156,10 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
     |> Application.get_env(:payments, [])
     |> Keyword.get(:stripe, [])
     |> Keyword.fetch!(:webhook_secret)
+  end
+
+  defp webhook_receipt_count do
+    WebhookReceipt
+    |> Ash.count!(domain: Store.Payments, authorize?: false)
   end
 end

@@ -12,6 +12,9 @@ defmodule Store.Payments.Providers do
   @type known_provider :: :stripe | :payfast | :paystack | :yoco | :peach_payments
   @type normalized_provider :: known_provider() | :unknown
   @type provider :: known_provider() | String.t()
+  @type enabled_provider_config :: [provider()] | String.t() | nil
+
+  @known_providers [:stripe, :payfast, :paystack, :yoco, :peach_payments]
 
   @provider_aliases %{
     "stripe" => :stripe,
@@ -22,6 +25,14 @@ defmodule Store.Payments.Providers do
     "peach_payments" => :peach_payments,
     "peach-payments" => :peach_payments
   }
+
+  @spec known_providers() :: [known_provider()]
+  def known_providers do
+    Enum.map(@known_providers, & &1)
+  end
+
+  @spec known_provider?(term()) :: boolean()
+  def known_provider?(provider), do: provider in @known_providers
 
   @spec adapter(provider()) :: {:ok, module()} | {:error, Error.t()}
   def adapter(provider) do
@@ -81,9 +92,126 @@ defmodule Store.Payments.Providers do
 
   def normalize_provider(_provider), do: :unknown
 
-  defp unsupported_provider_error(provider) do
-    Error.new("PAYMENT_EVENT_UNKNOWN", "unsupported payment provider", %{
-      provider: inspect(provider)
+  @spec normalize_enabled_providers(enabled_provider_config()) ::
+          {:ok, [known_provider()]} | {:error, Error.t()}
+  def normalize_enabled_providers(nil), do: {:ok, []}
+
+  def normalize_enabled_providers(value) when is_binary(value) do
+    value
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> normalize_enabled_provider_list()
+  end
+
+  def normalize_enabled_providers(value) when is_list(value),
+    do: normalize_enabled_provider_list(value)
+
+  def normalize_enabled_providers(_value) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "enabled payment providers config must be a comma-separated string or list"
+     )}
+  end
+
+  @spec enabled_providers() :: [known_provider()]
+  def enabled_providers do
+    config_value =
+      :store
+      |> Application.get_env(:payments, [])
+      |> Keyword.get(:enabled_providers, [])
+
+    case normalize_enabled_providers(config_value) do
+      {:ok, providers} -> providers
+      {:error, _error} -> []
+    end
+  end
+
+  @spec default_purchase_provider_for_ui() :: known_provider() | nil
+  def default_purchase_provider_for_ui do
+    configured =
+      :store
+      |> Application.get_env(:payments, [])
+      |> Keyword.get(:default_purchase_provider_for_ui)
+
+    enabled = enabled_providers()
+
+    case normalize_provider(configured) do
+      known when known in @known_providers ->
+        if known in enabled, do: known, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  @spec ensure_enabled_provider(known_provider()) :: :ok | {:error, Error.t()}
+  def ensure_enabled_provider(provider) when provider in @known_providers do
+    if provider in enabled_providers() do
+      :ok
+    else
+      {:error,
+       Error.new("PAYMENT_PROVIDER_DISABLED", "payment provider is disabled", %{
+         provider: Atom.to_string(provider),
+         enabled_providers: supported_enabled_providers()
+       })}
+    end
+  end
+
+  def ensure_enabled_provider(provider), do: {:error, unsupported_provider_error(provider)}
+
+  @spec selection_required_error() :: Error.t()
+  def selection_required_error do
+    Error.new("PAYMENT_PROVIDER_SELECTION_REQUIRED", "payment provider selection is required", %{
+      supported_providers: supported_providers()
     })
   end
+
+  defp unsupported_provider_error(provider) do
+    Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "unsupported payment provider", %{
+      provider: provider_metadata(provider),
+      supported_providers: supported_providers()
+    })
+  end
+
+  defp normalize_enabled_provider_list(list) when is_list(list) do
+    Enum.reduce_while(list, {:ok, []}, fn value, {:ok, acc} ->
+      case normalize_provider(value) do
+        known when known in @known_providers ->
+          {:cont, {:ok, [known | acc]}}
+
+        :unknown ->
+          {:halt,
+           {:error,
+            Error.new(
+              "PAYMENT_PROVIDER_UNSUPPORTED",
+              "enabled payment provider is unsupported",
+              %{
+                provider: provider_metadata(value),
+                supported_providers: supported_providers()
+              }
+            )}}
+      end
+    end)
+    |> case do
+      {:ok, providers} ->
+        {:ok, providers |> Enum.reverse() |> Enum.uniq()}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp supported_providers do
+    Enum.map(@known_providers, &Atom.to_string/1)
+  end
+
+  defp supported_enabled_providers do
+    enabled_providers()
+    |> Enum.map(&Atom.to_string/1)
+  end
+
+  defp provider_metadata(provider) when is_atom(provider), do: Atom.to_string(provider)
+  defp provider_metadata(provider) when is_binary(provider), do: String.trim(provider)
+  defp provider_metadata(provider), do: inspect(provider)
 end

@@ -116,7 +116,8 @@ defmodule Store.Payments.Refunds do
   @spec process_refund_webhook_receipt(WebhookReceipt.t(), keyword()) ::
           :ok | {:discard, String.t()} | {:error, term()}
   def process_refund_webhook_receipt(%WebhookReceipt{} = receipt, _opts \\ []) do
-    with {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
+    with :ok <- Providers.ensure_enabled_provider(receipt.provider),
+         {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
          {:ok, event_type} <- extract_event_type(payload),
          true <- refund_event?(event_type),
          {:ok, provider_event_id} <- extract_provider_event_id(payload),
@@ -592,6 +593,7 @@ defmodule Store.Payments.Refunds do
     fields = extract_request_fields(attrs)
 
     with {:ok, provider} <- normalize_provider(fields.provider),
+         :ok <- Providers.ensure_enabled_provider(provider),
          normalized_fields <- Map.put(fields, :provider, provider),
          :ok <- validate_request_fields(normalized_fields) do
       {:ok, finalize_request_fields(normalized_fields)}
@@ -689,11 +691,15 @@ defmodule Store.Payments.Refunds do
 
   defp normalize_provider(provider_input) do
     case Providers.normalize_provider(provider_input) do
-      known when known in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
-        {:ok, known}
-
       :unknown ->
         {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported")}
+
+      known ->
+        if Providers.known_provider?(known) do
+          {:ok, known}
+        else
+          {:error, Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported")}
+        end
     end
   end
 

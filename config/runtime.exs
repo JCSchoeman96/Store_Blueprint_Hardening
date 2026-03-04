@@ -39,10 +39,6 @@ if config_env() == :prod do
     System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE") ||
       raise "environment variable STORE_GOOGLE_REDIRECT_URI_BASE is missing."
 
-  stripe_webhook_secret =
-    System.get_env("STORE_STRIPE_WEBHOOK_SECRET") ||
-      raise "environment variable STORE_STRIPE_WEBHOOK_SECRET is missing."
-
   quote_hash_secret =
     System.get_env("STORE_QUOTE_HASH_SECRET") ||
       raise "environment variable STORE_QUOTE_HASH_SECRET is missing."
@@ -107,7 +103,121 @@ if config_env() == :prod do
       value -> raise "invalid STORE_COMMS_PROVIDER value: #{value}"
     end
 
-  config :store, :payments, stripe: [webhook_secret: stripe_webhook_secret]
+  payment_provider_aliases = %{
+    "stripe" => :stripe,
+    "payfast" => :payfast,
+    "paystack" => :paystack,
+    "yoco" => :yoco,
+    "peach" => :peach_payments,
+    "peach_payments" => :peach_payments,
+    "peach-payments" => :peach_payments
+  }
+
+  normalize_payment_provider = fn
+    provider when is_atom(provider) ->
+      provider
+      |> Atom.to_string()
+      |> String.downcase()
+      |> then(&Map.get(payment_provider_aliases, &1, :unknown))
+
+    provider when is_binary(provider) ->
+      provider
+      |> String.trim()
+      |> String.downcase()
+      |> then(&Map.get(payment_provider_aliases, &1, :unknown))
+
+    _provider ->
+      :unknown
+  end
+
+  parse_enabled_payment_providers! = fn raw_value ->
+    values =
+      cond do
+        is_nil(raw_value) ->
+          []
+
+        is_binary(raw_value) ->
+          raw_value
+          |> String.split(",", trim: true)
+          |> Enum.map(&String.trim/1)
+
+        is_list(raw_value) ->
+          raw_value
+
+        true ->
+          raise "STORE_PAYMENTS_ENABLED_PROVIDERS must be a comma-separated string or list"
+      end
+
+    values
+    |> Enum.reduce([], fn value, acc ->
+      case normalize_payment_provider.(value) do
+        :unknown ->
+          raise "unsupported payment provider in STORE_PAYMENTS_ENABLED_PROVIDERS: #{inspect(value)}"
+
+        provider ->
+          if provider in acc, do: acc, else: acc ++ [provider]
+      end
+    end)
+  end
+
+  parse_optional_payment_provider! = fn raw_value ->
+    case raw_value do
+      nil ->
+        nil
+
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          nil
+        else
+          case normalize_payment_provider.(value) do
+            :unknown ->
+              raise "unsupported payment provider in STORE_PAYMENTS_DEFAULT_PURCHASE_PROVIDER_FOR_UI: #{inspect(value)}"
+
+            provider ->
+              provider
+          end
+        end
+
+      value ->
+        case normalize_payment_provider.(value) do
+          :unknown ->
+            raise "unsupported payment provider in STORE_PAYMENTS_DEFAULT_PURCHASE_PROVIDER_FOR_UI: #{inspect(value)}"
+
+          provider ->
+            provider
+        end
+    end
+  end
+
+  enabled_payment_providers =
+    parse_enabled_payment_providers!.(System.get_env("STORE_PAYMENTS_ENABLED_PROVIDERS", ""))
+
+  default_purchase_provider_for_ui =
+    parse_optional_payment_provider!.(
+      System.get_env("STORE_PAYMENTS_DEFAULT_PURCHASE_PROVIDER_FOR_UI")
+    )
+
+  if default_purchase_provider_for_ui &&
+       default_purchase_provider_for_ui not in enabled_payment_providers do
+    raise """
+    STORE_PAYMENTS_DEFAULT_PURCHASE_PROVIDER_FOR_UI must be one of STORE_PAYMENTS_ENABLED_PROVIDERS.
+    got=#{default_purchase_provider_for_ui}
+    enabled=#{inspect(enabled_payment_providers)}
+    """
+  end
+
+  stripe_webhook_secret =
+    if :stripe in enabled_payment_providers do
+      System.get_env("STORE_STRIPE_WEBHOOK_SECRET") ||
+        raise "environment variable STORE_STRIPE_WEBHOOK_SECRET is missing."
+    else
+      System.get_env("STORE_STRIPE_WEBHOOK_SECRET")
+    end
+
+  config :store, :payments,
+    enabled_providers: enabled_payment_providers,
+    default_purchase_provider_for_ui: default_purchase_provider_for_ui,
+    stripe: [webhook_secret: stripe_webhook_secret]
 
   config :store, :shipping, quote_hash_secret: quote_hash_secret
 

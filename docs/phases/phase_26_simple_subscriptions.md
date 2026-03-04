@@ -233,11 +233,19 @@ No global governance doc changes are required **if** you implement the uniquenes
 This section tightens the subscription model so it is **production-usable** and **cloneable** without hidden assumptions.
 
 ### Payment method storage (how renewals are actually charged)
-A subscription renewal needs a durable **provider billing reference**. Keep it minimal:
+A subscription renewal needs a durable **stored payment method** identity.
+
+- Keep a dedicated `StoredPaymentMethod` record:
+  - `user_id`
+  - `provider` (enum)
+  - `provider_customer_ref`
+  - `provider_payment_method_ref`
+  - `status` (`active|inactive|revoked`)
+  - uniqueness: `(provider, provider_customer_ref, provider_payment_method_ref)`
 
 - Store on `Subscription`:
-  - `provider_customer_ref` (string, nullable until first successful payment links a customer)
-  - `provider_billing_ref` (string, nullable; e.g., mandate/authorization/payment-method token)
+  - `stored_payment_method_id` (nullable until setup flow succeeds)
+  - `provider_customer_ref` / `provider_billing_ref` (optional support snapshots)
   - `billing_status_reason` (enum/string; for support visibility)
 
 **Rules**
@@ -248,7 +256,7 @@ A subscription renewal needs a durable **provider billing reference**. Keep it m
 **Update payment method (MVP)**
 - Customer triggers an “Update payment method” flow.
 - Provider returns a setup/authorization success callback via webhook.
-- Worker updates `Subscription.provider_billing_ref` and clears `billing_status_reason`.
+- Worker creates/updates `StoredPaymentMethod`, sets `Subscription.stored_payment_method_id`, and clears `billing_status_reason`.
 
 ### Dunning & retries (minimal, but real)
 You need explicit rules for failed renewals so the system is not ambiguous:
@@ -257,6 +265,11 @@ You need explicit rules for failed renewals so the system is not ambiguous:
   - set `Subscription.status = :past_due`
   - set `past_due_since` timestamp
   - set `billing_status_reason = :payment_failed`
+
+- If `stored_payment_method_id` is missing or points to a non-active record:
+  - fail renewal with `PAYMENT_METHOD_REQUIRED`
+  - set `Subscription.status = :past_due`
+  - set `billing_status_reason = PAYMENT_METHOD_REQUIRED`
 
 - Retry strategy (MVP):
   - up to `N` retries (default 3) during `grace_period_days` (Plan field, default 7)
@@ -305,7 +318,7 @@ MVP policy recommendation:
 
 ### Acceptance criteria additions (enterprise)
 A “simple subscriptions” implementation is only accepted when:
-- A stored billing ref exists and is used for renewals
+- An active `StoredPaymentMethod` exists and is used for renewals
 - Failed renewals reliably transition into `:past_due` and retry deterministically
 - Grace-period expiry deterministically cancels
 - No duplicate renewals occur under webhook/job replay or multi-node concurrency

@@ -21,6 +21,7 @@ defmodule Store.Subscriptions.Facade do
   alias Store.Subscriptions.{
     RenewalAttempt,
     Scheduler,
+    StoredPaymentMethod,
     Subscription,
     SubscriptionItem,
     SubscriptionPlan,
@@ -528,6 +529,7 @@ defmodule Store.Subscriptions.Facade do
   defp resolve_provider_and_billing_mode(%Order{} = order, _plan) do
     with {:ok, %PaymentIntent{} = payment_intent} <- fetch_succeeded_payment_intent(order.id),
          {:ok, provider} <- normalize_selected_provider(payment_intent.provider),
+         :ok <- Providers.ensure_enabled_provider(provider),
          {:ok, capabilities} <- fetch_provider_capabilities(provider),
          {:ok, billing_mode} <- choose_billing_mode(capabilities) do
       {:ok, %{provider: provider, billing_mode: billing_mode}}
@@ -563,12 +565,20 @@ defmodule Store.Subscriptions.Facade do
 
   defp normalize_selected_provider(provider) do
     case Providers.normalize_provider(provider) do
-      known when known in [:stripe, :payfast, :paystack, :yoco, :peach_payments] ->
-        {:ok, known}
-
       :unknown ->
         {:error,
          Error.new("SUBSCRIPTION_PROVIDER_UNSUPPORTED", "subscription provider is unsupported")}
+
+      known ->
+        if Providers.known_provider?(known) do
+          {:ok, known}
+        else
+          {:error,
+           Error.new(
+             "SUBSCRIPTION_PROVIDER_UNSUPPORTED",
+             "subscription provider is unsupported"
+           )}
+        end
     end
   end
 
@@ -788,15 +798,66 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp ensure_renewal_chargeability(subscription, _plan) do
-    if is_binary(subscription.provider_billing_ref) do
+    with :ok <- Providers.ensure_enabled_provider(subscription.provider),
+         {:ok, %StoredPaymentMethod{} = stored_payment_method} <-
+           fetch_active_stored_payment_method(subscription),
+         true <- stored_payment_method.provider == subscription.provider do
       :ok
     else
-      {:error,
-       Error.new(
-         "SUBSCRIPTION_MISSING_BILLING_REFERENCE",
-         "subscription cannot renew without provider_billing_ref"
-       )}
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_METHOD_REQUIRED",
+           "active stored payment method provider does not match subscription provider"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp fetch_active_stored_payment_method(%Subscription{stored_payment_method_id: nil}) do
+    {:error,
+     Error.new(
+       "PAYMENT_METHOD_REQUIRED",
+       "subscription cannot renew without an active stored payment method"
+     )}
+  end
+
+  defp fetch_active_stored_payment_method(%Subscription{
+         stored_payment_method_id: stored_payment_method_id,
+         user_id: user_id
+       })
+       when is_binary(stored_payment_method_id) and is_binary(user_id) do
+    query =
+      StoredPaymentMethod
+      |> Ash.Query.filter(
+        expr(id == ^stored_payment_method_id and user_id == ^user_id and status == :active)
+      )
+      |> Ash.Query.limit(1)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, [%StoredPaymentMethod{} = stored_payment_method | _]} ->
+        {:ok, stored_payment_method}
+
+      {:ok, []} ->
+        {:error,
+         Error.new(
+           "PAYMENT_METHOD_REQUIRED",
+           "subscription cannot renew without an active stored payment method"
+         )}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp fetch_active_stored_payment_method(%Subscription{}) do
+    {:error,
+     Error.new(
+       "PAYMENT_METHOD_REQUIRED",
+       "subscription cannot renew without an active stored payment method"
+     )}
   end
 
   defp maybe_expire_past_due(%Subscription{status: :past_due} = subscription, plan, now) do

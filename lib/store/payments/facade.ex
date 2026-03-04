@@ -4,7 +4,7 @@ defmodule Store.Payments.Facade do
   """
 
   alias Store.Payments.Inputs.WebhookReceiptIngestInput
-  alias Store.Payments.{PaymentIntent, WebhookReceipt}
+  alias Store.Payments.{PaymentIntent, Providers, WebhookReceipt}
   alias Store.Payments.Queries.{PaymentIntentIndexQuery, PaymentIntentShowQuery}
   alias Store.Support.Errors.Normalize
 
@@ -65,30 +65,44 @@ defmodule Store.Payments.Facade do
   @spec process_payment_webhook_receipt_for_system(WebhookReceipt.t()) ::
           :ok | {:discard, String.t()} | {:error, term()}
   def process_payment_webhook_receipt_for_system(%WebhookReceipt{} = receipt) do
-    with {:ok, processing_receipt} <- mark_processing(receipt),
-         result <-
-           Store.Payments.process_payment_webhook_receipt(processing_receipt,
-             context: %{system?: true}
-           ),
-         :ok <- mark_terminal_status(processing_receipt, result) do
-      result
-    else
-      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    case mark_processing(receipt) do
+      {:ok, processing_receipt} ->
+        result =
+          with :ok <- Providers.ensure_enabled_provider(processing_receipt.provider) do
+            Store.Payments.process_payment_webhook_receipt(processing_receipt,
+              context: %{system?: true}
+            )
+          end
+
+        case mark_terminal_status(processing_receipt, result) do
+          :ok -> result
+          {:error, reason} -> {:error, Normalize.normalize(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
   end
 
   @spec process_refund_webhook_receipt_for_system(WebhookReceipt.t()) ::
           :ok | {:discard, String.t()} | {:error, term()}
   def process_refund_webhook_receipt_for_system(%WebhookReceipt{} = receipt) do
-    with {:ok, processing_receipt} <- mark_processing(receipt),
-         result <-
-           Store.Payments.process_refund_webhook_receipt(processing_receipt,
-             context: %{system?: true}
-           ),
-         :ok <- mark_terminal_status(processing_receipt, result) do
-      result
-    else
-      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    case mark_processing(receipt) do
+      {:ok, processing_receipt} ->
+        result =
+          with :ok <- Providers.ensure_enabled_provider(processing_receipt.provider) do
+            Store.Payments.process_refund_webhook_receipt(processing_receipt,
+              context: %{system?: true}
+            )
+          end
+
+        case mark_terminal_status(processing_receipt, result) do
+          :ok -> result
+          {:error, reason} -> {:error, Normalize.normalize(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
   end
 

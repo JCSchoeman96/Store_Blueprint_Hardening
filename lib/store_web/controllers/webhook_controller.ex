@@ -13,9 +13,9 @@ defmodule StoreWeb.WebhookController do
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, %{"provider" => provider}) when is_binary(provider) do
-    with {:ok, raw_body, conn} <- extract_raw_body(conn),
+    with {:ok, normalized_provider} <- normalize_provider_param(provider),
+         {:ok, raw_body, conn} <- extract_raw_body(conn),
          headers <- headers_to_map(conn.req_headers),
-         normalized_provider = provider_name(provider),
          {:ok, payload} <- Providers.verify_webhook(normalized_provider, headers, raw_body, []),
          {:ok, canonical_receipt} <- Providers.normalize_webhook(normalized_provider, payload),
          {:ok, receipt} <-
@@ -103,10 +103,26 @@ defmodule StoreWeb.WebhookController do
     |> Enum.into(%{}, fn {key, values} -> {key, Enum.reverse(values)} end)
   end
 
-  defp provider_name(provider) do
-    provider
-    |> Providers.normalize_provider()
-    |> Atom.to_string()
+  defp normalize_provider_param(provider) when is_binary(provider) do
+    case Providers.normalize_provider(provider) do
+      :unknown ->
+        {:error,
+         Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported", %{
+           provider: provider,
+           supported_providers: Providers.known_providers() |> Enum.map(&Atom.to_string/1)
+         })}
+
+      known ->
+        if Providers.known_provider?(known) do
+          {:ok, known}
+        else
+          {:error,
+           Error.new("PAYMENT_PROVIDER_UNSUPPORTED", "payment provider is unsupported", %{
+             provider: provider,
+             supported_providers: Providers.known_providers() |> Enum.map(&Atom.to_string/1)
+           })}
+        end
+    end
   end
 
   defp sha256_hex(value) when is_binary(value) do

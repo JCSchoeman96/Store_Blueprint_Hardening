@@ -10,6 +10,16 @@ defmodule Store.Subscriptions.FacadeTest do
   alias Store.Subscriptions.{RenewalAttempt, Subscription, SubscriptionItem}
   alias Store.SubscriptionsFixtures
 
+  setup do
+    previous = Application.get_env(:store, :payments, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :payments, previous)
+    end)
+
+    :ok
+  end
+
   test "create_subscriptions_from_paid_order_for_system is replay-safe and issues entitlements" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_create")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -108,11 +118,74 @@ defmodule Store.Subscriptions.FacadeTest do
 
     updated = fetch_subscription!(subscription.id)
     assert updated.status == :past_due
-    assert updated.billing_status_reason == "SUBSCRIPTION_MISSING_BILLING_REFERENCE"
+    assert updated.billing_status_reason == "PAYMENT_METHOD_REQUIRED"
 
     attempt = fetch_latest_attempt!(updated.id)
     assert attempt.status == :failed
-    assert attempt.failure_code == "SUBSCRIPTION_MISSING_BILLING_REFERENCE"
+    assert attempt.failure_code == "PAYMENT_METHOD_REQUIRED"
+  end
+
+  test "run_due_renewals_for_system requires stored payment method to be active" do
+    customer = SubscriptionsFixtures.create_customer!("phase26_sub_inactive_method")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_phase26_inactive",
+        stored_payment_method_status: :inactive,
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    assert {:ok, result} = SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+    assert result.due_count == 1
+    assert result.success_count == 0
+    assert result.failed_count == 1
+
+    updated = fetch_subscription!(subscription.id)
+    assert updated.status == :past_due
+    assert updated.billing_status_reason == "PAYMENT_METHOD_REQUIRED"
+
+    attempt = fetch_latest_attempt!(updated.id)
+    assert attempt.status == :failed
+    assert attempt.failure_code == "PAYMENT_METHOD_REQUIRED"
+  end
+
+  test "run_due_renewals_for_system fails closed when provider is disabled" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [],
+      stripe: [webhook_secret: "whsec_test_only_change_me"]
+    )
+
+    customer = SubscriptionsFixtures.create_customer!("phase26_sub_provider_disabled")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider: :stripe,
+        provider_billing_ref: "pm_phase26_provider_disabled",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    assert {:ok, result} = SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+    assert result.due_count == 1
+    assert result.success_count == 0
+    assert result.failed_count == 1
+
+    updated = fetch_subscription!(subscription.id)
+    assert updated.status == :past_due
+    assert updated.billing_status_reason == "PAYMENT_PROVIDER_DISABLED"
+
+    attempt = fetch_latest_attempt!(updated.id)
+    assert attempt.status == :failed
+    assert attempt.failure_code == "PAYMENT_PROVIDER_DISABLED"
   end
 
   test "run_due_renewals_for_system expires subscriptions past grace and revokes entitlements" do
@@ -189,6 +262,27 @@ defmodule Store.Subscriptions.FacadeTest do
              SubscriptionsFacade.create_subscriptions_from_paid_order_for_system(order.id)
 
     assert error.code == "SUBSCRIPTION_PROVIDER_SELECTION_REQUIRED"
+    assert 0 == count_subscriptions_for_order_line(order.id)
+  end
+
+  test "create_subscriptions_from_paid_order_for_system fails closed when provider is disabled" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [],
+      stripe: [webhook_secret: "whsec_test_only_change_me"]
+    )
+
+    customer = SubscriptionsFixtures.create_customer!("phase26_sub_disabled_provider")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{order: order} =
+      SubscriptionsFixtures.create_paid_order_with_subscription_line!(customer.id, variant, plan)
+
+    assert {:error, error} =
+             SubscriptionsFacade.create_subscriptions_from_paid_order_for_system(order.id)
+
+    assert error.code == "PAYMENT_PROVIDER_DISABLED"
     assert 0 == count_subscriptions_for_order_line(order.id)
   end
 
