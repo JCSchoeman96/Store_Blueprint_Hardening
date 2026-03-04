@@ -280,6 +280,7 @@ defmodule Store.Subscriptions.SubscriptionPlan do
   postgres do
     table("subscription_plans")
     repo(Store.Repo)
+    migration_defaults(retry_schedule_hours: "[0, 24, 72]")
 
     custom_indexes do
       index([:status], name: "subscription_plans_status_index")

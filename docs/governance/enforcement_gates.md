@@ -12,6 +12,16 @@ mix check MUST include:
   2) moduledoc gate
   3) docs-first phase notes gate
 
+## Migration ordering governance note (MUST)
+- Migration execution order is filename timestamp order. Dependency tables must be created before dependents that reference them.
+- Migrations must remain deterministic: avoid conditional branching on `table_exists?` or environment state for core schema shape.
+- Phase-labeled migration filenames should remain monotonic (`phase_19` before `phase_20`) unless there is a documented pre-production resequence.
+- If a resequence is performed pre-production, record:
+  1) exact filenames changed
+  2) reason
+  3) required operator action (drop/create/migrate for local/test DBs)
+  in the relevant `docs/agent_notes/phase_XX_docs.md`.
+
 ## No Repo in web gate (MUST)
 Fail if any file under lib/store_web/** references:
 - Store.Repo

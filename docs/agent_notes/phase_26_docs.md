@@ -93,6 +93,20 @@ Implement the Phase 26 subscription constitution with SA-first provider posture 
 - Web boundary and governance anti-drift checks: PASS
 - Phase 26 beads/epic closure: PASS
 
+## POST-CLOSE HARDENING (2026-03-04)
+
+- Re-sequenced catalog/cart migration ordering to remove phase/timestamp drift and keep FK dependencies deterministic:
+  - moved `20260302213000_phase_19_catalog_simple_products.exs` to `20260302193000_phase_19_catalog_simple_products.exs`
+  - restored inline `cart_items.variant_id -> variants(id)` FK in `20260302194911_phase_20_carts_checkout_drafts.exs`
+  - removed temporary backfill migration
+- Reconciled Ash resource snapshot drift by generating missing snapshots (`mix ash_postgres.generate_migrations --snapshots-only`).
+- Added Oban hardening migration:
+  - `20260304123000_validate_oban_non_negative_priority_constraint.exs` validates `public.oban_jobs.non_negative_priority` when present and unvalidated.
+- Added legacy-safe Oban backstop migration:
+  - `20260304123100_validate_oban_non_negative_priority_constraint_backstop.exs` re-validates the same constraint for environments that previously ran a different body under version `20260304123000`.
+- Updated governance note in `docs/governance/enforcement_gates.md` to pin migration ordering requirements and resequence documentation protocol.
+- Added `migration_defaults(retry_schedule_hours: "[0, 24, 72]")` in `SubscriptionPlan` and refreshed snapshots so Ash codegen checks pass without array-default warnings.
+
 ## PERFORMANCE & SCALING REVIEW
 
 - Hot paths:
