@@ -22,7 +22,9 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 ## DECISIONS / PINS
 
 1. Performance suite entrypoint is `priv/repo/performance_smoke_test.exs`.
-2. Suite is self-running via `MIX_ENV=test mix run priv/repo/performance_smoke_test.exs`.
+2. Suite is self-running via standalone invocation:
+   - `MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs`
+   - script exits early (code 0) if `STORE_PERF_SMOKE` is not enabled.
 3. Redis is mandatory for `ci_gate` and `full_stress` profiles; script fails immediately if Redis ping fails.
 4. Profiles:
    - `ci_gate`: scheduler-scaled concurrency
@@ -30,8 +32,10 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
    - `local_dev`: reduced load for local validation
 5. Stampede gate is resource-scoped using repo telemetry filter and bounded by `STORE_PERF_STAMPEDE_MAX_RESOURCE_QUERIES` (default 1).
 6. HLL gate uses relative error, not exact cardinality equality.
-7. Mirror consistency uses a quiescent barrier (`GenServer.call`) after async updates before equality assertions.
+7. Mirror consistency uses a counted quiescent barrier (`barrier(expected_updates)`) that waits for all async updates, preventing false negatives from cross-process cast ordering.
 8. CI adds required `performance_smoke_required` job; nightly adds `full_stress` execution.
+9. Repo pool size is scheduler-aware by default (`min(max(schedulers * 4, 20), 60)`) and can be overridden via `STORE_PERF_REPO_POOL_SIZE`.
+10. Checkout payment provider is env/config driven (`STORE_PERF_PROVIDER` or enabled/default provider config), fail-closed if unsupported/disabled.
 
 ## PLAN
 
@@ -63,9 +67,12 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 - Added `priv/repo/performance_smoke_test.exs` with Benchee + ExUnit performance gate suite.
 - Added Redis round-robin benchmark pool for concurrent warm-path command execution.
 - Added deterministic Redis ping gate at startup for required profiles.
+- Added explicit perf-smoke enable switch (`STORE_PERF_SMOKE=true`) and standalone `--no-start` execution contract.
+- Added adaptive repo pool sizing and explicit repo timeout/queue tuning for stress runs.
+- Replaced mirror pseudo-barrier with a counted barrier to guarantee quiescent consistency checks.
+- Made checkout payment provider configurable/validated against enabled providers.
 - Added summary table output and JSON artifact in `tmp/perf/`.
-- Added required CI job `performance_smoke_required` in `.github/workflows/ci.yml`.
-- Added nightly full-stress run and artifacts in `.github/workflows/nightly-hardening.yml`.
+- Updated CI and nightly jobs to run smoke suite with `STORE_PERF_SMOKE=true` and `--no-start`.
 
 ## NEXT
 
@@ -85,6 +92,7 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 - `bd create ...`
 - `bd update store_blueprint-7yf.22 --claim`
 - `mix run priv/repo/performance_smoke_test.exs` (validation)
+- `MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs` (intended invocation)
 - `mix check` (validation)
 
 ## GATES

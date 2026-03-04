@@ -14,6 +14,7 @@ defmodule Store.Application do
       [
         StoreWeb.Telemetry,
         Store.Repo,
+        Store.DirectRepo,
         {Oban, Application.fetch_env!(:store, Oban)},
         {AshAuthentication.Supervisor, otp_app: :store},
         {DNSCluster, query: Application.get_env(:store, :dns_cluster_query) || :ignore},

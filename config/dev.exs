@@ -1,19 +1,32 @@
 import Config
 
 # Configure your database
+# 1. The High-Velocity Proxy Route (Hits PgBouncer)
 config :store, Store.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  port: String.to_integer(System.get_env("STORE_DB_PORT", "5433")),
+  port: 6432,
   database: "store_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
-  pool_size: 10
+  pool_size: 20,
+  prepare: :unnamed
+
+# 2. The Direct Route (Hits Postgres directly for Oban)
+config :store, Store.DirectRepo,
+  username: "postgres",
+  password: "postgres",
+  hostname: "localhost",
+  port: 5433,
+  database: "store_dev",
+  stacktrace: true,
+  show_sensitive_data_on_connection_error: true,
+  pool_size: 5
 
 config :store,
-       :token_signing_secret,
-       System.get_env("STORE_TOKEN_SIGNING_SECRET", "dev-store-token-signing-secret")
+    :token_signing_secret,
+    System.get_env("STORE_TOKEN_SIGNING_SECRET", "dev-store-token-signing-secret")
 
 config :store, :google_oauth,
   client_id: System.get_env("STORE_GOOGLE_CLIENT_ID", "dev-google-client-id"),

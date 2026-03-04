@@ -5,18 +5,32 @@ import Config
 # The MIX_TEST_PARTITION environment variable can be used
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
+# In test we bypass PgBouncer and hit Postgres directly.
+# Sandbox mode wraps each test in a transaction, making PgBouncer's
+# transaction-mode pooling redundant and adding unnecessary latency.
 config :store, Store.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  port: String.to_integer(System.get_env("STORE_DB_PORT", "5433")),
-  database: "store_test#{System.get_env("MIX_TEST_PARTITION")}",
+  port: 5433,
+  database: "store_#{config_env()}#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
+
+# 2. The Direct Route (Hits Postgres directly for Oban)
+config :store, Store.DirectRepo,
+  username: "postgres",
+  password: "postgres",
+  hostname: "localhost",
+  port: 5433, # Direct Port from your original setup
+  database: "store_#{config_env()}#{System.get_env("MIX_TEST_PARTITION")}",
+  pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: 5
 
 config :store, :token_signing_secret, "test-store-token-signing-secret"
 
 config :store, Oban,
+  repo: Store.DirectRepo,
   testing: :manual,
   plugins: false,
   queues: false

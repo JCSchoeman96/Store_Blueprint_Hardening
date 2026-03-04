@@ -8,7 +8,7 @@
 import Config
 
 config :store,
-  ecto_repos: [Store.Repo],
+  ecto_repos: [Store.Repo, Store.DirectRepo],
   ash_domains: [
     Store.Accounts,
     Store.Admin,
@@ -89,8 +89,13 @@ config :store, :rate_limit,
   signed_download_limit: 10,
   signed_download_window_seconds: 60
 
+# Ensure DirectRepo uses the primary migration path and delegates schema management
+config :store, Store.DirectRepo,
+  priv: "priv/repo",
+  migration_repo: Store.Repo
+
 config :store, Oban,
-  repo: Store.Repo,
+  repo: Store.DirectRepo,
   plugins: [
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24},
     {Oban.Plugins.Cron,

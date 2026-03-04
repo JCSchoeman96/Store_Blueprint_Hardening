@@ -112,10 +112,11 @@ jobs:
 
       - name: Run nightly full-stress performance smoke
         env:
+          STORE_PERF_SMOKE: "true"
           STORE_PERF_PROFILE: full_stress
         run: |
           mkdir -p tmp/nightly
-          mix run priv/repo/performance_smoke_test.exs \
+          mix run --no-start priv/repo/performance_smoke_test.exs \
             | tee tmp/nightly/performance-smoke-seed-${{ matrix.seed }}.log
 
       - name: Upload nightly test diagnostics

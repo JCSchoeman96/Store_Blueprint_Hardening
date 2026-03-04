@@ -201,7 +201,9 @@ jobs:
     env:
       MIX_ENV: test
       STORE_DB_PORT: 5433
+      STORE_PERF_SMOKE: "true"
       STORE_PERF_PROFILE: ci_gate
+      STORE_PERF_REPO_POOL_SIZE: "40"
       PGHOST: localhost
       PGPORT: 5433
       PGUSER: postgres
@@ -217,6 +219,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: store_test
+          POSTGRES_INITDB_ARGS: "--auth-host=trust"
         options: >-
           --health-cmd "pg_isready -U postgres -d store_test"
           --health-interval 10s
@@ -282,7 +285,7 @@ jobs:
         run: mix ash_postgres.create && mix ash_postgres.migrate
 
       - name: Run performance smoke gate
-        run: mix run priv/repo/performance_smoke_test.exs
+        run: mix run --no-start priv/repo/performance_smoke_test.exs
 
       - name: Upload perf artifacts
         if: always()
