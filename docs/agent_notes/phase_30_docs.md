@@ -27,6 +27,7 @@
    - avoid reloading checkout context after shipping/finalize when the updated order is already in hand
    - collapse the payment-intent blocking checks into one read
 5. No new public checkout API is introduced in this phase.
+6. The k6 benchmark harness must run against an isolated test database suffix via `STORE_TEST_DB_SUFFIX` so it never pollutes the default `store_test` database used by `mix test` and `mix check`.
 
 ## Plan
 1. Add `RepoStats.capture/2` and replace ad hoc query counters.
@@ -45,6 +46,7 @@
   - `finalize_totals`
   - `create_payment_intent`
 - Added the benchmark bootstrap script at `priv/perf/benchmark_bootstrap.exs`.
+- Benchmark bootstrap now refuses to run without `STORE_TEST_DB_SUFFIX` so the harness uses an isolated benchmark database such as `store_testbench`.
 - Added `perf/k6/` benchmark scripts for storefront HTTP, webhook ingress, and a browser-level checkout journey.
 - Reduced hot-path chatter by:
   - removing cart post-mutation `Repo.get!/2` reloads
@@ -59,6 +61,7 @@
 - Warm:
   - smoke suite now records query-count and repo-time summaries for the key checkout steps
   - k6 bootstrap fixture generation produces stable benchmark inputs for repeatable runs
+  - benchmark fixture generation is isolated from the default test database via `STORE_TEST_DB_SUFFIX`
 - Cold:
   - no schema or index changes were made in this phase
 - DB query count + N+1 risk:
@@ -79,3 +82,8 @@
 
 ## Notes
 - The current checkout LiveView requires server-generated quote options before shipping can be saved. The browser benchmark uses a browser-ready checkout fixture to exercise the payment-facing half of the real UI without adding a synthetic checkout API.
+- Benchmark run sequence:
+  1. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix ecto.create && STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix ecto.migrate`
+  2. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
+  3. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix phx.server`
+  4. Run `k6` against `http://127.0.0.1:4000`

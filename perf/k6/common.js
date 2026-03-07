@@ -1,6 +1,6 @@
 import http from 'k6/http';
 
-const rawData = open(__ENV.STORE_BENCHMARK_DATA_PATH || 'tmp/perf/benchmark_data.json');
+const rawData = open(__ENV.STORE_BENCHMARK_DATA_PATH || '../../tmp/perf/benchmark_data.json');
 const benchmarkData = JSON.parse(rawData);
 
 export const baseUrl = (__ENV.STORE_BENCHMARK_BASE_URL || benchmarkData.base_url).replace(/\/$/, '');

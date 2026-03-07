@@ -1,5 +1,7 @@
 import Config
 
+test_db_suffix = System.get_env("STORE_TEST_DB_SUFFIX") || System.get_env("MIX_TEST_PARTITION")
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -13,7 +15,7 @@ config :store, Store.Repo,
   password: "postgres",
   hostname: "localhost",
   port: 5433,
-  database: "store_#{config_env()}#{System.get_env("MIX_TEST_PARTITION")}",
+  database: "store_#{config_env()}#{test_db_suffix}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
@@ -24,7 +26,7 @@ config :store, Store.DirectRepo,
   hostname: "localhost",
   # Direct Port from your original setup
   port: 5433,
-  database: "store_#{config_env()}#{System.get_env("MIX_TEST_PARTITION")}",
+  database: "store_#{config_env()}#{test_db_suffix}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 5
 

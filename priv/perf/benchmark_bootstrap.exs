@@ -2,10 +2,19 @@ if Mix.env() != :test do
   raise "benchmark_bootstrap.exs must be run with MIX_ENV=test"
 end
 
+benchmark_db_suffix = System.get_env("STORE_TEST_DB_SUFFIX")
+
+if benchmark_db_suffix in [nil, ""] do
+  raise """
+  benchmark_bootstrap.exs requires an isolated test database.
+  Run with: STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs
+  """
+end
+
 if Enum.any?(Application.started_applications(), fn {app, _desc, _vsn} -> app == :store end) do
   raise """
   benchmark_bootstrap.exs expects standalone startup.
-  Run with: MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs
+  Run with: STORE_TEST_DB_SUFFIX=#{benchmark_db_suffix} MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs
   """
 end
 
@@ -63,8 +72,13 @@ defmodule Store.Perf.BenchmarkBootstrap do
   @hot_storefront_count 5
   @distributed_checkout_count 12
   @prepared_checkout_count 12
+  @benchmark_country_code "ZA"
+  @benchmark_region_code "GP"
+  @benchmark_postal_code "2000"
+  @benchmark_city "Johannesburg"
 
   def build do
+    cleanup_benchmark_pricing!()
     admin = create_admin!()
     storefront_products = create_products!(admin, @hot_storefront_count, "phase30-hot")
     flash_sale = create_products!(admin, 1, "phase30-flash") |> hd()
@@ -101,10 +115,10 @@ defmodule Store.Perf.BenchmarkBootstrap do
         shipping_form: %{
           recipient_name: "Phase 30 Customer",
           address_line1: "1 Main St",
-          city: "San Francisco",
-          country_code: "US",
-          region_code: "CA",
-          postal_code: "94105",
+          city: @benchmark_city,
+          country_code: @benchmark_country_code,
+          region_code: @benchmark_region_code,
+          postal_code: @benchmark_postal_code,
           phone: "555-555-1212",
           shipping_method_code: pricing.selection.shipping_method_code,
           quote_hash: pricing.selection.quote_hash
@@ -117,6 +131,18 @@ defmodule Store.Perf.BenchmarkBootstrap do
     }
   end
 
+  defp cleanup_benchmark_pricing! do
+    [
+      {"shipping_rates", "code LIKE 'GROUND_RULE_P30_%'"},
+      {"shipping_zones", "code LIKE '%-P30-%'"},
+      {"shipping_methods", "code LIKE 'GROUND-P30-%'"},
+      {"tax_rates", "code LIKE 'P30-%'"}
+    ]
+    |> Enum.each(fn {table, condition} ->
+      Store.Repo.query!("DELETE FROM #{table} WHERE #{condition}")
+    end)
+  end
+
   def write!(path) when is_binary(path) do
     payload = build()
     File.mkdir_p!(Path.dirname(path))
@@ -125,7 +151,9 @@ defmodule Store.Perf.BenchmarkBootstrap do
   end
 
   defp create_admin! do
-    email = "phase30_perf_admin_#{System.unique_integer([:positive, :monotonic])}@example.com"
+    email =
+      "phase30_perf_admin_#{Ash.UUIDv7.generate() |> String.replace("-", "")}@example.com"
+
     admin = TestFixtures.register_user!(email: email)
     _role = TestFixtures.assign_role!(admin, :admin)
     admin
@@ -133,14 +161,16 @@ defmodule Store.Perf.BenchmarkBootstrap do
 
   defp create_products!(admin, count, prefix) do
     Enum.map(1..count, fn idx ->
+      unique = Ash.UUIDv7.generate() |> String.replace("-", "")
+
       product =
         Store.Catalog.Product
         |> Ash.Changeset.for_create(
           :create_draft,
           %{
-            slug: "#{prefix}-#{System.unique_integer([:positive])}",
+            slug: "#{prefix}-#{unique}",
             title: "Phase 30 #{prefix} #{idx}",
-            base_variant_sku: "P30-#{prefix}-#{System.unique_integer([:positive])}",
+            base_variant_sku: "P30-#{prefix}-#{unique}",
             base_variant_currency_code: "USD",
             base_variant_price_minor: 2_000,
             base_variant_stock_on_hand: 50_000
@@ -180,9 +210,9 @@ defmodule Store.Perf.BenchmarkBootstrap do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          code: "US-CA-P30-#{unique}",
-          country_code: "US",
-          region_code: "CA",
+          code: "#{@benchmark_country_code}-#{@benchmark_region_code}-P30-#{unique}",
+          country_code: @benchmark_country_code,
+          region_code: @benchmark_region_code,
           active: true
         },
         context: %{system?: true}
@@ -211,9 +241,9 @@ defmodule Store.Perf.BenchmarkBootstrap do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          code: "P30-CA-#{unique}",
-          country_code: "US",
-          region_code: "CA",
+          code: "P30-#{@benchmark_region_code}-#{unique}",
+          country_code: @benchmark_country_code,
+          region_code: @benchmark_region_code,
           rate_basis_points: 725,
           active: true,
           product_tax_category: "STANDARD",
@@ -263,10 +293,10 @@ defmodule Store.Perf.BenchmarkBootstrap do
       CheckoutShippingInput.new(%{
         "recipient_name" => "Phase 30 Customer",
         "address_line1" => "1 Main St",
-        "city" => "San Francisco",
-        "country_code" => "US",
-        "region_code" => "CA",
-        "postal_code" => "94105",
+        "city" => @benchmark_city,
+        "country_code" => @benchmark_country_code,
+        "region_code" => @benchmark_region_code,
+        "postal_code" => @benchmark_postal_code,
         "phone" => "555-555-1212",
         "shipping_method_code" => pricing.selection.shipping_method_code,
         "quote_hash" => pricing.selection.quote_hash
@@ -284,9 +314,9 @@ defmodule Store.Perf.BenchmarkBootstrap do
   defp quote_selection! do
     {:ok, request} =
       QuoteRequest.new(%{
-        destination_country_code: "US",
-        destination_region_code: "CA",
-        destination_postal_code: "94105",
+        destination_country_code: @benchmark_country_code,
+        destination_region_code: @benchmark_region_code,
+        destination_postal_code: @benchmark_postal_code,
         currency_code: "USD",
         shipping_weight_grams: 0
       })
