@@ -24,9 +24,7 @@ export const options = {
     'http_req_duration{route:shop_index}': ['p(95)<500'],
     'http_req_duration{route:shop_show}': ['p(95)<500'],
     'http_req_duration{route:cart}': ['p(95)<700'],
-    'http_req_duration{route:checkout}': ['p(95)<900'],
-    'http_req_duration{route:webhook}': ['p(95)<700'],
-    'http_req_duration{route:callback}': ['p(95)<700']
+    'http_req_duration{route:checkout}': ['p(95)<900']
   }
 };
 
@@ -43,25 +41,12 @@ export default function () {
   } else if (roll < 0.85) {
     const response = http.get(storefrontUrl('/cart'), { tags: { route: 'cart' } });
     check(response, { 'cart ok': (r) => r.status === 200 });
-  } else if (roll < 0.95) {
+  } else {
     const checkout = pick(data.checkout.prepared_paths);
     const response = getWithCheckoutCookie(checkout.path, checkout.cart_token, {
       route: 'checkout'
     });
     check(response, { 'checkout ok': (r) => r.status === 200 });
-  } else {
-    const routeName = Math.random() < 0.5 ? 'webhook' : 'callback';
-    const fixture =
-      routeName === 'webhook'
-        ? data.webhook_ingress.webhook
-        : data.webhook_ingress.callback;
-
-    const response = http.post(storefrontUrl(fixture.path), fixture.body, {
-      headers: fixture.headers,
-      tags: { route: routeName }
-    });
-
-    check(response, { [`${routeName} accepted`]: (r) => r.status === 202 });
   }
 
   sleep(1);

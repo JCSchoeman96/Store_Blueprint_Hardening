@@ -65,12 +65,54 @@ defmodule StoreWeb.WebhookControllerTest do
 
     assert receipt_id_1 == receipt_id_2
 
+    assert [
+             %Oban.Job{args: %{"webhook_receipt_id" => ^receipt_id_1}}
+           ] =
+             all_enqueued(
+               worker: ProcessWebhookReceiptWorker,
+               args: %{"webhook_receipt_id" => receipt_id_1}
+             )
+
     count =
       WebhookReceipt
       |> Ash.Query.filter(expr(idempotency_key == ^expected_key))
       |> Ash.count!(domain: Store.Payments, authorize?: false)
 
     assert count == 1
+  end
+
+  test "successful webhook ingest emits persist, enqueue, and response telemetry", %{conn: conn} do
+    payment_intent = create_submitted_payment_intent!()
+    raw_body = stripe_payment_event_raw_body(payment_intent, "evt_webhook_telemetry_001")
+    signature = stripe_signature(raw_body)
+
+    with_ingress_telemetry(fn ->
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("stripe-signature", signature)
+        |> post(~p"/api/webhooks/stripe", raw_body)
+
+      assert json_response(conn, 202)
+
+      assert_receive {:telemetry, :persist, measurements, metadata}
+      assert metadata.route == :webhook
+      assert metadata.provider == "stripe"
+      assert metadata.result == :ok
+      assert is_integer(measurements.query_count)
+
+      assert_receive {:telemetry, :enqueue, measurements, metadata}
+      assert metadata.route == :webhook
+      assert metadata.provider == "stripe"
+      assert metadata.result == :ok
+      assert is_integer(measurements.query_count)
+
+      assert_receive {:telemetry, :response, measurements, metadata}
+      assert metadata.route == :webhook
+      assert metadata.status_bucket == "2xx"
+      assert metadata.result == :ok
+      assert measurements.duration > 0
+    end)
   end
 
   test "refund event payload routes to dedicated refund worker", %{conn: conn} do
@@ -230,5 +272,37 @@ defmodule StoreWeb.WebhookControllerTest do
   defp webhook_receipt_count do
     WebhookReceipt
     |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
+  defp with_ingress_telemetry(fun) when is_function(fun, 0) do
+    parent = self()
+    events = [:persist, :enqueue, :response]
+
+    Enum.each(events, fn stage ->
+      :telemetry.attach(
+        {__MODULE__, stage, System.unique_integer([:positive])},
+        [:store, :payments, :ingress, stage],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:telemetry, stage, measurements, metadata})
+        end,
+        nil
+      )
+    end)
+
+    try do
+      fun.()
+    after
+      :telemetry.list_handlers([:store, :payments, :ingress, :persist])
+      |> Enum.filter(&match?({__MODULE__, :persist, _}, &1.id))
+      |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+
+      :telemetry.list_handlers([:store, :payments, :ingress, :enqueue])
+      |> Enum.filter(&match?({__MODULE__, :enqueue, _}, &1.id))
+      |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+
+      :telemetry.list_handlers([:store, :payments, :ingress, :response])
+      |> Enum.filter(&match?({__MODULE__, :response, _}, &1.id))
+      |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+    end
   end
 end

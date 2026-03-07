@@ -48,6 +48,19 @@
 - Added the benchmark bootstrap script at `priv/perf/benchmark_bootstrap.exs`.
 - Benchmark bootstrap now refuses to run without `STORE_TEST_DB_SUFFIX` so the harness uses an isolated benchmark database such as `store_testbench`.
 - Added `perf/k6/` benchmark scripts for storefront HTTP, webhook ingress, and a browser-level checkout journey.
+- Fixed the public product slug lookup used by `/shop/:slug` by switching `Product.get_for_public` to a supported action filter shape.
+- Removed webhook and callback traffic from the mixed storefront benchmark so storefront latency is measured independently from webhook ingress.
+- Reworked webhook ingress benchmarking to:
+  - generate fresh Stripe signatures at runtime
+  - support `STORE_WEBHOOK_MODE=unique_ingress`
+  - support `STORE_WEBHOOK_MODE=duplicate_replay`
+  - keep duplicate replay logically identical while refreshing only the signature timestamp
+- Added ingress telemetry for webhook and callback controllers covering:
+  - verify/normalize duration
+  - persist duration and repo stats
+  - enqueue duration and repo stats
+  - response duration with status bucket and error code
+- Reduced duplicate replay cost by skipping the enqueue stage when receipt ingest returns an upsert-skipped duplicate and by applying Oban uniqueness to webhook processing jobs.
 - Reduced hot-path chatter by:
   - removing cart post-mutation `Repo.get!/2` reloads
   - reusing the updated checkout order in shipping/finalize flows instead of re-reading checkout context
@@ -58,10 +71,12 @@
   - cart mutation path now avoids a redundant cart reload after version bump
   - checkout set/finalize now avoid re-reading draft/order context immediately after successful updates
   - payment-intent interlocks now use one blocking-state read instead of separate succeeded/in-flight reads
+  - webhook duplicate replay now skips duplicate worker enqueue when the receipt upsert is skipped
 - Warm:
   - smoke suite now records query-count and repo-time summaries for the key checkout steps
   - k6 bootstrap fixture generation produces stable benchmark inputs for repeatable runs
   - benchmark fixture generation is isolated from the default test database via `STORE_TEST_DB_SUFFIX`
+  - webhook benchmark data now stores unsigned payload templates and the signing secret instead of stale signed headers
 - Cold:
   - no schema or index changes were made in this phase
 - DB query count + N+1 risk:
@@ -79,6 +94,7 @@
 - Telemetry / logging:
   - per-step query metrics added for carts/checkout
   - smoke JSON now includes checkout step summaries
+  - webhook ingress now emits route/stage telemetry for verification, persistence, enqueue, and response
 
 ## Notes
 - The current checkout LiveView requires server-generated quote options before shipping can be saved. The browser benchmark uses a browser-ready checkout fixture to exercise the payment-facing half of the real UI without adding a synthetic checkout API.
@@ -86,4 +102,10 @@
   1. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix ecto.create && STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix ecto.migrate`
   2. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
   3. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix phx.server`
-  4. Run `k6` against `http://127.0.0.1:4000`
+  4. Run `k6` against the `base_url` written into `tmp/perf/benchmark_data.json` (defaults to the test endpoint port)
+  5. Storefront HTTP:
+     - `k6 run perf/k6/http_storefront.js`
+  6. Webhook unique ingress:
+     - `k6 run -e STORE_WEBHOOK_MODE=unique_ingress perf/k6/webhook_ingress.js`
+  7. Webhook duplicate replay:
+     - `k6 run -e STORE_WEBHOOK_MODE=duplicate_replay perf/k6/webhook_ingress.js`

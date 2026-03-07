@@ -114,6 +114,52 @@ defmodule StoreWeb.Telemetry do
         tags: [:step, :result],
         unit: {:native, :millisecond}
       ),
+      summary("store.payments.ingress.verify.duration",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.persist.duration",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.persist.query_count",
+        tags: [:route, :provider, :result, :error_code]
+      ),
+      summary("store.payments.ingress.persist.queue_time",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.persist.query_time",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.persist.decode_time",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.enqueue.duration",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.enqueue.query_count",
+        tags: [:route, :provider, :result, :error_code]
+      ),
+      summary("store.payments.ingress.enqueue.queue_time",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.enqueue.query_time",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.enqueue.decode_time",
+        tags: [:route, :provider, :result, :error_code],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.ingress.response.duration",
+        tags: [:route, :provider, :result, :status_bucket, :error_code],
+        unit: {:native, :millisecond}
+      ),
 
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),

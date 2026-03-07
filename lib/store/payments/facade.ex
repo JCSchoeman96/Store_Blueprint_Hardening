@@ -36,7 +36,7 @@ defmodule Store.Payments.Facade do
   end
 
   @spec ingest_webhook_receipt_for_system(WebhookReceiptIngestInput.t()) ::
-          {:ok, WebhookReceipt.t()} | {:error, term()}
+          {:ok, %{receipt: WebhookReceipt.t(), duplicate?: boolean()}} | {:error, term()}
   def ingest_webhook_receipt_for_system(%WebhookReceiptIngestInput{} = input) do
     attrs =
       input
@@ -104,6 +104,14 @@ defmodule Store.Payments.Facade do
       {:error, reason} ->
         {:error, Normalize.normalize(reason)}
     end
+  end
+
+  defp normalize_result({:ok, %WebhookReceipt{} = receipt}) do
+    {:ok,
+     %{
+       receipt: receipt,
+       duplicate?: Ash.Resource.get_metadata(receipt, :upsert_skipped) == true
+     }}
   end
 
   defp normalize_result({:ok, result}), do: {:ok, result}

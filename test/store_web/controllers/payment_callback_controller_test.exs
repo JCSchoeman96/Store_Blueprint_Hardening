@@ -89,6 +89,41 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
     assert webhook_receipt_count() == 0
   end
 
+  test "callback ingest emits persist, enqueue, and response telemetry", %{conn: conn} do
+    order = create_order!()
+    payment_intent = create_submitted_payment_intent!(order.id)
+    raw_body = stripe_payment_event_raw_body(payment_intent, "evt_callback_telemetry_001")
+    signature = stripe_signature(raw_body)
+
+    with_ingress_telemetry(fn ->
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("stripe-signature", signature)
+        |> post(~p"/api/payments/stripe/callback", raw_body)
+
+      assert json_response(conn, 202)
+
+      assert_receive {:telemetry, :persist, measurements, metadata}
+      assert metadata.route == :callback
+      assert metadata.provider == "stripe"
+      assert metadata.result == :ok
+      assert is_integer(measurements.query_count)
+
+      assert_receive {:telemetry, :enqueue, measurements, metadata}
+      assert metadata.route == :callback
+      assert metadata.provider == "stripe"
+      assert metadata.result == :ok
+      assert is_integer(measurements.query_count)
+
+      assert_receive {:telemetry, :response, measurements, metadata}
+      assert metadata.route == :callback
+      assert metadata.status_bucket == "2xx"
+      assert metadata.result == :ok
+      assert measurements.duration > 0
+    end)
+  end
+
   defp create_order! do
     Order
     |> Ash.Changeset.for_create(:create, %{})
@@ -161,5 +196,37 @@ defmodule StoreWeb.PaymentCallbackControllerTest do
   defp webhook_receipt_count do
     WebhookReceipt
     |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
+  defp with_ingress_telemetry(fun) when is_function(fun, 0) do
+    parent = self()
+    events = [:persist, :enqueue, :response]
+
+    Enum.each(events, fn stage ->
+      :telemetry.attach(
+        {__MODULE__, stage, System.unique_integer([:positive])},
+        [:store, :payments, :ingress, stage],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:telemetry, stage, measurements, metadata})
+        end,
+        nil
+      )
+    end)
+
+    try do
+      fun.()
+    after
+      :telemetry.list_handlers([:store, :payments, :ingress, :persist])
+      |> Enum.filter(&match?({__MODULE__, :persist, _}, &1.id))
+      |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+
+      :telemetry.list_handlers([:store, :payments, :ingress, :enqueue])
+      |> Enum.filter(&match?({__MODULE__, :enqueue, _}, &1.id))
+      |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+
+      :telemetry.list_handlers([:store, :payments, :ingress, :response])
+      |> Enum.filter(&match?({__MODULE__, :response, _}, &1.id))
+      |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+    end
   end
 end

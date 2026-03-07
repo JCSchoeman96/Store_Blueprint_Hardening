@@ -127,11 +127,7 @@ defmodule Store.Catalog.Product do
         allow_nil?(false)
       end
 
-      prepare(fn query, _context ->
-        query
-        |> Ash.Query.filter(expr(status == :published and not is_nil(published_at)))
-        |> Ash.Query.filter(expr(slug == ^arg(:slug)))
-      end)
+      filter(expr(status == :published and not is_nil(published_at) and slug == ^arg(:slug)))
     end
 
     read :read_for_admin do

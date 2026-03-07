@@ -92,7 +92,7 @@ defmodule Store.Perf.BenchmarkBootstrap do
 
     %{
       generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
-      base_url: System.get_env("STORE_BENCHMARK_BASE_URL", "http://127.0.0.1:4000"),
+      base_url: System.get_env("STORE_BENCHMARK_BASE_URL", benchmark_base_url()),
       storefront: %{
         hot_slugs: Enum.map(storefront_products, & &1.slug),
         flash_sale_slug: flash_sale.slug
@@ -125,6 +125,7 @@ defmodule Store.Perf.BenchmarkBootstrap do
         }
       },
       webhook_ingress: %{
+        signing_secret: stripe_webhook_secret(),
         webhook: webhook_request_fixture("/api/webhooks/stripe", webhook_payload),
         callback: webhook_request_fixture("/api/payments/stripe/callback", callback_payload)
       }
@@ -325,14 +326,10 @@ defmodule Store.Perf.BenchmarkBootstrap do
     %{quote_hash: option.quote_hash, shipping_method_code: option.shipping_method_code}
   end
 
-  defp webhook_request_fixture(path, raw_body) do
+  defp webhook_request_fixture(path, payload_template) do
     %{
       path: path,
-      body: raw_body,
-      headers: %{
-        "content-type" => "application/json",
-        "stripe-signature" => stripe_signature(raw_body)
-      }
+      payload_template: payload_template
     }
   end
 
@@ -340,7 +337,7 @@ defmodule Store.Perf.BenchmarkBootstrap do
     payment_provider = Providers.default_purchase_provider_for_ui() || :stripe
     provider_name = Atom.to_string(payment_provider)
 
-    Jason.encode!(%{
+    %{
       "id" => event_id,
       "type" => event_type,
       "data" => %{
@@ -355,22 +352,20 @@ defmodule Store.Perf.BenchmarkBootstrap do
           }
         }
       }
-    })
+    }
   end
 
-  defp stripe_signature(raw_body) do
-    timestamp = DateTime.utc_now() |> DateTime.to_unix()
+  defp benchmark_base_url do
+    endpoint_config = Application.get_env(:store, StoreWeb.Endpoint, [])
+    http_config = Keyword.get(endpoint_config, :http, [])
+    port = Keyword.get(http_config, :port, 4000)
+    "http://127.0.0.1:#{port}"
+  end
 
-    secret =
-      Application.get_env(:store, :payments, [])
-      |> Keyword.get(:stripe, [])
-      |> Keyword.fetch!(:webhook_secret)
-
-    signature =
-      :crypto.mac(:hmac, :sha256, secret, "#{timestamp}.#{raw_body}")
-      |> Base.encode16(case: :lower)
-
-    "t=#{timestamp},v1=#{signature}"
+  defp stripe_webhook_secret do
+    Application.get_env(:store, :payments, [])
+    |> Keyword.get(:stripe, [])
+    |> Keyword.fetch!(:webhook_secret)
   end
 end
 

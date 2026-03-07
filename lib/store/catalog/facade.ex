@@ -10,6 +10,7 @@ defmodule Store.Catalog.Facade do
 
   alias Store.Catalog.{
     AvailabilityCache,
+    Category,
     Product,
     ProductOption,
     ProductOptionValue,
@@ -40,14 +41,13 @@ defmodule Store.Catalog.Facade do
   @spec list_products_for_public(map() | nil, ProductIndexQuery.t()) ::
           {:ok, [Product.t()]} | {:error, term()}
   def list_products_for_public(actor, %ProductIndexQuery{} = query) do
-    ash_query =
-      Product
-      |> Ash.Query.for_read(:read_for_public, %{}, actor: actor)
-      |> Ash.Query.load([:images, :default_variant, :category])
+    ash_query = Ash.Query.for_read(Product, :read_for_public, %{}, actor: actor)
 
     case Ash.read(ash_query, domain: Catalog, actor: actor) do
       {:ok, products} ->
         products
+        |> attach_default_variants()
+        |> attach_categories()
         |> apply_public_filters(query)
         |> apply_public_sort(query.sort)
         |> apply_pagination(ProductIndexQuery.offset(query), query.page_size)
@@ -64,7 +64,7 @@ defmodule Store.Catalog.Facade do
     ash_query =
       Product
       |> Ash.Query.for_read(:get_for_public, %{slug: slug}, actor: actor)
-      |> Ash.Query.load([:images, :default_variant, :category])
+      |> Ash.Query.load([:images])
 
     case Ash.read_one(ash_query, domain: Catalog, actor: actor) do
       {:ok, product} -> {:ok, product}
@@ -512,6 +512,44 @@ defmodule Store.Catalog.Facade do
 
   defp maybe_filter_status(products, status) do
     Enum.filter(products, &(&1.status == status))
+  end
+
+  defp attach_default_variants([]), do: []
+
+  defp attach_default_variants(products) do
+    variant_ids =
+      products
+      |> Enum.map(& &1.default_variant_id)
+      |> Enum.reject(&is_nil/1)
+
+    variants_by_id =
+      Variant
+      |> where([variant], variant.id in ^variant_ids and variant.status == :active)
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    Enum.map(products, fn product ->
+      Map.put(product, :default_variant, Map.get(variants_by_id, product.default_variant_id))
+    end)
+  end
+
+  defp attach_categories([]), do: []
+
+  defp attach_categories(products) do
+    category_ids =
+      products
+      |> Enum.map(& &1.category_id)
+      |> Enum.reject(&is_nil/1)
+
+    categories_by_id =
+      Category
+      |> where([category], category.id in ^category_ids and category.is_active == true)
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    Enum.map(products, fn product ->
+      Map.put(product, :category, Map.get(categories_by_id, product.category_id))
+    end)
   end
 
   defp apply_public_sort(products, :newest),

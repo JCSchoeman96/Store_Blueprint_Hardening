@@ -1,11 +1,13 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-import { data, storefrontUrl } from './common.js';
+import { buildWebhookRequest, storefrontUrl, webhookMode } from './common.js';
+
+const scenarioName = webhookMode === 'duplicate_replay' ? 'duplicate_replay' : 'unique_ingress';
 
 export const options = {
   scenarios: {
-    webhook_ingress: {
+    [scenarioName]: {
       executor: 'constant-arrival-rate',
       rate: 20,
       timeUnit: '1s',
@@ -22,13 +24,12 @@ export const options = {
 };
 
 export default function () {
-  const useWebhook = Math.random() < 0.5;
-  const fixture = useWebhook ? data.webhook_ingress.webhook : data.webhook_ingress.callback;
-  const route = useWebhook ? 'webhook' : 'callback';
+  const route = Math.random() < 0.5 ? 'webhook' : 'callback';
+  const request = buildWebhookRequest(route, webhookMode);
 
-  const response = http.post(storefrontUrl(fixture.path), fixture.body, {
-    headers: fixture.headers,
-    tags: { route }
+  const response = http.post(storefrontUrl(request.path), request.body, {
+    headers: request.headers,
+    tags: { route, mode: webhookMode }
   });
 
   check(response, { 'accepted': (r) => r.status === 202 });
