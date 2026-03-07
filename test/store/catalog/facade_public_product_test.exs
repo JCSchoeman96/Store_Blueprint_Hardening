@@ -29,6 +29,42 @@ defmodule Store.Catalog.FacadePublicProductTest do
     assert is_list(detail.availability_matrix)
   end
 
+  test "get_product_detail_for_public emits catalog detail telemetry with repo and payload diagnostics" do
+    %{slug: slug} = published_product_fixture()
+    parent = self()
+    handler_id = {__MODULE__, :catalog_detail, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      handler_id,
+      [:store, :catalog, :product_detail, :public],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:catalog_detail, measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      assert {:ok, query} = ProductDetailQuery.new(%{slug: slug, selection: %{}})
+      assert {:ok, %ProductDetail{}} = CatalogFacade.get_product_detail_for_public(nil, query)
+
+      assert_receive {:catalog_detail, measurements, metadata}
+      assert metadata.slug == slug
+      assert metadata.selection_count == 0
+      assert metadata.result == :ok
+      assert is_integer(measurements.query_count)
+      assert measurements.query_count > 0
+      assert is_integer(measurements.encoded_payload_bytes)
+      assert measurements.encoded_payload_bytes > 0
+      assert is_integer(measurements.option_count)
+      assert is_integer(measurements.option_value_count)
+      assert is_integer(measurements.variant_row_count)
+      assert is_integer(measurements.availability_cell_count)
+      assert is_integer(measurements.availability_value_count)
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
   defp published_product_fixture do
     admin = TestFixtures.register_user!(email: TestFixtures.unique_email("shop_public_admin"))
     _role = TestFixtures.assign_role!(admin, :admin)

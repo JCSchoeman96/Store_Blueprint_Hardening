@@ -13,6 +13,7 @@ defmodule Store.Catalog.Facade do
     Category,
     Product,
     ProductDetailProjection,
+    ProductDetailTelemetry,
     ProductOption,
     ProductOptionValue,
     StockFastPath,
@@ -30,6 +31,7 @@ defmodule Store.Catalog.Facade do
   alias Store.Repo
   alias Store.Support.Errors.Error
   alias Store.Support.Errors.Normalize
+  alias Store.Support.Telemetry.RepoStats
 
   @variant_delete_blocking_constraints [
     "products_default_variant_id_fkey",
@@ -67,12 +69,31 @@ defmodule Store.Catalog.Facade do
   @spec get_product_detail_for_public(map() | nil, ProductDetailQuery.t()) ::
           {:ok, map()} | {:error, term()}
   def get_product_detail_for_public(_actor, %ProductDetailQuery{} = query) do
-    with {:ok, %Product{} = product} <- ProductDetailProjection.load_public_product(query.slug),
-         {:ok, payload} <- ProductDetailProjection.fetch(product),
-         {:ok, detail} <- VariantResolver.build_product_detail(product, payload, query.selection) do
-      {:ok, detail}
-    else
-      {:ok, nil} -> {:error, Error.new("NOT_FOUND", "product not found")}
+    started_at = System.monotonic_time()
+    selection_count = map_size(query.selection)
+
+    {{result, payload_metrics}, repo_stats} =
+      RepoStats.capture(fn ->
+        case load_public_product_detail(query) do
+          {:ok, detail, payload} ->
+            {{:ok, detail}, ProductDetailTelemetry.payload_metrics(detail, payload)}
+
+          {:error, error} ->
+            {{:error, error}, nil}
+        end
+      end)
+
+    ProductDetailTelemetry.emit_catalog_public_detail(
+      started_at,
+      query.slug,
+      selection_count,
+      result,
+      repo_stats,
+      payload_metrics
+    )
+
+    case result do
+      {:ok, _detail} = ok -> ok
       {:error, error} -> {:error, Normalize.normalize(error)}
     end
   end
@@ -696,4 +717,15 @@ defmodule Store.Catalog.Facade do
 
   defp normalize_result({:ok, result}), do: {:ok, result}
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}
+
+  defp load_public_product_detail(%ProductDetailQuery{} = query) do
+    with {:ok, %{product: %Product{} = product, payload: payload}} <-
+           ProductDetailProjection.load_public_detail(query.slug),
+         {:ok, detail} <- VariantResolver.build_product_detail(product, payload, query.selection) do
+      {:ok, detail, payload}
+    else
+      {:ok, nil} -> {:error, Error.new("NOT_FOUND", "product not found")}
+      {:error, error} -> {:error, error}
+    end
+  end
 end

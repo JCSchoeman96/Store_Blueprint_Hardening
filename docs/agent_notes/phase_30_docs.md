@@ -201,3 +201,82 @@
   - storefront product detail no longer crashes and is now contract-stable, but the route remains materially too slow under k6 and still needs another projection/LiveView pass
   - checkout finalization is cheaper than before, but not yet in the target `8-10` query band; the latest validated smoke baseline is `22` mean queries
   - the latest webhook rerun remained benchmarkable with fresh signatures, but unique and duplicate modes both showed high tail latency and failure rate again; treat the earlier near-zero-failure webhook numbers as non-stable until rerun conditions are reconciled
+
+## Phase 30.4
+### Links Consulted
+- [StoreWeb.ShopLive.Show](/home/jcs/projects/store_blueprint/lib/store_web/live/shop_live/show.ex)
+- [Store.Catalog.Facade](/home/jcs/projects/store_blueprint/lib/store/catalog/facade.ex)
+- [Store.Catalog.ProductDetailProjection](/home/jcs/projects/store_blueprint/lib/store/catalog/product_detail_projection.ex)
+- [Store.Catalog.VariantResolver](/home/jcs/projects/store_blueprint/lib/store/catalog/variant_resolver.ex)
+- [Store.Catalog.Types.ProductDetail](/home/jcs/projects/store_blueprint/lib/store/catalog/types/product_detail.ex)
+- [StoreWeb.Telemetry](/home/jcs/projects/store_blueprint/lib/store_web/telemetry.ex)
+- [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js)
+
+### Decisions / Pins
+- The `/shop/:slug` investigation is treated as a LiveView lifecycle split, not as a DB-only problem.
+- Product detail stays behind the stable `%Store.Catalog.Types.ProductDetail{}` contract.
+- New telemetry split:
+  - `[:store, :shop_live, :product_detail]` for adapter-side timing with `phase`, `connected?`, reductions delta, and memory delta
+  - `[:store, :catalog, :product_detail, :public]` for domain timing with repo stats and payload diagnostics
+- The public detail payload remains facade-owned and web stays adapter-only.
+- `VariantResolver` stays pure in-memory, but now uses precomputed selection indexes instead of repeated full-row scans.
+- Mixed storefront k6 remains the acceptance gate; a new `perf/k6/http_shop_detail.js` script exists for route-only diagnosis.
+- Smoke regressions must run on an isolated test DB suffix because the performance script writes committed fixture data.
+
+### Implementation
+- Added [Store.Catalog.ProductDetailTelemetry](/home/jcs/projects/store_blueprint/lib/store/catalog/product_detail_telemetry.ex).
+- Instrumented [StoreWeb.ShopLive.Show](/home/jcs/projects/store_blueprint/lib/store_web/live/shop_live/show.ex) to emit:
+  - `phase: :static_render | :live_join`
+  - `connected?`
+  - reductions delta
+  - memory delta
+- Instrumented [Store.Catalog.Facade.get_product_detail_for_public/2](/home/jcs/projects/store_blueprint/lib/store/catalog/facade.ex) with repo stats capture and payload diagnostics.
+- Extended [Store.Catalog.ProductDetailProjection](/home/jcs/projects/store_blueprint/lib/store/catalog/product_detail_projection.ex) with:
+  - a single `load_public_detail/1` entrypoint
+  - prebuilt `detail_options`
+  - precomputed variant lookup and selection indexes
+- Reduced transformation overhead in [Store.Catalog.VariantResolver](/home/jcs/projects/store_blueprint/lib/store/catalog/variant_resolver.ex):
+  - no repeated `Enum.filter` scans across `variant_rows` for every availability cell
+  - availability matrix now reuses per-option base candidate sets and selection indexes
+- Added telemetry-aware regression coverage in:
+  - [test/store/catalog/facade_public_product_test.exs](/home/jcs/projects/store_blueprint/test/store/catalog/facade_public_product_test.exs)
+  - [test/store_web/live/shop_live/show_test.exs](/home/jcs/projects/store_blueprint/test/store_web/live/shop_live/show_test.exs)
+- Added `STORE_K6_QUICK=1` stage overrides for [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js).
+- Added route-only diagnostic script [perf/k6/http_shop_detail.js](/home/jcs/projects/store_blueprint/perf/k6/http_shop_detail.js).
+
+### Performance & Scaling Review
+- Hot path:
+  - `/shop/:slug` now has explicit visibility into:
+    - LiveView static render vs live join time
+    - catalog repo query count and query time
+    - BEAM reductions and memory delta
+    - payload size and cardinality
+- Query count / N+1 risk:
+  - no new DB fan-out was introduced
+  - the public detail path still runs through a small fixed query set, but the in-memory N-scan cost is reduced via precomputed selection indexes
+- Caching:
+  - the existing availability cache is retained
+  - cached payload now stores more reusable derived data (`detail_options`, row/index maps) to reduce repeated transformation work
+- Telemetry / logging:
+  - new product detail telemetry is now first-class and can separate:
+    - web lifecycle cost
+    - domain/repo cost
+    - BEAM allocation/CPU cost
+
+### Validation
+- Targeted product detail regression tests: `PASS`
+  - `MIX_ENV=test mix test test/store/catalog/facade_public_product_test.exs test/store_web/live/shop_live/show_test.exs test/store/governance/catalog_phase_25_test.exs`
+- Full repo gate: `PASS`
+  - `MIX_ENV=test mix check`
+- Isolated smoke regression: `PASS`
+  - `STORE_TEST_DB_SUFFIX=phase304smoke MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs`
+  - latest isolated step metrics:
+    - `start_from_cart`: `15` mean queries, `303.65ms`
+    - `finalize_totals`: `22` mean queries, `330.69ms`
+    - `create_payment_intent`: `17` mean queries, `225.41ms`
+- k6 scripts parse correctly:
+  - `k6 inspect perf/k6/http_storefront.js`
+  - `k6 inspect perf/k6/http_shop_detail.js`
+- Local k6 rerun status:
+  - route benchmarks were not rerun in this session because the local `mix phx.server` benchmark harness did not expose the HTTP port within the tool session despite the BEAM booting
+  - this is a harness/runtime issue for follow-up, not a compile/test blocker in the Phase 30.4 code itself

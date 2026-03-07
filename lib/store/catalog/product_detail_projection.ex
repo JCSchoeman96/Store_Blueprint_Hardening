@@ -14,20 +14,31 @@ defmodule Store.Catalog.ProductDetailProjection do
     VariantOptionSelection
   }
 
+  alias Store.Catalog.Types.ProductDetail.Option
+  alias Store.Catalog.Types.ProductDetail.OptionValue
   alias Store.Repo
   alias Store.Support.Errors.Error
   alias Store.Support.ID.BinaryUuidSort
 
   @type payload :: %{
           options: [ProductOption.t()],
+          detail_options: [Option.t()],
           values_by_option_id: %{optional(String.t()) => [ProductOptionValue.t()]},
           required_option_ids: [String.t()],
           option_lookup: %{optional(String.t()) => ProductOption.t()},
           value_lookup: %{optional({String.t(), String.t()}) => String.t()},
           variant_rows: [map()],
+          row_by_variant_id: %{optional(String.t()) => map()},
+          sellable_variant_ids: MapSet.t(String.t()),
+          in_stock_sellable_variant_ids: MapSet.t(String.t()),
+          sellable_variant_ids_by_selection: %{
+            optional({String.t(), String.t()}) => MapSet.t(String.t())
+          },
           default_variant_id: String.t() | nil,
           published?: boolean()
         }
+
+  @type public_detail_context :: %{product: Product.t(), payload: payload()}
 
   @spec fetch(Product.t()) :: {:ok, payload()} | {:error, Error.t()}
   def fetch(%Product{id: product_id} = product) when is_binary(product_id) do
@@ -47,6 +58,21 @@ defmodule Store.Catalog.ProductDetailProjection do
   end
 
   def fetch(_product), do: {:error, Error.new("VALIDATION_ERROR", "product is required")}
+
+  @spec load_public_detail(String.t()) ::
+          {:ok, public_detail_context() | nil} | {:error, Error.t()}
+  def load_public_detail(slug) when is_binary(slug) do
+    with {:ok, %Product{} = product} <- load_public_product(slug),
+         {:ok, payload} <- fetch(product) do
+      {:ok, %{product: product, payload: payload}}
+    else
+      {:ok, nil} -> {:ok, nil}
+      {:error, _} = error -> error
+    end
+  end
+
+  def load_public_detail(_slug),
+    do: {:error, Error.new("VALIDATION_ERROR", "slug must be a string")}
 
   @spec load_public_product(String.t()) :: {:ok, Product.t() | nil} | {:error, Error.t()}
   def load_public_product(slug) when is_binary(slug) do
@@ -91,6 +117,7 @@ defmodule Store.Catalog.ProductDetailProjection do
     options = load_options(product_id)
     values_by_option_id = load_values_by_option_id(Enum.map(options, & &1.id))
     variant_rows = load_variant_rows(product_id, options)
+    variant_indexes = build_variant_indexes(variant_rows)
 
     option_lookup = Map.new(options, &{&1.slug, &1})
     required_option_ids = options |> Enum.filter(& &1.selection_required) |> Enum.map(& &1.id)
@@ -98,12 +125,38 @@ defmodule Store.Catalog.ProductDetailProjection do
 
     %{
       options: options,
+      detail_options: build_detail_options(options, values_by_option_id),
       values_by_option_id: values_by_option_id,
       required_option_ids: required_option_ids,
       option_lookup: option_lookup,
       value_lookup: build_value_lookup(values_by_option_id, option_slug_by_id),
-      variant_rows: variant_rows
+      variant_rows: variant_rows,
+      row_by_variant_id: variant_indexes.row_by_variant_id,
+      sellable_variant_ids: variant_indexes.sellable_variant_ids,
+      in_stock_sellable_variant_ids: variant_indexes.in_stock_sellable_variant_ids,
+      sellable_variant_ids_by_selection: variant_indexes.sellable_variant_ids_by_selection
     }
+  end
+
+  defp build_detail_options(options, values_by_option_id) do
+    Enum.map(options, fn option ->
+      %Option{
+        id: option.id,
+        slug: option.slug,
+        name: option.name,
+        position: option.position,
+        selection_required: option.selection_required,
+        values:
+          Enum.map(Map.get(values_by_option_id, option.id, []), fn value ->
+            %OptionValue{
+              id: value.id,
+              slug: value.slug,
+              name: value.name,
+              position: value.position
+            }
+          end)
+      }
+    end)
   end
 
   defp build_value_lookup(values_by_option_id, option_slug_by_id) do
@@ -197,6 +250,65 @@ defmodule Store.Catalog.ProductDetailProjection do
   end
 
   defp variant_in_stock?(_inventory), do: false
+
+  defp build_variant_indexes(variant_rows) do
+    Enum.reduce(variant_rows, empty_variant_indexes(), fn row, acc ->
+      variant_id = row.variant.id
+
+      acc =
+        %{acc | row_by_variant_id: Map.put(acc.row_by_variant_id, variant_id, row)}
+
+      if row.sellable? do
+        acc
+        |> put_sellable_variant_id(variant_id)
+        |> maybe_put_in_stock_variant_id(variant_id, row.in_stock?)
+        |> put_selection_index(variant_id, row.selection_by_option_id)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp empty_variant_indexes do
+    %{
+      row_by_variant_id: %{},
+      sellable_variant_ids: MapSet.new(),
+      in_stock_sellable_variant_ids: MapSet.new(),
+      sellable_variant_ids_by_selection: %{}
+    }
+  end
+
+  defp put_sellable_variant_id(indexes, variant_id) do
+    %{indexes | sellable_variant_ids: MapSet.put(indexes.sellable_variant_ids, variant_id)}
+  end
+
+  defp maybe_put_in_stock_variant_id(indexes, variant_id, true) do
+    %{
+      indexes
+      | in_stock_sellable_variant_ids:
+          MapSet.put(indexes.in_stock_sellable_variant_ids, variant_id)
+    }
+  end
+
+  defp maybe_put_in_stock_variant_id(indexes, _variant_id, false), do: indexes
+
+  defp put_selection_index(indexes, variant_id, selection_by_option_id) do
+    selection_index =
+      Enum.reduce(
+        selection_by_option_id,
+        indexes.sellable_variant_ids_by_selection,
+        fn {option_id, value_id}, acc ->
+          Map.update(
+            acc,
+            {option_id, value_id},
+            MapSet.new([variant_id]),
+            &MapSet.put(&1, variant_id)
+          )
+        end
+      )
+
+    %{indexes | sellable_variant_ids_by_selection: selection_index}
+  end
 
   defp normalize_cache_result({:ok, payload}), do: {:ok, payload}
   defp normalize_cache_result({:error, %Error{} = error}), do: {:error, error}

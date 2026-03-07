@@ -114,6 +114,55 @@ defmodule StoreWeb.Telemetry do
         tags: [:step, :result],
         unit: {:native, :millisecond}
       ),
+      summary("store.catalog.product_detail.public.duration",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.catalog.product_detail.public.query_count",
+        tags: [:result]
+      ),
+      summary("store.catalog.product_detail.public.queue_time",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.catalog.product_detail.public.query_time",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.catalog.product_detail.public.decode_time",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.catalog.product_detail.public.encoded_payload_bytes",
+        tags: [:result],
+        unit: {:byte, :kilobyte}
+      ),
+      summary("store.catalog.product_detail.public.option_count",
+        tags: [:result]
+      ),
+      summary("store.catalog.product_detail.public.option_value_count",
+        tags: [:result]
+      ),
+      summary("store.catalog.product_detail.public.variant_row_count",
+        tags: [:result]
+      ),
+      summary("store.catalog.product_detail.public.availability_cell_count",
+        tags: [:result]
+      ),
+      summary("store.catalog.product_detail.public.availability_value_count",
+        tags: [:result]
+      ),
+      summary("store.shop_live.product_detail.duration",
+        tags: [:phase, :connected, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.shop_live.product_detail.reductions_delta",
+        tags: [:phase, :connected, :result]
+      ),
+      summary("store.shop_live.product_detail.memory_delta",
+        tags: [:phase, :connected, :result],
+        unit: {:byte, :kilobyte}
+      ),
       summary("store.payments.ingress.verify.duration",
         tags: [:route, :provider, :result, :error_code],
         unit: {:native, :millisecond}

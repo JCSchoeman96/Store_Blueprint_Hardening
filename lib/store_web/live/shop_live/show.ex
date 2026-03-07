@@ -7,6 +7,7 @@ defmodule StoreWeb.ShopLive.Show do
 
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Catalog.Facade, as: CatalogFacade
+  alias Store.Catalog.ProductDetailTelemetry
   alias StoreWeb.Params.Carts.CartItemParams
   alias StoreWeb.Params.Catalog.ProductDetailParams
 
@@ -25,20 +26,44 @@ defmodule StoreWeb.ShopLive.Show do
   @impl true
   def handle_params(params, _uri, socket) do
     actor = socket.assigns[:current_user]
+    started_at = System.monotonic_time()
+    before_snapshot = ProductDetailTelemetry.process_snapshot()
+    phase = if connected?(socket), do: :live_join, else: :static_render
+    slug = normalize_slug(Map.get(params, "slug") || Map.get(params, :slug))
+    selection_count = selection_count(params)
 
-    with {:ok, query} <- ProductDetailParams.query(params),
-         {:ok, detail} <- CatalogFacade.get_product_detail_for_public(actor, query) do
-      {:noreply,
-       socket
-       |> assign(:detail, detail)
-       |> assign(:selector_form, selector_form(detail))}
-    else
-      {:error, _reason} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Product not found")
-         |> push_navigate(to: ~p"/shop")}
-    end
+    {socket, result} =
+      case ProductDetailParams.query(params) do
+        {:ok, query} ->
+          case CatalogFacade.get_product_detail_for_public(actor, query) do
+            {:ok, detail} ->
+              {
+                socket
+                |> assign(:detail, detail)
+                |> assign(:selector_form, selector_form(detail)),
+                {:ok, detail}
+              }
+
+            {:error, reason} ->
+              {not_found_socket(socket), {:error, reason}}
+          end
+
+        {:error, reason} ->
+          {not_found_socket(socket), {:error, reason}}
+      end
+
+    ProductDetailTelemetry.emit_shop_live(
+      started_at,
+      slug,
+      selection_count,
+      phase,
+      connected?(socket),
+      result,
+      before_snapshot,
+      ProductDetailTelemetry.process_snapshot()
+    )
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -207,6 +232,22 @@ defmodule StoreWeb.ShopLive.Show do
 
   defp prompt_for_option(%{selection_required: true, name: name}), do: "Select #{name}"
   defp prompt_for_option(%{name: name}), do: "Any #{name}"
+
+  defp not_found_socket(socket) do
+    socket
+    |> put_flash(:error, "Product not found")
+    |> push_navigate(to: ~p"/shop")
+  end
+
+  defp selection_count(params) when is_map(params) do
+    Enum.count(params, fn {key, _value} -> to_string(key) != "slug" end)
+  end
+
+  defp selection_count(_params), do: 0
+
+  defp normalize_slug(slug) when is_binary(slug), do: slug
+  defp normalize_slug(slug) when is_atom(slug), do: Atom.to_string(slug)
+  defp normalize_slug(_slug), do: nil
 
   defp add_to_cart_enabled?(%{resolution: %{status: :ok}}), do: true
   defp add_to_cart_enabled?(_detail), do: false

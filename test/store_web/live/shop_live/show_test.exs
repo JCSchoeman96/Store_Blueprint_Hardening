@@ -25,6 +25,64 @@ defmodule StoreWeb.ShopLive.ShowTest do
     assert html =~ "Add to Cart"
   end
 
+  test "/shop/:slug emits static and live-join telemetry with BEAM diagnostics", %{conn: conn} do
+    product = published_product_fixture()
+    parent = self()
+    shop_live_handler = {__MODULE__, :shop_live, System.unique_integer([:positive])}
+    catalog_handler = {__MODULE__, :catalog_detail, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      shop_live_handler,
+      [:store, :shop_live, :product_detail],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:shop_live_detail, measurements, metadata})
+      end,
+      parent
+    )
+
+    :telemetry.attach(
+      catalog_handler,
+      [:store, :catalog, :product_detail, :public],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:catalog_detail, measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      {:ok, _view, html} = live(conn, ~p"/shop/#{product.slug}")
+
+      assert html =~ product.title
+
+      phases =
+        1..2
+        |> Enum.map(fn _ ->
+          assert_receive {:shop_live_detail, measurements, metadata}
+          assert metadata.slug == product.slug
+          assert is_boolean(metadata.connected?)
+          assert metadata.result == :ok
+          assert is_integer(measurements.reductions_delta)
+          assert measurements.reductions_delta >= 0
+          assert is_integer(measurements.memory_delta)
+          metadata.phase
+        end)
+        |> MapSet.new()
+
+      assert phases == MapSet.new([:static_render, :live_join])
+
+      assert_receive {:catalog_detail, measurements, metadata}
+      assert metadata.slug == product.slug
+      assert metadata.result == :ok
+      assert is_integer(measurements.query_count)
+      assert measurements.query_count > 0
+      assert is_integer(measurements.encoded_payload_bytes)
+      assert measurements.encoded_payload_bytes > 0
+    after
+      :telemetry.detach(shop_live_handler)
+      :telemetry.detach(catalog_handler)
+    end
+  end
+
   defp published_product_fixture do
     admin = TestFixtures.register_user!(email: TestFixtures.unique_email("shop_show_admin"))
     _role = TestFixtures.assign_role!(admin, :admin)

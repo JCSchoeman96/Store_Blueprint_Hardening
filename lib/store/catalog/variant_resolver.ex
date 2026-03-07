@@ -15,8 +15,6 @@ defmodule Store.Catalog.VariantResolver do
   alias Store.Catalog.Types.ProductDetail.{
     AvailabilityCell,
     AvailabilityValue,
-    Option,
-    OptionValue,
     Resolution
   }
 
@@ -69,7 +67,7 @@ defmodule Store.Catalog.VariantResolver do
       {:ok,
        %ProductDetail{
          product: product,
-         options: option_payload(payload),
+         options: payload.detail_options,
          selected: normalized_selection,
          resolution: resolution_payload(resolution),
          availability_matrix: availability_matrix(payload, normalized_selection)
@@ -91,21 +89,9 @@ defmodule Store.Catalog.VariantResolver do
     if payload.options == [] do
       resolve_no_options_default(payload)
     else
-      matching_rows = matching_rows(payload.variant_rows, normalized_selection)
-
-      case matching_rows do
-        [] ->
-          {:error, :invalid_selection}
-
-        [%{in_stock?: true, variant: variant}] ->
-          {:ok, variant}
-
-        [%{in_stock?: false}] ->
-          {:error, :out_of_stock}
-
-        [_ | _] ->
-          {:error, :selection_ambiguous}
-      end
+      payload
+      |> matching_variant_ids(normalized_selection)
+      |> resolve_matching_variant_ids(payload)
     end
   end
 
@@ -125,16 +111,47 @@ defmodule Store.Catalog.VariantResolver do
     end
   end
 
-  defp matching_rows(variant_rows, normalized_selection) do
-    Enum.filter(variant_rows, fn row ->
-      row.sellable? and selection_matches?(row.selection_by_option_id, normalized_selection)
+  defp matching_variant_ids(payload, normalized_selection) do
+    normalized_selection
+    |> Enum.reduce_while(payload.sellable_variant_ids, fn {option_id, value_id}, matching_ids ->
+      case Map.get(payload.sellable_variant_ids_by_selection, {option_id, value_id}) do
+        nil ->
+          {:halt, MapSet.new()}
+
+        selection_variant_ids ->
+          intersect_variant_ids(matching_ids, selection_variant_ids)
+      end
     end)
   end
 
-  defp selection_matches?(variant_selection, normalized_selection) do
-    Enum.all?(normalized_selection, fn {option_id, value_id} ->
-      Map.get(variant_selection, option_id) == value_id
-    end)
+  defp resolve_matching_variant_ids(matching_variant_ids, payload) do
+    case MapSet.size(matching_variant_ids) do
+      0 -> {:error, :invalid_selection}
+      1 -> resolve_single_matching_variant(matching_variant_ids, payload)
+      _multiple -> {:error, :selection_ambiguous}
+    end
+  end
+
+  defp resolve_single_matching_variant(matching_variant_ids, payload) do
+    case matching_variant_ids |> Enum.at(0) |> variant_row(payload) do
+      %{in_stock?: true, variant: variant} -> {:ok, variant}
+      %{in_stock?: false} -> {:error, :out_of_stock}
+      _ -> {:error, :invalid_selection}
+    end
+  end
+
+  defp intersect_variant_ids(matching_ids, selection_variant_ids) do
+    next_ids = MapSet.intersection(matching_ids, selection_variant_ids)
+
+    if MapSet.size(next_ids) == 0 do
+      {:halt, next_ids}
+    else
+      {:cont, next_ids}
+    end
+  end
+
+  defp variant_row(variant_id, payload) when is_binary(variant_id) do
+    Map.get(payload.row_by_variant_id, variant_id)
   end
 
   defp ensure_product_published(payload) do
@@ -170,43 +187,27 @@ defmodule Store.Catalog.VariantResolver do
     if missing_required == [], do: :ok, else: {:error, :invalid_selection}
   end
 
-  defp option_payload(payload) do
-    Enum.map(payload.options, fn option ->
-      values = Map.get(payload.values_by_option_id, option.id, [])
-
-      %Option{
-        id: option.id,
-        slug: option.slug,
-        name: option.name,
-        position: option.position,
-        selection_required: option.selection_required,
-        values:
-          Enum.map(values, fn value ->
-            %OptionValue{
-              id: value.id,
-              slug: value.slug,
-              name: value.name,
-              position: value.position
-            }
-          end)
-      }
-    end)
-  end
-
   defp availability_matrix(payload, normalized_selection) do
-    Enum.map(payload.options, fn option ->
-      values = Map.get(payload.values_by_option_id, option.id, [])
+    base_variant_ids_by_option_id = availability_base_variant_ids(payload, normalized_selection)
 
+    Enum.map(payload.detail_options, fn option ->
       value_states =
-        Enum.map(values, fn value ->
-          candidate_selection = Map.put(normalized_selection, option.id, value.id)
-          candidates = matching_rows(payload.variant_rows, candidate_selection)
+        Enum.map(option.values, fn value ->
+          candidate_variant_ids =
+            payload
+            |> selection_variant_ids(option.id, value.id)
+            |> MapSet.intersection(
+              Map.get(base_variant_ids_by_option_id, option.id, MapSet.new())
+            )
 
           %AvailabilityValue{
             value_id: value.id,
             value_slug: value.slug,
-            selectable: candidates != [],
-            in_stock: Enum.any?(candidates, & &1.in_stock?)
+            selectable: MapSet.size(candidate_variant_ids) > 0,
+            in_stock:
+              MapSet.size(
+                MapSet.intersection(candidate_variant_ids, payload.in_stock_sellable_variant_ids)
+              ) > 0
           }
         end)
 
@@ -217,6 +218,17 @@ defmodule Store.Catalog.VariantResolver do
         values: value_states
       }
     end)
+  end
+
+  defp availability_base_variant_ids(payload, normalized_selection) do
+    Enum.reduce(payload.detail_options, %{}, fn option, acc ->
+      {_selected_value, selection_without_option} = Map.pop(normalized_selection, option.id)
+      Map.put(acc, option.id, matching_variant_ids(payload, selection_without_option))
+    end)
+  end
+
+  defp selection_variant_ids(payload, option_id, value_id) do
+    Map.get(payload.sellable_variant_ids_by_selection, {option_id, value_id}, MapSet.new())
   end
 
   defp resolution_payload({:ok, %Variant{} = variant}) do
