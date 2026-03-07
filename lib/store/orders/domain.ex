@@ -143,6 +143,13 @@ defmodule Store.Orders do
     InventoryReservations.reserve_inventory(order_id, items, opts)
   end
 
+  @spec reserve_inventory_for_checkout(String.t(), [map()], keyword()) ::
+          {:ok, %{reserved_rows: [map()]}} | {:error, term()}
+  def reserve_inventory_for_checkout(order_id, items, opts \\ [])
+      when is_binary(order_id) and is_list(items) and is_list(opts) do
+    InventoryReservations.reserve_inventory_for_checkout(order_id, items, opts)
+  end
+
   @spec consume_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{consumed_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}

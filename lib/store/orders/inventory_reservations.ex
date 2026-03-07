@@ -39,6 +39,61 @@ defmodule Store.Orders.InventoryReservations do
       {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
   end
 
+  @spec reserve_inventory_for_checkout(String.t(), [map()], keyword()) ::
+          {:ok, %{reserved_rows: [map()]}} | {:error, term()}
+  def reserve_inventory_for_checkout(order_id, items, opts \\ [])
+      when is_binary(order_id) and is_list(items) and is_list(opts) do
+    case normalize_reserve_items(items) do
+      {:ok, desired_quantities} ->
+        now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+        ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
+        expires_at = DateTime.add(now, ttl_seconds, :second)
+
+        requests =
+          desired_quantities
+          |> Map.to_list()
+          |> Enum.sort_by(fn {variant_id, _quantity} ->
+            BinaryUuidSort.normalize_raw16!(variant_id)
+          end)
+          |> Enum.with_index(1)
+          |> Enum.map(fn {{variant_id, quantity}, ordinal} ->
+            %{
+              reservation_id: UUIDv7.generate(),
+              reservation_key: reservation_key(order_id, variant_id),
+              variant_id: variant_id,
+              quantity: quantity,
+              ordinal: ordinal
+            }
+          end)
+
+        run_checkout_reservation_transaction(order_id, requests, expires_at, now)
+        |> unwrap_transaction_error("Checkout reservation transaction failed")
+        |> maybe_invalidate_after_checkout_reserve(requests)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  rescue
+    ArgumentError ->
+      {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
+  end
+
+  defp run_checkout_reservation_transaction(order_id, requests, expires_at, now) do
+    Repo.transaction(fn ->
+      case reserve_inventory_cte(order_id, requests, expires_at, now) do
+        {:ok, rows} ->
+          ensure_checkout_reservation_match!(requests, rows)
+          %{reserved_rows: rows}
+
+        {:error, %Error{} = error} ->
+          Repo.rollback(error)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
   @spec consume_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{consumed_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}
@@ -609,6 +664,174 @@ defmodule Store.Orders.InventoryReservations do
 
   defp reservation_key(order_id, variant_id), do: "order:#{order_id}:sku:#{variant_id}"
 
+  defp reserve_inventory_cte(order_id, requests, expires_at, now) do
+    reservation_ids = Enum.map(requests, &UUIDv7.decode!(&1.reservation_id))
+    variant_ids = Enum.map(requests, &UUIDv7.decode!(&1.variant_id))
+    quantities = Enum.map(requests, & &1.quantity)
+    ordinals = Enum.map(requests, & &1.ordinal)
+    reservation_keys = Enum.map(requests, & &1.reservation_key)
+    order_id = UUIDv7.decode!(order_id)
+
+    sql = """
+    WITH requested AS (
+      SELECT *
+      FROM unnest(
+        $1::uuid[],
+        $2::uuid[],
+        $3::int[],
+        $4::int[],
+        $5::text[]
+      ) AS r(reservation_id, variant_id, quantity, ordinal, reservation_key)
+    ),
+    locked AS (
+      SELECT
+        r.reservation_id,
+        r.variant_id,
+        r.quantity,
+        r.ordinal,
+        r.reservation_key,
+        i.id AS inventory_item_id
+      FROM requested r
+      JOIN inventory_items i ON i.variant_id = r.variant_id
+      ORDER BY r.ordinal
+      FOR UPDATE OF i
+    ),
+    updated AS (
+      UPDATE inventory_items AS i
+      SET
+        reserved_count = i.reserved_count + l.quantity,
+        version = i.version + 1,
+        updated_at = $8::timestamp
+      FROM locked l
+      WHERE i.id = l.inventory_item_id
+        AND (i.allow_oversell = true OR i.stock_on_hand - i.reserved_count >= l.quantity)
+      RETURNING
+        l.reservation_id,
+        l.variant_id,
+        l.quantity,
+        l.ordinal,
+        l.reservation_key,
+        i.id AS inventory_item_id,
+        i.stock_on_hand,
+        i.reserved_count,
+        i.allow_oversell
+    ),
+    inserted AS (
+      INSERT INTO inventory_reservations (
+        id,
+        order_id,
+        variant_id,
+        reservation_key,
+        quantity,
+        state,
+        expires_at,
+        version,
+        inserted_at,
+        updated_at
+      )
+      SELECT
+        u.reservation_id,
+        $6::uuid,
+        u.variant_id,
+        u.reservation_key,
+        u.quantity,
+        'active',
+        $7::timestamp,
+        1,
+        $8::timestamp,
+        $8::timestamp
+      FROM updated u
+      RETURNING id, variant_id
+    )
+    SELECT
+      u.reservation_id::text,
+      u.variant_id::text,
+      u.quantity,
+      u.ordinal,
+      u.inventory_item_id::text,
+      u.stock_on_hand,
+      u.reserved_count,
+      u.allow_oversell
+    FROM updated u
+    JOIN inserted i ON i.id = u.reservation_id AND i.variant_id = u.variant_id
+    ORDER BY u.ordinal
+    """
+
+    case Repo.query(sql, [
+           reservation_ids,
+           variant_ids,
+           quantities,
+           ordinals,
+           reservation_keys,
+           order_id,
+           expires_at,
+           now
+         ]) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [
+                             reservation_id,
+                             variant_id,
+                             quantity,
+                             ordinal,
+                             inventory_item_id,
+                             stock_on_hand,
+                             reserved_count,
+                             allow_oversell
+                           ] ->
+           %{
+             reservation_id: reservation_id,
+             variant_id: variant_id,
+             quantity: quantity,
+             ordinal: ordinal,
+             inventory_item_id: inventory_item_id,
+             stock_on_hand: stock_on_hand,
+             reserved_count: reserved_count,
+             allow_oversell: allow_oversell
+           }
+         end)}
+
+      {:error, _reason} ->
+        {:error, Error.new("RESERVATION_CONFLICT", "Failed to reserve checkout inventory")}
+    end
+  end
+
+  defp ensure_checkout_reservation_match!(requests, rows) do
+    requested_by_variant = Map.new(requests, &{&1.variant_id, &1.quantity})
+    reserved_by_variant = Map.new(rows, &{&1.variant_id, &1.quantity})
+
+    unavailable =
+      requested_by_variant
+      |> Enum.reduce([], fn {variant_id, requested_qty}, acc ->
+        reserved_qty = Map.get(reserved_by_variant, variant_id, 0)
+
+        if reserved_qty == requested_qty do
+          acc
+        else
+          [
+            %{
+              variant_id: variant_id,
+              requested_quantity: requested_qty,
+              reserved_quantity: reserved_qty
+            }
+            | acc
+          ]
+        end
+      end)
+      |> Enum.reverse()
+
+    if unavailable == [] do
+      :ok
+    else
+      Repo.rollback(
+        Error.new("OUT_OF_STOCK", "Insufficient available inventory", %{
+          unavailable_variants: unavailable,
+          unavailable_variant_ids: Enum.map(unavailable, & &1.variant_id)
+        })
+      )
+    end
+  end
+
   defp consume_for_order_transaction(order_id, now) do
     case ensure_no_terminal_blockers(order_id) do
       :ok -> consume_active_variants(order_id, now)
@@ -642,6 +865,16 @@ defmodule Store.Orders.InventoryReservations do
   end
 
   defp maybe_invalidate_after_reserve({:error, _} = error), do: error
+
+  defp maybe_invalidate_after_checkout_reserve({:ok, %{reserved_rows: _rows} = result}, requests) do
+    requests
+    |> Enum.map(& &1.variant_id)
+    |> invalidate_variant_availability()
+
+    {:ok, result}
+  end
+
+  defp maybe_invalidate_after_checkout_reserve({:error, _} = error, _requests), do: error
 
   defp maybe_invalidate_after_consume_or_expire({:ok, %{reservations: reservations} = result}) do
     variant_ids = Enum.map(reservations, & &1.variant_id)

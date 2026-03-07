@@ -3,6 +3,8 @@ defmodule Store.Catalog.FacadePublicProductTest do
 
   alias Store.Catalog.Facade, as: CatalogFacade
   alias Store.Catalog.Product
+  alias Store.Catalog.Queries.ProductDetailQuery
+  alias Store.Catalog.Types.ProductDetail
   alias Store.TestFixtures
 
   test "get_product_for_public returns a published product by slug" do
@@ -12,6 +14,19 @@ defmodule Store.Catalog.FacadePublicProductTest do
     assert %Product{} = product
     assert product.slug == slug
     assert product.status == :published
+  end
+
+  test "get_product_detail_for_public returns the ProductDetail contract" do
+    %{slug: slug} = published_product_fixture()
+
+    assert {:ok, query} = ProductDetailQuery.new(%{slug: slug, selection: %{}})
+    assert {:ok, detail} = CatalogFacade.get_product_detail_for_public(nil, query)
+    assert %ProductDetail{} = detail
+    assert %Product{} = detail.product
+    assert is_list(detail.options)
+    assert is_map(detail.selected)
+    assert %ProductDetail.Resolution{} = detail.resolution
+    assert is_list(detail.availability_matrix)
   end
 
   defp published_product_fixture do

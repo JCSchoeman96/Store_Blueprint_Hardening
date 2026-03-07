@@ -6,7 +6,6 @@ defmodule Store.Orders.SnapshotWriter do
   for an order, writes are treated as idempotent no-op reads.
   """
 
-  alias Ecto.Changeset
   import Ash.Expr
   require Ash.Query
 
@@ -15,6 +14,7 @@ defmodule Store.Orders.SnapshotWriter do
   alias Store.Pricing.Evaluator
   alias Store.Repo
   alias Store.Support.Errors.Error
+  alias Store.Support.ID.UUIDv7
 
   @type write_result ::
           {:ok,
@@ -30,49 +30,48 @@ defmodule Store.Orders.SnapshotWriter do
   def write_priced_snapshot(order_id, output, opts \\ [])
       when is_binary(order_id) and is_list(opts) do
     output = to_output!(output)
-
-    case read_existing_snapshot(order_id) do
-      {:ok, existing_line_items, existing_adjustments} ->
-        maybe_write_snapshot(order_id, output, existing_line_items, existing_adjustments, opts)
-
-      {:error, _reason} = error ->
-        error
-    end
+    maybe_write_snapshot(order_id, output, opts)
   rescue
     KeyError -> {:error, Error.new("VALIDATION_ERROR", "Invalid priced snapshot output")}
     ArgumentError -> {:error, Error.new("VALIDATION_ERROR", "Invalid priced snapshot output")}
   end
 
-  defp maybe_write_snapshot(_order_id, _output, existing_line_items, existing_adjustments, _opts)
-       when existing_line_items != [] or existing_adjustments != [] do
-    {:ok,
-     %{
-       line_items: Enum.sort_by(existing_line_items, & &1.line_no),
-       adjustments: Enum.sort_by(existing_adjustments, & &1.sequence_no),
-       idempotent?: true
-     }}
+  defp maybe_write_snapshot(order_id, %Contract.Output{} = output, _opts) do
+    with {:ok, line_items} <- create_line_items(order_id, output, []),
+         {:ok, adjustments} <- create_adjustments(order_id, output, []) do
+      build_snapshot_write_result(order_id, line_items, adjustments)
+    end
   end
 
-  defp maybe_write_snapshot(order_id, %Contract.Output{} = output, [], [], opts) do
-    ash_opts = Keyword.merge([domain: Store.Orders, authorize?: false], opts)
-
-    with {:ok, line_items} <- create_line_items(order_id, output, ash_opts),
-         {:ok, adjustments} <- create_adjustments(order_id, output, ash_opts) do
+  defp build_snapshot_write_result(order_id, [], []) do
+    with {:ok, existing_line_items, existing_adjustments} <- read_existing_snapshot(order_id) do
       {:ok,
        %{
-         line_items: Enum.sort_by(line_items, & &1.line_no),
-         adjustments: Enum.sort_by(adjustments, & &1.sequence_no),
-         idempotent?: false
+         line_items: Enum.sort_by(existing_line_items, & &1.line_no),
+         adjustments: Enum.sort_by(existing_adjustments, & &1.sequence_no),
+         idempotent?: true
        }}
     end
   end
 
-  defp create_line_items(order_id, %Contract.Output{} = output, _ash_opts) do
-    created =
+  defp build_snapshot_write_result(_order_id, line_items, adjustments) do
+    {:ok,
+     %{
+       line_items: Enum.sort_by(line_items, & &1.line_no),
+       adjustments: Enum.sort_by(adjustments, & &1.sequence_no),
+       idempotent?: false
+     }}
+  end
+
+  defp create_line_items(order_id, %Contract.Output{} = output, _opts) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    entries =
       output.lines
       |> Enum.sort_by(& &1.line_no)
       |> Enum.map(fn line ->
-        attrs = %{
+        %{
+          id: UUIDv7.generate(),
           order_id: order_id,
           line_no: line.line_no,
           currency: output.currency,
@@ -95,24 +94,30 @@ defmodule Store.Orders.SnapshotWriter do
           tax_rate_id_snapshot: Map.get(line, :tax_rate_id_snapshot),
           tax_rate_code_snapshot: Map.get(line, :tax_rate_code_snapshot),
           tax_rate_bps_snapshot: Map.get(line, :tax_rate_bps_snapshot),
-          tax_minor: Map.get(line, :tax_minor, 0)
+          tax_minor: Map.get(line, :tax_minor, 0),
+          inserted_at: now,
+          updated_at: now
         }
-
-        %OrderLineItem{}
-        |> Changeset.change(attrs)
-        |> Repo.insert()
       end)
 
-    collect_create_results(created, "Unable to persist line-item snapshot")
+    insert_all_snapshots(
+      OrderLineItem,
+      entries,
+      [:order_id, :line_no],
+      "Unable to persist line-item snapshot"
+    )
   end
 
-  defp create_adjustments(order_id, %Contract.Output{} = output, _ash_opts) do
-    created =
+  defp create_adjustments(order_id, %Contract.Output{} = output, _opts) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    entries =
       output.applied_adjustments
       |> Enum.sort_by(&Evaluator.applied_adjustment_tuple/1)
       |> Enum.with_index(1)
       |> Enum.map(fn {adjustment, sequence_no} ->
-        attrs = %{
+        %{
+          id: UUIDv7.generate(),
           order_id: order_id,
           sequence_no: sequence_no,
           currency: output.currency,
@@ -122,22 +127,61 @@ defmodule Store.Orders.SnapshotWriter do
           source_kind: adjustment.source_kind |> to_string() |> String.downcase(),
           source_code: adjustment.source_code,
           source_id: adjustment.source_id,
-          precedence_rank: adjustment.precedence_rank
+          precedence_rank: adjustment.precedence_rank,
+          inserted_at: now,
+          updated_at: now
         }
-
-        %OrderAdjustment{}
-        |> Changeset.change(attrs)
-        |> Repo.insert()
       end)
 
-    collect_create_results(created, "Unable to persist adjustment snapshot")
+    insert_all_snapshots(
+      OrderAdjustment,
+      entries,
+      [:order_id, :sequence_no],
+      "Unable to persist adjustment snapshot"
+    )
   end
 
-  defp collect_create_results(results, error_message) do
-    case Enum.split_with(results, &match?({:ok, _record}, &1)) do
-      {oks, []} -> {:ok, Enum.map(oks, fn {:ok, record} -> record end)}
-      {_oks, _errors} -> {:error, Error.new("INTERNAL_ERROR", error_message)}
+  defp insert_all_snapshots(_schema, [], _conflict_target, _error_message), do: {:ok, []}
+
+  defp insert_all_snapshots(schema, entries, conflict_target, error_message) do
+    {inserted_count, rows} =
+      Repo.insert_all(
+        schema,
+        entries,
+        on_conflict: :nothing,
+        conflict_target: conflict_target,
+        returning: true
+      )
+
+    cond do
+      inserted_count == length(entries) ->
+        {:ok, Enum.map(rows, &returned_row_to_struct(schema, &1))}
+
+      inserted_count == 0 ->
+        {:ok, []}
+
+      true ->
+        {:error, Error.new("INTERNAL_ERROR", error_message)}
     end
+  end
+
+  defp returned_row_to_struct(_schema, %_{} = row), do: row
+
+  defp returned_row_to_struct(schema, row) when is_map(row) do
+    struct(schema, atomize_row_keys(row))
+  end
+
+  defp atomize_row_keys(row) do
+    Map.new(row, fn {key, value} ->
+      normalized_key =
+        if is_binary(key) do
+          String.to_existing_atom(key)
+        else
+          key
+        end
+
+      {normalized_key, value}
+    end)
   end
 
   defp read_existing_line_items(order_id) do

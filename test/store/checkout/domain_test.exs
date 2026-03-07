@@ -6,6 +6,7 @@ defmodule Store.CheckoutTest do
 
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Carts.Inputs.CartItemInput
+  alias Store.Catalog.InventoryItem
   alias Store.Checkout
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
   alias Store.Orders.{InventoryReservation, Order, OrderAdjustment, OrderLineItem}
@@ -216,6 +217,34 @@ defmodule Store.CheckoutTest do
     assert finalized_checkout.shipping_total_minor == checkout.selection.amount_minor
   end
 
+  test "finalize_totals returns structured unavailable variant details when inventory is gone" do
+    checkout = setup_checkout_with_shipping!()
+
+    inventory = Repo.get_by!(InventoryItem, variant_id: checkout.variant_id)
+
+    assert {:ok, _updated_inventory} =
+             inventory
+             |> Ash.Changeset.for_update(
+               :set_on_hand,
+               %{stock_on_hand: 0, allow_oversell: false},
+               context: %{system?: true}
+             )
+             |> Ash.update(domain: Store.Catalog, authorize?: false, context: %{system?: true})
+
+    assert {:ok, finalize_input} = CheckoutFinalizeInput.new(%{})
+
+    assert {:error, error} =
+             Checkout.finalize_totals(checkout.actor, checkout.checkout_key, finalize_input)
+
+    assert error.code == "OUT_OF_STOCK"
+
+    assert [%{variant_id: variant_id, requested_quantity: 1, reserved_quantity: 0}] =
+             error.meta.unavailable_variants
+
+    assert error.meta.unavailable_variant_ids == [checkout.variant_id]
+    assert variant_id == checkout.variant_id
+  end
+
   test "guest draft requires matching cart token for get_draft_for_user" do
     token = Ash.UUIDv7.generate()
     wrong_token = Ash.UUIDv7.generate()
@@ -408,6 +437,7 @@ defmodule Store.CheckoutTest do
       actor: actor,
       checkout_key: start_result.checkout_key,
       order_id: start_result.order_id,
+      variant_id: variant_id,
       selection: selection,
       shipping_setup: shipping_setup
     }

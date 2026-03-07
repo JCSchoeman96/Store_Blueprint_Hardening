@@ -35,6 +35,10 @@
    - reduce `finalize_totals` query fan-out without changing reservation/quote integrity rules
    - reduce `create_payment_intent` query fan-out by using a minimal payment context and a single blocking-state preflight read
    - remove remaining public storefront projection overhead from the product listing path
+9. Phase 30.3 adds two harder pins:
+   - public product detail must flow through a fixed `Store.Catalog.Types.ProductDetail` contract so LiveView/template code remains unchanged while the loader moves to Ecto projection
+   - checkout reservation must use a deterministic set-based Postgres CTE with `RETURNING`, but full checkout finalization must still rollback on any missing reservation so there is no partial checkout success
+10. Phase 30.3 optimization stops once the checkout finalization path is in the `8-10` query band or the remaining work would require correctness-hostile drift.
 
 ## Plan
 1. Add `RepoStats.capture/2` and replace ad hoc query counters.
@@ -88,6 +92,20 @@
     - `STORE_BENCH_POOL_SIZE=100`
     - `STORE_BENCH_DIRECT_POOL_SIZE=60`
   - these overrides were necessary because `show max_connections;` on local Postgres returned `300`
+- Phase 30.3 product detail contract:
+  - added `Store.Catalog.Types.ProductDetail` as the stable internal storefront detail contract
+  - `CatalogFacade.get_product_detail_for_public/2` now returns `%ProductDetail{}`
+  - added `Store.Catalog.ProductDetailProjection` for the facade-owned public detail loader
+  - `VariantResolver` now resolves selections in memory over the projected payload instead of owning the data-loading contract
+- Phase 30.3 checkout finalization changes:
+  - `Store.Orders.reserve_inventory_for_checkout/2` now uses a deterministic reservation CTE with `RETURNING`
+  - checkout compares requested vs reserved rows and rolls back with `OUT_OF_STOCK` details containing unavailable variant identifiers
+  - priced line-item and adjustment snapshot writes now batch via `Repo.insert_all`
+  - finalized checkout summaries stop recomputing all shipping quote options and instead reuse the finalized order evidence
+- Phase 30.3 targeted tests added/updated:
+  - public product detail contract test
+  - structured unavailable-variant conflict details test for checkout finalization
+  - existing shop detail LiveView tests still pass without template changes
 
 ## Performance & Scaling Review
 - Hot:
@@ -108,6 +126,10 @@
   - `finalize_totals` mean query count dropped from `36` to `31`
   - the payment-intent path now meets the "material reduction" bar; `finalize_totals` improved but is still the heaviest orchestration path and remains the next reduction target
   - public storefront listing no longer does Elixir-side filter/sort/paginate work after broad resource loads, but `/shop/:slug` still has room for deeper projection work if `shop_show` remains the slowest storefront route
+  - Phase 30.3 rerun:
+    - `create_payment_intent` stayed flat at `17` mean queries
+    - `finalize_totals` dropped again from `31` to `22` mean queries
+    - the `8-10` query guardrail was not reached; the remaining cost is still dominated by synchronous finalize orchestration and order/tax snapshot writes
 - Indexes:
   - existing uniqueness and hot-path indexes remain the source of truth
   - phase focus was query-count reduction before index churn
@@ -139,6 +161,25 @@
     - duplicate replay failed rate: `88.03% -> 0.00%`
     - duplicate replay `webhook` p95: `4711ms -> 10.42ms`
     - duplicate replay `callback` p95: `4847ms -> 10.43ms`
+  - Phase 30.3 fresh rerun:
+    - smoke suite:
+      - `start_from_cart`: `15` mean queries, `246.73ms`
+      - `finalize_totals`: `22` mean queries, `288.80ms`
+      - `create_payment_intent`: `17` mean queries, `182.76ms`
+    - storefront k6:
+      - failed rate: `8.19%`
+      - dropped iterations: `10185`
+      - `shop_index` p95: `2.91s`
+      - `shop_show` p95: `4.00s`
+      - `cart` p95: `2.90s`
+      - `checkout` p95: `2.87s`
+    - webhook k6:
+      - unique ingress failed rate: `19.12%`, `webhook` p95: `17.65s`, `callback` p95: `16.41s`
+      - duplicate replay failed rate: `18.71%`, `webhook` p95: `18.82s`, `callback` p95: `18.39s`
+  - Interpretation:
+    - Phase 30.3 preserved correctness and improved checkout query counts again
+    - product detail no longer crashes and now honors a stable contract, but `shop_show` still has unresolved latency under real HTTP load
+    - the webhook ingress path did not reproduce the extremely low failure-rate numbers from the previous phase on the latest rerun, so those benchmarks need a follow-up investigation before being treated as stable
 
 ## Notes
 - The current checkout LiveView requires server-generated quote options before shipping can be saved. The browser benchmark uses a browser-ready checkout fixture to exercise the payment-facing half of the real UI without adding a synthetic checkout API.
@@ -157,5 +198,6 @@
   8. Webhook duplicate replay:
      - `k6 run -e STORE_WEBHOOK_MODE=duplicate_replay perf/k6/webhook_ingress.js`
 - Interpretation:
-  - storefront now fails far less often under the benchmark profile, but `shop_show` remains the slowest route and still misses the current `500ms` p95 threshold
-  - webhook ingress no longer collapses because of the tiny local pool profile; unique and duplicate modes are both benchmarkable, and duplicate replay is now measurably cheaper than unique ingress
+  - storefront product detail no longer crashes and is now contract-stable, but the route remains materially too slow under k6 and still needs another projection/LiveView pass
+  - checkout finalization is cheaper than before, but not yet in the target `8-10` query band; the latest validated smoke baseline is `22` mean queries
+  - the latest webhook rerun remained benchmarkable with fresh signatures, but unique and duplicate modes both showed high tail latency and failure rate again; treat the earlier near-zero-failure webhook numbers as non-stable until rerun conditions are reconciled

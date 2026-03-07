@@ -23,7 +23,7 @@ defmodule Store.Checkout do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.QuoteHash
   alias Store.Shipping.Types.QuoteEvidence
-  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
+  alias Store.Subscriptions.{SubscriptionPlan, VariantSubscriptionPlan}
 
   alias Store.Repo
   alias Store.Support.AshNotifications
@@ -137,13 +137,27 @@ defmodule Store.Checkout do
   end
 
   defp do_finalize_totals(_actor, _checkout_key, checkout) do
-    with {:ok, checkout} <- ensure_priced_snapshot_and_reservations(checkout),
-         line_items = Map.get(checkout, :line_items, []),
-         :ok <- ensure_line_items_present(line_items),
-         {:ok, updated_order} <- finalize_order_for_line_items(checkout.order, line_items) do
-      checkout
-      |> Map.put(:order, updated_order)
-      |> checkout_summary_from_context(line_items)
+    case ensure_priced_snapshot_and_reservations(checkout) do
+      {:ok, %{already_finalized?: true} = finalized_checkout} ->
+        checkout_summary_from_context(finalized_checkout)
+
+      {:ok, checkout} ->
+        line_items = Map.get(checkout, :line_items, [])
+
+        with :ok <- ensure_line_items_present(line_items),
+             {:ok, updated_order} <-
+               finalize_order_for_line_items(
+                 checkout.order,
+                 line_items,
+                 Map.get(checkout, :pricing_adjustment_count, 0)
+               ) do
+          checkout
+          |> Map.put(:order, updated_order)
+          |> checkout_summary_from_context(line_items)
+        end
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -560,51 +574,14 @@ defmodule Store.Checkout do
     Repo.transaction(fn ->
       locked_cart = lock_checkout_cart!(draft.cart_id, draft.cart_version)
       locked_items = lock_cart_items(locked_cart.id)
+      locked_order = lock_checkout_order!(order.id)
 
       :ok = ensure_cart_not_empty!(locked_items)
-      {variants_by_id, products_by_id} = catalog_maps(locked_items)
-      :ok = ensure_published_sellables!(locked_items, variants_by_id, products_by_id)
-      plans_by_item_id = resolve_subscription_plans_for_items!(locked_items)
 
-      currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
-      shipping_weight_grams = shipping_weight_grams_for_items(locked_items, variants_by_id)
-
-      shipping_quote_request =
-        quote_request_attrs(
-          order.shipping_country_code,
-          order.shipping_region_code,
-          order.shipping_postal_code,
-          String.upcase(currency),
-          shipping_weight_grams
-        )
-
-      with {:ok, snapshot} <-
-             write_priced_snapshot(
-               order.id,
-               locked_items,
-               variants_by_id,
-               products_by_id,
-               plans_by_item_id,
-               currency
-             ),
-           {:ok, _reservations} <-
-             Store.Orders.reserve_inventory(order.id, reserve_items(locked_items)) do
-        %{
-          draft: draft,
-          order: order,
-          cart: locked_cart,
-          cart_items: locked_items,
-          variants_by_id: variants_by_id,
-          products_by_id: products_by_id,
-          plans_by_item_id: plans_by_item_id,
-          line_items: snapshot.line_items,
-          currency_code: String.upcase(currency),
-          shipping_weight_grams: shipping_weight_grams,
-          shipping_quote_request: shipping_quote_request
-        }
+      if is_nil(locked_order.totals_finalized_at) do
+        build_checkout_finalize_context(draft, locked_order, locked_cart, locked_items)
       else
-        {:error, %Error{} = error} -> Repo.rollback(error)
-        {:error, reason} -> Repo.rollback(reason)
+        load_already_finalized_checkout(draft, locked_order)
       end
     end)
     |> case do
@@ -616,6 +593,100 @@ defmodule Store.Checkout do
 
   defp ensure_priced_snapshot_and_reservations(_checkout) do
     {:error, Error.new("VALIDATION_ERROR", "checkout context is required")}
+  end
+
+  defp load_already_finalized_checkout(draft, locked_order) do
+    case fetch_order_line_items(locked_order.id) do
+      {:ok, line_items} ->
+        %{
+          draft: draft,
+          order: locked_order,
+          already_finalized?: true,
+          line_items: line_items
+        }
+
+      {:error, %Error{} = error} ->
+        Repo.rollback(error)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp build_checkout_finalize_context(draft, locked_order, locked_cart, locked_items) do
+    {variants_by_id, products_by_id} = catalog_maps(locked_items)
+    :ok = ensure_published_sellables!(locked_items, variants_by_id, products_by_id)
+    plans_by_item_id = resolve_subscription_plans_for_items!(locked_items)
+
+    currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
+    shipping_weight_grams = shipping_weight_grams_for_items(locked_items, variants_by_id)
+
+    shipping_quote_request =
+      quote_request_attrs(
+        locked_order.shipping_country_code,
+        locked_order.shipping_region_code,
+        locked_order.shipping_postal_code,
+        String.upcase(currency),
+        shipping_weight_grams
+      )
+
+    case write_finalize_snapshot_and_reservations(
+           locked_order,
+           locked_items,
+           variants_by_id,
+           products_by_id,
+           plans_by_item_id,
+           currency
+         ) do
+      {:ok, snapshot, reservation_result} ->
+        %{
+          draft: draft,
+          order: locked_order,
+          cart: locked_cart,
+          cart_items: locked_items,
+          variants_by_id: variants_by_id,
+          products_by_id: products_by_id,
+          plans_by_item_id: plans_by_item_id,
+          line_items: snapshot.line_items,
+          pricing_adjustment_count: length(snapshot.adjustments),
+          reserved_rows: reservation_result.reserved_rows,
+          currency_code: String.upcase(currency),
+          shipping_weight_grams: shipping_weight_grams,
+          shipping_quote_request: shipping_quote_request
+        }
+
+      {:error, %Error{} = error} ->
+        Repo.rollback(error)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp write_finalize_snapshot_and_reservations(
+         locked_order,
+         locked_items,
+         variants_by_id,
+         products_by_id,
+         plans_by_item_id,
+         currency
+       ) do
+    with {:ok, snapshot} <-
+           write_priced_snapshot(
+             locked_order.id,
+             locked_items,
+             variants_by_id,
+             products_by_id,
+             plans_by_item_id,
+             currency
+           ),
+         {:ok, reservation_result} <-
+           Store.Orders.reserve_inventory_for_checkout(
+             locked_order.id,
+             reserve_items(locked_items)
+           ) do
+      {:ok, snapshot, reservation_result}
+    end
   end
 
   defp checkout_context_for_user(actor, checkout_key) do
@@ -677,7 +748,7 @@ defmodule Store.Checkout do
   defp build_checkout_summary(%{draft: draft, order: order} = checkout, line_items) do
     item_count = Enum.reduce(line_items, 0, &(&1.quantity + &2))
     items_subtotal = Enum.reduce(line_items, 0, &(&1.net_line_total_minor + &2))
-    shipping_quote_options = available_quote_options(checkout)
+    shipping_quote_options = shipping_quote_options_for_summary(checkout)
 
     {:ok,
      %{
@@ -715,6 +786,21 @@ defmodule Store.Checkout do
        items: Enum.map(line_items, &line_item_summary/1)
      }}
   end
+
+  defp shipping_quote_options_for_summary(%{shipping_quote_options: [_ | _]} = checkout) do
+    Map.get(checkout, :shipping_quote_options, [])
+  end
+
+  defp shipping_quote_options_for_summary(%{
+         order: %Order{totals_finalized_at: %DateTime{}} = order
+       }) do
+    case quote_option_from_order(order) do
+      nil -> []
+      option -> [option]
+    end
+  end
+
+  defp shipping_quote_options_for_summary(checkout), do: available_quote_options(checkout)
 
   defp quote_option_summary(option) do
     %{
@@ -926,6 +1012,19 @@ defmodule Store.Checkout do
 
   defp available_quote_options(_checkout), do: []
 
+  defp quote_option_from_order(%Order{} = order) do
+    if is_binary(order.shipping_quote_hash) and is_binary(order.shipping_method_code) and
+         is_binary(order.shipping_quote_currency_code) do
+      %{
+        quote_hash: order.shipping_quote_hash,
+        shipping_method_code: order.shipping_method_code,
+        amount_minor: non_neg_int(order.shipping_quote_amount_minor, 0),
+        currency_code: order.shipping_quote_currency_code,
+        label: order.shipping_rate_code || order.shipping_method_code
+      }
+    end
+  end
+
   defp shipping_weight_grams_for_checkout(%{shipping_weight_grams: weight_grams})
        when is_integer(weight_grams) and weight_grams >= 0,
        do: weight_grams
@@ -1021,25 +1120,23 @@ defmodule Store.Checkout do
     }
   end
 
-  defp ensure_shipping_adjustment(order, quote_evidence) do
+  defp ensure_shipping_adjustment(order, quote_evidence, base_sequence_no) do
     case existing_shipping_adjustment(order.id) do
       {:ok, %OrderAdjustment{} = adjustment} ->
         {:ok, adjustment, true}
 
       {:ok, nil} ->
-        insert_shipping_adjustment(order, quote_evidence)
+        insert_shipping_adjustment(order, quote_evidence, base_sequence_no)
 
       {:error, error} ->
         {:error, error}
     end
   end
 
-  defp insert_shipping_adjustment(order, quote_evidence) do
-    sequence_no = next_adjustment_sequence(order.id)
-
+  defp insert_shipping_adjustment(order, quote_evidence, base_sequence_no) do
     attrs = %{
       order_id: order.id,
-      sequence_no: sequence_no,
+      sequence_no: base_sequence_no + 1,
       currency: quote_evidence.currency_code,
       kind: "shipping",
       amount_minor: quote_evidence.amount_minor,
@@ -1090,18 +1187,6 @@ defmodule Store.Checkout do
     end
   end
 
-  defp next_adjustment_sequence(order_id) do
-    OrderAdjustment
-    |> where([adjustment], adjustment.order_id == ^order_id)
-    |> select([adjustment], max(adjustment.sequence_no))
-    |> Repo.one()
-    |> case do
-      nil -> 1
-      sequence_no when is_integer(sequence_no) -> sequence_no + 1
-      _ -> 1
-    end
-  end
-
   defp tax_rate_candidate(rate) do
     %{
       id: rate.id,
@@ -1118,7 +1203,7 @@ defmodule Store.Checkout do
     }
   end
 
-  defp finalize_order_for_line_items(order, line_items) do
+  defp finalize_order_for_line_items(order, line_items, pricing_adjustment_count) do
     if subscription_only_line_items?(line_items) do
       output = subscription_only_totals_output(line_items, order)
       finalize_order_totals(order, output)
@@ -1133,7 +1218,8 @@ defmodule Store.Checkout do
                quote_evidence,
                tax_rates
              ),
-           {:ok, _adjustment, _idempotent?} <- ensure_shipping_adjustment(order, quote_evidence),
+           {:ok, _adjustment, _idempotent?} <-
+             ensure_shipping_adjustment(order, quote_evidence, pricing_adjustment_count),
            {:ok, _snapshot} <- Store.Orders.write_tax_shipping_snapshot(order.id, output) do
         finalize_order_totals(order, output)
       end
@@ -1221,6 +1307,19 @@ defmodule Store.Checkout do
 
       nil ->
         Repo.rollback(Error.new("STALE_RECORD", "checkout cart changed; restart checkout"))
+    end
+  end
+
+  defp lock_checkout_order!(order_id) do
+    case Order
+         |> where([order], order.id == ^order_id)
+         |> lock("FOR UPDATE")
+         |> Repo.one() do
+      %Order{} = order ->
+        order
+
+      nil ->
+        Repo.rollback(Error.new("NOT_FOUND", "checkout order not found"))
     end
   end
 
@@ -1457,13 +1556,33 @@ defmodule Store.Checkout do
   end
 
   defp resolve_subscription_plans_for_items(items) when is_list(items) do
+    variant_ids =
+      items
+      |> Enum.map(& &1.variant_id)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    plans_by_variant =
+      VariantSubscriptionPlan
+      |> where([attachment], attachment.variant_id in ^variant_ids and attachment.active == true)
+      |> join(:inner, [attachment], plan in SubscriptionPlan,
+        on: plan.id == attachment.subscription_plan_id
+      )
+      |> select(
+        [attachment, plan],
+        {attachment.variant_id, attachment.subscription_plan_id, plan}
+      )
+      |> Repo.all()
+      |> Enum.group_by(fn {variant_id, _plan_id, _plan} -> variant_id end, fn {_variant_id,
+                                                                               plan_id, plan} ->
+        {plan_id, plan}
+      end)
+
     Enum.reduce_while(items, {:ok, %{}}, fn item, {:ok, acc} ->
       explicit_plan_id = Map.get(item, :subscription_plan_id)
+      variant_plans = Map.get(plans_by_variant, item.variant_id, [])
 
-      case SubscriptionsFacade.resolve_variant_subscription_plan_for_system(
-             item.variant_id,
-             explicit_plan_id
-           ) do
+      case pick_subscription_plan_for_item(item.variant_id, explicit_plan_id, variant_plans) do
         {:ok, plan} ->
           {:cont, {:ok, Map.put(acc, item.id, plan)}}
 
@@ -1471,6 +1590,34 @@ defmodule Store.Checkout do
           {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp pick_subscription_plan_for_item(_variant_id, explicit_plan_id, variant_plans)
+       when is_binary(explicit_plan_id) do
+    case Enum.find(variant_plans, fn {plan_id, _plan} -> plan_id == explicit_plan_id end) do
+      {_plan_id, plan} ->
+        {:ok, plan}
+
+      nil ->
+        {:error,
+         Error.new(
+           "VALIDATION_ERROR",
+           "subscription_plan_id is not active for the selected variant"
+         )}
+    end
+  end
+
+  defp pick_subscription_plan_for_item(_variant_id, _explicit_plan_id, []), do: {:ok, nil}
+
+  defp pick_subscription_plan_for_item(_variant_id, _explicit_plan_id, [{_plan_id, plan}]),
+    do: {:ok, plan}
+
+  defp pick_subscription_plan_for_item(_variant_id, _explicit_plan_id, _variant_plans) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "variant has multiple active subscription plans; explicit subscription_plan_id is required"
+     )}
   end
 
   defp resolve_subscription_plans_for_items!([]), do: %{}

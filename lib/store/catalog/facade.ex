@@ -12,6 +12,7 @@ defmodule Store.Catalog.Facade do
     AvailabilityCache,
     Category,
     Product,
+    ProductDetailProjection,
     ProductOption,
     ProductOptionValue,
     StockFastPath,
@@ -65,9 +66,10 @@ defmodule Store.Catalog.Facade do
 
   @spec get_product_detail_for_public(map() | nil, ProductDetailQuery.t()) ::
           {:ok, map()} | {:error, term()}
-  def get_product_detail_for_public(actor, %ProductDetailQuery{} = query) do
-    with {:ok, %Product{} = product} <- get_product_for_public(actor, query.slug),
-         {:ok, detail} <- VariantResolver.build_product_detail(product, query.selection) do
+  def get_product_detail_for_public(_actor, %ProductDetailQuery{} = query) do
+    with {:ok, %Product{} = product} <- ProductDetailProjection.load_public_product(query.slug),
+         {:ok, payload} <- ProductDetailProjection.fetch(product),
+         {:ok, detail} <- VariantResolver.build_product_detail(product, payload, query.selection) do
       {:ok, detail}
     else
       {:ok, nil} -> {:error, Error.new("NOT_FOUND", "product not found")}
