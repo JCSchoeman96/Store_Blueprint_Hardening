@@ -1,6 +1,6 @@
 defmodule Store.Workers.ExpireInventoryReservationsWorkerTest do
   use Store.DataCase, async: false
-  use Oban.Testing, repo: Store.Repo
+  use Oban.Testing, repo: Store.DirectRepo
 
   alias Store.Catalog.InventoryItem
   alias Store.Orders.{InventoryReservation, Order}

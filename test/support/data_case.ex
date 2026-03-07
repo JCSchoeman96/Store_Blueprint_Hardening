@@ -38,8 +38,13 @@ defmodule Store.DataCase do
   Sets up the sandbox based on the test tags.
   """
   def setup_sandbox(tags) do
-    pid = Sandbox.start_owner!(Store.Repo, shared: not tags[:async])
-    on_exit(fn -> Sandbox.stop_owner(pid) end)
+    shared? = not tags[:async]
+
+    [Store.Repo, Store.DirectRepo]
+    |> Enum.map(&Sandbox.start_owner!(&1, shared: shared?))
+    |> Enum.each(fn owner_pid ->
+      on_exit(fn -> Sandbox.stop_owner(owner_pid) end)
+    end)
   end
 
   @doc """

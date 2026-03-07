@@ -25,8 +25,8 @@ config :store, Store.DirectRepo,
   pool_size: 5
 
 config :store,
-    :token_signing_secret,
-    System.get_env("STORE_TOKEN_SIGNING_SECRET", "dev-store-token-signing-secret")
+       :token_signing_secret,
+       System.get_env("STORE_TOKEN_SIGNING_SECRET", "dev-store-token-signing-secret")
 
 config :store, :google_oauth,
   client_id: System.get_env("STORE_GOOGLE_CLIENT_ID", "dev-google-client-id"),

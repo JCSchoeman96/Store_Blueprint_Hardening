@@ -1,6 +1,6 @@
 defmodule Store.Comms.DomainTest do
   use Store.DataCase, async: false
-  use Oban.Testing, repo: Store.Repo
+  use Oban.Testing, repo: Store.DirectRepo
 
   import Ash.Expr
   require Ash.Query

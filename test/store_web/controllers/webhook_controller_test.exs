@@ -1,6 +1,6 @@
 defmodule StoreWeb.WebhookControllerTest do
   use StoreWeb.ConnCase, async: false
-  use Oban.Testing, repo: Store.Repo
+  use Oban.Testing, repo: Store.DirectRepo
 
   import Ash.Expr
   require Ash.Query

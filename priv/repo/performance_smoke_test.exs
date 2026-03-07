@@ -93,6 +93,10 @@ defmodule Store.PerformanceSmoke.Config do
             payment_provider: "stripe",
             repo_pool_size: 20,
             redis_pool_size: 10,
+            observer_interval_ms: 500,
+            lock_wait_max_ratio: 0.10,
+            lock_wait_min_active_backends: 10,
+            pool_utilization_max_ratio: 0.95,
             benchee_time_seconds: 2,
             benchee_warmup_seconds: 1,
             sample_iterations: 100,
@@ -163,6 +167,10 @@ defmodule Store.PerformanceSmoke.Config do
       payment_provider: payment_provider(),
       repo_pool_size: Keyword.get(Store.Repo.config(), :pool_size),
       redis_pool_size: max(env_int("STORE_PERF_REDIS_POOL_SIZE", redis_pool_default), 1),
+      observer_interval_ms: env_int("STORE_PERF_OBSERVER_INTERVAL_MS", 500),
+      lock_wait_max_ratio: env_float("STORE_PERF_LOCK_WAIT_MAX_RATIO", 0.10),
+      lock_wait_min_active_backends: env_int("STORE_PERF_LOCK_WAIT_MIN_ACTIVE_BACKENDS", 10),
+      pool_utilization_max_ratio: env_float("STORE_PERF_POOL_UTILIZATION_MAX_RATIO", 0.95),
       benchee_time_seconds:
         env_int("STORE_PERF_BENCHEE_TIME_SECONDS", Map.fetch!(defaults, :benchee_time_seconds)),
       benchee_warmup_seconds:
@@ -175,6 +183,10 @@ defmodule Store.PerformanceSmoke.Config do
       redis_prefix: "store:perf:#{run_id}"
     }
   end
+
+  @spec observer_gate_enforced?(t()) :: boolean()
+  def observer_gate_enforced?(%__MODULE__{profile: profile}),
+    do: profile in [:ci_gate, :full_stress]
 
   @spec redis_opts() :: keyword()
   def redis_opts do
@@ -316,17 +328,13 @@ end
 defmodule Store.PerformanceSmoke.Reporter do
   @moduledoc false
 
-  @table :store_performance_smoke_metrics
+  @metrics_table :store_performance_smoke_metrics
+  @observer_table :store_performance_smoke_observers
 
   @spec reset() :: :ok
   def reset do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ets.new(@table, [:named_table, :public, :set])
-
-      table ->
-        :ets.delete_all_objects(table)
-    end
+    reset_table(@metrics_table)
+    reset_table(@observer_table)
 
     :ok
   end
@@ -334,22 +342,25 @@ defmodule Store.PerformanceSmoke.Reporter do
   @spec record(map()) :: :ok
   def record(metric) when is_map(metric) do
     key = Map.fetch!(metric, :name)
-    :ets.insert(@table, {key, metric})
+    :ets.insert(@metrics_table, {key, metric})
+    :ok
+  end
+
+  @spec record_observer(map()) :: :ok
+  def record_observer(summary) when is_map(summary) do
+    key = Map.fetch!(summary, :name)
+    :ets.insert(@observer_table, {key, summary})
     :ok
   end
 
   @spec all() :: [map()]
   def all do
-    case :ets.whereis(@table) do
-      :undefined ->
-        []
+    table_values(@metrics_table)
+  end
 
-      table ->
-        table
-        |> :ets.tab2list()
-        |> Enum.map(fn {_k, v} -> v end)
-        |> Enum.sort_by(&Map.get(&1, :name))
-    end
+  @spec observers() :: [map()]
+  def observers do
+    table_values(@observer_table)
   end
 
   @spec print_table([map()]) :: :ok
@@ -375,11 +386,55 @@ defmodule Store.PerformanceSmoke.Reporter do
     :ok
   end
 
+  @spec print_observer_table([map()]) :: :ok
+  def print_observer_table([]), do: :ok
+
+  def print_observer_table(observers) do
+    IO.puts("\n| Observer | Peak Lock Wait Ratio | Peak Lock Waiters | Peak Pool Util | Result |")
+    IO.puts("| --- | --- | --- | --- | --- |")
+
+    Enum.each(observers, fn observer ->
+      lock_wait_ratio = observer[:peak_lock_wait_ratio] |> float_or_dash()
+      lock_waiters = observer[:peak_lock_waiters] |> integer_or_dash()
+      pool_utilization = observer[:peak_active_backend_utilization] |> float_or_dash()
+      result = if observer[:pass], do: "PASS", else: "FAIL"
+
+      IO.puts(
+        "| #{observer[:name]} | #{lock_wait_ratio} | #{lock_waiters} | #{pool_utilization} | #{result} |"
+      )
+    end)
+
+    :ok
+  end
+
   @spec write_json(map()) :: :ok | {:error, term()}
   def write_json(payload) when is_map(payload) do
     File.mkdir_p!("tmp/perf")
     encoded = Jason.encode_to_iodata!(payload, pretty: true)
     File.write("tmp/perf/performance_smoke_report.json", encoded)
+  end
+
+  defp reset_table(table_name) do
+    case :ets.whereis(table_name) do
+      :undefined ->
+        :ets.new(table_name, [:named_table, :public, :set])
+
+      table ->
+        :ets.delete_all_objects(table)
+    end
+  end
+
+  defp table_values(table_name) do
+    case :ets.whereis(table_name) do
+      :undefined ->
+        []
+
+      table ->
+        table
+        |> :ets.tab2list()
+        |> Enum.map(fn {_k, v} -> v end)
+        |> Enum.sort_by(&Map.get(&1, :name))
+    end
   end
 
   defp maybe_target(_label, nil), do: nil
@@ -389,6 +444,9 @@ defmodule Store.PerformanceSmoke.Reporter do
 
   defp float_or_dash(value) when is_number(value),
     do: :erlang.float_to_binary(value * 1.0, decimals: 2)
+
+  defp integer_or_dash(nil), do: "-"
+  defp integer_or_dash(value) when is_integer(value), do: Integer.to_string(value)
 end
 
 defmodule Store.PerformanceSmoke.Gate do
@@ -423,6 +481,122 @@ defmodule Store.PerformanceSmoke.Gate do
 
     :ok
   end
+
+  @spec assert_observer_summary!(map()) :: :ok
+  def assert_observer_summary!(summary) when is_map(summary) do
+    assert summary.pass,
+           "observer gate failed for #{summary.name}: peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_lock_waiters=#{summary.peak_lock_waiters} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold}"
+
+    :ok
+  end
+end
+
+defmodule Store.PerformanceSmoke.Observer do
+  @moduledoc false
+
+  alias Store.PerformanceSmoke.{Config, Reporter}
+
+  @sample_query """
+  SELECT
+    COUNT(*) FILTER (WHERE state = 'active')::bigint AS active_backends,
+    COUNT(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')::bigint AS lock_waiters
+  FROM pg_stat_activity
+  WHERE datname = current_database()
+    AND backend_type = 'client backend'
+    AND pid <> pg_backend_pid()
+  """
+
+  @spec capture(String.t(), Config.t(), (-> term())) :: {term(), map()}
+  def capture(name, %Config{} = config, fun) when is_binary(name) and is_function(fun, 0) do
+    parent = self()
+    ref = make_ref()
+    {:ok, pid} = Task.start_link(fn -> sample_loop(parent, ref, config, []) end)
+    result = fun.()
+    send(pid, {:stop, parent, ref})
+
+    samples =
+      receive do
+        {:observer_samples, ^ref, samples} -> samples
+      end
+
+    summary = summarize(name, config, samples)
+    Reporter.record_observer(summary)
+    {result, summary}
+  end
+
+  defp sample_loop(parent, ref, config, acc) do
+    sample = sample(config)
+
+    receive do
+      {:stop, ^parent, ^ref} ->
+        send(parent, {:observer_samples, ref, Enum.reverse([sample | acc])})
+    after
+      config.observer_interval_ms ->
+        sample_loop(parent, ref, config, [sample | acc])
+    end
+  end
+
+  defp sample(config) do
+    %{rows: [[active_backends, lock_waiters]]} =
+      Ecto.Adapters.SQL.query!(Store.DirectRepo, @sample_query, [])
+
+    active_backends = parse_count(active_backends)
+    lock_waiters = parse_count(lock_waiters)
+
+    %{
+      timestamp_ms: System.system_time(:millisecond),
+      active_backends: active_backends,
+      lock_waiters: lock_waiters,
+      lock_wait_ratio: ratio(lock_waiters, active_backends),
+      active_backend_utilization: ratio(active_backends, config.repo_pool_size)
+    }
+  end
+
+  defp summarize(name, config, samples) do
+    samples_over_lock_threshold =
+      Enum.count(samples, fn sample ->
+        sample.active_backends >= config.lock_wait_min_active_backends and
+          sample.lock_wait_ratio > config.lock_wait_max_ratio
+      end)
+
+    samples_over_pool_threshold =
+      Enum.count(samples, fn sample ->
+        sample.active_backend_utilization > config.pool_utilization_max_ratio
+      end)
+
+    enforced = Config.observer_gate_enforced?(config)
+
+    %{
+      name: name,
+      pass:
+        if(enforced,
+          do: samples_over_lock_threshold == 0 and samples_over_pool_threshold == 0,
+          else: true
+        ),
+      enforced: enforced,
+      sample_count: length(samples),
+      peak_active_backends: peak_value(samples, :active_backends, 0),
+      peak_lock_waiters: peak_value(samples, :lock_waiters, 0),
+      peak_lock_wait_ratio: peak_value(samples, :lock_wait_ratio, 0.0),
+      peak_active_backend_utilization: peak_value(samples, :active_backend_utilization, 0.0),
+      samples_over_lock_threshold: samples_over_lock_threshold,
+      samples_over_pool_threshold: samples_over_pool_threshold,
+      lock_wait_max_ratio: config.lock_wait_max_ratio,
+      lock_wait_min_active_backends: config.lock_wait_min_active_backends,
+      pool_utilization_max_ratio: config.pool_utilization_max_ratio
+    }
+  end
+
+  defp peak_value(samples, key, default) do
+    samples
+    |> Enum.map(&Map.get(&1, key))
+    |> Enum.max(fn -> default end)
+  end
+
+  defp ratio(_numerator, 0), do: 0.0
+  defp ratio(numerator, denominator), do: numerator / denominator
+
+  defp parse_count(value) when is_integer(value), do: value
 end
 
 defmodule Store.PerformanceSmoke.RedisPool do
@@ -452,13 +626,15 @@ defmodule Store.PerformanceSmoke.RedisPool do
         Supervisor.child_spec({Redix, redix_opts}, id: name)
       end)
 
-    children = workers ++ [
-      %{
-        id: @state_name,
-        start:
-          {Agent, :start_link, [fn -> %{names: names, index: 0} end, [name: @state_name]]}
-      }
-    ]
+    children =
+      workers ++
+        [
+          %{
+            id: @state_name,
+            start:
+              {Agent, :start_link, [fn -> %{names: names, index: 0} end, [name: @state_name]]}
+          }
+        ]
 
     Supervisor.init(children, strategy: :one_for_one)
   end
@@ -517,12 +693,16 @@ defmodule Store.PerformanceSmoke.RedisPool do
 
   defp next_worker do
     if Process.whereis(@state_name) do
-      {:ok,
-       Agent.get_and_update(@state_name, fn %{names: names, index: index} = state ->
-         size = max(length(names), 1)
-         next_index = rem(index + 1, size)
-         {Enum.at(names, index, hd(names)), %{state | index: next_index}}
-       end)}
+      try do
+        {:ok,
+         Agent.get_and_update(@state_name, fn %{names: names, index: index} = state ->
+           size = max(length(names), 1)
+           next_index = rem(index + 1, size)
+           {Enum.at(names, index, hd(names)), %{state | index: next_index}}
+         end)}
+      catch
+        :exit, _reason -> {:error, :redis_pool_not_started}
+      end
     else
       {:error, :redis_pool_not_started}
     end
@@ -551,7 +731,7 @@ defmodule Store.PerformanceSmoke.SingleFlightCache do
         {:ok, value, :hit}
 
       _ ->
-        :global.trans({__MODULE__, key}, fn ->
+        :global.trans({{__MODULE__, key}, self()}, fn ->
           case :ets.lookup(table, key) do
             [{^key, value}] ->
               {:ok, value, :hit}
@@ -738,6 +918,7 @@ defmodule Store.PerformanceSmoke.Fixtures do
 
     {:ok, start_input} = CheckoutStartInput.new(%{})
     {:ok, finalize_input} = CheckoutFinalizeInput.new(%{})
+
     {:ok, payment_input} =
       CreateIntentForOrderInput.new(%{
         "provider" => Store.PerformanceSmoke.Config.payment_provider()
@@ -917,7 +1098,17 @@ defmodule Store.PerformanceSmokeTest do
 
   alias Store.Catalog.{InventoryItem, StockFastPath}
   alias Store.Orders
-  alias Store.PerformanceSmoke.{Config, Gate, RedisPool, Reporter, SingleFlightCache, Stats}
+
+  alias Store.PerformanceSmoke.{
+    Config,
+    Gate,
+    Observer,
+    RedisPool,
+    Reporter,
+    SingleFlightCache,
+    Stats
+  }
+
   alias Store.PerformanceSmoke.Fixtures
   alias Store.Support.Errors.Error
   alias Store.Repo
@@ -926,11 +1117,12 @@ defmodule Store.PerformanceSmokeTest do
     # Defensive cleanup: detach any stale telemetry handlers from prior crashed runs.
     # If the script was killed mid-test, handlers matching our prefix may linger.
     :telemetry.list_handlers([:store, :repo, :query])
-    |> Enum.filter(fn %{id: id} -> String.starts_with?(to_string(id), "phase29_perf_repo_query_") end)
+    |> Enum.filter(fn %{id: id} ->
+      String.starts_with?(to_string(id), "phase29_perf_repo_query_")
+    end)
     |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
 
     config = Config.load()
-    :ok = Reporter.reset()
 
     case RedisPool.start_link(pool_size: config.redis_pool_size, redis_opts: Config.redis_opts()) do
       {:ok, _pid} ->
@@ -1097,42 +1289,48 @@ defmodule Store.PerformanceSmokeTest do
   test "checkout concurrency meets mean and p99 thresholds", %{config: config} do
     fixture = Fixtures.checkout_fixture!()
 
-    {samples, errors} =
-      1..config.concurrency_users
-      |> Task.async_stream(
-        fn _idx ->
-          token = Ash.UUIDv7.generate()
+    {{samples, errors}, observer_summary} =
+      Observer.capture("checkout_concurrency_observer", config, fn ->
+        1..config.concurrency_users
+        |> Task.async_stream(
+          fn _idx ->
+            token = Ash.UUIDv7.generate()
 
-          {result, elapsed_ms} = timed(fn ->
-            try do
-               Fixtures.checkout_flow!(fixture, token)
-               :ok
-            rescue
-              e -> {:error, e}
+            {result, elapsed_ms} =
+              timed(fn ->
+                try do
+                  Fixtures.checkout_flow!(fixture, token)
+                  :ok
+                rescue
+                  e -> {:error, e}
+                end
+              end)
+
+            case result do
+              :ok -> {:ok, elapsed_ms}
+              {:error, reason} -> {:error, reason}
             end
-          end)
-
-          case result do
-            :ok -> {:ok, elapsed_ms}
-            {:error, reason} -> {:error, reason}
-          end
-        end,
-        max_concurrency: config.concurrency_users,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Enum.reduce({[], []}, fn
-        {:ok, {:ok, elapsed_ms}}, {durations, errs} -> {[elapsed_ms | durations], errs}
-        {:ok, {:error, reason}}, {durations, errs} -> {durations, [reason | errs]}
-        {:exit, reason}, {durations, errs} -> {durations, [reason | errs]}
+          end,
+          max_concurrency: config.concurrency_users,
+          ordered: false,
+          timeout: :infinity
+        )
+        |> Enum.reduce({[], []}, fn
+          {:ok, {:ok, elapsed_ms}}, {durations, errs} -> {[elapsed_ms | durations], errs}
+          {:ok, {:error, reason}}, {durations, errs} -> {durations, [reason | errs]}
+          {:exit, reason}, {durations, errs} -> {durations, [reason | errs]}
+        end)
       end)
 
     assert errors == [], "checkout concurrency errors: #{inspect(errors)}"
 
     Gate.assert_metric!("checkout_concurrency", samples,
-      target_mean_ms: nil, # A full 5-step workflow will not average under 100ms
+      # A full 5-step workflow will not average under 100ms
+      target_mean_ms: nil,
       target_p99_ms: config.checkout_p99_ms
     )
+
+    Gate.assert_observer_summary!(observer_summary)
   end
 
   test "seat-hold registry Redis ZSET concurrency remains fast", %{config: config} do
@@ -1188,27 +1386,31 @@ defmodule Store.PerformanceSmokeTest do
 
     orders = Enum.map(1..config.thundering_herd_users, fn _ -> Fixtures.create_order!() end)
 
-    {samples, results} =
-      orders
-      |> Task.async_stream(
-        fn order ->
-          {result, elapsed_ms} =
-            timed(fn ->
-              Orders.reserve_inventory(order.id, [%{variant_id: fixture.variant_id, quantity: 1}])
-            end)
+    {{samples, results}, observer_summary} =
+      Observer.capture("domain_thundering_herd_observer", config, fn ->
+        orders
+        |> Task.async_stream(
+          fn order ->
+            {result, elapsed_ms} =
+              timed(fn ->
+                Orders.reserve_inventory(order.id, [
+                  %{variant_id: fixture.variant_id, quantity: 1}
+                ])
+              end)
 
-          {elapsed_ms, result}
-        end,
-        max_concurrency: config.thundering_herd_users,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Enum.reduce({[], []}, fn
-        {:ok, {elapsed_ms, result}}, {durations, acc} ->
-          {[elapsed_ms | durations], [result | acc]}
+            {elapsed_ms, result}
+          end,
+          max_concurrency: config.thundering_herd_users,
+          ordered: false,
+          timeout: :infinity
+        )
+        |> Enum.reduce({[], []}, fn
+          {:ok, {elapsed_ms, result}}, {durations, acc} ->
+            {[elapsed_ms | durations], [result | acc]}
 
-        {:exit, reason}, {durations, acc} ->
-          {durations, [{:error, reason} | acc]}
+          {:exit, reason}, {durations, acc} ->
+            {durations, [{:error, reason} | acc]}
+        end)
       end)
 
     success_count = Enum.count(results, &match?({:ok, _}, &1))
@@ -1227,6 +1429,7 @@ defmodule Store.PerformanceSmokeTest do
 
     # Allow a slightly higher mean to account for row-lock serialization
     Gate.assert_metric!("domain_thundering_herd", samples, target_mean_ms: 250.0)
+    Gate.assert_observer_summary!(observer_summary)
   end
 
   test "thundering herd on Redis same seat grants one lock owner", %{config: config} do
@@ -1566,16 +1769,26 @@ defmodule Store.PerformanceSmokeTest do
   end
 
   defp contains_param_value?(params, target_value) when is_list(params) do
-    Enum.any?(params, &param_match?(&1, target_value))
+    match_values = normalize_param_match_values(target_value)
+    Enum.any?(params, &param_match?(&1, match_values))
   end
 
   defp contains_param_value?(_params, _target_value), do: false
 
-  defp param_match?(value, target_value) when is_list(value) do
-    Enum.any?(value, &param_match?(&1, target_value))
+  defp param_match?(value, match_values) when is_list(value) do
+    Enum.any?(value, &param_match?(&1, match_values))
   end
 
-  defp param_match?(value, target_value), do: value == target_value
+  defp param_match?(value, match_values), do: value in match_values
+
+  defp normalize_param_match_values(value) when is_binary(value) do
+    case Ecto.UUID.dump(value) do
+      {:ok, dumped} -> [value, dumped]
+      :error -> [value]
+    end
+  end
+
+  defp normalize_param_match_values(value), do: [value]
 
   defp parse_int(value) when is_integer(value), do: value * 1.0
 
@@ -1587,7 +1800,15 @@ defmodule Store.PerformanceSmokeTest do
   end
 end
 
-test_failures = ExUnit.run()
+:ok = Store.PerformanceSmoke.Reporter.reset()
+
+test_results = ExUnit.run()
+
+failure_count =
+  case test_results do
+    %{failures: failures} when is_integer(failures) -> failures
+    failures when is_integer(failures) -> failures
+  end
 
 run_config =
   :persistent_term.get(
@@ -1596,6 +1817,7 @@ run_config =
   )
 
 metrics = Store.PerformanceSmoke.Reporter.all()
+observer_summaries = Store.PerformanceSmoke.Reporter.observers()
 
 summary = %{
   generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -1604,7 +1826,11 @@ summary = %{
     api_mean_ms: run_config.api_mean_ms,
     checkout_p99_ms: run_config.checkout_p99_ms,
     hll_max_rel_error: run_config.hll_max_rel_error,
-    stampede_max_resource_queries: run_config.stampede_max_resource_queries
+    stampede_max_resource_queries: run_config.stampede_max_resource_queries,
+    observer_interval_ms: run_config.observer_interval_ms,
+    lock_wait_max_ratio: run_config.lock_wait_max_ratio,
+    lock_wait_min_active_backends: run_config.lock_wait_min_active_backends,
+    pool_utilization_max_ratio: run_config.pool_utilization_max_ratio
   },
   load: %{
     concurrency_users: run_config.concurrency_users,
@@ -1615,11 +1841,13 @@ summary = %{
   },
   payment_provider: run_config.payment_provider,
   metrics: metrics,
-  status: if(test_failures == 0, do: "pass", else: "fail"),
-  test_failures: test_failures
+  observer_summaries: observer_summaries,
+  status: if(failure_count == 0, do: "pass", else: "fail"),
+  test_failures: test_results
 }
 
 Store.PerformanceSmoke.Reporter.print_table(metrics)
+Store.PerformanceSmoke.Reporter.print_observer_table(observer_summaries)
 
 case Store.PerformanceSmoke.Reporter.write_json(summary) do
   :ok ->
@@ -1629,7 +1857,7 @@ case Store.PerformanceSmoke.Reporter.write_json(summary) do
     IO.puts("\nFailed to write performance report: #{inspect(reason)}")
 end
 
-if test_failures == 0 do
+if failure_count == 0 do
   IO.puts("\nPerformance smoke suite passed")
   System.halt(0)
 else

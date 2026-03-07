@@ -110,6 +110,8 @@ defmodule StoreWeb.AdminTaxLiveTest do
         }
       })
 
+    assert_patch(view, ~p"/admin/tax-rates", 1_000)
+
     assert {:ok, [updated]} =
              TaxRate
              |> Ash.Query.filter(expr(id == ^tax_rate.id))

@@ -22,7 +22,8 @@ config :store, Store.DirectRepo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  port: 5433, # Direct Port from your original setup
+  # Direct Port from your original setup
+  port: 5433,
   database: "store_#{config_env()}#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 5

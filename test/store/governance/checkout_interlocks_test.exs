@@ -4,10 +4,12 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.OrderFixtures
   alias Store.Orders.{Order, PaymentApplication}
   alias Store.Payments.PaymentIntent
   alias Store.Support.Errors.Error
   alias Store.Support.ID.UUIDv7
+  alias Store.TestFixtures
 
   setup do
     previous = Application.get_env(:store, :payments, [])
@@ -138,7 +140,7 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   end
 
   test "apply_payment_success_once is replay-safe and inserts one payment_application" do
-    order = create_order!()
+    order = create_customer_order!()
     payment_intent = create_submitted_payment_intent!(order.id)
 
     assert {:ok, first_result} = Store.Payments.apply_payment_success_once(payment_intent.id)
@@ -206,6 +208,15 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     Order
     |> Ash.Changeset.for_create(:create, %{})
     |> Ash.create!(domain: Store.Orders, authorize?: false)
+  end
+
+  defp create_customer_order! do
+    %{order: order} =
+      OrderFixtures.create_customer_order!(
+        email: TestFixtures.unique_email("checkout_interlocks_customer")
+      )
+
+    order
   end
 
   defp create_submitted_payment_intent!(order_id) do

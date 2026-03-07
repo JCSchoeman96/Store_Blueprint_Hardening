@@ -1,5 +1,6 @@
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Store.Repo, :manual)
+Ecto.Adapters.SQL.Sandbox.mode(Store.DirectRepo, :manual)
 
 if Store.Support.RateLimit.backend() == Store.Support.RateLimit.RedisBackend do
   case Store.Support.RateLimit.RedixClient.flush_db() do

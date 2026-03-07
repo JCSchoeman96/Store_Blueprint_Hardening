@@ -1,6 +1,6 @@
 defmodule Store.Workers.ReclaimStaleEmailOutboxWorkerTest do
   use Store.DataCase, async: false
-  use Oban.Testing, repo: Store.Repo
+  use Oban.Testing, repo: Store.DirectRepo
 
   alias Store.Workers.ReclaimStaleEmailOutboxWorker
 

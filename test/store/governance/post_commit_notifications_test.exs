@@ -1,7 +1,8 @@
 defmodule Store.Governance.PostCommitNotificationsTest do
   use Store.DataCase, async: false
 
-  alias Store.Orders.{Order, OrderLineItem}
+  alias Store.OrderFixtures
+  alias Store.Orders.OrderLineItem
   alias Store.Payments.PaymentIntent
   alias Store.Support.Time
   alias Store.TestFixtures
@@ -53,9 +54,13 @@ defmodule Store.Governance.PostCommitNotificationsTest do
   end
 
   defp create_order! do
-    Order
-    |> Ash.Changeset.for_create(:create, %{order_ref: unique_order_ref()})
-    |> Ash.create!(domain: Store.Orders, authorize?: false)
+    %{order: order} =
+      OrderFixtures.create_customer_order!(
+        email: TestFixtures.unique_email("notify_customer"),
+        order_attrs: %{order_ref: unique_order_ref()}
+      )
+
+    order
   end
 
   defp mark_order_paid!(order) do

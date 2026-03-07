@@ -36,6 +36,10 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 8. CI adds required `performance_smoke_required` job; nightly adds `full_stress` execution.
 9. Repo pool size is scheduler-aware by default (`min(max(schedulers * 4, 20), 60)`) and can be overridden via `STORE_PERF_REPO_POOL_SIZE`.
 10. Checkout payment provider is env/config driven (`STORE_PERF_PROVIDER` or enabled/default provider config), fail-closed if unsupported/disabled.
+11. v0.0.8 adds an async observer scaffold to the standalone smoke script instead of a separate profiler entrypoint.
+12. The first observer dimensions are DB lock contention and pool-pressure, scoped only to the checkout concurrency and domain thundering-herd scenarios.
+13. Observer metrics are report-only in `local_dev` and enforced as hard gates in `ci_gate` / `full_stress`.
+14. Pool pressure is defined for v0.0.8 as active Postgres client-backend utilization against configured repo pool size, not DBConnection checkout telemetry.
 
 ## PLAN
 
@@ -73,12 +77,20 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 - Made checkout payment provider configurable/validated against enabled providers.
 - Added summary table output and JSON artifact in `tmp/perf/`.
 - Updated CI and nightly jobs to run smoke suite with `STORE_PERF_SMOKE=true` and `--no-start`.
+- Added `Store.PerformanceSmoke.Observer` sampling around the DB-heavy burst scenarios.
+- Added `pg_stat_activity` lock-wait and active-backend utilization summaries to the smoke report.
+- Added observer threshold env overrides:
+  - `STORE_PERF_OBSERVER_INTERVAL_MS`
+  - `STORE_PERF_LOCK_WAIT_MAX_RATIO`
+  - `STORE_PERF_LOCK_WAIT_MIN_ACTIVE_BACKENDS`
+  - `STORE_PERF_POOL_UTILIZATION_MAX_RATIO`
+- Added a second console/report section for observer summaries keyed by scenario.
 
 ## NEXT
 
 1. Monitor CI behavior for threshold stability under real runner load.
 2. Tune per-profile load defaults if CI noise exceeds acceptable variance.
-3. Expand benchmark targets as new hot paths are introduced.
+3. Expand observer coverage later with VM memory / reductions and payment-provider slow-path fault injection.
 
 ## BLOCKERS
 
@@ -97,7 +109,7 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 
 ## GATES
 
-- Performance smoke script: pending validation after implementation.
+- Performance smoke script: passing after v0.0.8 observer expansion.
 - `mix check`: pending validation after implementation.
 
 ## PERFORMANCE & SCALING REVIEW
@@ -114,6 +126,10 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 - **Query count / N+1 risk**:
   - stampede scenario explicitly bounds same-resource query amplification
   - saturation scenario captures repo query and queue times under concurrency
+- **Observer coverage / contention insight**:
+  - checkout concurrency and domain thundering herd now sample `pg_stat_activity` every 500ms
+  - captures peak lock wait ratio, peak lock waiters, and active-backend utilization
+  - lock contention is only considered actionable once active backends reach a minimum threshold, to avoid false positives on low-volume samples
 - **Indexes / DB posture**:
   - relies on existing inventory/order indexes and row-lock semantics
   - no new schema/index changes in this phase
@@ -125,3 +141,4 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 - **Telemetry / observability**:
   - repo query telemetry used for resource-filtered counting and queue/query timing
   - JSON artifact + console summary for regression tracking
+  - observer metrics intentionally stay within gate scope, not full profiling scope, to preserve fast smoke-suite runtime
