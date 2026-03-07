@@ -40,6 +40,10 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 12. The first observer dimensions are DB lock contention and pool-pressure, scoped only to the checkout concurrency and domain thundering-herd scenarios.
 13. Observer metrics are report-only in `local_dev` and enforced as hard gates in `ci_gate` / `full_stress`.
 14. Pool pressure is defined for v0.0.8 as active Postgres client-backend utilization against configured repo pool size, not DBConnection checkout telemetry.
+15. Phase 29.1 adds a test-only payment-provider fault injector at `Store.Payments.Providers.create_intent/3`, driven by app config instead of env reads inside the provider boundary.
+16. Provider fault modes are `:slow`, `:timeout`, and `:error`, mapped to `PAYMENT_PROVIDER_TIMEOUT` / `PAYMENT_PROVIDER_DOWN` for negative-path assertions.
+17. Provider-fault smoke scenarios prepare finalized checkout state first, then measure only concurrent `create_intent_for_order/3` execution.
+18. Provider slowness is interpreted via `mean_db_share_ratio`: high end-to-end latency with low DB share and low pool/lock pressure is acceptable isolation; high latency with high DB share or DB pressure is a failure.
 
 ## PLAN
 
@@ -85,12 +89,28 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
   - `STORE_PERF_LOCK_WAIT_MIN_ACTIVE_BACKENDS`
   - `STORE_PERF_POOL_UTILIZATION_MAX_RATIO`
 - Added a second console/report section for observer summaries keyed by scenario.
+- Added provider fault injection to `Store.Payments.Providers.create_intent/3` with app-configured `:slow`, `:timeout`, and `:error` modes plus optional notify hooks for integration tests.
+- Added provider-fault smoke scenarios and reporting for:
+  - `provider_fault_slow`
+  - `provider_fault_timeout`
+  - `provider_fault_error`
+- Added provider-fault thresholds and env overrides:
+  - `STORE_PERF_PROVIDER_DELAY_MS`
+  - `STORE_PERF_PROVIDER_USERS`
+  - `STORE_PERF_PROVIDER_MODE`
+  - `STORE_PERF_PROVIDER_DB_SHARE_MAX_RATIO`
+  - `STORE_PERF_PROVIDER_POOL_UTILIZATION_MAX_RATIO`
+  - `STORE_PERF_PROVIDER_LOCK_WAIT_MAX_RATIO`
+- Added focused payment integration coverage for:
+  - no `idle in transaction` leak during slow provider delay
+  - retry/idempotent reuse after `PAYMENT_PROVIDER_TIMEOUT`
+  - retry/idempotent reuse after `PAYMENT_PROVIDER_DOWN`
 
 ## NEXT
 
 1. Monitor CI behavior for threshold stability under real runner load.
 2. Tune per-profile load defaults if CI noise exceeds acceptable variance.
-3. Expand observer coverage later with VM memory / reductions and payment-provider slow-path fault injection.
+3. Expand observer coverage later with VM memory / reductions and, if needed, event-driven provider telemetry beyond the current create-intent smoke scenarios.
 
 ## BLOCKERS
 
@@ -130,6 +150,10 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
   - checkout concurrency and domain thundering herd now sample `pg_stat_activity` every 500ms
   - captures peak lock wait ratio, peak lock waiters, and active-backend utilization
   - lock contention is only considered actionable once active backends reach a minimum threshold, to avoid false positives on low-volume samples
+- **Provider fault isolation**:
+  - `create_intent_for_order/3` is now exercised under slow, timeout, and provider-down conditions without changing production runtime behavior
+  - provider-fault summaries separate total request duration from aggregate DB queue/query time via `mean_db_share_ratio`
+  - passing behavior is explicit: provider waits may increase request latency, but must not materially increase lock pressure or active-backend utilization
 - **Indexes / DB posture**:
   - relies on existing inventory/order indexes and row-lock semantics
   - no new schema/index changes in this phase

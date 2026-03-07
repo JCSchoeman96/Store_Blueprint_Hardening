@@ -13,6 +13,7 @@ defmodule Store.Payments.Providers do
   @type normalized_provider :: known_provider() | :unknown
   @type provider :: known_provider() | String.t()
   @type enabled_provider_config :: [provider()] | String.t() | nil
+  @type fault_mode :: :none | :slow | :timeout | :error
 
   @known_providers [:stripe, :payfast, :paystack, :yoco, :peach_payments]
 
@@ -57,7 +58,7 @@ defmodule Store.Payments.Providers do
   @spec create_intent(provider(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def create_intent(provider, attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
     with {:ok, module} <- adapter(provider) do
-      module.create_intent(attrs, opts)
+      maybe_inject_create_intent(provider, module, attrs, opts)
     end
   end
 
@@ -173,6 +174,86 @@ defmodule Store.Payments.Providers do
       supported_providers: supported_providers()
     })
   end
+
+  defp maybe_inject_create_intent(provider, module, attrs, opts) do
+    case fault_injection_config(provider) do
+      %{mode: :none} ->
+        module.create_intent(attrs, opts)
+
+      %{mode: :slow, delay_ms: delay_ms} = config ->
+        notify_fault_hook(config, :slow)
+        Process.sleep(delay_ms)
+        module.create_intent(attrs, opts)
+
+      %{mode: :timeout, delay_ms: delay_ms} = config ->
+        notify_fault_hook(config, :timeout)
+        Process.sleep(delay_ms)
+
+        {:error,
+         Error.new("PAYMENT_PROVIDER_TIMEOUT", "payment provider timed out", %{
+           provider: provider_metadata(provider),
+           delay_ms: delay_ms
+         })}
+
+      %{mode: :error, delay_ms: delay_ms} = config ->
+        notify_fault_hook(config, :error)
+
+        if delay_ms > 0 do
+          Process.sleep(delay_ms)
+        end
+
+        {:error,
+         Error.new("PAYMENT_PROVIDER_DOWN", "payment provider is unavailable", %{
+           provider: provider_metadata(provider),
+           delay_ms: delay_ms
+         })}
+    end
+  end
+
+  defp fault_injection_config(provider) do
+    if Mix.env() == :test do
+      config =
+        Application.get_env(:store, :payment_provider_fault_injection, [])
+        |> Enum.into(%{})
+
+      configured_provider = Map.get(config, :provider)
+
+      if fault_injection_enabled_for_provider?(configured_provider, provider) do
+        %{
+          mode: normalize_fault_mode(Map.get(config, :mode)),
+          delay_ms: normalize_delay_ms(Map.get(config, :delay_ms, 0)),
+          notify_pid: Map.get(config, :notify_pid),
+          notify_ref: Map.get(config, :notify_ref)
+        }
+      else
+        %{mode: :none, delay_ms: 0, notify_pid: nil, notify_ref: nil}
+      end
+    else
+      %{mode: :none, delay_ms: 0, notify_pid: nil, notify_ref: nil}
+    end
+  end
+
+  defp fault_injection_enabled_for_provider?(nil, _provider), do: true
+
+  defp fault_injection_enabled_for_provider?(configured_provider, provider) do
+    normalize_provider(configured_provider) == normalize_provider(provider)
+  end
+
+  defp normalize_fault_mode(mode) when mode in [:slow, :timeout, :error], do: mode
+  defp normalize_fault_mode("slow"), do: :slow
+  defp normalize_fault_mode("timeout"), do: :timeout
+  defp normalize_fault_mode("error"), do: :error
+  defp normalize_fault_mode(_mode), do: :none
+
+  defp normalize_delay_ms(value) when is_integer(value), do: max(value, 0)
+  defp normalize_delay_ms(_value), do: 0
+
+  defp notify_fault_hook(%{notify_pid: pid, notify_ref: ref}, mode)
+       when is_pid(pid) and not is_nil(ref) do
+    send(pid, {:payment_provider_fault, mode, :entered, ref})
+  end
+
+  defp notify_fault_hook(_config, _mode), do: :ok
 
   defp normalize_enabled_provider_list(list) when is_list(list) do
     Enum.reduce_while(list, {:ok, []}, fn value, {:ok, acc} ->

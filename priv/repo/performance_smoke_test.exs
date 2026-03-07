@@ -87,6 +87,12 @@ defmodule Store.PerformanceSmoke.Config do
             checkout_p99_ms: 5_000.0,
             hll_max_rel_error: 0.02,
             concurrency_users: 20,
+            provider_fault_users: 10,
+            provider_fault_delay_ms: 2_000,
+            provider_fault_modes: [:slow, :timeout, :error],
+            provider_fault_db_share_max_ratio: 0.25,
+            provider_fault_pool_utilization_max_ratio: 0.35,
+            provider_fault_lock_wait_max_ratio: 0.10,
             thundering_herd_users: 40,
             stampede_requests: 200,
             stampede_max_resource_queries: 1,
@@ -115,6 +121,7 @@ defmodule Store.PerformanceSmoke.Config do
         :full_stress ->
           %{
             concurrency_users: 120,
+            provider_fault_users: 100,
             thundering_herd_users: 200,
             stampede_requests: 1_000,
             sample_iterations: 250,
@@ -125,6 +132,7 @@ defmodule Store.PerformanceSmoke.Config do
         :ci_gate ->
           %{
             concurrency_users: min(max(schedulers * 14, 40), 100),
+            provider_fault_users: 50,
             thundering_herd_users: min(max(schedulers * 20, 80), 160),
             stampede_requests: min(max(schedulers * 120, 350), 700),
             sample_iterations: 160,
@@ -135,6 +143,7 @@ defmodule Store.PerformanceSmoke.Config do
         :local_dev ->
           %{
             concurrency_users: min(max(schedulers * 8, 20), 60),
+            provider_fault_users: 10,
             thundering_herd_users: min(max(schedulers * 10, 40), 100),
             stampede_requests: min(max(schedulers * 40, 150), 400),
             sample_iterations: 90,
@@ -156,6 +165,16 @@ defmodule Store.PerformanceSmoke.Config do
       hll_max_rel_error: env_float("STORE_PERF_HLL_MAX_REL_ERROR", 0.02),
       concurrency_users:
         env_int("STORE_PERF_CONCURRENCY_USERS", Map.fetch!(defaults, :concurrency_users)),
+      provider_fault_users:
+        env_int("STORE_PERF_PROVIDER_USERS", Map.fetch!(defaults, :provider_fault_users)),
+      provider_fault_delay_ms: env_int("STORE_PERF_PROVIDER_DELAY_MS", 2_000),
+      provider_fault_modes: provider_fault_modes(),
+      provider_fault_db_share_max_ratio:
+        env_float("STORE_PERF_PROVIDER_DB_SHARE_MAX_RATIO", 0.25),
+      provider_fault_pool_utilization_max_ratio:
+        env_float("STORE_PERF_PROVIDER_POOL_UTILIZATION_MAX_RATIO", 0.35),
+      provider_fault_lock_wait_max_ratio:
+        env_float("STORE_PERF_PROVIDER_LOCK_WAIT_MAX_RATIO", 0.10),
       thundering_herd_users:
         env_int(
           "STORE_PERF_THUNDERING_HERD_USERS",
@@ -274,6 +293,27 @@ defmodule Store.PerformanceSmoke.Config do
       value -> String.to_float(value)
     end
   end
+
+  defp provider_fault_modes do
+    case System.get_env("STORE_PERF_PROVIDER_MODE") do
+      nil ->
+        [:slow, :timeout, :error]
+
+      "" ->
+        [:slow, :timeout, :error]
+
+      value ->
+        [parse_provider_fault_mode(value)]
+    end
+  end
+
+  defp parse_provider_fault_mode("slow"), do: :slow
+  defp parse_provider_fault_mode("timeout"), do: :timeout
+  defp parse_provider_fault_mode("error"), do: :error
+
+  defp parse_provider_fault_mode(other) do
+    raise "invalid STORE_PERF_PROVIDER_MODE: #{inspect(other)}"
+  end
 end
 
 defmodule Store.PerformanceSmoke.Stats do
@@ -330,11 +370,13 @@ defmodule Store.PerformanceSmoke.Reporter do
 
   @metrics_table :store_performance_smoke_metrics
   @observer_table :store_performance_smoke_observers
+  @provider_fault_table :store_performance_smoke_provider_faults
 
   @spec reset() :: :ok
   def reset do
     reset_table(@metrics_table)
     reset_table(@observer_table)
+    reset_table(@provider_fault_table)
 
     :ok
   end
@@ -353,6 +395,13 @@ defmodule Store.PerformanceSmoke.Reporter do
     :ok
   end
 
+  @spec record_provider_fault(map()) :: :ok
+  def record_provider_fault(summary) when is_map(summary) do
+    key = Map.fetch!(summary, :name)
+    :ets.insert(@provider_fault_table, {key, summary})
+    :ok
+  end
+
   @spec all() :: [map()]
   def all do
     table_values(@metrics_table)
@@ -361,6 +410,11 @@ defmodule Store.PerformanceSmoke.Reporter do
   @spec observers() :: [map()]
   def observers do
     table_values(@observer_table)
+  end
+
+  @spec provider_faults() :: [map()]
+  def provider_faults do
+    table_values(@provider_fault_table)
   end
 
   @spec print_table([map()]) :: :ok
@@ -401,6 +455,32 @@ defmodule Store.PerformanceSmoke.Reporter do
 
       IO.puts(
         "| #{observer[:name]} | #{lock_wait_ratio} | #{lock_waiters} | #{pool_utilization} | #{result} |"
+      )
+    end)
+
+    :ok
+  end
+
+  @spec print_provider_fault_table([map()]) :: :ok
+  def print_provider_fault_table([]), do: :ok
+
+  def print_provider_fault_table(summaries) do
+    IO.puts(
+      "\n| Provider Fault | Mode | Mean (ms) | p99 (ms) | Mean DB Share | Peak Lock Wait Ratio | Peak Pool Util | Result |"
+    )
+
+    IO.puts("| --- | --- | --- | --- | --- | --- | --- | --- |")
+
+    Enum.each(summaries, fn summary ->
+      mean = summary[:mean_duration_ms] |> float_or_dash()
+      p99 = summary[:p99_duration_ms] |> float_or_dash()
+      db_share = summary[:mean_db_share_ratio] |> float_or_dash()
+      lock_wait_ratio = summary[:peak_lock_wait_ratio] |> float_or_dash()
+      pool_utilization = summary[:peak_active_backend_utilization] |> float_or_dash()
+      result = if summary[:pass], do: "PASS", else: "FAIL"
+
+      IO.puts(
+        "| #{summary[:name]} | #{summary[:mode]} | #{mean} | #{p99} | #{db_share} | #{lock_wait_ratio} | #{pool_utilization} | #{result} |"
       )
     end)
 
@@ -486,6 +566,14 @@ defmodule Store.PerformanceSmoke.Gate do
   def assert_observer_summary!(summary) when is_map(summary) do
     assert summary.pass,
            "observer gate failed for #{summary.name}: peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_lock_waiters=#{summary.peak_lock_waiters} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold}"
+
+    :ok
+  end
+
+  @spec assert_provider_fault_summary!(map()) :: :ok
+  def assert_provider_fault_summary!(summary) when is_map(summary) do
+    assert summary.pass,
+           "provider fault gate failed for #{summary.name}: mode=#{summary.mode} success_count=#{summary.success_count} error_counts=#{inspect(summary.error_counts)} mean_duration_ms=#{summary.mean_duration_ms} p99_duration_ms=#{summary.p99_duration_ms} mean_db_share_ratio=#{summary.mean_db_share_ratio} peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_active_backend_utilization=#{summary.peak_active_backend_utilization}"
 
     :ok
   end
@@ -597,6 +685,33 @@ defmodule Store.PerformanceSmoke.Observer do
   defp ratio(numerator, denominator), do: numerator / denominator
 
   defp parse_count(value) when is_integer(value), do: value
+end
+
+defmodule Store.PerformanceSmoke.ProviderFault do
+  @moduledoc false
+
+  @env_key :payment_provider_fault_injection
+
+  @spec with_injection(String.t(), atom(), pos_integer(), (-> term())) :: term()
+  def with_injection(provider, mode, delay_ms, fun)
+      when is_binary(provider) and is_atom(mode) and is_integer(delay_ms) and delay_ms >= 0 and
+             is_function(fun, 0) do
+    previous = Application.get_env(:store, @env_key, [])
+
+    config = [
+      provider: provider,
+      mode: mode,
+      delay_ms: delay_ms
+    ]
+
+    Application.put_env(:store, @env_key, config)
+
+    try do
+      fun.()
+    after
+      Application.put_env(:store, @env_key, previous)
+    end
+  end
 end
 
 defmodule Store.PerformanceSmoke.RedisPool do
@@ -944,6 +1059,21 @@ defmodule Store.PerformanceSmoke.Fixtures do
 
   @spec checkout_flow!(map(), String.t()) :: :ok | {:error, term()}
   def checkout_flow!(fixture, token) when is_map(fixture) and is_binary(token) do
+    prepared = prepare_checkout_for_payment_intent!(fixture, token)
+
+    with {:ok, _intent} <-
+           Payments.create_intent_for_order(
+             prepared.actor,
+             prepared.checkout_key,
+             fixture.payment_input
+           ) do
+      :ok
+    end
+  end
+
+  @spec prepare_checkout_for_payment_intent!(map(), String.t()) :: map()
+  def prepare_checkout_for_payment_intent!(fixture, token)
+      when is_map(fixture) and is_binary(token) do
     actor = %{cart_token: token}
 
     with {:ok, add_input} <- CartItemInput.new(%{"variant_id" => fixture.variant_id, "qty" => 1}),
@@ -958,15 +1088,18 @@ defmodule Store.PerformanceSmoke.Fixtures do
            ),
          {:ok, _checkout_with_shipping} <-
            Checkout.set_shipping(actor, start_result.checkout_key, shipping_input),
-         {:ok, _finalized_checkout} <-
-           Checkout.finalize_totals(actor, start_result.checkout_key, fixture.finalize_input),
-         {:ok, _intent} <-
-           Payments.create_intent_for_order(
-             actor,
-             start_result.checkout_key,
-             fixture.payment_input
-           ) do
-      :ok
+         {:ok, finalized_checkout} <-
+           Checkout.finalize_totals(actor, start_result.checkout_key, fixture.finalize_input) do
+      %{
+        actor: actor,
+        checkout_key: start_result.checkout_key,
+        order_id: start_result.order_id,
+        grand_total_minor: finalized_checkout.grand_total_minor,
+        currency_code: finalized_checkout.currency_code
+      }
+    else
+      {:error, reason} ->
+        raise "failed to prepare checkout fixture for payment intent: #{inspect(reason)}"
     end
   end
 
@@ -1119,6 +1252,12 @@ defmodule Store.PerformanceSmokeTest do
     :telemetry.list_handlers([:store, :repo, :query])
     |> Enum.filter(fn %{id: id} ->
       String.starts_with?(to_string(id), "phase29_perf_repo_query_")
+    end)
+    |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+
+    :telemetry.list_handlers([:store, :checkout, :create_payment_intent])
+    |> Enum.filter(fn %{id: id} ->
+      String.starts_with?(to_string(id), "phase29_perf_checkout_intent_")
     end)
     |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
 
@@ -1331,6 +1470,22 @@ defmodule Store.PerformanceSmokeTest do
     )
 
     Gate.assert_observer_summary!(observer_summary)
+  end
+
+  test "payment provider fault scenarios isolate DB pressure from provider latency", %{
+    config: config
+  } do
+    fixture = Fixtures.checkout_fixture!()
+
+    Enum.each(config.provider_fault_modes, fn mode ->
+      prepared_checkouts =
+        Enum.map(1..config.provider_fault_users, fn _ ->
+          Fixtures.prepare_checkout_for_payment_intent!(fixture, Ash.UUIDv7.generate())
+        end)
+
+      summary = run_provider_fault_scenario(config, fixture, prepared_checkouts, mode)
+      Gate.assert_provider_fault_summary!(summary)
+    end)
   end
 
   test "seat-hold registry Redis ZSET concurrency remains fast", %{config: config} do
@@ -1709,6 +1864,147 @@ defmodule Store.PerformanceSmokeTest do
     })
   end
 
+  defp run_provider_fault_scenario(config, fixture, prepared_checkouts, mode) do
+    scenario_name = "provider_fault_#{mode}"
+
+    repo_filter = fn _event, _measurements, metadata ->
+      Map.get(metadata, :repo) == Store.Repo
+    end
+
+    {{{results, duration_events}, repo_events}, observer_summary} =
+      Observer.capture("#{scenario_name}_observer", config, fn ->
+        with_repo_query_telemetry(repo_filter, fn ->
+          with_checkout_intent_telemetry(fn ->
+            Store.PerformanceSmoke.ProviderFault.with_injection(
+              config.payment_provider,
+              mode,
+              config.provider_fault_delay_ms,
+              fn ->
+                prepared_checkouts
+                |> Task.async_stream(
+                  fn prepared ->
+                    Store.Payments.create_intent_for_order(
+                      prepared.actor,
+                      prepared.checkout_key,
+                      fixture.payment_input
+                    )
+                  end,
+                  max_concurrency: config.provider_fault_users,
+                  ordered: false,
+                  timeout: :infinity
+                )
+                |> Enum.map(fn
+                  {:ok, result} -> result
+                  {:exit, reason} -> {:error, reason}
+                end)
+              end
+            )
+          end)
+        end)
+      end)
+
+    summary =
+      summarize_provider_fault(
+        scenario_name,
+        mode,
+        prepared_checkouts,
+        results,
+        duration_events,
+        repo_events,
+        observer_summary,
+        config
+      )
+
+    Reporter.record_provider_fault(summary)
+    summary
+  end
+
+  defp summarize_provider_fault(
+         scenario_name,
+         mode,
+         prepared_checkouts,
+         results,
+         duration_events,
+         repo_events,
+         observer_summary,
+         config
+       ) do
+    request_count = length(prepared_checkouts)
+    success_count = Enum.count(results, &match?({:ok, _}, &1))
+
+    error_counts =
+      results
+      |> Enum.map(&provider_fault_error_code/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.frequencies()
+
+    durations_ms = Enum.map(duration_events, & &1.duration_ms)
+    duration_stats = Stats.describe(durations_ms)
+    total_repo_queue_ms = Enum.sum(Enum.map(repo_events, & &1.queue_time_ms))
+    total_repo_query_ms = Enum.sum(Enum.map(repo_events, & &1.query_time_ms))
+    mean_repo_queue_ms = total_repo_queue_ms / max(request_count, 1)
+    mean_repo_query_ms = total_repo_query_ms / max(request_count, 1)
+
+    mean_db_share_ratio =
+      if duration_stats.mean_ms > 0.0 do
+        (mean_repo_queue_ms + mean_repo_query_ms) / duration_stats.mean_ms
+      else
+        0.0
+      end
+
+    sample_count = duration_stats.count
+    enforced = Config.observer_gate_enforced?(config)
+
+    expectation_pass =
+      case mode do
+        :slow ->
+          success_count == request_count and error_counts == %{}
+
+        :timeout ->
+          success_count == 0 and error_counts == %{"PAYMENT_PROVIDER_TIMEOUT" => request_count}
+
+        :error ->
+          success_count == 0 and error_counts == %{"PAYMENT_PROVIDER_DOWN" => request_count}
+      end
+
+    pressure_pass =
+      mean_db_share_ratio <= config.provider_fault_db_share_max_ratio and
+        observer_summary.peak_active_backend_utilization <=
+          config.provider_fault_pool_utilization_max_ratio and
+        observer_summary.peak_lock_wait_ratio <= config.provider_fault_lock_wait_max_ratio
+
+    telemetry_pass = sample_count == request_count
+
+    %{
+      name: scenario_name,
+      mode: Atom.to_string(mode),
+      enforced: enforced,
+      sample_count: sample_count,
+      success_count: success_count,
+      error_counts: error_counts,
+      mean_duration_ms: duration_stats.mean_ms,
+      p99_duration_ms: duration_stats.p99_ms,
+      mean_repo_queue_ms: mean_repo_queue_ms,
+      mean_repo_query_ms: mean_repo_query_ms,
+      mean_db_share_ratio: mean_db_share_ratio,
+      peak_lock_wait_ratio: observer_summary.peak_lock_wait_ratio,
+      peak_active_backend_utilization: observer_summary.peak_active_backend_utilization,
+      provider_fault_db_share_max_ratio: config.provider_fault_db_share_max_ratio,
+      provider_fault_pool_utilization_max_ratio: config.provider_fault_pool_utilization_max_ratio,
+      provider_fault_lock_wait_max_ratio: config.provider_fault_lock_wait_max_ratio,
+      telemetry_sample_count_expected: request_count,
+      pass: if(enforced, do: expectation_pass and pressure_pass and telemetry_pass, else: true)
+    }
+  end
+
+  defp provider_fault_error_code({:error, %Error{code: code}}), do: code
+
+  defp provider_fault_error_code({:error, error}) when is_exception(error),
+    do: Exception.message(error)
+
+  defp provider_fault_error_code({:error, error}), do: inspect(error)
+  defp provider_fault_error_code(_result), do: nil
+
   defp timed(fun) when is_function(fun, 0) do
     started = System.monotonic_time()
     result = fun.()
@@ -1721,6 +2017,35 @@ defmodule Store.PerformanceSmokeTest do
       {_result, elapsed_ms} = timed(fun)
       elapsed_ms
     end)
+  end
+
+  defp with_checkout_intent_telemetry(fun) when is_function(fun, 0) do
+    ref = make_ref()
+    parent = self()
+    handler_id = "phase29_perf_checkout_intent_#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler_id,
+      [:store, :checkout, :create_payment_intent],
+      fn _event, measurements, metadata, %{ref: ref, parent: parent} ->
+        send(parent, {
+          ref,
+          %{
+            duration_ms: Stats.native_to_ms(Map.get(measurements, :duration, 0)),
+            provider: Map.get(metadata, :provider),
+            result: Map.get(metadata, :result)
+          }
+        })
+      end,
+      %{ref: ref, parent: parent}
+    )
+
+    try do
+      result = fun.()
+      {result, drain_checkout_intent_events(ref, [])}
+    after
+      :telemetry.detach(handler_id)
+    end
   end
 
   defp with_repo_query_telemetry(filter_fun, fun)
@@ -1763,6 +2088,15 @@ defmodule Store.PerformanceSmokeTest do
         }
 
         drain_query_events(ref, [event | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  defp drain_checkout_intent_events(ref, acc) do
+    receive do
+      {^ref, event} ->
+        drain_checkout_intent_events(ref, [event | acc])
     after
       0 -> Enum.reverse(acc)
     end
@@ -1818,6 +2152,7 @@ run_config =
 
 metrics = Store.PerformanceSmoke.Reporter.all()
 observer_summaries = Store.PerformanceSmoke.Reporter.observers()
+provider_fault_summaries = Store.PerformanceSmoke.Reporter.provider_faults()
 
 summary = %{
   generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -1830,10 +2165,17 @@ summary = %{
     observer_interval_ms: run_config.observer_interval_ms,
     lock_wait_max_ratio: run_config.lock_wait_max_ratio,
     lock_wait_min_active_backends: run_config.lock_wait_min_active_backends,
-    pool_utilization_max_ratio: run_config.pool_utilization_max_ratio
+    pool_utilization_max_ratio: run_config.pool_utilization_max_ratio,
+    provider_fault_db_share_max_ratio: run_config.provider_fault_db_share_max_ratio,
+    provider_fault_pool_utilization_max_ratio:
+      run_config.provider_fault_pool_utilization_max_ratio,
+    provider_fault_lock_wait_max_ratio: run_config.provider_fault_lock_wait_max_ratio
   },
   load: %{
     concurrency_users: run_config.concurrency_users,
+    provider_fault_users: run_config.provider_fault_users,
+    provider_fault_delay_ms: run_config.provider_fault_delay_ms,
+    provider_fault_modes: run_config.provider_fault_modes,
     thundering_herd_users: run_config.thundering_herd_users,
     stampede_requests: run_config.stampede_requests,
     repo_pool_size: run_config.repo_pool_size,
@@ -1842,12 +2184,14 @@ summary = %{
   payment_provider: run_config.payment_provider,
   metrics: metrics,
   observer_summaries: observer_summaries,
+  provider_fault_summaries: provider_fault_summaries,
   status: if(failure_count == 0, do: "pass", else: "fail"),
   test_failures: test_results
 }
 
 Store.PerformanceSmoke.Reporter.print_table(metrics)
 Store.PerformanceSmoke.Reporter.print_observer_table(observer_summaries)
+Store.PerformanceSmoke.Reporter.print_provider_fault_table(provider_fault_summaries)
 
 case Store.PerformanceSmoke.Reporter.write_json(summary) do
   :ok ->
