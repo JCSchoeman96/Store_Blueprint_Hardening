@@ -29,7 +29,7 @@ defmodule Store.Catalog.VariantResolver do
   @spec resolve_for_shop(Product.t(), %{optional(String.t()) => String.t()}) :: outcome()
   def resolve_for_shop(%Product{} = product, selection_by_option_slug)
       when is_map(selection_by_option_slug) do
-    with {:ok, payload} <- availability_payload(product.id),
+    with {:ok, payload} <- availability_payload(product),
          :ok <- ensure_product_published(payload),
          {:ok, normalized_selection} <-
            normalize_slug_selection(payload, selection_by_option_slug),
@@ -45,7 +45,7 @@ defmodule Store.Catalog.VariantResolver do
           {:ok, map()} | {:error, Error.t()}
   def build_product_detail(%Product{} = product, selection_by_option_slug)
       when is_map(selection_by_option_slug) do
-    with {:ok, payload} <- availability_payload(product.id),
+    with {:ok, payload} <- availability_payload(product),
          {:ok, normalized_selection} <-
            normalize_slug_selection(payload, selection_by_option_slug) do
       resolution =
@@ -74,7 +74,12 @@ defmodule Store.Catalog.VariantResolver do
   def build_product_detail(_product, _selection_by_option_slug),
     do: {:error, Error.new("VALIDATION_ERROR", "product and selection map are required")}
 
-  @spec availability_payload(Ecto.UUID.t()) :: {:ok, map()} | {:error, Error.t()}
+  @spec availability_payload(Product.t() | Ecto.UUID.t()) :: {:ok, map()} | {:error, Error.t()}
+  def availability_payload(%Product{id: product_id} = product) when is_binary(product_id) do
+    AvailabilityCache.fetch(product_id, fn -> {:ok, build_payload(product)} end)
+    |> normalize_cache_result()
+  end
+
   def availability_payload(product_id) when is_binary(product_id) do
     AvailabilityCache.fetch(product_id, fn ->
       case Repo.get(Product, product_id) do

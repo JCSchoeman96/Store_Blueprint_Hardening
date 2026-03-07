@@ -80,7 +80,7 @@ defmodule Store.Payments do
 
     {result, repo_stats} =
       RepoStats.capture(fn ->
-        with {:ok, checkout} <- Checkout.get_checkout_for_user(actor, checkout_key),
+        with {:ok, checkout} <- Checkout.get_payment_context_for_user(actor, checkout_key),
              :ok <-
                DigitalFacade.ensure_checkout_actor_allowed_for_system(actor, checkout.order_id),
              :ok <- ensure_totals_finalized(checkout),

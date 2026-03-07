@@ -28,6 +28,13 @@
    - collapse the payment-intent blocking checks into one read
 5. No new public checkout API is introduced in this phase.
 6. The k6 benchmark harness must run against an isolated test database suffix via `STORE_TEST_DB_SUFFIX` so it never pollutes the default `store_test` database used by `mix test` and `mix check`.
+7. Phase 30.2 keeps the benchmark-only large pool profile in `config/test.exs`:
+   - default benchmark profile for `STORE_TEST_DB_SUFFIX=bench` is `200/200` for `Store.Repo` / `Store.DirectRepo`
+   - local benchmark runs on this workstation must override that down to `100/60` because local Postgres reports `max_connections = 300`
+8. Phase 30.2 optimization focus is:
+   - reduce `finalize_totals` query fan-out without changing reservation/quote integrity rules
+   - reduce `create_payment_intent` query fan-out by using a minimal payment context and a single blocking-state preflight read
+   - remove remaining public storefront projection overhead from the product listing path
 
 ## Plan
 1. Add `RepoStats.capture/2` and replace ad hoc query counters.
@@ -65,6 +72,22 @@
   - removing cart post-mutation `Repo.get!/2` reloads
   - reusing the updated checkout order in shipping/finalize flows instead of re-reading checkout context
   - collapsing payment-intent “blocked” checks into one read
+- Phase 30.2 checkout reductions:
+  - `finalize_totals/3` now carries a single locked finalize context through snapshot creation, reservation, and summary rendering
+  - `finalize_totals/3` reuses line items, catalog maps, quote inputs, and shipping weight from the locked context instead of rebuilding them in later helper passes
+  - `required_complete?/2` checks are now bulk-computed per variant instead of reloading required plans item-by-item
+  - `create_intent_for_order/3` now uses `Checkout.get_payment_context_for_user/2` instead of building a full checkout summary
+  - payment-intent interlocks now use one preflight read that answers both "existing by key" and "blocking state for order" decisions
+- Phase 30.2 storefront reductions:
+  - public product listing moved to a DB-backed joined projection for `default_variant` and `category`
+  - product detail path still stays facade-driven, but no longer re-fetches the loaded product inside `VariantResolver`
+- Phase 30.2 benchmark normalization:
+  - benchmark bootstrap now respects benchmark pool config instead of hardcoding smaller pool sizes
+  - local benchmark runs were executed with:
+    - `STORE_TEST_DB_SUFFIX=bench`
+    - `STORE_BENCH_POOL_SIZE=100`
+    - `STORE_BENCH_DIRECT_POOL_SIZE=60`
+  - these overrides were necessary because `show max_connections;` on local Postgres returned `300`
 
 ## Performance & Scaling Review
 - Hot:
@@ -81,7 +104,10 @@
   - no schema or index changes were made in this phase
 - DB query count + N+1 risk:
   - query counting is now first-class for the target paths
-  - `required_complete?/2` and some checkout/cart catalog lookups remain a likely future query-count target
+  - `create_payment_intent` mean query count dropped from `25` to `17`
+  - `finalize_totals` mean query count dropped from `36` to `31`
+  - the payment-intent path now meets the "material reduction" bar; `finalize_totals` improved but is still the heaviest orchestration path and remains the next reduction target
+  - public storefront listing no longer does Elixir-side filter/sort/paginate work after broad resource loads, but `/shop/:slug` still has room for deeper projection work if `shop_show` remains the slowest storefront route
 - Indexes:
   - existing uniqueness and hot-path indexes remain the source of truth
   - phase focus was query-count reduction before index churn
@@ -95,17 +121,41 @@
   - per-step query metrics added for carts/checkout
   - smoke JSON now includes checkout step summaries
   - webhook ingress now emits route/stage telemetry for verification, persistence, enqueue, and response
+  - latest smoke checkout step baselines:
+    - `start_from_cart`: `15` mean queries, `217.83ms`
+    - `finalize_totals`: `31` mean queries, `362.55ms`
+    - `create_payment_intent`: `17` mean queries, `177.34ms`
+  - latest k6 storefront results versus Phase 30.1:
+    - failed rate: `18.69% -> 3.03%`
+    - dropped iterations: `22139 -> 404`
+    - `shop_index` p95: `2982ms -> 2787ms`
+    - `shop_show` p95: `4010ms -> 4184ms`
+    - `cart` p95: `2958ms -> 2887ms`
+    - `checkout` p95: `2962ms -> 2707ms`
+  - latest k6 webhook results versus Phase 30.1:
+    - unique ingress failed rate: `87.40% -> 0.42%`
+    - unique ingress `webhook` p95: `5204ms -> 12.43ms`
+    - unique ingress `callback` p95: `5125ms -> 12.64ms`
+    - duplicate replay failed rate: `88.03% -> 0.00%`
+    - duplicate replay `webhook` p95: `4711ms -> 10.42ms`
+    - duplicate replay `callback` p95: `4847ms -> 10.43ms`
 
 ## Notes
 - The current checkout LiveView requires server-generated quote options before shipping can be saved. The browser benchmark uses a browser-ready checkout fixture to exercise the payment-facing half of the real UI without adding a synthetic checkout API.
 - Benchmark run sequence:
   1. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix ecto.create && STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix ecto.migrate`
-  2. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
-  3. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix phx.server`
-  4. Run `k6` against the `base_url` written into `tmp/perf/benchmark_data.json` (defaults to the test endpoint port)
-  5. Storefront HTTP:
+  2. For this workstation, set safe pool overrides under the local `max_connections` ceiling:
+     - `export STORE_BENCH_POOL_SIZE=100`
+     - `export STORE_BENCH_DIRECT_POOL_SIZE=60`
+  3. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
+  4. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix phx.server`
+  5. Run `k6` against the `base_url` written into `tmp/perf/benchmark_data.json` (defaults to the test endpoint port)
+  6. Storefront HTTP:
      - `k6 run perf/k6/http_storefront.js`
-  6. Webhook unique ingress:
+  7. Webhook unique ingress:
      - `k6 run -e STORE_WEBHOOK_MODE=unique_ingress perf/k6/webhook_ingress.js`
-  7. Webhook duplicate replay:
+  8. Webhook duplicate replay:
      - `k6 run -e STORE_WEBHOOK_MODE=duplicate_replay perf/k6/webhook_ingress.js`
+- Interpretation:
+  - storefront now fails far less often under the benchmark profile, but `shop_show` remains the slowest route and still misses the current `500ms` p95 threshold
+  - webhook ingress no longer collapses because of the tiny local pool profile; unique and duplicate modes are both benchmarkable, and duplicate replay is now measurably cheaper than unique ingress

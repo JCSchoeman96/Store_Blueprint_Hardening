@@ -40,9 +40,7 @@ defmodule Store.Payments.Interlocks do
     ash_opts = payment_ash_opts(opts)
 
     with {:ok, request} <- normalize_payment_intent_request(attrs),
-         {:ok, existing_by_key} <- find_payment_intent_by_key(request.payment_intent_key),
-         {:ok, intent, duplicate?} <-
-           create_or_reuse_payment_intent_record(request, existing_by_key, ash_opts) do
+         {:ok, intent, duplicate?} <- create_or_reuse_payment_intent_record(request, ash_opts) do
       {:ok,
        %{
          payment_intent: intent,
@@ -158,14 +156,36 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp create_or_reuse_payment_intent_record(_request, %PaymentIntent{} = intent, _ash_opts) do
+  defp create_or_reuse_payment_intent_record(request, ash_opts) do
+    with {:ok, preflight_intent} <- read_preflight_payment_intent(request) do
+      create_or_reuse_payment_intent_from_preflight(request, preflight_intent, ash_opts)
+    end
+  end
+
+  defp create_or_reuse_payment_intent_from_preflight(
+         request,
+         %PaymentIntent{payment_intent_key: payment_intent_key} = intent,
+         _ash_opts
+       )
+       when payment_intent_key == request.payment_intent_key do
     {:ok, intent, true}
   end
 
-  defp create_or_reuse_payment_intent_record(request, nil, ash_opts) do
-    with :ok <- ensure_payment_intent_not_blocked(request.order_id),
-         {:ok, intent} <- create_or_reuse_intent(request, ash_opts) do
-      {:ok, intent, false}
+  defp create_or_reuse_payment_intent_from_preflight(
+         _request,
+         %PaymentIntent{state: :succeeded},
+         _ash_opts
+       ) do
+    {:error, Error.new("PAYMENT_ALREADY_SUCCEEDED", "payment already succeeded for order")}
+  end
+
+  defp create_or_reuse_payment_intent_from_preflight(_request, %PaymentIntent{}, _ash_opts) do
+    {:error, Error.new("PAYMENT_INTENT_DUPLICATE", "payment intent already in-flight for order")}
+  end
+
+  defp create_or_reuse_payment_intent_from_preflight(request, nil, ash_opts) do
+    with {:ok, intent} <- create_or_reuse_intent(request, ash_opts) do
+      {:ok, intent, payment_intent_duplicate?(intent)}
     end
   end
 
@@ -209,41 +229,35 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp find_payment_intent_by_key(payment_intent_key) when is_binary(payment_intent_key) do
-    query = PaymentIntent |> Ash.Query.filter(expr(payment_intent_key == ^payment_intent_key))
-
-    case Ash.read(query, payment_ash_opts([])) do
-      {:ok, [intent | _]} -> {:ok, intent}
-      {:ok, []} -> {:ok, nil}
-      {:error, error} -> {:error, error}
-    end
-  end
-
-  defp ensure_payment_intent_not_blocked(order_id) do
+  defp read_preflight_payment_intent(request) do
     blocking_query =
       PaymentIntent
       |> Ash.Query.filter(
         expr(
-          order_id == ^order_id and
-            (state == :succeeded or state == :submitted or state == :requires_action)
+          payment_intent_key == ^request.payment_intent_key or
+            (order_id == ^request.order_id and
+               (state == :succeeded or state == :submitted or state == :requires_action))
         )
       )
+      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
 
     case Ash.read(blocking_query, payment_ash_opts([])) do
-      {:ok, []} ->
-        :ok
-
       {:ok, intents} ->
-        if Enum.any?(intents, &(&1.state == :succeeded)) do
-          {:error, Error.new("PAYMENT_ALREADY_SUCCEEDED", "payment already succeeded for order")}
-        else
-          {:error,
-           Error.new("PAYMENT_INTENT_DUPLICATE", "payment intent already in-flight for order")}
-        end
+        {:ok, prefer_preflight_intent(intents, request.payment_intent_key)}
 
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  defp prefer_preflight_intent(intents, payment_intent_key) do
+    Enum.find(intents, &(&1.payment_intent_key == payment_intent_key)) ||
+      Enum.find(intents, &(&1.state == :succeeded)) ||
+      List.first(intents)
+  end
+
+  defp payment_intent_duplicate?(%PaymentIntent{} = intent) do
+    Ash.Resource.get_metadata(intent, :upsert_skipped) == true
   end
 
   defp decode_webhook_payload(raw_body) when is_binary(raw_body) do

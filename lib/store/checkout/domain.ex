@@ -137,8 +137,8 @@ defmodule Store.Checkout do
   end
 
   defp do_finalize_totals(_actor, _checkout_key, checkout) do
-    with :ok <- ensure_priced_snapshot_and_reservations(checkout),
-         {:ok, line_items} <- fetch_order_line_items(checkout.order.id),
+    with {:ok, checkout} <- ensure_priced_snapshot_and_reservations(checkout),
+         line_items = Map.get(checkout, :line_items, []),
          :ok <- ensure_line_items_present(line_items),
          {:ok, updated_order} <- finalize_order_for_line_items(checkout.order, line_items) do
       checkout
@@ -158,17 +158,53 @@ defmodule Store.Checkout do
     {:error, Error.new("VALIDATION_ERROR", "checkout_key must be a string")}
   end
 
+  @spec get_payment_context_for_user(map() | nil, String.t()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def get_payment_context_for_user(actor, checkout_key) when is_binary(checkout_key) do
+    with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key) do
+      {:ok, payment_context_from_checkout(checkout)}
+    end
+    |> normalize_result()
+  end
+
+  def get_payment_context_for_user(_actor, _checkout_key) do
+    {:error, Error.new("VALIDATION_ERROR", "checkout_key must be a string")}
+  end
+
   defp checkout_summary_for_user(checkout_key, actor) do
     with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key) do
       checkout_summary_from_context(checkout)
     end
   end
 
+  defp payment_context_from_checkout(%{draft: draft, order: order}) do
+    %{
+      draft_id: draft.id,
+      checkout_key: draft.checkout_key,
+      cart_id: draft.cart_id,
+      cart_version: draft.cart_version,
+      user_id: draft.user_id,
+      order_id: order.id,
+      order_ref: order.order_ref,
+      state: order.state,
+      grand_total_minor: non_neg_int(order.grand_total_minor, 0),
+      currency_code: order.currency_code || "USD",
+      totals_finalized_at: order.totals_finalized_at,
+      totals_finalized?: not is_nil(order.totals_finalized_at)
+    }
+  end
+
   defp checkout_summary_from_context(checkout, line_items_or_default \\ :fetch) do
     line_items_result =
       case line_items_or_default do
-        :fetch -> fetch_order_line_items(checkout.order.id)
-        line_items when is_list(line_items) -> {:ok, line_items}
+        :fetch ->
+          case Map.get(checkout, :line_items) do
+            line_items when is_list(line_items) -> {:ok, line_items}
+            _ -> fetch_order_line_items(checkout.order.id)
+          end
+
+        line_items when is_list(line_items) ->
+          {:ok, line_items}
       end
 
     with {:ok, line_items} <- line_items_result,
@@ -501,6 +537,16 @@ defmodule Store.Checkout do
     Store.Orders.write_priced_snapshot(order_id, output)
   end
 
+  defp quote_request_attrs(country_code, region_code, postal_code, currency, weight_grams) do
+    %{
+      destination_country_code: country_code,
+      destination_region_code: region_code,
+      destination_postal_code: postal_code,
+      currency_code: currency,
+      shipping_weight_grams: weight_grams
+    }
+  end
+
   defp reserve_items(locked_items) do
     Enum.map(locked_items, fn item ->
       %{variant_id: item.variant_id, quantity: item.qty}
@@ -521,8 +567,18 @@ defmodule Store.Checkout do
       plans_by_item_id = resolve_subscription_plans_for_items!(locked_items)
 
       currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
+      shipping_weight_grams = shipping_weight_grams_for_items(locked_items, variants_by_id)
 
-      with {:ok, _snapshot} <-
+      shipping_quote_request =
+        quote_request_attrs(
+          order.shipping_country_code,
+          order.shipping_region_code,
+          order.shipping_postal_code,
+          String.upcase(currency),
+          shipping_weight_grams
+        )
+
+      with {:ok, snapshot} <-
              write_priced_snapshot(
                order.id,
                locked_items,
@@ -533,14 +589,26 @@ defmodule Store.Checkout do
              ),
            {:ok, _reservations} <-
              Store.Orders.reserve_inventory(order.id, reserve_items(locked_items)) do
-        :ok
+        %{
+          draft: draft,
+          order: order,
+          cart: locked_cart,
+          cart_items: locked_items,
+          variants_by_id: variants_by_id,
+          products_by_id: products_by_id,
+          plans_by_item_id: plans_by_item_id,
+          line_items: snapshot.line_items,
+          currency_code: String.upcase(currency),
+          shipping_weight_grams: shipping_weight_grams,
+          shipping_quote_request: shipping_quote_request
+        }
       else
         {:error, %Error{} = error} -> Repo.rollback(error)
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
     |> case do
-      {:ok, :ok} -> :ok
+      {:ok, checkout} -> {:ok, checkout}
       {:error, %Error{} = error} -> {:error, error}
       {:error, other} -> {:error, normalize_db_error(other)}
     end
@@ -606,10 +674,10 @@ defmodule Store.Checkout do
   defp authorize_checkout_access(_actor, _draft, _order),
     do: {:error, Error.new("NOT_FOUND", "checkout not found")}
 
-  defp build_checkout_summary(%{draft: draft, order: order}, line_items) do
+  defp build_checkout_summary(%{draft: draft, order: order} = checkout, line_items) do
     item_count = Enum.reduce(line_items, 0, &(&1.quantity + &2))
     items_subtotal = Enum.reduce(line_items, 0, &(&1.net_line_total_minor + &2))
-    shipping_quote_options = available_quote_options(%{draft: draft, order: order})
+    shipping_quote_options = available_quote_options(checkout)
 
     {:ok,
      %{
@@ -730,14 +798,15 @@ defmodule Store.Checkout do
   defp quote_options_for_checkout(checkout, input) do
     with {:ok, currency} <- checkout_currency(checkout),
          weight_grams <- shipping_weight_grams_for_checkout(checkout),
-         {:ok, request} <-
-           QuoteRequest.new(%{
-             destination_country_code: input.country_code,
-             destination_region_code: input.region_code,
-             destination_postal_code: input.postal_code,
-             currency_code: currency,
-             shipping_weight_grams: weight_grams
-           }),
+         request_attrs =
+           quote_request_attrs(
+             input.country_code,
+             input.region_code,
+             input.postal_code,
+             currency,
+             weight_grams
+           ),
+         {:ok, request} <- QuoteRequest.new(request_attrs),
          {:ok, options} <- Shipping.quote_options(request),
          :ok <- ensure_quote_options_present(options) do
       {:ok, options}
@@ -833,17 +902,21 @@ defmodule Store.Checkout do
   end
 
   defp available_quote_options(%{order: %Order{} = order} = checkout) do
-    with {:ok, currency} <- checkout_currency(checkout),
-         true <- is_binary(order.shipping_country_code),
-         weight_grams <- shipping_weight_grams_for_checkout(checkout),
-         {:ok, request} <-
-           QuoteRequest.new(%{
-             destination_country_code: order.shipping_country_code,
-             destination_region_code: order.shipping_region_code,
-             destination_postal_code: order.shipping_postal_code,
-             currency_code: currency,
-             shipping_weight_grams: weight_grams
-           }),
+    request_attrs =
+      Map.get(
+        checkout,
+        :shipping_quote_request,
+        quote_request_attrs(
+          order.shipping_country_code,
+          order.shipping_region_code,
+          order.shipping_postal_code,
+          checkout_currency_value(checkout),
+          shipping_weight_grams_for_checkout(checkout)
+        )
+      )
+
+    with true <- is_binary(order.shipping_country_code),
+         {:ok, request} <- QuoteRequest.new(request_attrs),
          {:ok, options} <- Shipping.quote_options(request) do
       options
     else
@@ -853,18 +926,31 @@ defmodule Store.Checkout do
 
   defp available_quote_options(_checkout), do: []
 
+  defp shipping_weight_grams_for_checkout(%{shipping_weight_grams: weight_grams})
+       when is_integer(weight_grams) and weight_grams >= 0,
+       do: weight_grams
+
+  defp shipping_weight_grams_for_checkout(%{order: %Order{} = order})
+       when is_integer(order.shipping_weight_grams) and order.shipping_weight_grams >= 0 and
+              is_binary(order.shipping_country_code),
+       do: order.shipping_weight_grams
+
   defp shipping_weight_grams_for_checkout(%{draft: %CheckoutDraft{} = draft}) do
     with {:ok, cart_items} <- cart_items_by_checkout_draft(draft),
          {variants_by_id, _products_by_id} <- catalog_maps(cart_items) do
-      Enum.reduce(cart_items, 0, fn item, acc ->
-        acc + cart_item_shipping_weight(item, variants_by_id)
-      end)
+      shipping_weight_grams_for_items(cart_items, variants_by_id)
     else
       _ -> 0
     end
   end
 
   defp shipping_weight_grams_for_checkout(_checkout), do: 0
+
+  defp shipping_weight_grams_for_items(cart_items, variants_by_id) do
+    Enum.reduce(cart_items, 0, fn item, acc ->
+      acc + cart_item_shipping_weight(item, variants_by_id)
+    end)
+  end
 
   defp cart_item_shipping_weight(item, variants_by_id) do
     case Map.get(variants_by_id, item.variant_id) do
@@ -1146,6 +1232,8 @@ defmodule Store.Checkout do
   defp ensure_cart_not_empty!(_items), do: :ok
 
   defp ensure_published_sellables!(items, variants_by_id, products_by_id) when is_list(items) do
+    required_complete_by_variant_id = required_complete_by_variant_id(items, variants_by_id)
+
     Enum.each(items, fn item ->
       variant = Map.get(variants_by_id, item.variant_id)
       product = variant && Map.get(products_by_id, variant.product_id)
@@ -1157,7 +1245,7 @@ defmodule Store.Checkout do
         variant.status != :active ->
           Repo.rollback(Error.new("VALIDATION_ERROR", "cart contains inactive variant"))
 
-        not required_complete?(variant.id, variant.product_id) ->
+        not Map.get(required_complete_by_variant_id, variant.id, false) ->
           Repo.rollback(
             Error.new("VALIDATION_ERROR", "cart contains incomplete variant selection")
           )
@@ -1271,6 +1359,80 @@ defmodule Store.Checkout do
     {Map.new(variants, &{&1.id, &1}), Map.new(products, &{&1.id, &1})}
   end
 
+  defp required_complete_by_variant_id(items, variants_by_id) when is_list(items) do
+    variant_ids =
+      items
+      |> Enum.map(& &1.variant_id)
+      |> Enum.uniq()
+
+    product_id_by_variant = product_id_by_variant(variant_ids, variants_by_id)
+    product_ids = product_id_by_variant |> Map.values() |> Enum.uniq()
+
+    required_option_ids_by_product =
+      ProductOption
+      |> where([option], option.product_id in ^product_ids and option.selection_required == true)
+      |> select([option], {option.product_id, option.id})
+      |> Repo.all()
+      |> Enum.group_by(fn {product_id, _option_id} -> product_id end, fn {_product_id, option_id} ->
+        option_id
+      end)
+
+    required_option_ids =
+      required_option_ids_by_product
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.uniq()
+
+    selected_required_count_by_variant =
+      if required_option_ids == [] or variant_ids == [] do
+        %{}
+      else
+        VariantOptionSelection
+        |> where(
+          [selection],
+          selection.variant_id in ^variant_ids and
+            selection.product_option_id in ^required_option_ids
+        )
+        |> group_by([selection], selection.variant_id)
+        |> select(
+          [selection],
+          {selection.variant_id, count(fragment("DISTINCT ?", selection.product_option_id))}
+        )
+        |> Repo.all()
+        |> Map.new()
+      end
+
+    Map.new(variant_ids, fn variant_id ->
+      required_count =
+        required_option_count(variant_id, product_id_by_variant, required_option_ids_by_product)
+
+      selected_count = Map.get(selected_required_count_by_variant, variant_id, 0)
+      {variant_id, required_count == 0 or selected_count == required_count}
+    end)
+  end
+
+  defp product_id_by_variant(variant_ids, variants_by_id) do
+    variant_ids
+    |> Enum.reduce(%{}, fn variant_id, acc ->
+      case Map.get(variants_by_id, variant_id) do
+        %Variant{product_id: product_id} -> Map.put(acc, variant_id, product_id)
+        _ -> acc
+      end
+    end)
+  end
+
+  defp required_option_count(variant_id, product_id_by_variant, required_option_ids_by_product) do
+    case Map.get(product_id_by_variant, variant_id) do
+      nil ->
+        0
+
+      product_id ->
+        required_option_ids_by_product
+        |> Map.get(product_id, [])
+        |> length()
+    end
+  end
+
   defp maybe_reload_checkout_draft(%CheckoutDraft{id: nil}, %Cart{} = cart) do
     case Repo.get_by(CheckoutDraft, cart_id: cart.id, cart_version: cart.version) do
       %CheckoutDraft{} = draft ->
@@ -1292,27 +1454,6 @@ defmodule Store.Checkout do
       _ ->
         false
     end)
-  end
-
-  defp required_complete?(variant_id, product_id) do
-    required_option_ids =
-      ProductOption
-      |> where([option], option.product_id == ^product_id and option.selection_required == true)
-      |> select([option], option.id)
-      |> Repo.all()
-
-    if required_option_ids == [] do
-      true
-    else
-      selected_required_count =
-        VariantOptionSelection
-        |> where([selection], selection.variant_id == ^variant_id)
-        |> where([selection], selection.product_option_id in ^required_option_ids)
-        |> select([selection], count(fragment("DISTINCT ?", selection.product_option_id)))
-        |> Repo.one() || 0
-
-      selected_required_count == length(required_option_ids)
-    end
   end
 
   defp resolve_subscription_plans_for_items(items) when is_list(items) do
@@ -1371,6 +1512,13 @@ defmodule Store.Checkout do
 
   defp normalize_result({:ok, _} = result), do: result
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}
+
+  defp checkout_currency_value(checkout) do
+    case checkout_currency(checkout) do
+      {:ok, currency} -> currency
+      _ -> "USD"
+    end
+  end
 
   defp normalize_db_error(%Ecto.Changeset{} = changeset) do
     if unique_cart_version_conflict?(changeset) do

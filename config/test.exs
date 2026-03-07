@@ -2,6 +2,24 @@ import Config
 
 test_db_suffix = System.get_env("STORE_TEST_DB_SUFFIX") || System.get_env("MIX_TEST_PARTITION")
 
+bench_pool_size =
+  case System.get_env("STORE_BENCH_POOL_SIZE") do
+    nil ->
+      if test_db_suffix == "bench", do: 200, else: System.schedulers_online() * 2
+
+    value ->
+      String.to_integer(value)
+  end
+
+bench_direct_pool_size =
+  case System.get_env("STORE_BENCH_DIRECT_POOL_SIZE") do
+    nil ->
+      if test_db_suffix == "bench", do: 200, else: 5
+
+    value ->
+      String.to_integer(value)
+  end
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -17,7 +35,7 @@ config :store, Store.Repo,
   port: 5433,
   database: "store_#{config_env()}#{test_db_suffix}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  pool_size: bench_pool_size
 
 # 2. The Direct Route (Hits Postgres directly for Oban)
 config :store, Store.DirectRepo,
@@ -28,7 +46,7 @@ config :store, Store.DirectRepo,
   port: 5433,
   database: "store_#{config_env()}#{test_db_suffix}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: 5
+  pool_size: bench_direct_pool_size
 
 config :store, :token_signing_secret, "test-store-token-signing-secret"
 

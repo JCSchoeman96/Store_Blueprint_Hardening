@@ -26,7 +26,7 @@ Application.put_env(
   Store.Repo,
   Keyword.merge(repo_config,
     pool: DBConnection.ConnectionPool,
-    pool_size: 20,
+    pool_size: Keyword.get(repo_config, :pool_size, 20),
     prepare: :unnamed,
     queue_target: 10_000,
     queue_interval: 10_000,
@@ -39,7 +39,7 @@ Application.put_env(
   Store.DirectRepo,
   Keyword.merge(direct_repo_config,
     pool: DBConnection.ConnectionPool,
-    pool_size: 10,
+    pool_size: Keyword.get(direct_repo_config, :pool_size, 10),
     queue_target: 10_000,
     queue_interval: 10_000,
     timeout: 60_000

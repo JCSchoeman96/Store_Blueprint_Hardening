@@ -40,22 +40,13 @@ defmodule Store.Catalog.Facade do
 
   @spec list_products_for_public(map() | nil, ProductIndexQuery.t()) ::
           {:ok, [Product.t()]} | {:error, term()}
-  def list_products_for_public(actor, %ProductIndexQuery{} = query) do
-    ash_query = Ash.Query.for_read(Product, :read_for_public, %{}, actor: actor)
-
-    case Ash.read(ash_query, domain: Catalog, actor: actor) do
-      {:ok, products} ->
-        products
-        |> attach_default_variants()
-        |> attach_categories()
-        |> apply_public_filters(query)
-        |> apply_public_sort(query.sort)
-        |> apply_pagination(ProductIndexQuery.offset(query), query.page_size)
-        |> then(&{:ok, &1})
-
-      {:error, error} ->
-        {:error, Normalize.normalize(error)}
-    end
+  def list_products_for_public(_actor, %ProductIndexQuery{} = query) do
+    query
+    |> public_product_query()
+    |> Repo.all()
+    |> then(&{:ok, &1})
+  rescue
+    error -> {:error, Normalize.normalize(error)}
   end
 
   @spec get_product_for_public(map() | nil, String.t()) ::
@@ -474,16 +465,45 @@ defmodule Store.Catalog.Facade do
   def delete_variant_selection_for_admin(_actor, _selection_id),
     do: {:error, Error.new("VALIDATION_ERROR", "actor and selection_id are required")}
 
-  defp apply_public_filters(products, query) do
-    products
-    |> maybe_filter_query(query.q)
-    |> maybe_filter_category(query.category)
+  defp public_product_query(%ProductIndexQuery{} = query) do
+    public_product_base_query()
+    |> maybe_filter_public_query(query.q)
+    |> maybe_filter_public_category(query.category)
+    |> apply_public_query_sort(query.sort)
+    |> limit(^query.page_size)
+    |> offset(^ProductIndexQuery.offset(query))
+    |> preload([_product, default_variant, category],
+      default_variant: default_variant,
+      category: category
+    )
   end
 
   defp apply_admin_filters(products, query) do
     products
     |> maybe_filter_query(query.q)
     |> maybe_filter_status(query.status)
+  end
+
+  defp public_product_base_query do
+    from product in Product,
+      where: product.status == :published and not is_nil(product.published_at),
+      left_join: default_variant in Variant,
+      on: default_variant.id == product.default_variant_id and default_variant.status == :active,
+      left_join: category in Category,
+      on: category.id == product.category_id and category.is_active == true
+  end
+
+  defp maybe_filter_public_query(query, nil), do: query
+  defp maybe_filter_public_query(query, ""), do: query
+
+  defp maybe_filter_public_query(query, q) do
+    needle = "%#{String.trim(q)}%"
+
+    where(
+      query,
+      [product, _default_variant, _category],
+      ilike(product.title, ^needle) or ilike(product.subtitle, ^needle)
+    )
   end
 
   defp maybe_filter_query(products, nil), do: products
@@ -498,14 +518,11 @@ defmodule Store.Catalog.Facade do
     end)
   end
 
-  defp maybe_filter_category(products, nil), do: products
-  defp maybe_filter_category(products, ""), do: products
+  defp maybe_filter_public_category(query, nil), do: query
+  defp maybe_filter_public_category(query, ""), do: query
 
-  defp maybe_filter_category(products, category_slug) do
-    Enum.filter(products, fn product ->
-      category = Map.get(product, :category)
-      category && category.slug == category_slug
-    end)
+  defp maybe_filter_public_category(query, category_slug) do
+    where(query, [_product, _default_variant, category], category.slug == ^category_slug)
   end
 
   defp maybe_filter_status(products, nil), do: products
@@ -514,52 +531,30 @@ defmodule Store.Catalog.Facade do
     Enum.filter(products, &(&1.status == status))
   end
 
-  defp attach_default_variants([]), do: []
+  defp apply_public_query_sort(query, :newest),
+    do:
+      order_by(query, [product, _default_variant, _category],
+        desc: product.inserted_at,
+        desc: product.id
+      )
 
-  defp attach_default_variants(products) do
-    variant_ids =
-      products
-      |> Enum.map(& &1.default_variant_id)
-      |> Enum.reject(&is_nil/1)
+  defp apply_public_query_sort(query, :price_asc),
+    do:
+      order_by(
+        query,
+        [_product, default_variant, _category],
+        asc: default_variant.price_minor,
+        asc: default_variant.id
+      )
 
-    variants_by_id =
-      Variant
-      |> where([variant], variant.id in ^variant_ids and variant.status == :active)
-      |> Repo.all()
-      |> Map.new(&{&1.id, &1})
-
-    Enum.map(products, fn product ->
-      Map.put(product, :default_variant, Map.get(variants_by_id, product.default_variant_id))
-    end)
-  end
-
-  defp attach_categories([]), do: []
-
-  defp attach_categories(products) do
-    category_ids =
-      products
-      |> Enum.map(& &1.category_id)
-      |> Enum.reject(&is_nil/1)
-
-    categories_by_id =
-      Category
-      |> where([category], category.id in ^category_ids and category.is_active == true)
-      |> Repo.all()
-      |> Map.new(&{&1.id, &1})
-
-    Enum.map(products, fn product ->
-      Map.put(product, :category, Map.get(categories_by_id, product.category_id))
-    end)
-  end
-
-  defp apply_public_sort(products, :newest),
-    do: Enum.sort_by(products, &{to_unix_usec(&1.inserted_at), &1.id}, :desc)
-
-  defp apply_public_sort(products, :price_asc),
-    do: Enum.sort_by(products, &{price_of(&1), &1.id}, :asc)
-
-  defp apply_public_sort(products, :price_desc),
-    do: Enum.sort_by(products, &{price_of(&1), &1.id}, :desc)
+  defp apply_public_query_sort(query, :price_desc),
+    do:
+      order_by(
+        query,
+        [_product, default_variant, _category],
+        desc: default_variant.price_minor,
+        desc: default_variant.id
+      )
 
   defp apply_admin_sort(products, :newest),
     do: Enum.sort_by(products, &{to_unix_usec(&1.inserted_at), &1.id}, :desc)
@@ -575,15 +570,6 @@ defmodule Store.Catalog.Facade do
 
   defp apply_pagination(products, offset, limit),
     do: products |> Enum.drop(offset) |> Enum.take(limit)
-
-  defp price_of(product) do
-    product
-    |> Map.get(:default_variant)
-    |> case do
-      %{price_minor: price} when is_integer(price) -> price
-      _ -> 0
-    end
-  end
 
   defp to_unix_usec(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
   defp to_unix_usec(_), do: 0
