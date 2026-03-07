@@ -2,6 +2,7 @@ defmodule Store.Catalog.ProductDetailTelemetry do
   @moduledoc false
 
   alias Store.Catalog.Types.ProductDetail
+  alias Store.Perf.ProductDetailPoller
   alias Store.Support.Errors.Normalize
 
   @shop_live_event [:store, :shop_live, :product_detail]
@@ -39,27 +40,30 @@ defmodule Store.Catalog.ProductDetailTelemetry do
       )
       when is_integer(started_at) and is_integer(selection_count) and is_atom(phase) and
              is_boolean(connected?) and is_map(before_snapshot) and is_map(after_snapshot) do
+    measurements = %{
+      duration: System.monotonic_time() - started_at,
+      reductions_delta:
+        max(Map.get(after_snapshot, :reductions, 0) - Map.get(before_snapshot, :reductions, 0), 0),
+      memory_delta: Map.get(after_snapshot, :memory, 0) - Map.get(before_snapshot, :memory, 0)
+    }
+
+    metadata = %{
+      slug: slug,
+      selection_count: selection_count,
+      phase: phase,
+      connected?: connected?,
+      connected: if(connected?, do: "connected", else: "disconnected"),
+      result: telemetry_result(result),
+      error_code: telemetry_error_code(result) || "NONE"
+    }
+
     :telemetry.execute(
       @shop_live_event,
-      %{
-        duration: System.monotonic_time() - started_at,
-        reductions_delta:
-          max(
-            Map.get(after_snapshot, :reductions, 0) - Map.get(before_snapshot, :reductions, 0),
-            0
-          ),
-        memory_delta: Map.get(after_snapshot, :memory, 0) - Map.get(before_snapshot, :memory, 0)
-      },
-      %{
-        slug: slug,
-        selection_count: selection_count,
-        phase: phase,
-        connected?: connected?,
-        connected: if(connected?, do: "connected", else: "disconnected"),
-        result: telemetry_result(result),
-        error_code: telemetry_error_code(result) || "NONE"
-      }
+      measurements,
+      metadata
     )
+
+    ProductDetailPoller.record(:shop_live, measurements, metadata)
   end
 
   @spec emit_catalog_public_detail(
@@ -79,8 +83,7 @@ defmodule Store.Catalog.ProductDetailTelemetry do
         payload_metrics
       )
       when is_integer(started_at) and is_integer(selection_count) and is_map(repo_stats) do
-    :telemetry.execute(
-      @catalog_event,
+    measurements =
       Map.merge(
         %{
           duration: System.monotonic_time() - started_at,
@@ -90,14 +93,22 @@ defmodule Store.Catalog.ProductDetailTelemetry do
           decode_time: Map.get(repo_stats, :decode_time, 0)
         },
         payload_metrics || empty_payload_metrics()
-      ),
-      %{
-        slug: slug,
-        selection_count: selection_count,
-        result: telemetry_result(result),
-        error_code: telemetry_error_code(result) || "NONE"
-      }
+      )
+
+    metadata = %{
+      slug: slug,
+      selection_count: selection_count,
+      result: telemetry_result(result),
+      error_code: telemetry_error_code(result) || "NONE"
+    }
+
+    :telemetry.execute(
+      @catalog_event,
+      measurements,
+      metadata
     )
+
+    ProductDetailPoller.record(:catalog, measurements, metadata)
   end
 
   @spec payload_metrics(ProductDetail.t(), map()) :: map()

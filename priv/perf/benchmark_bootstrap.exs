@@ -2,6 +2,9 @@ if Mix.env() != :test do
   raise "benchmark_bootstrap.exs must be run with MIX_ENV=test"
 end
 
+Code.ensure_loaded!(Store.Perf.BenchmarkHarness)
+Store.Perf.BenchmarkHarness.require_isolated_test_db!()
+
 benchmark_db_suffix = System.get_env("STORE_TEST_DB_SUFFIX")
 
 if benchmark_db_suffix in [nil, ""] do
@@ -92,7 +95,11 @@ defmodule Store.Perf.BenchmarkBootstrap do
 
     %{
       generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
-      base_url: System.get_env("STORE_BENCHMARK_BASE_URL", benchmark_base_url()),
+      base_url:
+        System.get_env(
+          "STORE_BENCHMARK_BASE_URL",
+          Store.Perf.BenchmarkHarness.benchmark_base_url()
+        ),
       storefront: %{
         hot_slugs: Enum.map(storefront_products, & &1.slug),
         flash_sale_slug: flash_sale.slug
@@ -353,13 +360,6 @@ defmodule Store.Perf.BenchmarkBootstrap do
         }
       }
     }
-  end
-
-  defp benchmark_base_url do
-    endpoint_config = Application.get_env(:store, StoreWeb.Endpoint, [])
-    http_config = Keyword.get(endpoint_config, :http, [])
-    port = Keyword.get(http_config, :port, 4000)
-    "http://127.0.0.1:#{port}"
   end
 
   defp stripe_webhook_secret do

@@ -188,14 +188,15 @@
   2. For this workstation, set safe pool overrides under the local `max_connections` ceiling:
      - `export STORE_BENCH_POOL_SIZE=100`
      - `export STORE_BENCH_DIRECT_POOL_SIZE=60`
-  3. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
-  4. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix phx.server`
-  5. Run `k6` against the `base_url` written into `tmp/perf/benchmark_data.json` (defaults to the test endpoint port)
-  6. Storefront HTTP:
+  3. `export PORT=4000`
+  4. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
+  5. `STORE_TEST_DB_SUFFIX=bench MIX_ENV=test mix run --no-start --no-halt priv/perf/benchmark_server.exs`
+  6. Run `k6` against the `base_url` written into `tmp/perf/benchmark_data.json` (defaults to `http://127.0.0.1:$PORT`)
+  7. Storefront HTTP:
      - `k6 run perf/k6/http_storefront.js`
-  7. Webhook unique ingress:
+  8. Webhook unique ingress:
      - `k6 run -e STORE_WEBHOOK_MODE=unique_ingress perf/k6/webhook_ingress.js`
-  8. Webhook duplicate replay:
+  9. Webhook duplicate replay:
      - `k6 run -e STORE_WEBHOOK_MODE=duplicate_replay perf/k6/webhook_ingress.js`
 - Interpretation:
   - storefront product detail no longer crashes and is now contract-stable, but the route remains materially too slow under k6 and still needs another projection/LiveView pass
@@ -280,3 +281,102 @@
 - Local k6 rerun status:
   - route benchmarks were not rerun in this session because the local `mix phx.server` benchmark harness did not expose the HTTP port within the tool session despite the BEAM booting
   - this is a harness/runtime issue for follow-up, not a compile/test blocker in the Phase 30.4 code itself
+
+## Phase 30.5
+### Links Consulted
+- [config/test.exs](/home/jcs/projects/store_blueprint/config/test.exs)
+- [config/runtime.exs](/home/jcs/projects/store_blueprint/config/runtime.exs)
+- [priv/perf/benchmark_bootstrap.exs](/home/jcs/projects/store_blueprint/priv/perf/benchmark_bootstrap.exs)
+- [Store.Catalog.ProductDetailTelemetry](/home/jcs/projects/store_blueprint/lib/store/catalog/product_detail_telemetry.ex)
+- [StoreWeb.ShopLive.Show](/home/jcs/projects/store_blueprint/lib/store_web/live/shop_live/show.ex)
+
+### Decisions / Pins
+- The benchmark server now runs through `priv/perf/benchmark_server.exs`, not `mix phx.server`.
+- The benchmark base URL contract is:
+  - `STORE_BENCHMARK_BASE_URL` if explicitly set
+  - otherwise `http://$STORE_BENCHMARK_HOST:$PORT`
+  - defaults: `127.0.0.1:4000`
+- The telemetry poller must live inside the same BEAM as the endpoint; a separate `mix run` process cannot observe these product-detail telemetry events.
+- `http_shop_detail.js` remains diagnostic-only; `http_storefront.js` remains the acceptance gate.
+
+### Implementation
+- Added [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex) to centralize:
+  - benchmark host/port/base URL
+  - isolated test DB validation
+  - port preflight
+  - endpoint readiness checks
+- Added [Store.Perf.ProductDetailPoller](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller.ex) to:
+  - subscribe to the product-detail telemetry events
+  - print rolling 1-second aggregates
+  - append NDJSON rows to `tmp/perf/product_detail_poller.ndjson`
+- Added [priv/perf/benchmark_server.exs](/home/jcs/projects/store_blueprint/priv/perf/benchmark_server.exs) to:
+  - configure the endpoint
+  - start the app and in-process poller
+  - wait for `/shop` readiness
+  - print the k6 run order
+- Updated the benchmark bootstrap to use the same base URL helper as the benchmark server.
+
+### Performance & Scaling Review
+- This phase changes benchmark operations, not business behavior.
+- The poller now makes `/shop/:slug` attributable across:
+  - LiveView static render vs live join
+  - repo query/queue/decode time
+  - reductions delta
+  - memory delta
+  - payload size/cardinality
+- The next optimization phase should be chosen by the fresh telemetry split:
+  - repo-bound if query/queue time dominates
+  - BEAM-bound if reductions dominate with low repo time
+  - payload-bound if encoded bytes and availability cardinality are large
+  - contention-bound if route-only runs are healthy but mixed storefront remains slow
+
+### Validation
+- `MIX_ENV=test mix check`: `PASS`
+- Isolated smoke regression:
+  - `STORE_TEST_DB_SUFFIX=phase305smoke MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs`
+  - `PASS`
+  - `12 tests, 0 failures`
+- Benchmark bootstrap:
+  - `STORE_TEST_DB_SUFFIX=phase305bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
+  - wrote [tmp/perf/benchmark_data.json](/home/jcs/projects/store_blueprint/tmp/perf/benchmark_data.json) with `base_url = http://127.0.0.1:4000`
+- Benchmark server:
+  - `STORE_TEST_DB_SUFFIX=phase305bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 MIX_ENV=test mix run --no-start --no-halt priv/perf/benchmark_server.exs`
+  - endpoint preflight succeeded at `http://127.0.0.1:4000/shop`
+- Diagnostic k6:
+  - [tmp/perf/k6_http_shop_detail_quick_phase305_final.json](/home/jcs/projects/store_blueprint/tmp/perf/k6_http_shop_detail_quick_phase305_final.json)
+  - `http_req_failed = 0.00%`
+  - `shop_show p95 = 5.91ms`
+- Acceptance k6:
+  - [tmp/perf/k6_http_storefront_quick_phase305_final.json](/home/jcs/projects/store_blueprint/tmp/perf/k6_http_storefront_quick_phase305_final.json)
+  - `http_req_failed = 0.00%`
+  - `shop_index p95 = 10.36ms`
+  - `shop_show p95 = 10.28ms`
+  - `cart p95 = 22.92ms`
+  - `checkout p95 = 88.44ms`
+- Poller artifact:
+  - [tmp/perf/product_detail_poller.ndjson](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller.ndjson)
+  - sampled `shop_live` static render windows with:
+    - duration about `2.1ms` to `2.8ms`
+    - reductions delta about `6.3k`
+    - memory delta about `1KB` to `34KB`
+  - sampled `catalog` windows with:
+    - `query_count = 1`
+    - query time about `1.7ms` to `2.3ms`
+    - encoded payload about `572 bytes`
+    - `variant_row_count = 1`
+
+### Findings
+- The benchmark harness is now stable and unambiguous:
+  - bootstrap, server, and k6 all use the same `127.0.0.1:4000` contract
+  - the server preflight catches port/readiness issues before k6 runs
+- `/shop/:slug` is not currently repo-bound under the quick benchmark profile:
+  - product detail is one query
+  - repo time is low
+  - payload is tiny
+- `k6/http` is only exercising the disconnected static render path:
+  - poller windows during the benchmark are `phase=static_render` and `connected?=false`
+  - no live-join/hydration cost is represented in these numbers
+- The previous multi-second `shop_show` readings are not reproducible with the stabilized harness.
+- The next route-level optimization should therefore not be another blind projection rewrite.
+  - If storefront pain returns only in a broader system benchmark, the next target is system contention.
+  - If the remaining concern is interactive LiveView cost, the next benchmark must be browser/live-join aware rather than more `k6/http`.

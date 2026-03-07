@@ -1,0 +1,171 @@
+defmodule Store.Perf.BenchmarkHarness do
+  @moduledoc false
+
+  @default_host "127.0.0.1"
+  @default_port 4000
+  @connect_timeout 500
+  @ready_timeout_ms 30_000
+  @ready_poll_interval_ms 250
+
+  def benchmark_host do
+    System.get_env("STORE_BENCHMARK_HOST", @default_host)
+  end
+
+  def benchmark_port do
+    System.get_env("PORT", Integer.to_string(@default_port))
+    |> String.to_integer()
+  end
+
+  def benchmark_base_url do
+    "http://#{benchmark_host()}:#{benchmark_port()}"
+  end
+
+  def benchmark_data_path do
+    System.get_env("STORE_BENCHMARK_DATA_PATH", "tmp/perf/benchmark_data.json")
+  end
+
+  def require_test_env! do
+    if Mix.env() != :test do
+      raise "benchmark harness scripts must run with MIX_ENV=test"
+    end
+  end
+
+  def require_isolated_test_db! do
+    case System.get_env("STORE_TEST_DB_SUFFIX") do
+      nil ->
+        raise """
+        benchmark harness requires an isolated test database.
+        Run with STORE_TEST_DB_SUFFIX=bench or another suffix.
+        """
+
+      "" ->
+        raise """
+        benchmark harness requires an isolated test database.
+        Run with STORE_TEST_DB_SUFFIX=bench or another suffix.
+        """
+
+      suffix ->
+        suffix
+    end
+  end
+
+  def ensure_port_available! do
+    case :gen_tcp.connect(
+           String.to_charlist(benchmark_host()),
+           benchmark_port(),
+           [:binary],
+           @connect_timeout
+         ) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+
+        raise """
+        benchmark server port #{benchmark_port()} is already in use on #{benchmark_host()}.
+        Stop the existing process or choose a different PORT before starting the benchmark harness.
+        """
+
+      {:error, :econnrefused} ->
+        :ok
+
+      {:error, :timeout} ->
+        raise """
+        timed out while checking benchmark port #{benchmark_port()} on #{benchmark_host()}.
+        Resolve the local networking issue before running the benchmark harness.
+        """
+
+      {:error, :nxdomain} ->
+        raise "benchmark host #{benchmark_host()} could not be resolved"
+
+      {:error, reason} ->
+        raise "unable to validate benchmark port availability: #{inspect(reason)}"
+    end
+  end
+
+  def configure_endpoint! do
+    endpoint_config = Application.get_env(:store, StoreWeb.Endpoint, [])
+
+    ip =
+      benchmark_host() |> String.split(".") |> Enum.map(&String.to_integer/1) |> List.to_tuple()
+
+    Application.put_env(
+      :store,
+      StoreWeb.Endpoint,
+      Keyword.merge(endpoint_config,
+        server: true,
+        http: [ip: ip, port: benchmark_port()],
+        url: [host: benchmark_host(), port: benchmark_port(), scheme: "http"]
+      )
+    )
+  end
+
+  def configure_repos! do
+    repo_config = Application.get_env(:store, Store.Repo, [])
+    direct_repo_config = Application.get_env(:store, Store.DirectRepo, [])
+
+    Application.put_env(
+      :store,
+      Store.Repo,
+      Keyword.merge(repo_config,
+        pool: DBConnection.ConnectionPool,
+        pool_size: Keyword.get(repo_config, :pool_size, 20),
+        prepare: :unnamed,
+        queue_target: 10_000,
+        queue_interval: 10_000,
+        timeout: 60_000
+      )
+    )
+
+    Application.put_env(
+      :store,
+      Store.DirectRepo,
+      Keyword.merge(direct_repo_config,
+        pool: DBConnection.ConnectionPool,
+        pool_size: Keyword.get(direct_repo_config, :pool_size, 10),
+        queue_target: 10_000,
+        queue_interval: 10_000,
+        timeout: 60_000
+      )
+    )
+  end
+
+  def wait_for_endpoint! do
+    deadline = System.monotonic_time(:millisecond) + @ready_timeout_ms
+    url = benchmark_base_url() <> "/shop"
+    :inets.start()
+
+    wait_until(deadline, fn ->
+      case :httpc.request(:get, {String.to_charlist(url), []}, [timeout: 1_000], []) do
+        {:ok, {{_version, status, _reason}, _headers, _body}} when status in 200..399 -> :ok
+        {:ok, {{_version, status, _reason}, _headers, _body}} -> {:retry, "HTTP #{status}"}
+        {:error, reason} -> {:retry, inspect(reason)}
+      end
+    end)
+  end
+
+  def print_runbook(log_path) do
+    IO.puts("Benchmark server ready at #{benchmark_base_url()}")
+    IO.puts("Benchmark data: #{benchmark_data_path()}")
+    IO.puts("Poller log: #{log_path}")
+    IO.puts("")
+    IO.puts("Run order:")
+    IO.puts("  1. STORE_K6_QUICK=1 k6 run perf/k6/http_shop_detail.js")
+    IO.puts("  2. k6 run perf/k6/http_shop_detail.js")
+    IO.puts("  3. STORE_K6_QUICK=1 k6 run perf/k6/http_storefront.js")
+    IO.puts("  4. k6 run perf/k6/http_storefront.js")
+  end
+
+  defp wait_until(deadline, fun) do
+    case fun.() do
+      :ok ->
+        :ok
+
+      {:retry, _reason} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          raise "benchmark endpoint #{benchmark_base_url()} did not become ready before timeout"
+        end
+
+        Process.sleep(@ready_poll_interval_ms)
+        wait_until(deadline, fun)
+    end
+  end
+end
