@@ -44,6 +44,7 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
 16. Provider fault modes are `:slow`, `:timeout`, and `:error`, mapped to `PAYMENT_PROVIDER_TIMEOUT` / `PAYMENT_PROVIDER_DOWN` for negative-path assertions.
 17. Provider-fault smoke scenarios prepare finalized checkout state first, then measure only concurrent `create_intent_for_order/3` execution.
 18. Provider slowness is interpreted via `mean_db_share_ratio`: high end-to-end latency with low DB share and low pool/lock pressure is acceptable isolation; high latency with high DB share or DB pressure is a failure.
+19. `checkout_concurrency` now distributes users across a variant pool, while `domain_thundering_herd` remains the explicit same-SKU contention scenario.
 
 ## PLAN
 
@@ -105,6 +106,9 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
   - no `idle in transaction` leak during slow provider delay
   - retry/idempotent reuse after `PAYMENT_PROVIDER_TIMEOUT`
   - retry/idempotent reuse after `PAYMENT_PROVIDER_DOWN`
+- Added checkout fixture pool sizing via `STORE_PERF_CHECKOUT_VARIANT_POOL_SIZE`.
+- Changed `checkout_concurrency` to spread users across a configurable variant pool instead of colliding on one inventory row.
+- Added a fixture uniqueness assertion so the checkout throughput scenario cannot silently regress into a de facto single-SKU contention test.
 
 ## NEXT
 
@@ -150,6 +154,8 @@ Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths
   - checkout concurrency and domain thundering herd now sample `pg_stat_activity` every 500ms
   - captures peak lock wait ratio, peak lock waiters, and active-backend utilization
   - lock contention is only considered actionable once active backends reach a minimum threshold, to avoid false positives on low-volume samples
+  - checkout throughput is now measured with distributed variant selection, so the checkout observer gate reflects general checkout headroom instead of intentional same-row serialization
+  - single-SKU lock contention remains intentionally measured by `domain_thundering_herd`
 - **Provider fault isolation**:
   - `create_intent_for_order/3` is now exercised under slow, timeout, and provider-down conditions without changing production runtime behavior
   - provider-fault summaries separate total request duration from aggregate DB queue/query time via `mean_db_share_ratio`

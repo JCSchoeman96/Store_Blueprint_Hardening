@@ -85,6 +85,7 @@ defmodule Store.PerformanceSmoke.Config do
   defstruct profile: :local_dev,
             api_mean_ms: 100.0,
             checkout_p99_ms: 5_000.0,
+            checkout_variant_pool_size: 20,
             hll_max_rel_error: 0.02,
             concurrency_users: 20,
             provider_fault_users: 10,
@@ -121,6 +122,7 @@ defmodule Store.PerformanceSmoke.Config do
         :full_stress ->
           %{
             concurrency_users: 120,
+            checkout_variant_pool_size: max(120, 120),
             provider_fault_users: 100,
             thundering_herd_users: 200,
             stampede_requests: 1_000,
@@ -132,6 +134,7 @@ defmodule Store.PerformanceSmoke.Config do
         :ci_gate ->
           %{
             concurrency_users: min(max(schedulers * 14, 40), 100),
+            checkout_variant_pool_size: max(min(max(schedulers * 14, 40), 100), 50),
             provider_fault_users: 50,
             thundering_herd_users: min(max(schedulers * 20, 80), 160),
             stampede_requests: min(max(schedulers * 120, 350), 700),
@@ -143,6 +146,7 @@ defmodule Store.PerformanceSmoke.Config do
         :local_dev ->
           %{
             concurrency_users: min(max(schedulers * 8, 20), 60),
+            checkout_variant_pool_size: 20,
             provider_fault_users: 10,
             thundering_herd_users: min(max(schedulers * 10, 40), 100),
             stampede_requests: min(max(schedulers * 40, 150), 400),
@@ -162,6 +166,11 @@ defmodule Store.PerformanceSmoke.Config do
       profile: profile,
       api_mean_ms: env_float("STORE_PERF_API_MEAN_MS", 100.0),
       checkout_p99_ms: env_float("STORE_PERF_CHECKOUT_P99_MS", 5_000.0),
+      checkout_variant_pool_size:
+        env_int(
+          "STORE_PERF_CHECKOUT_VARIANT_POOL_SIZE",
+          Map.fetch!(defaults, :checkout_variant_pool_size)
+        ),
       hll_max_rel_error: env_float("STORE_PERF_HLL_MAX_REL_ERROR", 0.02),
       concurrency_users:
         env_int("STORE_PERF_CONCURRENCY_USERS", Map.fetch!(defaults, :concurrency_users)),
@@ -1017,9 +1026,10 @@ defmodule Store.PerformanceSmoke.Fixtures do
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.TestFixtures
 
-  @spec checkout_fixture!() :: map()
-  def checkout_fixture! do
-    {variant_id, _admin, _product} = published_variant_with_admin!()
+  @spec checkout_fixture!(keyword()) :: map()
+  def checkout_fixture!(opts \\ []) when is_list(opts) do
+    pool_size = opts |> Keyword.get(:variant_pool_size, 1) |> max(1)
+    {variant_ids, _admin} = published_variant_pool_with_admin!(pool_size)
     _pricing = create_pricing_rules!()
 
     selection =
@@ -1040,7 +1050,9 @@ defmodule Store.PerformanceSmoke.Fixtures do
       })
 
     %{
-      variant_id: variant_id,
+      variant_id: hd(variant_ids),
+      variant_ids: variant_ids,
+      variant_count: length(variant_ids),
       start_input: start_input,
       finalize_input: finalize_input,
       payment_input: payment_input,
@@ -1071,12 +1083,35 @@ defmodule Store.PerformanceSmoke.Fixtures do
     end
   end
 
+  @spec checkout_flow!(map(), String.t(), integer() | Ecto.UUID.t()) :: :ok | {:error, term()}
+  def checkout_flow!(fixture, token, variant_selector)
+      when is_map(fixture) and is_binary(token) do
+    prepared = prepare_checkout_for_payment_intent!(fixture, token, variant_selector)
+
+    with {:ok, _intent} <-
+           Payments.create_intent_for_order(
+             prepared.actor,
+             prepared.checkout_key,
+             fixture.payment_input
+           ) do
+      :ok
+    end
+  end
+
   @spec prepare_checkout_for_payment_intent!(map(), String.t()) :: map()
   def prepare_checkout_for_payment_intent!(fixture, token)
       when is_map(fixture) and is_binary(token) do
-    actor = %{cart_token: token}
+    prepare_checkout_for_payment_intent!(fixture, token, fixture.variant_id)
+  end
 
-    with {:ok, add_input} <- CartItemInput.new(%{"variant_id" => fixture.variant_id, "qty" => 1}),
+  @spec prepare_checkout_for_payment_intent!(map(), String.t(), integer() | Ecto.UUID.t()) ::
+          map()
+  def prepare_checkout_for_payment_intent!(fixture, token, variant_selector)
+      when is_map(fixture) and is_binary(token) do
+    actor = %{cart_token: token}
+    variant_id = variant_id_for_selector!(fixture, variant_selector)
+
+    with {:ok, add_input} <- CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1}),
          {:ok, _cart} <- CartsFacade.add_item_for_user(nil, token, add_input),
          {:ok, start_result} <- Checkout.start_from_cart(nil, token, fixture.start_input),
          {:ok, shipping_input} <-
@@ -1125,31 +1160,54 @@ defmodule Store.PerformanceSmoke.Fixtures do
     |> Ash.create!(domain: Store.Orders, authorize?: false)
   end
 
-  defp published_variant_with_admin! do
+  @spec variant_id_for_index!(map(), integer()) :: Ecto.UUID.t()
+  def variant_id_for_index!(fixture, index) when is_map(fixture) and is_integer(index) do
+    variant_id_for_selector!(fixture, index)
+  end
+
+  defp variant_id_for_selector!(fixture, selector) when is_binary(selector) do
+    if selector in fixture.variant_ids do
+      selector
+    else
+      raise "unknown checkout fixture variant_id: #{inspect(selector)}"
+    end
+  end
+
+  defp variant_id_for_selector!(fixture, selector) when is_integer(selector) do
+    count = max(Map.get(fixture, :variant_count, length(fixture.variant_ids || [])), 1)
+    Enum.at(fixture.variant_ids, rem(selector - 1, count))
+  end
+
+  defp published_variant_pool_with_admin!(count) when is_integer(count) and count > 0 do
     admin = TestFixtures.register_user!(email: TestFixtures.unique_email("perf_checkout_admin"))
     _role = TestFixtures.assign_role!(admin, :admin)
 
-    product =
-      Store.Catalog.Product
-      |> Ash.Changeset.for_create(
-        :create_draft,
-        %{
-          slug: "phase29-perf-#{System.unique_integer([:positive])}",
-          title: "Phase 29 Performance Product",
-          base_variant_sku: "P29-SKU-#{System.unique_integer([:positive])}",
-          base_variant_currency_code: "USD",
-          base_variant_price_minor: 2_000,
-          base_variant_stock_on_hand: 50_000
-        }
-      )
-      |> Ash.create!(domain: Store.Catalog, actor: admin)
+    variant_ids =
+      Enum.map(1..count, fn idx ->
+        product =
+          Store.Catalog.Product
+          |> Ash.Changeset.for_create(
+            :create_draft,
+            %{
+              slug: "phase29-perf-#{System.unique_integer([:positive])}",
+              title: "Phase 29 Performance Product #{idx}",
+              base_variant_sku: "P29-SKU-#{System.unique_integer([:positive])}",
+              base_variant_currency_code: "USD",
+              base_variant_price_minor: 2_000,
+              base_variant_stock_on_hand: 50_000
+            }
+          )
+          |> Ash.create!(domain: Store.Catalog, actor: admin)
 
-    published =
-      product
-      |> Ash.Changeset.for_update(:publish, %{})
-      |> Ash.update!(domain: Store.Catalog, actor: admin)
+        published =
+          product
+          |> Ash.Changeset.for_update(:publish, %{})
+          |> Ash.update!(domain: Store.Catalog, actor: admin)
 
-    {published.default_variant_id, admin, published}
+        published.default_variant_id
+      end)
+
+    {variant_ids, admin}
   end
 
   defp create_pricing_rules! do
@@ -1426,19 +1484,21 @@ defmodule Store.PerformanceSmokeTest do
   end
 
   test "checkout concurrency meets mean and p99 thresholds", %{config: config} do
-    fixture = Fixtures.checkout_fixture!()
+    fixture = Fixtures.checkout_fixture!(variant_pool_size: config.checkout_variant_pool_size)
+    assert length(Enum.uniq(fixture.variant_ids)) == fixture.variant_count
+    assert fixture.variant_count == config.checkout_variant_pool_size
 
     {{samples, errors}, observer_summary} =
       Observer.capture("checkout_concurrency_observer", config, fn ->
         1..config.concurrency_users
         |> Task.async_stream(
-          fn _idx ->
+          fn idx ->
             token = Ash.UUIDv7.generate()
 
             {result, elapsed_ms} =
               timed(fn ->
                 try do
-                  Fixtures.checkout_flow!(fixture, token)
+                  Fixtures.checkout_flow!(fixture, token, idx)
                   :ok
                 rescue
                   e -> {:error, e}
@@ -2173,6 +2233,7 @@ summary = %{
   },
   load: %{
     concurrency_users: run_config.concurrency_users,
+    checkout_variant_pool_size: run_config.checkout_variant_pool_size,
     provider_fault_users: run_config.provider_fault_users,
     provider_fault_delay_ms: run_config.provider_fault_delay_ms,
     provider_fault_modes: run_config.provider_fault_modes,
