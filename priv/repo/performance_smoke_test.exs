@@ -380,12 +380,14 @@ defmodule Store.PerformanceSmoke.Reporter do
   @metrics_table :store_performance_smoke_metrics
   @observer_table :store_performance_smoke_observers
   @provider_fault_table :store_performance_smoke_provider_faults
+  @step_table :store_performance_smoke_step_summaries
 
   @spec reset() :: :ok
   def reset do
     reset_table(@metrics_table)
     reset_table(@observer_table)
     reset_table(@provider_fault_table)
+    reset_table(@step_table)
 
     :ok
   end
@@ -411,6 +413,13 @@ defmodule Store.PerformanceSmoke.Reporter do
     :ok
   end
 
+  @spec record_step_summary(map()) :: :ok
+  def record_step_summary(summary) when is_map(summary) do
+    key = Map.fetch!(summary, :name)
+    :ets.insert(@step_table, {key, summary})
+    :ok
+  end
+
   @spec all() :: [map()]
   def all do
     table_values(@metrics_table)
@@ -424,6 +433,11 @@ defmodule Store.PerformanceSmoke.Reporter do
   @spec provider_faults() :: [map()]
   def provider_faults do
     table_values(@provider_fault_table)
+  end
+
+  @spec step_summaries() :: [map()]
+  def step_summaries do
+    table_values(@step_table)
   end
 
   @spec print_table([map()]) :: :ok
@@ -490,6 +504,27 @@ defmodule Store.PerformanceSmoke.Reporter do
 
       IO.puts(
         "| #{summary[:name]} | #{summary[:mode]} | #{mean} | #{p99} | #{db_share} | #{lock_wait_ratio} | #{pool_utilization} | #{result} |"
+      )
+    end)
+
+    :ok
+  end
+
+  @spec print_step_table([map()]) :: :ok
+  def print_step_table([]), do: :ok
+
+  def print_step_table(summaries) do
+    IO.puts("\n| Checkout Step | Mean Queries | p99 Queries | Mean Duration (ms) | Samples |")
+    IO.puts("| --- | --- | --- | --- | --- |")
+
+    Enum.each(summaries, fn summary ->
+      mean_queries = summary[:mean_query_count] |> float_or_dash()
+      p99_queries = summary[:p99_query_count] |> float_or_dash()
+      mean_duration = summary[:mean_duration_ms] |> float_or_dash()
+      samples = summary[:sample_count] |> integer_or_dash()
+
+      IO.puts(
+        "| #{summary[:name]} | #{mean_queries} | #{p99_queries} | #{mean_duration} | #{samples} |"
       )
     end)
 
@@ -1319,6 +1354,12 @@ defmodule Store.PerformanceSmokeTest do
     end)
     |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
 
+    :telemetry.list_handlers([:store, :checkout, :step])
+    |> Enum.filter(fn %{id: id} ->
+      String.starts_with?(to_string(id), "phase30_perf_checkout_step_")
+    end)
+    |> Enum.each(fn %{id: id} -> :telemetry.detach(id) end)
+
     config = Config.load()
 
     case RedisPool.start_link(pool_size: config.redis_pool_size, redis_opts: Config.redis_opts()) do
@@ -1488,40 +1529,48 @@ defmodule Store.PerformanceSmokeTest do
     assert length(Enum.uniq(fixture.variant_ids)) == fixture.variant_count
     assert fixture.variant_count == config.checkout_variant_pool_size
 
-    {{samples, errors}, observer_summary} =
+    {{{samples, errors}, step_events}, observer_summary} =
       Observer.capture("checkout_concurrency_observer", config, fn ->
-        1..config.concurrency_users
-        |> Task.async_stream(
-          fn idx ->
-            token = Ash.UUIDv7.generate()
+        with_checkout_step_telemetry(fn ->
+          1..config.concurrency_users
+          |> Task.async_stream(
+            fn idx ->
+              token = Ash.UUIDv7.generate()
 
-            {result, elapsed_ms} =
-              timed(fn ->
-                try do
-                  Fixtures.checkout_flow!(fixture, token, idx)
-                  :ok
-                rescue
-                  e -> {:error, e}
-                end
-              end)
+              {result, elapsed_ms} =
+                timed(fn ->
+                  try do
+                    Fixtures.checkout_flow!(fixture, token, idx)
+                    :ok
+                  rescue
+                    e -> {:error, e}
+                  end
+                end)
 
-            case result do
-              :ok -> {:ok, elapsed_ms}
-              {:error, reason} -> {:error, reason}
-            end
-          end,
-          max_concurrency: config.concurrency_users,
-          ordered: false,
-          timeout: :infinity
-        )
-        |> Enum.reduce({[], []}, fn
-          {:ok, {:ok, elapsed_ms}}, {durations, errs} -> {[elapsed_ms | durations], errs}
-          {:ok, {:error, reason}}, {durations, errs} -> {durations, [reason | errs]}
-          {:exit, reason}, {durations, errs} -> {durations, [reason | errs]}
+              case result do
+                :ok -> {:ok, elapsed_ms}
+                {:error, reason} -> {:error, reason}
+              end
+            end,
+            max_concurrency: config.concurrency_users,
+            ordered: false,
+            timeout: :infinity
+          )
+          |> Enum.reduce({[], []}, fn
+            {:ok, {:ok, elapsed_ms}}, {durations, errs} -> {[elapsed_ms | durations], errs}
+            {:ok, {:error, reason}}, {durations, errs} -> {durations, [reason | errs]}
+            {:exit, reason}, {durations, errs} -> {durations, [reason | errs]}
+          end)
         end)
       end)
 
     assert errors == [], "checkout concurrency errors: #{inspect(errors)}"
+
+    record_checkout_step_summaries(step_events, [
+      "start_from_cart",
+      "finalize_totals",
+      "create_payment_intent"
+    ])
 
     Gate.assert_metric!("checkout_concurrency", samples,
       # A full 5-step workflow will not average under 100ms
@@ -2108,6 +2157,26 @@ defmodule Store.PerformanceSmokeTest do
     end
   end
 
+  defp with_checkout_step_telemetry(fun) when is_function(fun, 0) do
+    ref = make_ref()
+    parent = self()
+    handler_id = "phase30_perf_checkout_step_#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler_id,
+      [:store, :checkout, :step],
+      &__MODULE__.handle_checkout_step_event/4,
+      %{ref: ref, parent: parent}
+    )
+
+    try do
+      result = fun.()
+      {result, drain_checkout_step_events(ref, [])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
   defp with_repo_query_telemetry(filter_fun, fun)
        when is_function(filter_fun, 3) and is_function(fun, 0) do
     ref = make_ref()
@@ -2117,11 +2186,7 @@ defmodule Store.PerformanceSmokeTest do
     :telemetry.attach(
       handler_id,
       [:store, :repo, :query],
-      fn event, measurements, metadata, %{ref: ref, parent: parent, filter: filter} ->
-        if filter.(event, measurements, metadata) do
-          send(parent, {ref, %{event: event, measurements: measurements, metadata: metadata}})
-        end
-      end,
+      &__MODULE__.handle_repo_query_event/4,
       %{ref: ref, parent: parent, filter: filter_fun}
     )
 
@@ -2160,6 +2225,67 @@ defmodule Store.PerformanceSmokeTest do
     after
       0 -> Enum.reverse(acc)
     end
+  end
+
+  defp drain_checkout_step_events(ref, acc) do
+    receive do
+      {^ref, %{measurements: measurements, metadata: metadata}} ->
+        event = %{
+          step: metadata[:step] |> to_string(),
+          result: metadata[:result],
+          duration_ms: Stats.native_to_ms(measurements[:duration] || 0),
+          query_count: measurements[:query_count] || 0,
+          queue_time_ms: Stats.native_to_ms(measurements[:queue_time] || 0),
+          query_time_ms: Stats.native_to_ms(measurements[:query_time] || 0),
+          decode_time_ms: Stats.native_to_ms(measurements[:decode_time] || 0)
+        }
+
+        drain_checkout_step_events(ref, [event | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  def handle_checkout_step_event(_event, measurements, metadata, %{ref: ref, parent: parent}) do
+    send(parent, {ref, %{measurements: measurements, metadata: metadata}})
+  end
+
+  def handle_repo_query_event(event, measurements, metadata, %{
+        ref: ref,
+        parent: parent,
+        filter: filter
+      }) do
+    if filter.(event, measurements, metadata) do
+      send(parent, {ref, %{event: event, measurements: measurements, metadata: metadata}})
+    end
+  end
+
+  defp record_checkout_step_summaries(events, step_names)
+       when is_list(events) and is_list(step_names) do
+    step_names
+    |> Enum.map(fn step_name ->
+      {step_name,
+       Enum.filter(events, fn event ->
+         event.step == step_name and event.result in [:ok, :duplicate]
+       end)}
+    end)
+    |> Enum.reject(fn {_step_name, step_events} -> step_events == [] end)
+    |> Enum.each(fn {step_name, step_events} ->
+      duration_stats = Stats.describe(Enum.map(step_events, & &1.duration_ms))
+      query_stats = Stats.describe(Enum.map(step_events, &(&1.query_count * 1.0)))
+
+      Reporter.record_step_summary(%{
+        name: step_name,
+        sample_count: length(step_events),
+        mean_duration_ms: duration_stats.mean_ms,
+        p99_duration_ms: duration_stats.p99_ms,
+        mean_query_count: query_stats.mean_ms,
+        p99_query_count: query_stats.p99_ms,
+        mean_queue_ms: Stats.mean(Enum.map(step_events, & &1.queue_time_ms)),
+        mean_query_ms: Stats.mean(Enum.map(step_events, & &1.query_time_ms)),
+        mean_decode_ms: Stats.mean(Enum.map(step_events, & &1.decode_time_ms))
+      })
+    end)
   end
 
   defp contains_param_value?(params, target_value) when is_list(params) do
@@ -2213,6 +2339,7 @@ run_config =
 metrics = Store.PerformanceSmoke.Reporter.all()
 observer_summaries = Store.PerformanceSmoke.Reporter.observers()
 provider_fault_summaries = Store.PerformanceSmoke.Reporter.provider_faults()
+step_summaries = Store.PerformanceSmoke.Reporter.step_summaries()
 
 summary = %{
   generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -2246,6 +2373,7 @@ summary = %{
   metrics: metrics,
   observer_summaries: observer_summaries,
   provider_fault_summaries: provider_fault_summaries,
+  checkout_step_summaries: step_summaries,
   status: if(failure_count == 0, do: "pass", else: "fail"),
   test_failures: test_results
 }
@@ -2253,6 +2381,7 @@ summary = %{
 Store.PerformanceSmoke.Reporter.print_table(metrics)
 Store.PerformanceSmoke.Reporter.print_observer_table(observer_summaries)
 Store.PerformanceSmoke.Reporter.print_provider_fault_table(provider_fault_summaries)
+Store.PerformanceSmoke.Reporter.print_step_table(step_summaries)
 
 case Store.PerformanceSmoke.Reporter.write_json(summary) do
   :ok ->

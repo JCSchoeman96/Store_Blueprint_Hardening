@@ -29,6 +29,7 @@ defmodule Store.Checkout do
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.ID.BinaryUuidSort
+  alias Store.Support.Telemetry.RepoStats
 
   resources do
     resource(Store.Checkout.CheckoutDraft)
@@ -49,26 +50,30 @@ defmodule Store.Checkout do
   def start_from_cart(actor, token, %CheckoutStartInput{} = _input) when is_binary(token) do
     started_at = System.monotonic_time()
 
-    result =
-      with {:ok, cart} <- CartsFacade.get_cart_for_user(actor, token),
-           {:ok, draft, order, duplicate?} <- get_or_create_checkout(cart) do
-        {:ok,
-         %{
-           checkout_key: draft.checkout_key,
-           draft_id: draft.id,
-           cart_id: draft.cart_id,
-           cart_version: draft.cart_version,
-           order_id: order.id,
-           order_ref: order.order_ref,
-           duplicate?: duplicate?
-         }}
-      end
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        with {:ok, cart} <- CartsFacade.get_cart_for_user(actor, token),
+             {:ok, draft, order, duplicate?} <- get_or_create_checkout(cart) do
+          {:ok,
+           %{
+             checkout_key: draft.checkout_key,
+             draft_id: draft.id,
+             cart_id: draft.cart_id,
+             cart_version: draft.cart_version,
+             order_id: order.id,
+             order_ref: order.order_ref,
+             duplicate?: duplicate?
+           }}
+        end
+      end)
 
     :telemetry.execute(
       [:store, :checkout, :start_from_cart],
       %{duration: System.monotonic_time() - started_at},
       %{result: telemetry_result(result)}
     )
+
+    emit_step_telemetry(:start_from_cart, started_at, result, repo_stats)
 
     normalize_result(result)
   end
@@ -81,16 +86,25 @@ defmodule Store.Checkout do
           {:ok, map()} | {:error, Error.t()}
   def set_shipping(actor, checkout_key, %CheckoutShippingInput{} = input)
       when is_binary(checkout_key) do
-    with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key),
-         {:ok, quote_options} <- quote_options_for_checkout(checkout, input),
-         {:ok, selected_option} <- select_quote_option(quote_options, input),
-         {:ok, _updated_order} <- update_order_shipping_address(checkout.order, input),
-         {:ok, _updated_order} <- update_order_shipping_method(checkout.order, selected_option),
-         {:ok, _updated_order} <-
-           update_order_shipping_quote_evidence(checkout.order, selected_option) do
-      get_checkout_for_user(actor, checkout_key)
-    end
-    |> normalize_result()
+    started_at = System.monotonic_time()
+
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key),
+             {:ok, quote_options} <- quote_options_for_checkout(checkout, input),
+             {:ok, selected_option} <- select_quote_option(quote_options, input),
+             {:ok, updated_order} <- update_order_shipping_address(checkout.order, input),
+             {:ok, updated_order} <- update_order_shipping_method(updated_order, selected_option),
+             {:ok, updated_order} <-
+               update_order_shipping_quote_evidence(updated_order, selected_option) do
+          checkout
+          |> Map.put(:order, updated_order)
+          |> checkout_summary_from_context()
+        end
+      end)
+
+    emit_step_telemetry(:set_shipping, started_at, result, repo_stats)
+    normalize_result(result)
   end
 
   def set_shipping(_actor, _checkout_key, _input) do
@@ -101,10 +115,17 @@ defmodule Store.Checkout do
           {:ok, map()} | {:error, Error.t()}
   def finalize_totals(actor, checkout_key, %CheckoutFinalizeInput{} = _input)
       when is_binary(checkout_key) do
-    with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key) do
-      do_finalize_totals(actor, checkout_key, checkout)
-    end
-    |> normalize_result()
+    started_at = System.monotonic_time()
+
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key) do
+          do_finalize_totals(actor, checkout_key, checkout)
+        end
+      end)
+
+    emit_step_telemetry(:finalize_totals, started_at, result, repo_stats)
+    normalize_result(result)
   end
 
   def finalize_totals(_actor, _checkout_key, _input) do
@@ -115,27 +136,45 @@ defmodule Store.Checkout do
     get_checkout_for_user(actor, checkout_key)
   end
 
-  defp do_finalize_totals(actor, checkout_key, checkout) do
+  defp do_finalize_totals(_actor, _checkout_key, checkout) do
     with :ok <- ensure_priced_snapshot_and_reservations(checkout),
          {:ok, line_items} <- fetch_order_line_items(checkout.order.id),
          :ok <- ensure_line_items_present(line_items),
-         {:ok, _updated_order} <- finalize_order_for_line_items(checkout.order, line_items) do
-      get_checkout_for_user(actor, checkout_key)
+         {:ok, updated_order} <- finalize_order_for_line_items(checkout.order, line_items) do
+      checkout
+      |> Map.put(:order, updated_order)
+      |> checkout_summary_from_context(line_items)
     end
   end
 
   @spec get_checkout_for_user(map() | nil, String.t()) :: {:ok, map()} | {:error, Error.t()}
   def get_checkout_for_user(actor, checkout_key) when is_binary(checkout_key) do
-    with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key),
-         {:ok, line_items} <- fetch_order_line_items(checkout.order.id),
-         {:ok, summary_line_items} <- fallback_line_items_from_cart(checkout, line_items) do
-      build_checkout_summary(checkout, summary_line_items)
-    end
+    checkout_key
+    |> checkout_summary_for_user(actor)
     |> normalize_result()
   end
 
   def get_checkout_for_user(_actor, _checkout_key) do
     {:error, Error.new("VALIDATION_ERROR", "checkout_key must be a string")}
+  end
+
+  defp checkout_summary_for_user(checkout_key, actor) do
+    with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key) do
+      checkout_summary_from_context(checkout)
+    end
+  end
+
+  defp checkout_summary_from_context(checkout, line_items_or_default \\ :fetch) do
+    line_items_result =
+      case line_items_or_default do
+        :fetch -> fetch_order_line_items(checkout.order.id)
+        line_items when is_list(line_items) -> {:ok, line_items}
+      end
+
+    with {:ok, line_items} <- line_items_result,
+         {:ok, summary_line_items} <- fallback_line_items_from_cart(checkout, line_items) do
+      build_checkout_summary(checkout, summary_line_items)
+    end
   end
 
   defp fallback_line_items_from_cart(_checkout, [_ | _] = line_items) do
@@ -1346,6 +1385,20 @@ defmodule Store.Checkout do
   defp telemetry_result({:ok, %{duplicate?: true}}), do: :duplicate
   defp telemetry_result({:ok, _}), do: :ok
   defp telemetry_result({:error, _}), do: :error
+
+  defp emit_step_telemetry(step, started_at, result, repo_stats) when is_atom(step) do
+    :telemetry.execute(
+      [:store, :checkout, :step],
+      %{
+        duration: System.monotonic_time() - started_at,
+        query_count: repo_stats.query_count,
+        queue_time: repo_stats.queue_time,
+        query_time: repo_stats.query_time,
+        decode_time: repo_stats.decode_time
+      },
+      %{step: step, result: telemetry_result(result)}
+    )
+  end
 
   defp non_neg_int(value, _fallback) when is_integer(value) and value >= 0, do: value
   defp non_neg_int(_value, fallback) when is_integer(fallback) and fallback >= 0, do: fallback

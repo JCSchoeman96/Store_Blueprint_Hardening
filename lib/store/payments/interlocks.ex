@@ -163,8 +163,7 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp create_or_reuse_payment_intent_record(request, nil, ash_opts) do
-    with :ok <- ensure_no_succeeded_intent(request.order_id),
-         :ok <- ensure_no_in_flight_intent(request.order_id),
+    with :ok <- ensure_payment_intent_not_blocked(request.order_id),
          {:ok, intent} <- create_or_reuse_intent(request, ash_opts) do
       {:ok, intent, false}
     end
@@ -220,35 +219,27 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp ensure_no_succeeded_intent(order_id) do
-    query = PaymentIntent |> Ash.Query.filter(expr(order_id == ^order_id and state == :succeeded))
-
-    case Ash.read(query, payment_ash_opts([])) do
-      {:ok, []} ->
-        :ok
-
-      {:ok, [_intent | _]} ->
-        {:error, Error.new("PAYMENT_ALREADY_SUCCEEDED", "payment already succeeded for order")}
-
-      {:error, error} ->
-        {:error, error}
-    end
-  end
-
-  defp ensure_no_in_flight_intent(order_id) do
-    query =
+  defp ensure_payment_intent_not_blocked(order_id) do
+    blocking_query =
       PaymentIntent
       |> Ash.Query.filter(
-        expr(order_id == ^order_id and (state == :submitted or state == :requires_action))
+        expr(
+          order_id == ^order_id and
+            (state == :succeeded or state == :submitted or state == :requires_action)
+        )
       )
 
-    case Ash.read(query, payment_ash_opts([])) do
+    case Ash.read(blocking_query, payment_ash_opts([])) do
       {:ok, []} ->
         :ok
 
-      {:ok, [_intent | _]} ->
-        {:error,
-         Error.new("PAYMENT_INTENT_DUPLICATE", "payment intent already in-flight for order")}
+      {:ok, intents} ->
+        if Enum.any?(intents, &(&1.state == :succeeded)) do
+          {:error, Error.new("PAYMENT_ALREADY_SUCCEEDED", "payment already succeeded for order")}
+        else
+          {:error,
+           Error.new("PAYMENT_INTENT_DUPLICATE", "payment intent already in-flight for order")}
+        end
 
       {:error, error} ->
         {:error, error}

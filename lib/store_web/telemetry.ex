@@ -76,6 +76,44 @@ defmodule StoreWeb.Telemetry do
         description:
           "The time the connection spent waiting before being checked out for the query"
       ),
+      summary("store.carts.step.duration",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.carts.step.query_count",
+        tags: [:step, :result]
+      ),
+      summary("store.carts.step.queue_time",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.carts.step.query_time",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.carts.step.decode_time",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.step.duration",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.step.query_count",
+        tags: [:step, :result]
+      ),
+      summary("store.checkout.step.queue_time",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.step.query_time",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.step.decode_time",
+        tags: [:step, :result],
+        unit: {:native, :millisecond}
+      ),
 
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),

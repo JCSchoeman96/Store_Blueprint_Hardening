@@ -10,6 +10,7 @@ defmodule Store.Payments do
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Payments.{Interlocks, Providers, Refunds}
   alias Store.Support.Errors.{Error, Normalize}
+  alias Store.Support.Telemetry.RepoStats
 
   resources do
     resource(Store.Payments.PaymentIntent)
@@ -77,29 +78,48 @@ defmodule Store.Payments do
       when is_binary(checkout_key) do
     started_at = System.monotonic_time()
 
-    result =
-      with {:ok, checkout} <- Checkout.get_checkout_for_user(actor, checkout_key),
-           :ok <- DigitalFacade.ensure_checkout_actor_allowed_for_system(actor, checkout.order_id),
-           :ok <- ensure_totals_finalized(checkout),
-           :ok <- ensure_order_pending_payment(checkout),
-           :ok <- ensure_payable_total(checkout),
-           :ok <- Providers.ensure_enabled_provider(input.provider),
-           {:ok, intent_result} <- create_or_reuse_intent_for_checkout(checkout, input),
-           {:ok, payment_intent} <-
-             ensure_provider_reference(
-               intent_result.payment_intent,
-               checkout,
-               intent_result.payment_intent_key,
-               input
-             ),
-           {:ok, submitted_intent} <- maybe_submit_payment_intent(payment_intent) do
-        {:ok, build_checkout_intent_result(checkout, intent_result, submitted_intent)}
-      end
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        with {:ok, checkout} <- Checkout.get_checkout_for_user(actor, checkout_key),
+             :ok <-
+               DigitalFacade.ensure_checkout_actor_allowed_for_system(actor, checkout.order_id),
+             :ok <- ensure_totals_finalized(checkout),
+             :ok <- ensure_order_pending_payment(checkout),
+             :ok <- ensure_payable_total(checkout),
+             :ok <- Providers.ensure_enabled_provider(input.provider),
+             {:ok, intent_result} <- create_or_reuse_intent_for_checkout(checkout, input),
+             {:ok, payment_intent} <-
+               ensure_provider_reference(
+                 intent_result.payment_intent,
+                 checkout,
+                 intent_result.payment_intent_key,
+                 input
+               ),
+             {:ok, submitted_intent} <- maybe_submit_payment_intent(payment_intent) do
+          {:ok, build_checkout_intent_result(checkout, intent_result, submitted_intent)}
+        end
+      end)
 
     :telemetry.execute(
       [:store, :checkout, :create_payment_intent],
       %{duration: System.monotonic_time() - started_at},
       %{provider: provider_to_string(input.provider), result: telemetry_result(result)}
+    )
+
+    :telemetry.execute(
+      [:store, :checkout, :step],
+      %{
+        duration: System.monotonic_time() - started_at,
+        query_count: repo_stats.query_count,
+        queue_time: repo_stats.queue_time,
+        query_time: repo_stats.query_time,
+        decode_time: repo_stats.decode_time
+      },
+      %{
+        step: :create_payment_intent,
+        provider: provider_to_string(input.provider),
+        result: telemetry_result(result)
+      }
     )
 
     normalize_result(result)

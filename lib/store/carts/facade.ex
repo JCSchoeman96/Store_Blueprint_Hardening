@@ -14,6 +14,7 @@ defmodule Store.Carts.Facade do
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.ID.{BinaryUuidSort, UUIDv7}
+  alias Store.Support.Telemetry.RepoStats
 
   @telemetry_prefix [:store, :carts]
 
@@ -39,12 +40,15 @@ defmodule Store.Carts.Facade do
   def get_cart_view_for_user(actor, token, %CartLoadQuery{} = query) when is_binary(token) do
     started_at = System.monotonic_time()
 
-    result =
-      with {:ok, cart} <- get_cart_for_user(actor, token) do
-        build_cart_view(cart, query)
-      end
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        with {:ok, cart} <- get_cart_for_user(actor, token) do
+          build_cart_view(cart, query)
+        end
+      end)
 
     emit_get_telemetry(started_at, actor_scope(actor), result)
+    emit_step_telemetry(:load_view, started_at, result, repo_stats)
     normalize_result(result)
   end
 
@@ -53,13 +57,16 @@ defmodule Store.Carts.Facade do
   def add_item_for_user(actor, token, %CartItemInput{} = input) when is_binary(token) do
     started_at = System.monotonic_time()
 
-    result =
-      with {:ok, cart} <- get_cart_for_user(actor, token),
-           :ok <- ensure_variant_sellable(input) do
-        add_item_transaction(cart, input)
-      end
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        with {:ok, cart} <- get_cart_for_user(actor, token),
+             :ok <- ensure_variant_sellable(input) do
+          add_item_transaction(cart, input)
+        end
+      end)
 
     emit_mutate_telemetry(started_at, :add, actor_scope(actor), result)
+    emit_step_telemetry(:add_item, started_at, result, repo_stats)
     normalize_result(result)
   end
 
@@ -301,7 +308,7 @@ defmodule Store.Carts.Facade do
       mutation? = add_or_merge_item!(locked_cart.id, locked_item, input)
 
       bumped_cart = maybe_bump_version!(locked_cart, mutation?)
-      load_cart_with_items!(bumped_cart.id)
+      load_cart_with_items!(bumped_cart)
     end)
     |> unwrap_transaction()
   end
@@ -321,7 +328,7 @@ defmodule Store.Carts.Facade do
           mutation? = maybe_update_item_qty!(item.id, item.qty, input.qty)
 
           bumped_cart = maybe_bump_version!(locked_cart, mutation?)
-          load_cart_with_items!(bumped_cart.id)
+          load_cart_with_items!(bumped_cart)
       end
     end)
     |> unwrap_transaction()
@@ -344,7 +351,7 @@ defmodule Store.Carts.Facade do
         end
 
       bumped_cart = maybe_bump_version!(locked_cart, mutation?)
-      load_cart_with_items!(bumped_cart.id)
+      load_cart_with_items!(bumped_cart)
     end)
     |> unwrap_transaction()
   end
@@ -485,11 +492,8 @@ defmodule Store.Carts.Facade do
     end
   end
 
-  defp load_cart_with_items!(cart_id) do
-    case Repo.get(Cart, cart_id) do
-      %Cart{} = cart -> %{cart | items: load_cart_items(cart_id)}
-      nil -> Repo.rollback(Error.new("NOT_FOUND", "cart not found after mutation"))
-    end
+  defp load_cart_with_items!(%Cart{} = cart) do
+    %{cart | items: load_cart_items(cart.id)}
   end
 
   defp lock_cart_item(cart_id, variant_id, subscription_plan_id) do
@@ -566,7 +570,7 @@ defmodule Store.Carts.Facade do
       |> Repo.update_all(set: [version: cart.version + 1, updated_at: now])
 
     if updated == 1 do
-      Repo.get!(Cart, cart.id)
+      %{cart | version: cart.version + 1, updated_at: now}
     else
       Repo.rollback(Error.new("STALE_RECORD", "cart changed while applying mutation"))
     end
@@ -730,6 +734,20 @@ defmodule Store.Carts.Facade do
       @telemetry_prefix ++ [:merge],
       %{duration: System.monotonic_time() - started_at},
       %{result: telemetry_result(result)}
+    )
+  end
+
+  defp emit_step_telemetry(step, started_at, result, repo_stats) when is_atom(step) do
+    :telemetry.execute(
+      @telemetry_prefix ++ [:step],
+      %{
+        duration: System.monotonic_time() - started_at,
+        query_count: repo_stats.query_count,
+        queue_time: repo_stats.queue_time,
+        query_time: repo_stats.query_time,
+        decode_time: repo_stats.decode_time
+      },
+      %{step: step, result: telemetry_result(result)}
     )
   end
 
