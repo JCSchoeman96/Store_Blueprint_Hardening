@@ -75,17 +75,19 @@ defmodule Store.Perf.ProductDetailPoller do
     %{
       count: 1,
       metadata: metadata,
+      metadata_values: metadata_values(metadata),
       sums: normalize_numbers(measurements),
       maxes: normalize_numbers(measurements)
     }
   end
 
-  defp merge_window(window, measurements, _metadata) do
+  defp merge_window(window, measurements, metadata) do
     values = normalize_numbers(measurements)
 
     %{
       count: window.count + 1,
       metadata: window.metadata,
+      metadata_values: merge_metadata_values(window.metadata_values, metadata),
       sums: Map.merge(window.sums, values, fn _key, left, right -> left + right end),
       maxes: Map.merge(window.maxes, values, fn _key, left, right -> max(left, right) end)
     }
@@ -108,14 +110,54 @@ defmodule Store.Perf.ProductDetailPoller do
         count: window.count,
         averages: average_map(window.sums, window.count),
         maxes: window.maxes,
-        metadata: window.metadata
+        metadata: window.metadata,
+        metadata_values: serialize_metadata_values(window.metadata_values)
       }
+    end)
+  end
+
+  defp serialize_metadata_values(values) do
+    Enum.into(values, %{}, fn {key, value_set} ->
+      {key, value_set |> MapSet.to_list() |> Enum.sort()}
     end)
   end
 
   defp average_map(values, count) do
     Enum.into(values, %{}, fn {key, value} -> {key, value / max(count, 1)} end)
   end
+
+  defp metadata_values(metadata) do
+    metadata
+    |> Enum.reduce(%{}, fn
+      {key, value}, acc
+      when is_binary(value) or is_atom(value) or is_boolean(value) or is_nil(value) ->
+        Map.put(acc, key, MapSet.new([normalize_metadata_value(value)]))
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp merge_metadata_values(left, right) do
+    Enum.reduce(right, left, fn
+      {key, value}, acc
+      when is_binary(value) or is_atom(value) or is_boolean(value) or is_nil(value) ->
+        Map.update(
+          acc,
+          key,
+          MapSet.new([normalize_metadata_value(value)]),
+          &MapSet.put(&1, normalize_metadata_value(value))
+        )
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp normalize_metadata_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_metadata_value(value) when is_boolean(value), do: to_string(value)
+  defp normalize_metadata_value(nil), do: "nil"
+  defp normalize_metadata_value(value), do: value
 
   defp print_snapshot(snapshot) do
     Enum.each(snapshot.shop_live, fn row ->

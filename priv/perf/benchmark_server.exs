@@ -15,8 +15,11 @@ BenchmarkHarness.configure_repos!()
 BenchmarkHarness.configure_endpoint!()
 
 {:ok, _} = Application.ensure_all_started(:store)
-{:ok, poller} = ProductDetailPoller.start_link()
+
+{:ok, poller} =
+  ProductDetailPoller.start_link(log_path: BenchmarkHarness.product_detail_poller_log_path())
+
 Process.unlink(poller)
 :ok = BenchmarkHarness.wait_for_endpoint!()
 
-BenchmarkHarness.print_runbook("tmp/perf/product_detail_poller.ndjson")
+BenchmarkHarness.print_runbook(BenchmarkHarness.product_detail_poller_log_path())

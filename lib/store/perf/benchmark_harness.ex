@@ -1,6 +1,8 @@
 defmodule Store.Perf.BenchmarkHarness do
   @moduledoc false
 
+  alias Store.Perf.ProductDetailPollerSummary
+
   @default_host "127.0.0.1"
   @default_port 4000
   @connect_timeout 500
@@ -22,6 +24,27 @@ defmodule Store.Perf.BenchmarkHarness do
 
   def benchmark_data_path do
     System.get_env("STORE_BENCHMARK_DATA_PATH", "tmp/perf/benchmark_data.json")
+  end
+
+  def product_detail_poller_log_path do
+    System.get_env(
+      "STORE_PRODUCT_DETAIL_POLLER_LOG_PATH",
+      "tmp/perf/product_detail_poller.ndjson"
+    )
+  end
+
+  def product_detail_poller_summary_path do
+    System.get_env(
+      "STORE_PRODUCT_DETAIL_POLLER_SUMMARY_PATH",
+      "tmp/perf/product_detail_poller_summary.json"
+    )
+  end
+
+  def playwright_result_path do
+    System.get_env(
+      "STORE_PLAYWRIGHT_RESULT_PATH",
+      "tmp/perf/playwright_product_detail_live_join.json"
+    )
   end
 
   def require_test_env! do
@@ -142,16 +165,34 @@ defmodule Store.Perf.BenchmarkHarness do
     end)
   end
 
+  def run_poller_summary! do
+    ProductDetailPollerSummary.run(
+      input_path: product_detail_poller_log_path(),
+      output_path: product_detail_poller_summary_path()
+    )
+  end
+
   def print_runbook(log_path) do
     IO.puts("Benchmark server ready at #{benchmark_base_url()}")
     IO.puts("Benchmark data: #{benchmark_data_path()}")
     IO.puts("Poller log: #{log_path}")
+    IO.puts("Poller summary: #{product_detail_poller_summary_path()}")
+    IO.puts("Playwright result: #{playwright_result_path()}")
     IO.puts("")
     IO.puts("Run order:")
-    IO.puts("  1. STORE_K6_QUICK=1 k6 run perf/k6/http_shop_detail.js")
-    IO.puts("  2. k6 run perf/k6/http_shop_detail.js")
-    IO.puts("  3. STORE_K6_QUICK=1 k6 run perf/k6/http_storefront.js")
-    IO.puts("  4. k6 run perf/k6/http_storefront.js")
+
+    IO.puts(
+      "  1. STORE_LIVE_JOIN_MODE=quick npx playwright test -c perf/playwright/playwright.config.mjs perf/playwright/product_detail_live_join.mjs"
+    )
+
+    IO.puts("  2. MIX_ENV=test mix run --no-start priv/perf/product_detail_poller_summary.exs")
+
+    IO.puts(
+      "  3. STORE_LIVE_JOIN_MODE=full npx playwright test -c perf/playwright/playwright.config.mjs perf/playwright/product_detail_live_join.mjs"
+    )
+
+    IO.puts("  4. MIX_ENV=test mix run --no-start priv/perf/product_detail_poller_summary.exs")
+    IO.puts("  5. STORE_K6_QUICK=1 k6 run perf/k6/http_storefront.js")
   end
 
   defp wait_until(deadline, fun) do

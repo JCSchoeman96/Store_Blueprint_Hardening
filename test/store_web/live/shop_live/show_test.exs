@@ -61,6 +61,7 @@ defmodule StoreWeb.ShopLive.ShowTest do
           assert metadata.slug == product.slug
           assert is_boolean(metadata.connected?)
           assert metadata.result == :ok
+          assert is_binary(metadata.payload_hash)
           assert is_integer(measurements.reductions_delta)
           assert measurements.reductions_delta >= 0
           assert is_integer(measurements.memory_delta)
@@ -73,6 +74,7 @@ defmodule StoreWeb.ShopLive.ShowTest do
       assert_receive {:catalog_detail, measurements, metadata}
       assert metadata.slug == product.slug
       assert metadata.result == :ok
+      assert is_binary(metadata.payload_hash)
       assert is_integer(measurements.query_count)
       assert measurements.query_count > 0
       assert is_integer(measurements.encoded_payload_bytes)

@@ -258,6 +258,124 @@
 - Caching:
   - the existing availability cache is retained
   - cached payload now stores more reusable derived data (`detail_options`, row/index maps) to reduce repeated transformation work
+
+## Phase 30.6
+### Links Consulted
+- [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex)
+- [Store.Perf.ProductDetailPoller](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller.ex)
+- [Store.Perf.ProductDetailPollerSummary](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex)
+- [Store.Catalog.ProductDetailTelemetry](/home/jcs/projects/store_blueprint/lib/store/catalog/product_detail_telemetry.ex)
+- [StoreWeb.ShopLive.Show](/home/jcs/projects/store_blueprint/lib/store_web/live/shop_live/show.ex)
+- [priv/perf/benchmark_server.exs](/home/jcs/projects/store_blueprint/priv/perf/benchmark_server.exs)
+- [priv/perf/product_detail_poller_summary.exs](/home/jcs/projects/store_blueprint/priv/perf/product_detail_poller_summary.exs)
+- [perf/playwright/product_detail_live_join.mjs](/home/jcs/projects/store_blueprint/perf/playwright/product_detail_live_join.mjs)
+- [perf/playwright/playwright.config.mjs](/home/jcs/projects/store_blueprint/perf/playwright/playwright.config.mjs)
+
+### Decisions / Pins
+- Phase 30.6 is diagnosis-only. No new checkout or product-detail optimization is allowed in this slice.
+- Browser driver is Playwright, not `k6/browser`, because local Node/Playwright support is reliable in this environment and Chromium can be installed user-local.
+- The benchmark server is the single source of truth for:
+  - isolated benchmark DB suffix
+  - explicit `PORT`
+  - benchmark base URL
+  - poller startup
+- Browser join runs must include guardrails:
+  - `quick = 20 joins`
+  - `full = 100 joins`
+  - ramp = `5 joins/sec`
+  - hold = `3000ms`
+  - run is marked invalid if client CPU stays above `90%` or free memory drops below the configured floor
+- Attribution rule is pinned:
+  - if `live_join` query count/time dominates, next target is domain/projection/session reuse
+  - if repo time is low but reductions are high, next target is BEAM transformation work
+  - if payload bytes/hash diverge between static and live, next target is hydration/payload compaction
+  - if websocket open/join ack dominates while server metrics stay low, next target is LiveView join transport/lifecycle
+
+### Implementation
+- Added Playwright harness files:
+  - [package.json](/home/jcs/projects/store_blueprint/package.json)
+  - [package-lock.json](/home/jcs/projects/store_blueprint/package-lock.json)
+  - [perf/playwright/playwright.config.mjs](/home/jcs/projects/store_blueprint/perf/playwright/playwright.config.mjs)
+  - [perf/playwright/product_detail_live_join.mjs](/home/jcs/projects/store_blueprint/perf/playwright/product_detail_live_join.mjs)
+- Added poller summary pipeline:
+  - [lib/store/perf/product_detail_poller_summary.ex](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex)
+  - [priv/perf/product_detail_poller_summary.exs](/home/jcs/projects/store_blueprint/priv/perf/product_detail_poller_summary.exs)
+- Extended product detail telemetry:
+  - `payload_hash` emitted for static and live phases
+  - shop-live events now include repo stats for full `handle_params/3`
+- Fixed poller logging bugs:
+  - `MapSet` metadata values are serialized before NDJSON write
+  - summary matching uses real boolean keys for `connected?`
+- Added cleanup support:
+  - tracked Chromium PIDs are persisted and cleaned between runs
+  - benchmark runbook now prints Playwright and poller-summary commands
+- Added regression coverage:
+  - [test/store/perf/product_detail_poller_summary_test.exs](/home/jcs/projects/store_blueprint/test/store/perf/product_detail_poller_summary_test.exs)
+  - updated [test/store_web/live/shop_live/show_test.exs](/home/jcs/projects/store_blueprint/test/store_web/live/shop_live/show_test.exs)
+
+### Validation
+- Targeted tests:
+  - `MIX_ENV=test mix test test/store_web/live/shop_live/show_test.exs test/store/perf/product_detail_poller_summary_test.exs`
+- Playwright quick run:
+  - artifact: [tmp/perf/playwright_product_detail_live_join.json](/home/jcs/projects/store_blueprint/tmp/perf/playwright_product_detail_live_join.json)
+  - `20/20` joins successful
+  - `invalid_client_saturated = false`
+  - aggregate:
+    - `avg_static_http_ms = 65.36`
+    - `p95_static_http_ms = 88.82`
+    - `avg_ws_open_ms = 0.76`
+    - `p95_ws_open_ms = 1.55`
+    - `avg_join_ack_ms = 11.78`
+    - `p95_join_ack_ms = 61.63`
+- Playwright full run:
+  - artifact: [tmp/perf/playwright_product_detail_live_join_full.json](/home/jcs/projects/store_blueprint/tmp/perf/playwright_product_detail_live_join_full.json)
+  - `100/100` joins successful
+  - `invalid_client_saturated = false`
+  - aggregate:
+    - `avg_static_http_ms = 53.72`
+    - `p95_static_http_ms = 74.19`
+    - `avg_ws_open_ms = 0.89`
+    - `p95_ws_open_ms = 1.71`
+    - `avg_join_ack_ms = 7.54`
+    - `p95_join_ack_ms = 11.76`
+- Poller summary:
+  - artifact: [tmp/perf/product_detail_poller_summary.json](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller_summary.json)
+  - static render:
+    - `count = 100`
+    - `avg query_count = 1.73`
+    - `avg duration = 7.19ms`
+    - `avg reductions_delta = 10539.74`
+    - `avg memory_delta = 92164`
+  - live join:
+    - `count = 100`
+    - `avg query_count = 1.02`
+    - `avg duration = 4.63ms`
+    - `avg reductions_delta = 7766.85`
+    - `avg memory_delta = 121926`
+  - static vs live:
+    - `query_count_delta = -0.71`
+    - `reductions_delta = -2772.90`
+    - `payload_bytes_delta = 0`
+    - `payload_hash_match? = true`
+
+### Findings
+- `/shop/:slug` `live_join` is healthy under a real browser driver in this environment.
+- The remaining work is not websocket handshake latency:
+  - `p95 ws_open_ms` is ~`1.71ms`
+  - `p95 join_ack_ms` is ~`11.76ms`
+- The route is not showing a payload divergence bug:
+  - static and live payload hashes match
+  - payload bytes delta is `0`
+- `live_join` is doing less DB work than static render:
+  - `1.02` avg queries vs `1.73`
+- `live_join` is also doing less BEAM reduction work than static render:
+  - `7766.85` avg reductions vs `10539.74`
+- The one signal to keep watching is memory:
+  - `live_join` average memory delta is higher than static render
+  - that is a second-order concern, not the primary current bottleneck
+- Decision:
+  - do not spend the next phase on `/shop/:slug` query/transport work
+  - if latency reappears, target broader contention or LiveView hydration memory shape before doing another domain projection rewrite
 - Telemetry / logging:
   - new product detail telemetry is now first-class and can separate:
     - web lifecycle cost

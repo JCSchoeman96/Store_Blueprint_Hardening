@@ -8,6 +8,7 @@ defmodule StoreWeb.ShopLive.Show do
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Catalog.Facade, as: CatalogFacade
   alias Store.Catalog.ProductDetailTelemetry
+  alias Store.Support.Telemetry.RepoStats
   alias StoreWeb.Params.Carts.CartItemParams
   alias StoreWeb.Params.Catalog.ProductDetailParams
 
@@ -32,38 +33,48 @@ defmodule StoreWeb.ShopLive.Show do
     slug = normalize_slug(Map.get(params, "slug") || Map.get(params, :slug))
     selection_count = selection_count(params)
 
-    {socket, result} =
-      case ProductDetailParams.query(params) do
-        {:ok, query} ->
-          case CatalogFacade.get_product_detail_for_public(actor, query) do
-            {:ok, detail} ->
-              {
-                socket
-                |> assign(:detail, detail)
-                |> assign(:selector_form, selector_form(detail)),
-                {:ok, detail}
-              }
+    attrs = %{
+      slug: slug,
+      selection_count: selection_count,
+      phase: phase,
+      connected?: connected?(socket)
+    }
 
-            {:error, reason} ->
-              {not_found_socket(socket), {:error, reason}}
-          end
-
-        {:error, reason} ->
-          {not_found_socket(socket), {:error, reason}}
-      end
+    {{socket, result}, repo_stats} =
+      RepoStats.capture(fn -> load_detail(socket, actor, params) end)
 
     ProductDetailTelemetry.emit_shop_live(
       started_at,
-      slug,
-      selection_count,
-      phase,
-      connected?(socket),
+      attrs,
       result,
+      repo_stats,
       before_snapshot,
       ProductDetailTelemetry.process_snapshot()
     )
 
     {:noreply, socket}
+  end
+
+  defp load_detail(socket, actor, params) do
+    case ProductDetailParams.query(params) do
+      {:ok, query} -> load_detail_from_query(socket, actor, query)
+      {:error, reason} -> {not_found_socket(socket), {:error, reason}}
+    end
+  end
+
+  defp load_detail_from_query(socket, actor, query) do
+    case CatalogFacade.get_product_detail_for_public(actor, query) do
+      {:ok, detail} ->
+        {
+          socket
+          |> assign(:detail, detail)
+          |> assign(:selector_form, selector_form(detail)),
+          {:ok, detail}
+        }
+
+      {:error, reason} ->
+        {not_found_socket(socket), {:error, reason}}
+    end
   end
 
   @impl true

@@ -4,6 +4,7 @@ defmodule Store.Catalog.ProductDetailTelemetry do
   alias Store.Catalog.Types.ProductDetail
   alias Store.Perf.ProductDetailPoller
   alias Store.Support.Errors.Normalize
+  alias Store.Support.Governance.Idempotency
 
   @shop_live_event [:store, :shop_live, :product_detail]
   @catalog_event [:store, :catalog, :product_detail, :public]
@@ -18,43 +19,31 @@ defmodule Store.Catalog.ProductDetailTelemetry do
     }
   end
 
-  @spec emit_shop_live(
-          integer(),
-          String.t() | nil,
-          non_neg_integer(),
-          :static_render | :live_join,
-          boolean(),
-          term(),
-          process_snapshot(),
-          process_snapshot()
-        ) :: :ok
-  def emit_shop_live(
-        started_at,
-        slug,
-        selection_count,
-        phase,
-        connected?,
-        result,
-        before_snapshot,
-        after_snapshot
-      )
-      when is_integer(started_at) and is_integer(selection_count) and is_atom(phase) and
-             is_boolean(connected?) and is_map(before_snapshot) and is_map(after_snapshot) do
+  @spec emit_shop_live(integer(), map(), term(), map(), process_snapshot(), process_snapshot()) ::
+          :ok
+  def emit_shop_live(started_at, attrs, result, repo_stats, before_snapshot, after_snapshot)
+      when is_integer(started_at) and is_map(attrs) and is_map(before_snapshot) and
+             is_map(after_snapshot) do
     measurements = %{
       duration: System.monotonic_time() - started_at,
+      query_count: Map.get(repo_stats, :query_count, 0),
+      queue_time: Map.get(repo_stats, :queue_time, 0),
+      query_time: Map.get(repo_stats, :query_time, 0),
+      decode_time: Map.get(repo_stats, :decode_time, 0),
       reductions_delta:
         max(Map.get(after_snapshot, :reductions, 0) - Map.get(before_snapshot, :reductions, 0), 0),
       memory_delta: Map.get(after_snapshot, :memory, 0) - Map.get(before_snapshot, :memory, 0)
     }
 
     metadata = %{
-      slug: slug,
-      selection_count: selection_count,
-      phase: phase,
-      connected?: connected?,
-      connected: if(connected?, do: "connected", else: "disconnected"),
+      slug: Map.get(attrs, :slug),
+      selection_count: Map.get(attrs, :selection_count, 0),
+      phase: Map.get(attrs, :phase),
+      connected?: Map.get(attrs, :connected?, false),
+      connected: if(Map.get(attrs, :connected?, false), do: "connected", else: "disconnected"),
       result: telemetry_result(result),
-      error_code: telemetry_error_code(result) || "NONE"
+      error_code: telemetry_error_code(result) || "NONE",
+      payload_hash: telemetry_payload_hash(result)
     }
 
     :telemetry.execute(
@@ -99,7 +88,8 @@ defmodule Store.Catalog.ProductDetailTelemetry do
       slug: slug,
       selection_count: selection_count,
       result: telemetry_result(result),
-      error_code: telemetry_error_code(result) || "NONE"
+      error_code: telemetry_error_code(result) || "NONE",
+      payload_hash: telemetry_payload_hash(result)
     }
 
     :telemetry.execute(
@@ -139,6 +129,15 @@ defmodule Store.Catalog.ProductDetailTelemetry do
   end
 
   def telemetry_error_code(_result), do: nil
+
+  @spec telemetry_payload_hash(term()) :: String.t() | nil
+  def telemetry_payload_hash({:ok, %ProductDetail{} = detail}) do
+    detail
+    |> payload_export()
+    |> Idempotency.payload_hash()
+  end
+
+  def telemetry_payload_hash(_result), do: nil
 
   defp empty_payload_metrics do
     %{
