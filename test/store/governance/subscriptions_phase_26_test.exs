@@ -18,11 +18,15 @@ defmodule Store.Governance.SubscriptionsPhase26Test do
     entitlements_exports = SurfaceRegistry.allowed_exports(Store.Entitlements.Facade)
 
     assert {:create_subscriptions_from_paid_order_for_system, 1} in subscriptions_exports
+    assert {:ensure_membership_purchase_allowed_for_system, 2} in subscriptions_exports
+    assert {:list_due_renewal_jobs_for_system, 1} in subscriptions_exports
+    assert {:process_due_subscription_renewal_for_system, 2} in subscriptions_exports
     assert {:run_due_renewals_for_system, 0} in subscriptions_exports
     assert {:run_due_renewals_for_system, 1} in subscriptions_exports
     assert {:list_subscriptions_for_user, 2} in subscriptions_exports
 
     assert {:list_entitlements_for_user, 2} in entitlements_exports
+    assert {:entitlement_set_for_user, 1} in entitlements_exports
     assert {:issue_subscription_entitlement_for_system, 2} in entitlements_exports
     assert {:revoke_subscription_entitlements_for_system, 2} in entitlements_exports
   end
@@ -34,7 +38,6 @@ defmodule Store.Governance.SubscriptionsPhase26Test do
              MapSet.new([
                :subscription_plans_key,
                :variant_subscription_plans_variant_subscription_plan,
-               :variant_subscription_plans_active_variant,
                :stored_payment_methods_provider_customer_payment_method,
                :subscriptions_source_order_line_item_id,
                :subscriptions_provider_provider_subscription_id,

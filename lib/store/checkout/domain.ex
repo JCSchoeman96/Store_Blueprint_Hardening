@@ -23,6 +23,7 @@ defmodule Store.Checkout do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.QuoteHash
   alias Store.Shipping.Types.QuoteEvidence
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Subscriptions.{SubscriptionPlan, VariantSubscriptionPlan}
 
   alias Store.Repo
@@ -408,6 +409,9 @@ defmodule Store.Checkout do
     currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
     as_of = locked_cart.updated_at || DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
+    plan_ids =
+      locked_items |> Enum.map(&resolved_plan_id_for_item(&1, plans_by_item_id)) |> Enum.uniq()
+
     begin_attrs = %{
       user_id: locked_cart.user_id,
       currency: currency,
@@ -424,7 +428,12 @@ defmodule Store.Checkout do
         end)
     }
 
-    with {:ok, begin_checkout} <-
+    with :ok <-
+           SubscriptionsFacade.ensure_membership_purchase_allowed_for_system(
+             locked_cart.user_id,
+             plan_ids
+           ),
+         {:ok, begin_checkout} <-
            Store.Orders.begin_checkout(begin_attrs, return_notifications?: true),
          {:ok, draft, duplicate?} <-
            create_or_reuse_checkout_draft(locked_cart, begin_checkout.order) do

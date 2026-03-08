@@ -9,23 +9,32 @@ defmodule Store.Catalog.Queries.ProductDetailQuery do
                   "slug",
                   :slug,
                   "selection",
-                  :selection
+                  :selection,
+                  "subscription_plan_key",
+                  :subscription_plan_key
                 ])
 
-  @enforce_keys [:slug, :selection]
-  defstruct [:slug, :selection]
+  @enforce_keys [:slug, :selection, :subscription_plan_key]
+  defstruct [:slug, :selection, :subscription_plan_key]
 
   @type t :: %__MODULE__{
           slug: String.t(),
-          selection: %{optional(String.t()) => String.t()}
+          selection: %{optional(String.t()) => String.t()},
+          subscription_plan_key: String.t() | nil
         }
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
   def new(params) when is_map(params) do
     with :ok <- validate_keys(params),
          {:ok, slug} <- parse_slug(params),
-         {:ok, selection} <- parse_selection(params) do
-      {:ok, %__MODULE__{slug: slug, selection: selection}}
+         {:ok, selection} <- parse_selection(params),
+         {:ok, subscription_plan_key} <- parse_optional_subscription_plan_key(params) do
+      {:ok,
+       %__MODULE__{
+         slug: slug,
+         selection: selection,
+         subscription_plan_key: subscription_plan_key
+       }}
     end
   end
 
@@ -74,6 +83,15 @@ defmodule Store.Catalog.Queries.ProductDetailQuery do
 
       _ ->
         {:error, Error.new("VALIDATION_ERROR", "selection must be a map")}
+    end
+  end
+
+  defp parse_optional_subscription_plan_key(params) do
+    case Map.get(params, :subscription_plan_key) || Map.get(params, "subscription_plan_key") do
+      nil -> {:ok, nil}
+      "" -> {:ok, nil}
+      value when is_binary(value) -> {:ok, String.trim(value)}
+      _ -> {:error, Error.new("VALIDATION_ERROR", "subscription_plan_key must be a string")}
     end
   end
 

@@ -35,12 +35,33 @@ defmodule Store.Payments.PaymentIntent do
       public?(true)
     end
 
+    attribute :purpose, Store.Payments.Types.PaymentIntentPurpose do
+      allow_nil?(false)
+      default(:order_checkout)
+      public?(true)
+    end
+
+    attribute :subscription_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :provider_payment_id, :string do
       allow_nil?(true)
       public?(true)
     end
 
     attribute :provider_session_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_customer_ref, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_payment_method_ref, :string do
       allow_nil?(true)
       public?(true)
     end
@@ -88,6 +109,8 @@ defmodule Store.Payments.PaymentIntent do
       transition(:mark_failed, from: :submitted, to: :failed)
       transition(:mark_failed, from: :requires_action, to: :failed)
       transition(:cancel, from: :created, to: :cancelled)
+      transition(:cancel, from: :submitted, to: :cancelled)
+      transition(:cancel, from: :requires_action, to: :cancelled)
     end
   end
 
@@ -119,8 +142,12 @@ defmodule Store.Payments.PaymentIntent do
         :amount_received_minor,
         :currency,
         :provider,
+        :purpose,
+        :subscription_id,
         :provider_payment_id,
         :provider_session_id,
+        :provider_customer_ref,
+        :provider_payment_method_ref,
         :provider_checkout_url,
         :provider_client_secret,
         :payment_intent_key
@@ -133,8 +160,12 @@ defmodule Store.Payments.PaymentIntent do
         :amount_received_minor,
         :currency,
         :provider,
+        :purpose,
+        :subscription_id,
         :provider_payment_id,
         :provider_session_id,
+        :provider_customer_ref,
+        :provider_payment_method_ref,
         :provider_checkout_url,
         :provider_client_secret,
         :payment_intent_key
@@ -151,8 +182,12 @@ defmodule Store.Payments.PaymentIntent do
 
       accept([
         :provider,
+        :purpose,
+        :subscription_id,
         :provider_payment_id,
         :provider_session_id,
+        :provider_customer_ref,
+        :provider_payment_method_ref,
         :provider_checkout_url,
         :provider_client_secret
       ])
@@ -207,11 +242,18 @@ defmodule Store.Payments.PaymentIntent do
 
     custom_indexes do
       index([:state], name: "payment_intents_state_index")
+      index([:purpose], name: "payment_intents_purpose_index")
       index([:order_id], name: "payment_intents_order_id_index")
+      index([:subscription_id], name: "payment_intents_subscription_id_index")
       index([:payment_intent_key], name: "payment_intents_payment_intent_key_index")
       index([:provider], name: "payment_intents_provider_index")
       index([:provider_payment_id], name: "payment_intents_provider_payment_id_index")
       index([:provider_session_id], name: "payment_intents_provider_session_id_index")
+      index([:provider_customer_ref], name: "payment_intents_provider_customer_ref_index")
+
+      index([:provider_payment_method_ref],
+        name: "payment_intents_provider_payment_method_ref_index"
+      )
     end
   end
 

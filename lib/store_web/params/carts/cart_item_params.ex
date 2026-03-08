@@ -13,7 +13,14 @@ defmodule StoreWeb.Params.Carts.CartItemParams do
       |> Map.put_new_lazy("qty", fn ->
         Map.get(params, "quantity") || Map.get(params, :quantity)
       end)
-      |> Map.take(["variant_id", :variant_id, "qty", :qty])
+      |> Map.take([
+        "variant_id",
+        :variant_id,
+        "qty",
+        :qty,
+        "subscription_plan_id",
+        :subscription_plan_id
+      ])
 
     CartItemInput.new(normalized)
   end

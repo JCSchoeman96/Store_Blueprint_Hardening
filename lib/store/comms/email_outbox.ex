@@ -97,12 +97,18 @@ defmodule Store.Comms.EmailOutbox do
 
   relationships do
     belongs_to :order, Store.Orders.Order do
-      allow_nil?(false)
+      allow_nil?(true)
       public?(true)
       attribute_writable?(true)
     end
 
     belongs_to :refund, Store.Payments.Refund do
+      allow_nil?(true)
+      public?(true)
+      attribute_writable?(true)
+    end
+
+    belongs_to :subscription, Store.Subscriptions.Subscription do
       allow_nil?(true)
       public?(true)
       attribute_writable?(true)
@@ -135,6 +141,7 @@ defmodule Store.Comms.EmailOutbox do
       accept([
         :order_id,
         :refund_id,
+        :subscription_id,
         :template_kind,
         :to_email,
         :subject,
@@ -192,6 +199,7 @@ defmodule Store.Comms.EmailOutbox do
       )
 
       index([:refund_id], name: "email_outboxes_refund_id_index")
+      index([:subscription_id], name: "email_outboxes_subscription_id_index")
     end
   end
 
@@ -214,21 +222,49 @@ defmodule Store.Comms.EmailOutbox do
 
   defp validate_template_refund_coherence(changeset, _context) do
     template_kind = Ash.Changeset.get_attribute(changeset, :template_kind)
+    order_id = Ash.Changeset.get_attribute(changeset, :order_id)
     refund_id = Ash.Changeset.get_attribute(changeset, :refund_id)
+    subscription_id = Ash.Changeset.get_attribute(changeset, :subscription_id)
 
-    cond do
-      is_nil(refund_id) and template_kind == :order_receipt ->
-        changeset
-
-      is_binary(refund_id) and template_kind in [:refund_requested, :refund_processed] ->
-        changeset
-
-      true ->
-        Ash.Changeset.add_error(
-          changeset,
-          field: :template_kind,
-          message: "template_kind/refund_id combination is invalid"
-        )
+    case {reference_shape(order_id, refund_id, subscription_id), template_group(template_kind)} do
+      {:order, :order} -> changeset
+      {:refund, :refund} -> changeset
+      {:subscription, :subscription} -> changeset
+      _ -> add_invalid_template_ref_error(changeset)
     end
+  end
+
+  defp reference_shape(order_id, refund_id, subscription_id)
+
+  defp reference_shape(order_id, nil, nil) when is_binary(order_id), do: :order
+
+  defp reference_shape(order_id, refund_id, nil)
+       when is_binary(order_id) and is_binary(refund_id), do: :refund
+
+  defp reference_shape(nil, nil, subscription_id) when is_binary(subscription_id),
+    do: :subscription
+
+  defp reference_shape(_order_id, _refund_id, _subscription_id), do: :invalid
+
+  defp template_group(template_kind)
+
+  defp template_group(template_kind)
+       when template_kind in [:order_receipt, :payment_authentication_required],
+       do: :order
+
+  defp template_group(template_kind) when template_kind in [:refund_requested, :refund_processed],
+    do: :refund
+
+  defp template_group(template_kind) when template_kind in [:renewal_reminder, :access_ended],
+    do: :subscription
+
+  defp template_group(_template_kind), do: :invalid
+
+  defp add_invalid_template_ref_error(changeset) do
+    Ash.Changeset.add_error(
+      changeset,
+      field: :template_kind,
+      message: "template_kind/order_id/refund_id/subscription_id combination is invalid"
+    )
   end
 end

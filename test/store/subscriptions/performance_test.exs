@@ -7,7 +7,7 @@ defmodule Store.Subscriptions.PerformanceTest do
   alias Store.SubscriptionsFixtures
   alias Store.Support.Telemetry.RepoStats
 
-  test "renewal tick query count stays bounded for a single due subscription" do
+  test "due renewal job listing query count stays bounded for a single due subscription" do
     customer = SubscriptionsFixtures.create_customer!("phase26_perf_due")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!()
@@ -23,11 +23,12 @@ defmodule Store.Subscriptions.PerformanceTest do
 
     {result, stats} =
       RepoStats.capture(fn ->
-        SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 10)
+        SubscriptionsFacade.list_due_renewal_jobs_for_system(now: now, limit: 10)
       end)
 
-    assert {:ok, %{due_count: 1}} = result
-    assert stats.query_count <= 20
+    assert {:ok, [%{subscription_id: subscription_id}]} = result
+    assert is_binary(subscription_id)
+    assert stats.query_count <= 5
   end
 
   test "entitlement list for user is served with bounded query count" do

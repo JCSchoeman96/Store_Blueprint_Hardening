@@ -23,13 +23,19 @@ defmodule Store.Governance.SubscriptionsUniquenessTest do
     attrs = %{
       user_id: customer.id,
       subscription_plan_id: plan.id,
+      variant_id: variant.id,
       status: :active,
       provider: :stripe,
       billing_mode: :merchant_managed,
+      quantity: first.quantity,
+      renewal_amount_minor: first.renewal_amount_minor,
+      renewal_currency: first.renewal_currency,
+      membership_key: first.membership_key,
       started_at: first.started_at,
       current_period_start_at: first.current_period_start_at,
       current_period_end_at: first.current_period_end_at,
       next_renewal_at: first.next_renewal_at,
+      dunning_attempt_count: first.dunning_attempt_count,
       source_order_id: order.id,
       source_order_line_item_id: line_item.id
     }

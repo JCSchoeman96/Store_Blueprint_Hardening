@@ -82,6 +82,7 @@ defmodule Store.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:benchee, "~> 1.3", only: [:dev, :test]},
+      {:cachex, "~> 4.1"},
       {:redix, "~> 1.5"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},

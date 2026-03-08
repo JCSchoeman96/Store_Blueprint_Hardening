@@ -14,7 +14,18 @@ defmodule Store.CheckoutTest do
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
+  alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
+
+  setup do
+    previous_flags = Application.get_env(:store, :subscription_features, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :subscription_features, previous_flags)
+    end)
+
+    :ok
+  end
 
   test "start_from_cart is idempotent for same cart version and issues new draft after mutation" do
     token = Ash.UUIDv7.generate()
@@ -215,6 +226,45 @@ defmodule Store.CheckoutTest do
 
     assert finalized_checkout.totals_finalized?
     assert finalized_checkout.shipping_total_minor == checkout.selection.amount_minor
+  end
+
+  test "start_from_cart blocks a new membership checkout when another pending membership order exists" do
+    enable_subscription_purchase!()
+
+    token = Ash.UUIDv7.generate()
+    customer = SubscriptionsFixtures.create_customer!("checkout_membership_pending")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:checkout-pending"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    assert {:ok, add_input} =
+             CartItemInput.new(%{
+               "variant_id" => variant.id,
+               "subscription_plan_id" => plan.id,
+               "qty" => 1
+             })
+
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(customer, token, add_input)
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, _started} = Checkout.start_from_cart(customer, token, start_input)
+
+    assert {:ok, update_input} =
+             CartItemInput.new(%{
+               "variant_id" => variant.id,
+               "subscription_plan_id" => plan.id,
+               "qty" => 2
+             })
+
+    assert {:ok, _cart} = CartsFacade.update_item_qty_for_user(customer, token, update_input)
+
+    assert {:error, error} = Checkout.start_from_cart(customer, token, start_input)
+    assert error.code == "SUBSCRIPTION_DUPLICATE"
   end
 
   test "finalize_totals returns structured unavailable variant details when inventory is gone" do
@@ -447,5 +497,15 @@ defmodule Store.CheckoutTest do
     Order
     |> Ash.Query.filter(expr(id == ^order_id))
     |> Ash.read_one!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+  end
+
+  defp enable_subscription_purchase! do
+    current_flags = Application.get_env(:store, :subscription_features, [])
+
+    Application.put_env(
+      :store,
+      :subscription_features,
+      Keyword.merge(current_flags, expose_purchase?: true)
+    )
   end
 end

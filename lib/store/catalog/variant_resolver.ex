@@ -70,7 +70,11 @@ defmodule Store.Catalog.VariantResolver do
          options: payload.detail_options,
          selected: normalized_selection,
          resolution: resolution_payload(resolution),
-         availability_matrix: availability_matrix(payload, normalized_selection)
+         availability_matrix: availability_matrix(payload, normalized_selection),
+         subscription_plan_options: [],
+         selected_subscription_plan_id: nil,
+         selected_subscription_plan_key: nil,
+         subscription_plan_required?: false
        }}
     else
       {:error, %Error{} = error} -> {:error, error}

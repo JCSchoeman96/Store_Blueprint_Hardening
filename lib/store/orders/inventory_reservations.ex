@@ -106,6 +106,18 @@ defmodule Store.Orders.InventoryReservations do
     |> maybe_invalidate_after_consume_or_expire()
   end
 
+  @spec release_reservations_for_order(String.t(), keyword()) ::
+          {:ok, %{released_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
+          | {:error, term()}
+  def release_reservations_for_order(order_id, opts \\ [])
+      when is_binary(order_id) and is_list(opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+
+    Repo.transaction(fn -> release_for_order_transaction(order_id, now) end)
+    |> unwrap_transaction_result()
+    |> maybe_invalidate_after_consume_or_expire()
+  end
+
   @spec expire_reservations(DateTime.t(), keyword()) ::
           {:ok, %{expired_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}
@@ -345,6 +357,95 @@ defmodule Store.Orders.InventoryReservations do
     |> BinaryUuidSort.sort_uuids()
   end
 
+  defp release_for_order_transaction(order_id, now) do
+    variant_ids = active_variant_ids_for_order(order_id)
+
+    variant_ids
+    |> Enum.reduce_while({0, []}, fn variant_id, acc ->
+      release_variant_step(order_id, variant_id, now, acc)
+    end)
+    |> finalize_release_result()
+  end
+
+  defp release_variant_step(order_id, variant_id, now, {count, reservations}) do
+    case release_variant(order_id, variant_id, now) do
+      {:ok, nil} ->
+        {:cont, {count, reservations}}
+
+      {:ok, reservation} ->
+        {:cont, {count + 1, [reservation | reservations]}}
+
+      {:error, error} ->
+        Repo.rollback(error)
+    end
+  end
+
+  defp release_variant(order_id, variant_id, now) do
+    with {:ok, inventory_item} <- lock_inventory_item(variant_id),
+         {:ok, reservation} <- lock_order_variant_reservation(order_id, variant_id) do
+      release_locked_reservation(order_id, variant_id, reservation, inventory_item, now)
+    end
+  end
+
+  defp release_locked_reservation(
+         _order_id,
+         _variant_id,
+         %InventoryReservation{state: :cancelled},
+         _inventory_item,
+         _now
+       ) do
+    {:ok, nil}
+  end
+
+  defp release_locked_reservation(
+         _order_id,
+         _variant_id,
+         %InventoryReservation{state: :expired},
+         _inventory_item,
+         _now
+       ) do
+    {:ok, nil}
+  end
+
+  defp release_locked_reservation(
+         _order_id,
+         _variant_id,
+         %InventoryReservation{state: :consumed},
+         _inventory_item,
+         _now
+       ) do
+    {:ok, nil}
+  end
+
+  defp release_locked_reservation(
+         _order_id,
+         _variant_id,
+         %InventoryReservation{state: :active} = reservation,
+         inventory_item,
+         now
+       ) do
+    update_inventory_counters(inventory_item, -reservation.quantity, 0)
+    |> case do
+      {:ok, _updated_inventory} ->
+        update_reservation(reservation.id, %{state: :cancelled, cancelled_at: now})
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp release_locked_reservation(_order_id, _variant_id, nil, _inventory_item, _now),
+    do: {:ok, nil}
+
+  defp release_locked_reservation(order_id, variant_id, %InventoryReservation{state: state}, _, _) do
+    {:error,
+     Error.new("RESERVATION_CONFLICT", "Reservation is not releasable", %{
+       order_id: order_id,
+       variant_id: variant_id,
+       state: state
+     })}
+  end
+
   defp consume_variant_step(order_id, variant_id, now, {count, reservations}) do
     case consume_variant(order_id, variant_id, now) do
       {:ok, nil} ->
@@ -408,6 +509,10 @@ defmodule Store.Orders.InventoryReservations do
 
   defp finalize_consume_result({count, reservations}) do
     %{consumed_count: count, reservations: Enum.reverse(reservations)}
+  end
+
+  defp finalize_release_result({count, reservations}) do
+    %{released_count: count, reservations: Enum.reverse(reservations)}
   end
 
   defp expired_active_candidates(now, batch_size) do

@@ -6,15 +6,39 @@ defmodule Store.Catalog.Types.ProductDetail do
   alias Store.Catalog.Product
   alias Store.Catalog.Variant
 
-  @enforce_keys [:product, :options, :selected, :resolution, :availability_matrix]
-  defstruct [:product, :options, :selected, :resolution, :availability_matrix]
+  @enforce_keys [
+    :product,
+    :options,
+    :selected,
+    :resolution,
+    :availability_matrix,
+    :subscription_plan_options,
+    :selected_subscription_plan_id,
+    :selected_subscription_plan_key,
+    :subscription_plan_required?
+  ]
+  defstruct [
+    :product,
+    :options,
+    :selected,
+    :resolution,
+    :availability_matrix,
+    :subscription_plan_options,
+    :selected_subscription_plan_id,
+    :selected_subscription_plan_key,
+    :subscription_plan_required?
+  ]
 
   @type t :: %__MODULE__{
           product: Product.t(),
           options: [Option.t()],
           selected: %{optional(String.t()) => String.t()},
           resolution: Resolution.t(),
-          availability_matrix: [AvailabilityCell.t()]
+          availability_matrix: [AvailabilityCell.t()],
+          subscription_plan_options: [PlanOption.t()],
+          selected_subscription_plan_id: String.t() | nil,
+          selected_subscription_plan_key: String.t() | nil,
+          subscription_plan_required?: boolean()
         }
 
   defmodule Option do
@@ -99,6 +123,23 @@ defmodule Store.Catalog.Types.ProductDetail do
             option_slug: String.t(),
             selected_value_id: String.t() | nil,
             values: [Store.Catalog.Types.ProductDetail.AvailabilityValue.t()]
+          }
+  end
+
+  defmodule PlanOption do
+    @moduledoc """
+    Public storefront subscription plan option for the resolved variant.
+    """
+
+    @enforce_keys [:id, :key, :name, :amount_minor, :currency]
+    defstruct [:id, :key, :name, :amount_minor, :currency]
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            key: String.t(),
+            name: String.t(),
+            amount_minor: integer(),
+            currency: String.t()
           }
   end
 end

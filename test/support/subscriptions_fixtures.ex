@@ -160,13 +160,26 @@ defmodule Store.SubscriptionsFixtures do
       %{
         user_id: user_id,
         subscription_plan_id: plan.id,
+        variant_id: variant.id,
         status: Map.get(overrides, :status, :active),
         provider: provider,
         billing_mode: Map.get(overrides, :billing_mode, :merchant_managed),
+        quantity: Map.get(overrides, :quantity, 1),
+        renewal_amount_minor: Map.get(overrides, :renewal_amount_minor, plan.amount_minor),
+        renewal_currency: Map.get(overrides, :renewal_currency, plan.currency),
+        membership_key: Map.get(overrides, :membership_key, membership_key_for_plan(plan)),
         started_at: period.current_period_start_at,
         current_period_start_at: period.current_period_start_at,
         current_period_end_at: period.current_period_end_at,
         next_renewal_at: Map.get(overrides, :next_renewal_at, period.next_renewal_at),
+        pending_variant_id: Map.get(overrides, :pending_variant_id),
+        pending_subscription_plan_id: Map.get(overrides, :pending_subscription_plan_id),
+        pending_renewal_amount_minor: Map.get(overrides, :pending_renewal_amount_minor),
+        pending_renewal_currency: Map.get(overrides, :pending_renewal_currency),
+        change_effective_at: Map.get(overrides, :change_effective_at),
+        dunning_attempt_count: Map.get(overrides, :dunning_attempt_count, 0),
+        next_retry_at: Map.get(overrides, :next_retry_at),
+        retry_suppressed_at: Map.get(overrides, :retry_suppressed_at),
         source_order_id: order.id,
         source_order_line_item_id: line_item.id,
         provider_customer_ref:
@@ -224,6 +237,8 @@ defmodule Store.SubscriptionsFixtures do
             amount_received_minor: amount_minor,
             currency: currency,
             provider: provider,
+            provider_customer_ref: Map.get(overrides, :provider_customer_ref),
+            provider_payment_method_ref: Map.get(overrides, :provider_billing_ref),
             payment_intent_key: "phase26:pi:#{order.id}:#{provider}"
           },
           context: %{system?: true}
@@ -334,5 +349,15 @@ defmodule Store.SubscriptionsFixtures do
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
     |> List.first()
+  end
+
+  defp membership_key_for_plan(plan) do
+    case {Map.get(plan, :entitlement_kind), Map.get(plan, :entitlement_scope_key)} do
+      {:membership_access, scope_key} when is_binary(scope_key) and scope_key != "" ->
+        scope_key
+
+      _ ->
+        nil
+    end
   end
 end

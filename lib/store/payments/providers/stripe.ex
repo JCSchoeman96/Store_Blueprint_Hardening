@@ -29,34 +29,55 @@ defmodule Store.Payments.Providers.Stripe do
 
   @impl true
   def create_intent(attrs, _opts) when is_map(attrs) do
-    with {:ok, order_ref} <- fetch_required_binary(attrs, :order_ref),
-         {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
+    case attr(attrs, :intent_purpose) do
+      :subscription_payment_method_update ->
+        create_setup_intent(attrs)
+
+      _ ->
+        create_checkout_intent(attrs)
+    end
+  end
+
+  @impl true
+  def charge_off_session(attrs, _opts) when is_map(attrs) do
+    with {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
          {:ok, currency} <- fetch_required_binary(attrs, :currency),
-         {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
-         {:ok, idempotency_key} <- fetch_required_binary(attrs, :idempotency_key),
-         {:ok, return_url} <- fetch_required_binary(attrs, :return_url),
-         {:ok, cancel_url} <- fetch_required_binary(attrs, :cancel_url) do
-      provider_session_id = "cs_store_#{short_hash(payment_intent_key)}"
-      provider_payment_id = "pi_store_#{short_hash("#{payment_intent_key}:#{idempotency_key}")}"
+         {:ok, renewal_key} <- fetch_required_binary(attrs, :renewal_key),
+         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
+         {:ok, order_id} <- fetch_required_binary(attrs, :order_id),
+         {:ok, renewal_attempt_id} <- fetch_required_binary(attrs, :renewal_attempt_id),
+         {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
+         {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
+         {:ok, provider_payment_method_ref} <-
+           fetch_required_binary(attrs, :provider_payment_method_ref) do
+      provider_payment_id = "pi_store_#{short_hash(renewal_key)}"
 
-      checkout_base_url =
-        Application.get_env(:store, :payments, [])
-        |> Keyword.get(:stripe, [])
-        |> Keyword.get(:checkout_base_url, "https://checkout.stripe.example")
+      provider_client_secret =
+        "pi_secret_#{short_hash("#{provider_payment_id}:#{local_intent_id}")}"
 
-      checkout_url =
-        "#{String.trim_trailing(checkout_base_url, "/")}/" <>
-          "#{provider_session_id}?order_ref=#{order_ref}&amount=#{amount_minor}&currency=#{String.downcase(currency)}" <>
-          "&payment_intent_id=#{provider_payment_id}" <>
-          "&idempotency_key=#{URI.encode(idempotency_key)}" <>
-          "&return_url=#{URI.encode(return_url)}&cancel_url=#{URI.encode(cancel_url)}"
+      action_url = recurring_action_url(provider_payment_id)
+      status = recurring_charge_status(attrs)
 
       {:ok,
        %{
-         provider_session_id: provider_session_id,
+         status: status,
+         idempotency_key: renewal_key,
+         confirm: true,
+         off_session: true,
+         amount_minor: amount_minor,
+         currency: String.upcase(currency),
          provider_payment_id: provider_payment_id,
-         provider_checkout_url: checkout_url,
-         provider_client_secret: nil
+         provider_customer_ref: provider_customer_ref,
+         provider_payment_method_ref: provider_payment_method_ref,
+         provider_client_secret: if(status == :requires_action, do: provider_client_secret),
+         action_url: if(status == :requires_action, do: action_url),
+         metadata: %{
+           local_intent_id: local_intent_id,
+           order_id: order_id,
+           renewal_attempt_id: renewal_attempt_id,
+           subscription_id: subscription_id,
+           renewal_key: renewal_key
+         }
        }}
     end
   end
@@ -87,10 +108,15 @@ defmodule Store.Payments.Providers.Stripe do
          provider_session_id: provider_session_id,
          provider_payment_id: provider_payment_id,
          provider_idempotency_key: extract_idempotency_key(payload),
+         provider_customer_ref: extract_provider_customer_ref(payload),
+         provider_payment_method_ref: extract_provider_payment_method_ref(payload),
+         local_payment_intent_id: extract_local_payment_intent_id(payload),
          status: normalize_status(event_type),
          amount_minor: amount_minor,
          currency: currency,
          order_ref: extract_order_ref(payload),
+         action_url: extract_action_url(payload),
+         client_secret: extract_client_secret(payload),
          occurred_at: extract_occurred_at(payload),
          event_type: event_type,
          raw_payload: payload
@@ -219,9 +245,7 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   defp extract_provider_session_id(payload, event_type) do
-    payload
-    |> provider_session_id_candidate(event_type)
-    |> normalize_required_session_id()
+    {:ok, provider_session_id_candidate(payload, event_type)}
   end
 
   defp provider_session_id_candidate(payload, <<"checkout.session.", _::binary>>) do
@@ -235,16 +259,7 @@ defmodule Store.Payments.Providers.Stripe do
 
     object["checkout_session_id"] ||
       metadata["checkout_session_id"] ||
-      Map.get(payload, "provider_session_id") ||
-      object["id"]
-  end
-
-  defp normalize_required_session_id(value) when is_binary(value) and value != "" do
-    {:ok, value}
-  end
-
-  defp normalize_required_session_id(_value) do
-    {:error, Error.new("PAYMENT_PAYLOAD_INVALID", "missing stripe checkout session id")}
+      Map.get(payload, "provider_session_id")
   end
 
   defp extract_provider_payment_id(payload, event_type) do
@@ -270,9 +285,11 @@ defmodule Store.Payments.Providers.Stripe do
 
   defp extract_amount_minor(payload) do
     object = payload_object(payload)
+    event_type = Map.get(payload, "type") || Map.get(payload, "event_type")
 
     case object["amount_total"] || object["amount_received"] || object["amount"] ||
-           Map.get(payload, "amount_minor") do
+           Map.get(payload, "amount_minor") ||
+           setup_intent_amount(event_type) do
       value when is_integer(value) and value >= 0 ->
         {:ok, value}
 
@@ -283,8 +300,9 @@ defmodule Store.Payments.Providers.Stripe do
 
   defp extract_currency(payload) do
     object = payload_object(payload)
+    metadata = object["metadata"] || %{}
 
-    case object["currency"] || Map.get(payload, "currency") do
+    case object["currency"] || metadata["currency"] || Map.get(payload, "currency") do
       value when is_binary(value) and value != "" ->
         {:ok, value |> String.trim() |> String.upcase()}
 
@@ -303,6 +321,35 @@ defmodule Store.Payments.Providers.Stripe do
     metadata["order_ref"] || metadata["checkout_key"]
   end
 
+  defp extract_provider_customer_ref(payload) do
+    object = payload_object(payload)
+    object["customer"] || Map.get(payload, "provider_customer_ref")
+  end
+
+  defp extract_provider_payment_method_ref(payload) do
+    object = payload_object(payload)
+
+    object["payment_method"] ||
+      get_in(object, ["payment_method_details", "id"]) ||
+      Map.get(payload, "provider_payment_method_ref")
+  end
+
+  defp extract_local_payment_intent_id(payload) do
+    object = payload_object(payload)
+    metadata = object["metadata"] || %{}
+    metadata["local_intent_id"] || Map.get(payload, "local_payment_intent_id")
+  end
+
+  defp extract_action_url(payload) do
+    object = payload_object(payload)
+    get_in(object, ["next_action", "redirect_to_url", "url"]) || Map.get(payload, "action_url")
+  end
+
+  defp extract_client_secret(payload) do
+    object = payload_object(payload)
+    object["client_secret"] || Map.get(payload, "provider_client_secret")
+  end
+
   defp extract_occurred_at(payload) do
     case Map.get(payload, "created") do
       created when is_integer(created) and created > 0 ->
@@ -317,15 +364,25 @@ defmodule Store.Payments.Providers.Stripe do
        when event_type in [
               "checkout.session.completed",
               "payment_intent.succeeded",
-              "charge.succeeded"
+              "charge.succeeded",
+              "setup_intent.succeeded"
             ],
        do: :succeeded
 
   defp normalize_status(event_type)
        when event_type in [
+              "payment_intent.requires_action",
+              "payment_intent.requires_confirmation"
+            ],
+       do: :requires_action
+
+  defp normalize_status(event_type)
+       when event_type in [
               "checkout.session.expired",
               "payment_intent.payment_failed",
-              "charge.failed"
+              "charge.failed",
+              "setup_intent.setup_failed",
+              "setup_intent.canceled"
             ],
        do: :failed
 
@@ -334,6 +391,90 @@ defmodule Store.Payments.Providers.Stripe do
   defp payload_object(payload) when is_map(payload) do
     get_in(payload, ["data", "object"]) || Map.get(payload, "data_object") || %{}
   end
+
+  defp create_checkout_intent(attrs) do
+    with {:ok, order_ref} <- fetch_required_binary(attrs, :order_ref),
+         {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
+         {:ok, currency} <- fetch_required_binary(attrs, :currency),
+         {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
+         {:ok, idempotency_key} <- fetch_required_binary(attrs, :idempotency_key),
+         {:ok, return_url} <- fetch_required_binary(attrs, :return_url),
+         {:ok, cancel_url} <- fetch_required_binary(attrs, :cancel_url) do
+      has_subscription_lines? = truthy_attr?(attrs, :has_subscription_lines?)
+      save_for_off_session? = truthy_attr?(attrs, :save_payment_method_for_off_session?)
+
+      checkout_mode =
+        derive_checkout_mode(amount_minor, attr(attrs, :checkout_mode), has_subscription_lines?)
+
+      provider_session_id = "cs_store_#{short_hash(payment_intent_key)}"
+
+      provider_payment_id =
+        case checkout_mode do
+          :setup -> nil
+          :payment -> "pi_store_#{short_hash("#{payment_intent_key}:#{idempotency_key}")}"
+        end
+
+      checkout_base_url =
+        Application.get_env(:store, :payments, [])
+        |> Keyword.get(:stripe, [])
+        |> Keyword.get(:checkout_base_url, "https://checkout.stripe.example")
+
+      checkout_url =
+        "#{String.trim_trailing(checkout_base_url, "/")}/" <>
+          "#{provider_session_id}?order_ref=#{order_ref}&amount=#{amount_minor}&currency=#{String.downcase(currency)}" <>
+          "&mode=#{Atom.to_string(checkout_mode)}" <>
+          "&has_subscription_lines=#{has_subscription_lines?}" <>
+          "&save_for_off_session=#{save_for_off_session?}" <>
+          maybe_payment_intent_query(provider_payment_id) <>
+          "&idempotency_key=#{URI.encode(idempotency_key)}" <>
+          "&return_url=#{URI.encode(return_url)}&cancel_url=#{URI.encode(cancel_url)}"
+
+      {:ok,
+       %{
+         provider_session_id: provider_session_id,
+         provider_payment_id: provider_payment_id,
+         provider_checkout_url: checkout_url,
+         provider_client_secret: nil,
+         checkout_mode: checkout_mode
+       }}
+    end
+  end
+
+  defp create_setup_intent(attrs) do
+    with {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
+         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
+         {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
+         {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
+         {:ok, currency} <- fetch_required_binary(attrs, :currency) do
+      provider_payment_id = "seti_store_#{short_hash(payment_intent_key)}"
+
+      provider_client_secret =
+        "seti_secret_#{short_hash("#{provider_payment_id}:#{local_intent_id}")}"
+
+      {:ok,
+       %{
+         provider_session_id: nil,
+         provider_payment_id: provider_payment_id,
+         provider_customer_ref: provider_customer_ref,
+         provider_client_secret: provider_client_secret,
+         metadata: %{
+           local_intent_id: local_intent_id,
+           subscription_id: subscription_id,
+           currency: String.upcase(currency)
+         }
+       }}
+    end
+  end
+
+  defp setup_intent_amount(event_type)
+       when event_type in [
+              "setup_intent.succeeded",
+              "setup_intent.setup_failed",
+              "setup_intent.canceled"
+            ],
+       do: 0
+
+  defp setup_intent_amount(_event_type), do: nil
 
   defp header_value(headers, key) do
     case Map.get(headers, key) || Map.get(headers, String.downcase(key)) do
@@ -352,20 +493,89 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   defp fetch_required_binary(attrs, key) do
-    case Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key)) do
+    case attr(attrs, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} is required")}
     end
   end
 
   defp fetch_required_integer(attrs, key) do
-    case Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key)) do
-      value when is_integer(value) and value >= 0 -> {:ok, value}
-      _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} must be a non-negative integer")}
+    case attr(attrs, key) do
+      value when is_integer(value) and value >= 0 ->
+        {:ok, value}
+
+      _ ->
+        {:error, Error.new("VALIDATION_ERROR", "#{key} must be a non-negative integer")}
     end
   end
 
-  defp short_hash(value) do
+  defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+
+  defp truthy_attr?(attrs, key) do
+    case attr(attrs, key) do
+      true -> true
+      "true" -> true
+      _ -> false
+    end
+  end
+
+  defp derive_checkout_mode(amount_minor, explicit_mode, has_subscription_lines?) do
+    case normalize_checkout_mode(explicit_mode) do
+      {:ok, checkout_mode} ->
+        checkout_mode
+
+      :error ->
+        if has_subscription_lines? and amount_minor == 0, do: :setup, else: :payment
+    end
+  end
+
+  defp normalize_checkout_mode(nil), do: :error
+  defp normalize_checkout_mode(:payment), do: {:ok, :payment}
+  defp normalize_checkout_mode(:setup), do: {:ok, :setup}
+  defp normalize_checkout_mode("payment"), do: {:ok, :payment}
+  defp normalize_checkout_mode("setup"), do: {:ok, :setup}
+  defp normalize_checkout_mode(_value), do: :error
+
+  defp maybe_payment_intent_query(nil), do: ""
+
+  defp maybe_payment_intent_query(provider_payment_id),
+    do: "&payment_intent_id=#{provider_payment_id}"
+
+  defp recurring_charge_status(attrs) do
+    case attr(attrs, :simulate_status) || configured_recurring_charge_status() do
+      status when status in [:succeeded, :failed, :requires_action] ->
+        status
+
+      "succeeded" ->
+        :succeeded
+
+      "failed" ->
+        :failed
+
+      "requires_action" ->
+        :requires_action
+
+      _ ->
+        :succeeded
+    end
+  end
+
+  defp configured_recurring_charge_status do
+    Application.get_env(:store, :payments, [])
+    |> Keyword.get(:stripe, [])
+    |> Keyword.get(:recurring_charge_status)
+  end
+
+  defp recurring_action_url(provider_payment_id) do
+    base_url =
+      Application.get_env(:store, :payments, [])
+      |> Keyword.get(:stripe, [])
+      |> Keyword.get(:authentication_base_url, "https://billing.stripe.example/authenticate")
+
+    "#{String.trim_trailing(base_url, "/")}/#{provider_payment_id}"
+  end
+
+  defp short_hash(value) when is_binary(value) do
     :crypto.hash(:sha256, value)
     |> Base.encode16(case: :lower)
     |> binary_part(0, 24)

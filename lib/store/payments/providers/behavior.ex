@@ -24,6 +24,8 @@ defmodule Store.Payments.Providers.Behaviour do
 
   @callback create_intent(map(), keyword()) :: {:ok, map()} | {:error, term()}
 
+  @callback charge_off_session(map(), keyword()) :: {:ok, map()} | {:error, term()}
+
   @callback verify_webhook(map(), binary(), keyword()) ::
               {:ok, map()} | {:error, term()}
 

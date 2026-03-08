@@ -5,8 +5,12 @@ defmodule Store.Payments do
 
   use Ash.Domain, extensions: [AshJsonApi.Domain]
 
+  import Ash.Expr
+  require Ash.Query
+
   alias Store.Checkout
   alias Store.Digital.Facade, as: DigitalFacade
+  alias Store.Orders.OrderLineItem
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Payments.{Interlocks, Providers, Refunds}
   alias Store.Support.Errors.{Error, Normalize}
@@ -87,13 +91,15 @@ defmodule Store.Payments do
              :ok <- ensure_order_pending_payment(checkout),
              :ok <- ensure_payable_total(checkout),
              :ok <- Providers.ensure_enabled_provider(input.provider),
+             {:ok, has_subscription_lines?} <- order_has_subscription_lines(checkout.order_id),
              {:ok, intent_result} <- create_or_reuse_intent_for_checkout(checkout, input),
              {:ok, payment_intent} <-
                ensure_provider_reference(
                  intent_result.payment_intent,
                  checkout,
                  intent_result.payment_intent_key,
-                 input
+                 input,
+                 has_subscription_lines?
                ),
              {:ok, submitted_intent} <- maybe_submit_payment_intent(payment_intent) do
           {:ok, build_checkout_intent_result(checkout, intent_result, submitted_intent)}
@@ -158,14 +164,24 @@ defmodule Store.Payments do
     create_or_reuse_payment_intent(attrs, context: %{system?: true})
   end
 
-  defp ensure_provider_reference(payment_intent, checkout, payment_intent_key, input) do
+  defp ensure_provider_reference(
+         payment_intent,
+         checkout,
+         payment_intent_key,
+         input,
+         has_subscription_lines?
+       ) do
     if provider_reference_present?(payment_intent) do
       {:ok, payment_intent}
     else
       with {:ok, provider_payload} <-
              Providers.create_intent(
                input.provider,
-               provider_create_intent_attrs(checkout, payment_intent_key),
+               provider_create_intent_attrs(
+                 checkout,
+                 payment_intent_key,
+                 has_subscription_lines?
+               ),
                []
              ) do
         update_provider_reference(payment_intent, provider_payload, input.provider)
@@ -173,8 +189,9 @@ defmodule Store.Payments do
     end
   end
 
-  defp provider_create_intent_attrs(checkout, payment_intent_key) do
+  defp provider_create_intent_attrs(checkout, payment_intent_key, has_subscription_lines?) do
     urls = provider_return_urls(checkout.checkout_key)
+    checkout_mode = provider_checkout_mode(checkout.grand_total_minor, has_subscription_lines?)
 
     %{
       order_ref: checkout.order_ref,
@@ -184,6 +201,9 @@ defmodule Store.Payments do
       currency: checkout.currency_code,
       payment_intent_key: payment_intent_key,
       idempotency_key: payment_intent_key,
+      has_subscription_lines?: has_subscription_lines?,
+      save_payment_method_for_off_session?: has_subscription_lines?,
+      checkout_mode: checkout_mode,
       return_url: urls.return_url,
       cancel_url: urls.cancel_url
     }
@@ -230,6 +250,8 @@ defmodule Store.Payments do
             provider: normalized,
             provider_payment_id: Map.get(provider_payload, :provider_payment_id),
             provider_session_id: Map.get(provider_payload, :provider_session_id),
+            provider_customer_ref: Map.get(provider_payload, :provider_customer_ref),
+            provider_payment_method_ref: Map.get(provider_payload, :provider_payment_method_ref),
             provider_checkout_url: Map.get(provider_payload, :provider_checkout_url),
             provider_client_secret: Map.get(provider_payload, :provider_client_secret)
           }
@@ -316,9 +338,32 @@ defmodule Store.Payments do
   defp provider_reference_present?(%Store.Payments.PaymentIntent{} = payment_intent) do
     is_binary(payment_intent.provider_session_id) or
       is_binary(payment_intent.provider_payment_id) or
+      is_binary(payment_intent.provider_customer_ref) or
+      is_binary(payment_intent.provider_payment_method_ref) or
       is_binary(payment_intent.provider_checkout_url) or
       is_binary(payment_intent.provider_client_secret)
   end
+
+  defp order_has_subscription_lines(order_id) when is_binary(order_id) do
+    query =
+      OrderLineItem
+      |> Ash.Query.filter(
+        expr(order_id == ^order_id and not is_nil(subscription_plan_id_snapshot))
+      )
+      |> Ash.Query.limit(1)
+
+    case Ash.read(query, domain: Store.Orders, authorize?: false, context: %{system?: true}) do
+      {:ok, [_ | _]} -> {:ok, true}
+      {:ok, []} -> {:ok, false}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp provider_checkout_mode(amount_minor, true)
+       when is_integer(amount_minor) and amount_minor == 0,
+       do: :setup
+
+  defp provider_checkout_mode(_amount_minor, _has_subscription_lines?), do: :payment
 
   defp provider_to_string(provider) when is_atom(provider),
     do: provider |> Atom.to_string() |> String.downcase()

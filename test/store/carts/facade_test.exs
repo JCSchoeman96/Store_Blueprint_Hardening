@@ -4,7 +4,20 @@ defmodule Store.Carts.FacadeTest do
   alias Store.Carts.{Cart, Facade}
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Carts.Queries.CartLoadQuery
+  alias Store.Checkout
+  alias Store.Checkout.Inputs.CheckoutStartInput
+  alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
+
+  setup do
+    previous_flags = Application.get_env(:store, :subscription_features, [])
+
+    on_exit(fn ->
+      Application.put_env(:store, :subscription_features, previous_flags)
+    end)
+
+    :ok
+  end
 
   test "lookup rule prefers user active cart for authenticated actor" do
     token = Ash.UUIDv7.generate()
@@ -71,6 +84,63 @@ defmodule Store.Carts.FacadeTest do
     assert is_binary(guest_cart.merged_into_cart_id)
   end
 
+  test "membership add-to-cart is blocked when the user already has an active membership" do
+    enable_subscription_purchase!()
+
+    user = SubscriptionsFixtures.create_customer!("cart_membership_active")
+    token = Ash.UUIDv7.generate()
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:cart-active"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    _existing = SubscriptionsFixtures.create_subscription_fixture!(user.id, variant, plan)
+
+    assert {:ok, add_input} =
+             CartItemInput.new(%{
+               "variant_id" => variant.id,
+               "subscription_plan_id" => plan.id,
+               "qty" => 1
+             })
+
+    assert {:error, error} = Facade.add_item_for_user(user, token, add_input)
+    assert error.code == "SUBSCRIPTION_DUPLICATE"
+  end
+
+  test "membership add-to-cart is blocked when a pending membership checkout already exists" do
+    enable_subscription_purchase!()
+
+    user = SubscriptionsFixtures.create_customer!("cart_membership_pending")
+    token = Ash.UUIDv7.generate()
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:cart-pending"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    assert {:ok, add_input} =
+             CartItemInput.new(%{
+               "variant_id" => variant.id,
+               "subscription_plan_id" => plan.id,
+               "qty" => 1
+             })
+
+    assert {:ok, _cart} = Facade.add_item_for_user(user, token, add_input)
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, _started} = Checkout.start_from_cart(user, token, start_input)
+
+    assert {:error, error} = Facade.add_item_for_user(user, token, add_input)
+    assert error.code == "SUBSCRIPTION_DUPLICATE"
+  end
+
   defp published_variant_id! do
     admin = TestFixtures.register_user!(email: TestFixtures.unique_email("cart_admin"))
     _role = TestFixtures.assign_role!(admin, :admin)
@@ -96,5 +166,15 @@ defmodule Store.Carts.FacadeTest do
       |> Ash.update!(domain: Store.Catalog, actor: admin)
 
     published.default_variant_id
+  end
+
+  defp enable_subscription_purchase! do
+    current_flags = Application.get_env(:store, :subscription_features, [])
+
+    Application.put_env(
+      :store,
+      :subscription_features,
+      Keyword.merge(current_flags, expose_purchase?: true)
+    )
   end
 end

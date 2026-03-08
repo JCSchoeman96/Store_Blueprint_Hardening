@@ -30,6 +30,11 @@ defmodule Store.Payments.Providers.Yoco do
   end
 
   @impl true
+  def charge_off_session(_attrs, _opts) do
+    {:error, Error.new("PAYMENT_PROVIDER_DISABLED", "yoco recurring charges are disabled")}
+  end
+
+  @impl true
   def verify_webhook(_headers, _raw_body, _opts) do
     {:error,
      Error.new(

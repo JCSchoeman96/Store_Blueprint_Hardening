@@ -102,7 +102,8 @@ config :store, Oban,
      crontab: [
        {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker},
        {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker},
-       {"*/5 * * * *", Store.Workers.RunDueSubscriptionRenewalsWorker}
+       {"*/5 * * * *", Store.Workers.RunDueSubscriptionRenewalsWorker},
+       {"0 * * * *", Store.Workers.EnqueueMembershipRenewalRemindersWorker}
      ]}
   ],
   queues: [

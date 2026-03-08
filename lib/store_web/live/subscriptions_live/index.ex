@@ -6,14 +6,18 @@ defmodule StoreWeb.SubscriptionsLive.Index do
   use StoreWeb, :live_view
 
   alias Store.Entitlements.Facade, as: EntitlementsFacade
+  alias Store.Entitlements.Types.EntitlementSet
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
-  alias StoreWeb.Params.Entitlements.UserEntitlementIndexParams
+  alias StoreWeb.Live.EntitlementAware
   alias StoreWeb.Params.Subscriptions.UserSubscriptionIndexParams
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
-     assign(socket,
+     socket
+     |> EntitlementAware.maybe_subscribe()
+     |> EntitlementAware.assign_entitlement_set()
+     |> assign(
        subscriptions: [],
        entitlements: [],
        query_error: nil
@@ -26,19 +30,34 @@ defmodule StoreWeb.SubscriptionsLive.Index do
 
     with {:ok, sub_query} <- UserSubscriptionIndexParams.query(params),
          {:ok, subscriptions} <- SubscriptionsFacade.list_subscriptions_for_user(actor, sub_query),
-         {:ok, entitlement_query} <-
-           UserEntitlementIndexParams.query(%{"status" => "active", "limit" => 200}),
-         {:ok, entitlements} <-
-           EntitlementsFacade.list_entitlements_for_user(actor, entitlement_query) do
+         {:ok, entitlement_set} <- EntitlementsFacade.entitlement_set_for_user(actor) do
       {:noreply,
        assign(socket,
          subscriptions: subscriptions,
-         entitlements: entitlements,
+         entitlement_set: entitlement_set,
+         entitlements: EntitlementSet.effective_grants(entitlement_set),
          query_error: nil
        )}
     else
       {:error, error} ->
         {:noreply, assign(socket, subscriptions: [], entitlements: [], query_error: error)}
+    end
+  end
+
+  @impl true
+  def handle_info(message, socket) do
+    case EntitlementAware.handle_invalidation(socket, message) do
+      {:handled, socket} ->
+        entitlements =
+          case socket.assigns[:entitlement_set] do
+            nil -> []
+            entitlement_set -> EntitlementSet.effective_grants(entitlement_set)
+          end
+
+        {:noreply, assign(socket, :entitlements, entitlements)}
+
+      :ignored ->
+        {:noreply, socket}
     end
   end
 

@@ -6,9 +6,11 @@ defmodule Store.Comms.Templates do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Accounts.User
   alias Store.Comms.EmailOutbox
   alias Store.Orders.{Order, OrderLineItem}
   alias Store.Payments.Refund
+  alias Store.Subscriptions.{Subscription, SubscriptionPlan}
 
   @spec build_message_for_delivery(EmailOutbox.t()) ::
           {:ok,
@@ -73,12 +75,97 @@ defmodule Store.Comms.Templates do
     end
   end
 
+  defp template_assigns(%EmailOutbox{template_kind: :payment_authentication_required} = outbox) do
+    with {:ok, order} <- fetch_order(outbox.order_id) do
+      {:ok,
+       %{
+         order_ref: order.order_ref,
+         action_url: outbox.template_assigns["action_url"],
+         provider_client_secret: outbox.template_assigns["provider_client_secret"],
+         support_email: outbox.template_assigns["support_email"] || support_email()
+       }}
+    end
+  end
+
+  defp template_assigns(%EmailOutbox{template_kind: :renewal_reminder} = outbox) do
+    with {:ok, subscription} <- fetch_subscription(outbox.subscription_id),
+         {:ok, plan} <- fetch_subscription_plan(subscription.subscription_plan_id),
+         {:ok, user} <- fetch_user(subscription.user_id) do
+      {:ok,
+       %{
+         customer_email: user.email,
+         plan_name: plan.name || plan.key,
+         days_before: outbox.template_assigns["days_before"],
+         renewal_date: format_datetime(subscription.next_renewal_at),
+         renewal_amount:
+           format_money(
+             subscription.renewal_amount_minor || 0,
+             subscription.renewal_currency || "USD"
+           ),
+         support_email: outbox.template_assigns["support_email"] || support_email()
+       }}
+    end
+  end
+
+  defp template_assigns(%EmailOutbox{template_kind: :access_ended} = outbox) do
+    with {:ok, subscription} <- fetch_subscription(outbox.subscription_id),
+         {:ok, plan} <- fetch_subscription_plan(subscription.subscription_plan_id),
+         {:ok, user} <- fetch_user(subscription.user_id) do
+      {:ok,
+       %{
+         customer_email: user.email,
+         plan_name: plan.name || plan.key,
+         reason: outbox.template_assigns["reason"] || "membership_ended",
+         period_end_at: format_datetime(subscription.current_period_end_at),
+         support_email: outbox.template_assigns["support_email"] || support_email()
+       }}
+    end
+  end
+
   defp fetch_order(order_id) do
     query = Order |> Ash.Query.filter(expr(id == ^order_id))
 
     case Ash.read(query, domain: Store.Orders, authorize?: false, context: %{system?: true}) do
       {:ok, [order | _]} -> {:ok, order}
       {:ok, []} -> {:error, {:order_not_found, order_id}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_subscription(subscription_id) do
+    query = Subscription |> Ash.Query.filter(expr(id == ^subscription_id))
+
+    case Ash.read(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, [subscription | _]} -> {:ok, subscription}
+      {:ok, []} -> {:error, {:subscription_not_found, subscription_id}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_subscription_plan(subscription_plan_id) do
+    query = SubscriptionPlan |> Ash.Query.filter(expr(id == ^subscription_plan_id))
+
+    case Ash.read(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, [plan | _]} -> {:ok, plan}
+      {:ok, []} -> {:error, {:subscription_plan_not_found, subscription_plan_id}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_user(user_id) do
+    query = User |> Ash.Query.filter(expr(id == ^user_id))
+
+    case Ash.read(query, domain: Store.Accounts, authorize?: false, context: %{system?: true}) do
+      {:ok, [user | _]} -> {:ok, user}
+      {:ok, []} -> {:error, {:user_not_found, user_id}}
       {:error, error} -> {:error, error}
     end
   end
@@ -136,6 +223,9 @@ defmodule Store.Comms.Templates do
     amount = :erlang.float_to_binary(minor / 100, decimals: 2)
     "#{String.upcase(currency)} #{amount}"
   end
+
+  defp format_datetime(%DateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%d %H:%M:%S UTC")
+  defp format_datetime(_value), do: "-"
 
   defp support_email do
     Application.get_env(:store, :comms, [])

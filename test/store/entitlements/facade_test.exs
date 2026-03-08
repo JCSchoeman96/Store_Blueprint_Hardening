@@ -4,7 +4,8 @@ defmodule Store.Entitlements.FacadeTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Entitlements.{EntitlementGrant, Facade}
+  alias Store.Entitlements.{Cache, EntitlementGrant, Facade}
+  alias Store.Entitlements.Types.EntitlementSet
   alias Store.SubscriptionsFixtures
 
   test "issue_subscription_entitlement_for_system upserts and refreshes validity window" do
@@ -85,10 +86,141 @@ defmodule Store.Entitlements.FacadeTest do
     assert grant.revoked_reason == "canceled_now"
   end
 
+  test "entitlement_set_for_user caches, invalidates, and evaluates validity at read time" do
+    customer = SubscriptionsFixtures.create_customer!("phase27a_entitlement_cache")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:cached"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan)
+
+    assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
+
+    assert {:ok, first_set} = Facade.entitlement_set_for_user(customer)
+    assert {:ok, second_set} = Facade.entitlement_set_for_user(customer)
+
+    assert first_set.fetched_at == second_set.fetched_at
+    assert EntitlementSet.has_entitlement?(first_set, :membership_access, "membership:cached")
+
+    customer_id = customer.id
+
+    Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(customer_id))
+
+    assert {:ok, _revoked_count} =
+             Facade.revoke_subscription_entitlements_for_system(subscription.id, "cache_revoke")
+
+    assert_receive {:entitlements_invalidated, ^customer_id, "cache_revoke", _occurred_at}
+
+    assert {:ok, refreshed_set} = Facade.entitlement_set_for_user(customer)
+    refute refreshed_set.fetched_at == first_set.fetched_at
+    refute EntitlementSet.has_entitlement?(refreshed_set, :membership_access, "membership:cached")
+
+    short_lived_subscription =
+      subscription
+      |> Ash.Changeset.for_update(
+        :extend_period,
+        %{
+          current_period_end_at:
+            DateTime.utc_now() |> DateTime.add(1, :second) |> DateTime.truncate(:microsecond)
+        },
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert {:ok, _grant} =
+             Facade.issue_subscription_entitlement_for_system(short_lived_subscription, plan)
+
+    assert {:ok, short_lived_set} = Facade.entitlement_set_for_user(customer)
+
+    assert EntitlementSet.has_entitlement?(
+             short_lived_set,
+             :membership_access,
+             "membership:cached"
+           )
+
+    Process.sleep(1_100)
+
+    refute EntitlementSet.has_entitlement?(
+             short_lived_set,
+             :membership_access,
+             "membership:cached"
+           )
+
+    assert EntitlementSet.effective_grants(short_lived_set) == []
+  end
+
+  test "entitlement_set_for_user coalesces concurrent cache misses" do
+    customer = SubscriptionsFixtures.create_customer!("phase27a_entitlement_single_flight")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:single-flight"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan)
+
+    assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
+
+    telemetry_ref = make_ref()
+    parent = self()
+
+    :telemetry.attach_many(
+      "entitlement-cache-test-#{inspect(telemetry_ref)}",
+      [[:store, :repo, :query]],
+      fn _event, _measurements, metadata, _config ->
+        if is_binary(metadata.query) and String.contains?(metadata.query, "entitlement_grants") do
+          send(parent, {:entitlement_query, telemetry_ref})
+        end
+      end,
+      nil
+    )
+
+    try do
+      tasks =
+        for _ <- 1..6 do
+          Task.async(fn -> Facade.entitlement_set_for_user(customer) end)
+        end
+
+      results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+
+      fetched_times =
+        results
+        |> Enum.map(fn {:ok, set} -> set.fetched_at end)
+        |> Enum.uniq()
+
+      assert length(fetched_times) == 1
+      assert drain_query_messages(telemetry_ref, 0) == 1
+    after
+      :telemetry.detach("entitlement-cache-test-#{inspect(telemetry_ref)}")
+    end
+  end
+
   defp fetch_entitlement!(subscription_id) do
     EntitlementGrant
     |> Ash.Query.filter(expr(source_kind == :subscription and source_id == ^subscription_id))
     |> Ash.read!(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
     |> List.first()
+  end
+
+  defp drain_query_messages(telemetry_ref, count) do
+    receive do
+      {:entitlement_query, ^telemetry_ref} -> drain_query_messages(telemetry_ref, count + 1)
+    after
+      100 -> count
+    end
   end
 end

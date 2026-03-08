@@ -1,0 +1,5 @@
+<p>We could not complete the renewal for order <strong><%= @order_ref %></strong> because your bank requires additional authentication.</p>
+
+<p><a href="<%= @action_url %>">Complete authentication</a></p>
+
+<p>If the link does not work, contact <%= @support_email %>.</p>

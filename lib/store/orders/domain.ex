@@ -158,6 +158,14 @@ defmodule Store.Orders do
     InventoryReservations.consume_reservations_for_order(order_id, opts)
   end
 
+  @spec release_reservations_for_order(String.t(), keyword()) ::
+          {:ok, %{released_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
+          | {:error, term()}
+  def release_reservations_for_order(order_id, opts \\ [])
+      when is_binary(order_id) and is_list(opts) do
+    InventoryReservations.release_reservations_for_order(order_id, opts)
+  end
+
   @spec expire_reservations(DateTime.t(), keyword()) ::
           {:ok, %{expired_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}

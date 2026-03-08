@@ -62,6 +62,13 @@ defmodule Store.Payments.Providers do
     end
   end
 
+  @spec charge_off_session(provider(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def charge_off_session(provider, attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
+    with {:ok, module} <- adapter(provider) do
+      module.charge_off_session(attrs, opts)
+    end
+  end
+
   @spec verify_webhook(provider(), map(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def verify_webhook(provider, headers, raw_body, opts \\ [])
       when is_map(headers) and is_binary(raw_body) and is_list(opts) do

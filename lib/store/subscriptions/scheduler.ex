@@ -48,6 +48,38 @@ defmodule Store.Subscriptions.Scheduler do
     DateTime.add(past_due_since_at, grace_period_days * 86_400, :second)
   end
 
+  @spec next_retry_at(DateTime.t(), non_neg_integer(), map()) :: DateTime.t()
+  def next_retry_at(%DateTime{} = reference_at, dunning_attempt_count, plan)
+      when is_integer(dunning_attempt_count) and dunning_attempt_count >= 0 and is_map(plan) do
+    retry_schedule_hours =
+      map_attr(plan, :retry_schedule_hours, [24, 72, 120])
+      |> normalize_retry_schedule()
+
+    schedule_index = min(dunning_attempt_count, max(length(retry_schedule_hours) - 1, 0))
+
+    offset_hours =
+      retry_schedule_hours
+      |> Enum.at(schedule_index, List.last(retry_schedule_hours, 24))
+      |> max(24)
+
+    DateTime.add(reference_at, offset_hours * 3_600, :second)
+  end
+
+  @spec renewal_jitter_seconds(Ecto.UUID.t(), pos_integer()) :: non_neg_integer()
+  def renewal_jitter_seconds(subscription_id, max_window_seconds \\ 3_600)
+
+  def renewal_jitter_seconds(subscription_id, max_window_seconds)
+      when is_binary(subscription_id) and is_integer(max_window_seconds) and
+             max_window_seconds > 0 do
+    hashed_source =
+      case Ecto.UUID.dump(subscription_id) do
+        {:ok, raw16} -> raw16
+        :error -> subscription_id
+      end
+
+    :erlang.phash2(hashed_source, max_window_seconds + 1)
+  end
+
   @spec advance_period_end(DateTime.t(), map()) :: DateTime.t()
   def advance_period_end(%DateTime{} = period_start_at, plan) when is_map(plan) do
     interval_unit = map_attr(plan, :interval_unit, :month)
@@ -87,6 +119,17 @@ defmodule Store.Subscriptions.Scheduler do
   defp map_attr(plan, key, default) do
     Map.get(plan, key) || Map.get(plan, Atom.to_string(key)) || default
   end
+
+  defp normalize_retry_schedule(schedule) when is_list(schedule) do
+    schedule
+    |> Enum.filter(&(is_integer(&1) and &1 >= 0))
+    |> case do
+      [] -> [24, 72, 120]
+      values -> values
+    end
+  end
+
+  defp normalize_retry_schedule(_schedule), do: [24, 72, 120]
 
   defp shift_calendar_months(
          %DateTime{} = period_start_at,

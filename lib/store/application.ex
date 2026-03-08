@@ -19,6 +19,7 @@ defmodule Store.Application do
         {AshAuthentication.Supervisor, otp_app: :store},
         {DNSCluster, query: Application.get_env(:store, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Store.PubSub},
+        Store.Entitlements.Cache,
         maybe_rate_limit_redis_child_spec(),
         # Start a worker by calling: Store.Worker.start_link(arg)
         # {Store.Worker, arg},

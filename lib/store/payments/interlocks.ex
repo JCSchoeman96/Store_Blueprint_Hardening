@@ -15,10 +15,12 @@ defmodule Store.Payments.Interlocks do
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Repo
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
+  alias Store.Subscriptions.RenewalAttempt
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.Governance.Idempotency
   alias Store.Workers.EnsureSubscriptionsForPaidOrderWorker
+  alias Store.Workers.ReconcilePaidSubscriptionRenewalWorker
 
   @type payment_intent_request :: %{
           required(:order_id) => String.t(),
@@ -58,8 +60,9 @@ defmodule Store.Payments.Interlocks do
          {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
          {:ok, canonical} <- normalize_canonical_receipt(receipt.provider, payload),
          {:ok, payment_intent} <- fetch_payment_intent_for_canonical(canonical),
-         {:ok, order} <- fetch_order(payment_intent.order_id),
-         :ok <- ensure_canonical_totals_match_order(canonical, order),
+         {:ok, payment_intent} <-
+           hydrate_payment_intent_provider_references(payment_intent, canonical),
+         :ok <- validate_canonical_receipt_target(payment_intent, canonical),
          {:ok, provider_event_key} <- ingest_provider_event(receipt, canonical),
          {:ok, _attempt} <-
            record_payment_attempt(payment_intent, receipt, canonical, provider_event_key),
@@ -292,12 +295,15 @@ defmodule Store.Payments.Interlocks do
   defp fetch_payment_intent_for_canonical(%CanonicalReceipt{} = canonical) do
     provider_session_id = canonical.provider_session_id
     provider_payment_id = canonical.provider_payment_id
+    local_payment_intent_id = canonical.local_payment_intent_id
 
     with {:ok, provider} <- normalize_provider(canonical.provider),
          {:ok, by_provider_session_id} <-
            fetch_payment_intent_by_provider_session_id(provider, provider_session_id),
          {:ok, by_provider_payment_id} <-
-           fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id) do
+           fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id),
+         {:ok, by_local_payment_intent_id} <-
+           fetch_payment_intent_if_present(local_payment_intent_id) do
       cond do
         match?(%PaymentIntent{}, by_provider_session_id) ->
           {:ok, by_provider_session_id}
@@ -305,8 +311,13 @@ defmodule Store.Payments.Interlocks do
         match?(%PaymentIntent{}, by_provider_payment_id) ->
           {:ok, by_provider_payment_id}
 
+        match?(%PaymentIntent{}, by_local_payment_intent_id) ->
+          {:ok, by_local_payment_intent_id}
+
         true ->
-          fallback_fetch_payment_intent(provider_payment_id || provider_session_id)
+          fallback_fetch_payment_intent(
+            provider_payment_id || provider_session_id || local_payment_intent_id
+          )
       end
     end
   end
@@ -347,6 +358,31 @@ defmodule Store.Payments.Interlocks do
   defp fetch_payment_intent_by_provider_payment_id(_provider, _provider_payment_id),
     do: {:ok, nil}
 
+  defp hydrate_payment_intent_provider_references(
+         %PaymentIntent{} = payment_intent,
+         %CanonicalReceipt{} = canonical
+       ) do
+    attrs =
+      %{
+        provider: payment_intent.provider,
+        provider_payment_id: canonical.provider_payment_id || payment_intent.provider_payment_id,
+        provider_session_id: canonical.provider_session_id || payment_intent.provider_session_id,
+        provider_customer_ref:
+          canonical.provider_customer_ref || payment_intent.provider_customer_ref,
+        provider_payment_method_ref:
+          canonical.provider_payment_method_ref || payment_intent.provider_payment_method_ref,
+        provider_client_secret: canonical.client_secret || payment_intent.provider_client_secret
+      }
+
+    if provider_reference_update_needed?(payment_intent, attrs) do
+      payment_intent
+      |> Ash.Changeset.for_update(:set_provider_reference, attrs, context: %{system?: true})
+      |> Ash.update(payment_ash_opts([]))
+    else
+      {:ok, payment_intent}
+    end
+  end
+
   defp fallback_fetch_payment_intent(payment_intent_id) when is_binary(payment_intent_id) do
     case fetch_payment_intent(payment_intent_id) do
       {:ok, %PaymentIntent{} = payment_intent} -> {:ok, payment_intent}
@@ -357,6 +393,16 @@ defmodule Store.Payments.Interlocks do
 
   defp fallback_fetch_payment_intent(_payment_intent_id),
     do: {:discard, "payment intent not found"}
+
+  defp fetch_payment_intent_if_present(payment_intent_id) when is_binary(payment_intent_id) do
+    case fetch_payment_intent(payment_intent_id) do
+      {:ok, payment_intent} -> {:ok, payment_intent}
+      {:discard, _reason} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_payment_intent_if_present(_payment_intent_id), do: {:ok, nil}
 
   defp ensure_canonical_totals_match_order(%CanonicalReceipt{} = canonical, %Order{} = order) do
     order_amount = non_neg_int(order.grand_total_minor)
@@ -444,6 +490,21 @@ defmodule Store.Payments.Interlocks do
   defp payment_attempt_outcome(_), do: "ignored"
 
   defp apply_canonical_receipt(
+         %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
+         %CanonicalReceipt{status: :succeeded},
+         _provider_event_key
+       ) do
+    with {:ok, _updated_intent, _notifications} <-
+           maybe_mark_payment_intent_succeeded(payment_intent),
+         :ok <-
+           SubscriptionsFacade.handle_payment_method_update_succeeded_for_system(
+             payment_intent.id
+           ) do
+      {:ok, :updated}
+    end
+  end
+
+  defp apply_canonical_receipt(
          payment_intent,
          %CanonicalReceipt{status: :succeeded},
          provider_event_key
@@ -452,11 +513,41 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp apply_canonical_receipt(
-         payment_intent,
+         %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
+         %CanonicalReceipt{status: :failed, event_type: "setup_intent.canceled"},
+         _provider_event_key
+       ) do
+    maybe_cancel_payment_intent(payment_intent)
+  end
+
+  defp apply_canonical_receipt(
+         %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
          %CanonicalReceipt{status: :failed},
          _provider_event_key
        ) do
     maybe_mark_payment_intent_failed(payment_intent)
+  end
+
+  defp apply_canonical_receipt(
+         payment_intent,
+         %CanonicalReceipt{status: :failed},
+         _provider_event_key
+       ) do
+    with {:ok, _result} <- maybe_mark_payment_intent_failed(payment_intent),
+         :ok <- maybe_release_failed_renewal_reservations(payment_intent) do
+      {:ok, :updated}
+    end
+  end
+
+  defp apply_canonical_receipt(
+         payment_intent,
+         %CanonicalReceipt{status: :requires_action},
+         _provider_event_key
+       ) do
+    with {:ok, _result} <- maybe_mark_payment_intent_requires_action(payment_intent),
+         :ok <- maybe_release_failed_renewal_reservations(payment_intent) do
+      {:ok, :updated}
+    end
   end
 
   defp apply_canonical_receipt(_payment_intent, _canonical, _provider_event_key) do
@@ -550,6 +641,53 @@ defmodule Store.Payments.Interlocks do
 
   defp maybe_mark_payment_intent_failed(%PaymentIntent{}), do: {:ok, :noop}
 
+  defp maybe_cancel_payment_intent(%PaymentIntent{state: :cancelled}), do: {:ok, :noop}
+
+  defp maybe_cancel_payment_intent(%PaymentIntent{state: state} = payment_intent)
+       when state in [:created, :submitted, :requires_action] do
+    payment_intent
+    |> Ash.Changeset.for_update(:cancel, %{}, context: %{system?: true})
+    |> Ash.update(payment_ash_opts([]))
+    |> case do
+      {:ok, _updated_intent} -> {:ok, :updated}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_cancel_payment_intent(%PaymentIntent{}), do: {:ok, :noop}
+
+  defp maybe_mark_payment_intent_requires_action(%PaymentIntent{state: :requires_action}),
+    do: {:ok, :noop}
+
+  defp maybe_mark_payment_intent_requires_action(
+         %PaymentIntent{state: :submitted} = payment_intent
+       ) do
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_requires_action, %{}, context: %{system?: true})
+    |> Ash.update(payment_ash_opts([]))
+    |> case do
+      {:ok, _updated_intent} -> {:ok, :updated}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_mark_payment_intent_requires_action(%PaymentIntent{}), do: {:ok, :noop}
+
+  defp maybe_release_failed_renewal_reservations(%PaymentIntent{order_id: order_id})
+       when is_binary(order_id) do
+    if renewal_order?(order_id) do
+      case Store.Orders.release_reservations_for_order(order_id, context: %{system?: true}) do
+        {:ok, _result} -> :ok
+        {:error, %Error{} = error} -> {:error, error}
+        {:error, other} -> {:error, other}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_release_failed_renewal_reservations(%PaymentIntent{}), do: :ok
+
   defp maybe_mark_order_paid(%Order{state: :paid} = order), do: {:ok, order, []}
 
   defp maybe_mark_order_paid(%Order{state: :pending_payment} = order) do
@@ -566,6 +704,22 @@ defmodule Store.Payments.Interlocks do
     {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "order is not in pending_payment state")}
   end
 
+  defp renewal_order?(order_id) when is_binary(order_id) do
+    query =
+      RenewalAttempt
+      |> Ash.Query.filter(expr(order_id == ^order_id))
+      |> Ash.Query.limit(1)
+
+    case Ash.read(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, [_ | _]} -> true
+      _ -> false
+    end
+  end
+
   defp fetch_order(order_id) do
     query = Order |> Ash.Query.filter(expr(id == ^order_id))
 
@@ -573,6 +727,21 @@ defmodule Store.Payments.Interlocks do
       {:ok, [order | _]} -> {:ok, order}
       {:ok, []} -> {:error, Error.new("ORDER_NOT_FOUND", "order not found for payment intent")}
       {:error, error} -> {:error, error}
+    end
+  end
+
+  defp validate_canonical_receipt_target(
+         %PaymentIntent{purpose: :subscription_payment_method_update},
+         %CanonicalReceipt{}
+       ),
+       do: :ok
+
+  defp validate_canonical_receipt_target(
+         %PaymentIntent{} = payment_intent,
+         %CanonicalReceipt{} = canonical
+       ) do
+    with {:ok, order} <- fetch_order(payment_intent.order_id) do
+      ensure_canonical_totals_match_order(canonical, order)
     end
   end
 
@@ -648,29 +817,16 @@ defmodule Store.Payments.Interlocks do
   defp maybe_enqueue_digital_grants(_result), do: :ok
 
   defp maybe_enqueue_subscriptions(%{applied?: true, order: %Order{} = order}) do
-    case SubscriptionsFacade.order_has_subscription_lines_for_system(order.id) do
-      {:ok, true} ->
-        %{"order_id" => order.id}
-        |> EnsureSubscriptionsForPaidOrderWorker.new()
-        |> Oban.insert()
-        |> case do
-          {:ok, _job} ->
-            :ok
+    case fetch_renewal_attempt_by_order_id(order.id) do
+      {:ok, %RenewalAttempt{} = renewal_attempt} ->
+        enqueue_renewal_reconciliation_job(order.id, renewal_attempt.id)
 
-          {:error, reason} ->
-            Logger.warning(
-              "ensure_subscriptions_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
-            )
-
-            :ok
-        end
-
-      {:ok, false} ->
-        :ok
+      {:ok, nil} ->
+        maybe_enqueue_initial_subscriptions(order)
 
       {:error, reason} ->
         Logger.warning(
-          "ensure_subscriptions_precheck_failed order_id=#{order.id} reason=#{inspect(reason)}"
+          "renewal_reconciliation_precheck_failed order_id=#{order.id} reason=#{inspect(reason)}"
         )
 
         :ok
@@ -678,6 +834,74 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp maybe_enqueue_subscriptions(_result), do: :ok
+
+  defp maybe_enqueue_initial_subscriptions(%Order{} = order) do
+    case SubscriptionsFacade.order_has_subscription_lines_for_system(order.id) do
+      {:ok, true} -> enqueue_initial_subscription_job(order)
+      {:ok, false} -> :ok
+      {:error, reason} -> log_subscription_precheck_failure(order.id, reason)
+    end
+  end
+
+  defp enqueue_initial_subscription_job(%Order{} = order) do
+    %{"order_id" => order.id}
+    |> EnsureSubscriptionsForPaidOrderWorker.new()
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} -> :ok
+      {:error, reason} -> log_subscription_enqueue_failure(order.id, reason)
+    end
+  end
+
+  defp log_subscription_precheck_failure(order_id, reason) do
+    Logger.warning(
+      "ensure_subscriptions_precheck_failed order_id=#{order_id} reason=#{inspect(reason)}"
+    )
+
+    :ok
+  end
+
+  defp log_subscription_enqueue_failure(order_id, reason) do
+    Logger.warning(
+      "ensure_subscriptions_enqueue_failed order_id=#{order_id} reason=#{inspect(reason)}"
+    )
+
+    :ok
+  end
+
+  defp fetch_renewal_attempt_by_order_id(order_id) when is_binary(order_id) do
+    query =
+      RenewalAttempt
+      |> Ash.Query.filter(expr(order_id == ^order_id))
+      |> Ash.Query.limit(1)
+
+    case Ash.read(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, [renewal_attempt | _]} -> {:ok, renewal_attempt}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp enqueue_renewal_reconciliation_job(order_id, renewal_attempt_id) do
+    %{"order_id" => order_id, "renewal_attempt_id" => renewal_attempt_id}
+    |> ReconcilePaidSubscriptionRenewalWorker.new()
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "renewal_reconciliation_enqueue_failed order_id=#{order_id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
 
   defp normalize_transaction_result({:ok, {:ok, result, notifications}})
        when is_list(notifications),
@@ -757,5 +981,20 @@ defmodule Store.Payments.Interlocks do
 
   defp attr(attrs, key, default \\ nil) do
     Map.get(attrs, key, Map.get(attrs, Atom.to_string(key), default))
+  end
+
+  defp provider_reference_update_needed?(payment_intent, attrs) do
+    Enum.any?(
+      [
+        :provider_payment_id,
+        :provider_session_id,
+        :provider_customer_ref,
+        :provider_payment_method_ref,
+        :provider_client_secret
+      ],
+      fn key ->
+        Map.get(attrs, key) != nil and Map.get(payment_intent, key) != Map.get(attrs, key)
+      end
+    )
   end
 end

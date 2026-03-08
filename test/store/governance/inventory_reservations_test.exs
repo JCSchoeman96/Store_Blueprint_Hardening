@@ -137,6 +137,28 @@ defmodule Store.Governance.InventoryReservationsTest do
     assert inventory.reserved_count == 0
   end
 
+  test "release replay restores reserved inventory exactly once" do
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 5)
+    order = create_order!()
+
+    assert {:ok, _reserved} =
+             Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 2}])
+
+    assert {:ok, first_release} = Store.Orders.release_reservations_for_order(order.id)
+    assert first_release.released_count == 1
+
+    assert {:ok, replay_release} = Store.Orders.release_reservations_for_order(order.id)
+    assert replay_release.released_count == 0
+
+    reservation = get_reservation!(order.id, variant_id)
+    assert reservation.state == :cancelled
+
+    inventory = get_inventory_item!(variant_id)
+    assert inventory.stock_on_hand == 5
+    assert inventory.reserved_count == 0
+  end
+
   test "expired reservation cannot be consumed and does not decrement stock" do
     variant_id = UUIDv7.generate()
     create_inventory_item!(variant_id, 2)

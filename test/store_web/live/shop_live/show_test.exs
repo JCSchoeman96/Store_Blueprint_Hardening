@@ -4,6 +4,7 @@ defmodule StoreWeb.ShopLive.ShowTest do
   import Phoenix.LiveViewTest
 
   alias Store.Catalog.Product
+  alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
 
   test "/shop renders published products", %{conn: conn} do
@@ -83,6 +84,68 @@ defmodule StoreWeb.ShopLive.ShowTest do
       :telemetry.detach(shop_live_handler)
       :telemetry.detach(catalog_handler)
     end
+  end
+
+  test "/shop/:slug auto-selects a single active subscription plan and enables add to cart", %{
+    conn: conn
+  } do
+    %{product: product, variant: variant} =
+      SubscriptionsFixtures.create_subscription_sellable!(%{
+        base_variant_price_minor: 1_000
+      })
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        key: "solo-plan",
+        name: "Solo Plan",
+        amount_minor: 3_199
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    {:ok, view, html} = live(conn, ~p"/shop/#{product.slug}")
+
+    assert html =~ "Solo Plan"
+    assert html =~ "$31.99"
+    refute has_element?(view, "#add-to-cart-handoff[disabled]")
+  end
+
+  test "/shop/:slug requires explicit selection when multiple active subscription plans exist", %{
+    conn: conn
+  } do
+    %{product: product, variant: variant} =
+      SubscriptionsFixtures.create_subscription_sellable!(%{
+        base_variant_price_minor: 1_000
+      })
+
+    basic_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        key: "basic-plan",
+        name: "Basic Plan",
+        amount_minor: 1_999
+      })
+
+    premium_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        key: "premium-plan",
+        name: "Premium Plan",
+        amount_minor: 2_999
+      })
+
+    _basic_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, basic_plan.id)
+    _premium_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, premium_plan.id)
+
+    {:ok, view, html} = live(conn, ~p"/shop/#{product.slug}")
+
+    assert html =~ "Basic Plan"
+    assert html =~ "Premium Plan"
+    assert has_element?(view, "#add-to-cart-handoff[disabled]")
+
+    {:ok, selected_view, selected_html} =
+      live(conn, ~p"/shop/#{product.slug}?subscription_plan_key=#{premium_plan.key}")
+
+    assert selected_html =~ "$29.99"
+    refute has_element?(selected_view, "#add-to-cart-handoff[disabled]")
   end
 
   defp published_product_fixture do

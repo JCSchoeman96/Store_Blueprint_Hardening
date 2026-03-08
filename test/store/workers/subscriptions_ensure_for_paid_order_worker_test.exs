@@ -5,7 +5,7 @@ defmodule Store.Workers.SubscriptionsEnsureForPaidOrderWorkerTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Subscriptions.{Subscription, SubscriptionItem}
+  alias Store.Subscriptions.{StoredPaymentMethod, Subscription, SubscriptionItem}
   alias Store.SubscriptionsFixtures
   alias Store.Workers.EnsureSubscriptionsForPaidOrderWorker
 
@@ -22,7 +22,15 @@ defmodule Store.Workers.SubscriptionsEnsureForPaidOrderWorkerTest do
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
 
     %{order: order} =
-      SubscriptionsFixtures.create_paid_order_with_subscription_line!(customer.id, variant, plan)
+      SubscriptionsFixtures.create_paid_order_with_subscription_line!(
+        customer.id,
+        variant,
+        plan,
+        %{
+          provider_customer_ref: "cus_worker_001",
+          provider_billing_ref: "pm_worker_001"
+        }
+      )
 
     assert :ok = perform_job(EnsureSubscriptionsForPaidOrderWorker, %{"order_id" => order.id})
     assert :ok = perform_job(EnsureSubscriptionsForPaidOrderWorker, %{"order_id" => order.id})
@@ -38,6 +46,29 @@ defmodule Store.Workers.SubscriptionsEnsureForPaidOrderWorkerTest do
     assert 1 ==
              SubscriptionItem
              |> Ash.Query.filter(expr(subscription_id in ^subscription_ids))
+             |> Ash.count!(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    [subscription] =
+      Subscription
+      |> Ash.Query.filter(expr(id in ^subscription_ids))
+      |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert subscription.provider_customer_ref == "cus_worker_001"
+    assert subscription.provider_billing_ref == "pm_worker_001"
+    assert is_binary(subscription.stored_payment_method_id)
+
+    assert 1 ==
+             StoredPaymentMethod
+             |> Ash.Query.filter(
+               expr(
+                 user_id == ^customer.id and provider_customer_ref == ^"cus_worker_001" and
+                   provider_payment_method_ref == ^"pm_worker_001"
+               )
+             )
              |> Ash.count!(
                domain: Store.Subscriptions,
                authorize?: false,

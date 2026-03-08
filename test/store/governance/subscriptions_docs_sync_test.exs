@@ -4,7 +4,8 @@ defmodule Store.Governance.SubscriptionsDocsSyncTest do
   @task "check.subscriptions_docs_sync"
   @tmp_policy_file "tmp/subscriptions_docs_sync_policy_matrix_test.md"
   @tmp_route_file "tmp/subscriptions_docs_sync_route_inventory_test.md"
-  @tmp_phase_file "tmp/subscriptions_docs_sync_phase_note_test.md"
+  @tmp_phase_27_file "tmp/subscriptions_docs_sync_phase_27_note_test.md"
+  @tmp_phase_27a_file "tmp/subscriptions_docs_sync_phase_27a_note_test.md"
 
   test "mix check aliases include subscriptions docs sync gate" do
     check_alias = Mix.Project.config()[:aliases][:check]
@@ -34,7 +35,16 @@ defmodule Store.Governance.SubscriptionsDocsSyncTest do
     )
 
     write_tmp_file(
-      @tmp_phase_file,
+      @tmp_phase_27_file,
+      """
+      ## GOAL
+      ## PLAN
+      ## PERFORMANCE & SCALING REVIEW
+      """
+    )
+
+    write_tmp_file(
+      @tmp_phase_27a_file,
       """
       ## GOAL
       ## PLAN
@@ -52,7 +62,8 @@ defmodule Store.Governance.SubscriptionsDocsSyncTest do
   test "task fails when policy matrix anchors are missing" do
     write_tmp_file(@tmp_policy_file, "no subscriptions section")
     write_tmp_file(@tmp_route_file, "| GET | `/account/subscriptions` |")
-    write_tmp_file(@tmp_phase_file, "## GOAL\n## PLAN\n## PERFORMANCE & SCALING REVIEW")
+    write_tmp_file(@tmp_phase_27_file, "## GOAL\n## PLAN\n## PERFORMANCE & SCALING REVIEW")
+    write_tmp_file(@tmp_phase_27a_file, "## GOAL\n## PLAN\n## PERFORMANCE & SCALING REVIEW")
 
     with_env_overrides(fn ->
       assert_raise Mix.Error, ~r/Missing anchors/, fn ->
@@ -72,7 +83,11 @@ defmodule Store.Governance.SubscriptionsDocsSyncTest do
   defp with_env_overrides(fun) do
     with_env("CHECK_SUBSCRIPTIONS_POLICY_MATRIX_FILE", @tmp_policy_file, fn ->
       with_env("CHECK_SUBSCRIPTIONS_ROUTE_INVENTORY_FILE", @tmp_route_file, fn ->
-        with_env("CHECK_SUBSCRIPTIONS_PHASE_NOTE_FILE", @tmp_phase_file, fun)
+        with_env(
+          "CHECK_SUBSCRIPTIONS_PHASE_NOTE_FILES",
+          Enum.join([@tmp_phase_27_file, @tmp_phase_27a_file], ","),
+          fun
+        )
       end)
     end)
   end
@@ -103,6 +118,7 @@ defmodule Store.Governance.SubscriptionsDocsSyncTest do
   defp cleanup_tmp_files do
     File.rm(@tmp_policy_file)
     File.rm(@tmp_route_file)
-    File.rm(@tmp_phase_file)
+    File.rm(@tmp_phase_27_file)
+    File.rm(@tmp_phase_27a_file)
   end
 end

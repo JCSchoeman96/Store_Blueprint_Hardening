@@ -110,7 +110,9 @@ Required (at minimum for release-1):
 - Required anchors:
   - subscriptions + entitlements sections in `docs/governance/policy_matrix.md`
   - customer/admin subscription routes in `docs/governance/route_inventory.md`
-  - phase note file and core sections in `docs/agent_notes/phase_26_docs.md`
+  - phase note files and core sections in:
+    - `docs/agent_notes/phase_27_docs.md`
+    - `docs/agent_notes/phase_27a_docs.md`
 
 
 ## Policy matrix test gate (MUST)

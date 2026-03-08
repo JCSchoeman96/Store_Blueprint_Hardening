@@ -1,0 +1,8 @@
+Your membership renewal is coming up.
+
+Plan: <%= @plan_name %>
+Renewal date: <%= @renewal_date %>
+Renewal amount: <%= @renewal_amount %>
+Reminder window: <%= @days_before %> day(s) before renewal
+
+If you need help before renewal, contact <%= @support_email %>.

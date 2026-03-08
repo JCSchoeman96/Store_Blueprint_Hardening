@@ -29,6 +29,7 @@ defmodule Store.Catalog.Facade do
   }
 
   alias Store.Repo
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Support.Errors.Error
   alias Store.Support.Errors.Normalize
   alias Store.Support.Telemetry.RepoStats
@@ -721,11 +722,68 @@ defmodule Store.Catalog.Facade do
   defp load_public_product_detail(%ProductDetailQuery{} = query) do
     with {:ok, %{product: %Product{} = product, payload: payload}} <-
            ProductDetailProjection.load_public_detail(query.slug),
-         {:ok, detail} <- VariantResolver.build_product_detail(product, payload, query.selection) do
+         {:ok, detail} <- VariantResolver.build_product_detail(product, payload, query.selection),
+         {:ok, detail} <- maybe_attach_subscription_plan_options(detail, query) do
       {:ok, detail, payload}
     else
       {:ok, nil} -> {:error, Error.new("NOT_FOUND", "product not found")}
       {:error, error} -> {:error, error}
     end
   end
+
+  defp maybe_attach_subscription_plan_options(
+         %{product: %Product{product_kind: :subscription}} = detail,
+         %ProductDetailQuery{} = query
+       ) do
+    case detail.resolution do
+      %{status: :ok, variant_id: variant_id} when is_binary(variant_id) ->
+        with {:ok, plan_options} <-
+               SubscriptionsFacade.list_variant_subscription_plan_options_for_system(
+                 variant_id,
+                 selected_plan_key: query.subscription_plan_key
+               ) do
+          selected_plan =
+            selected_subscription_plan_option(plan_options, query.subscription_plan_key)
+
+          {:ok,
+           %{
+             detail
+             | subscription_plan_options: plan_options,
+               selected_subscription_plan_id: selected_plan && selected_plan.id,
+               selected_subscription_plan_key: selected_plan && selected_plan.key,
+               subscription_plan_required?: length(plan_options) > 1
+           }}
+        end
+
+      _ ->
+        {:ok,
+         %{
+           detail
+           | subscription_plan_options: [],
+             selected_subscription_plan_id: nil,
+             selected_subscription_plan_key: nil,
+             subscription_plan_required?: false
+         }}
+    end
+  end
+
+  defp maybe_attach_subscription_plan_options(detail, _query) do
+    {:ok,
+     %{
+       detail
+       | subscription_plan_options: [],
+         selected_subscription_plan_id: nil,
+         selected_subscription_plan_key: nil,
+         subscription_plan_required?: false
+     }}
+  end
+
+  defp selected_subscription_plan_option([plan_option], nil), do: plan_option
+
+  defp selected_subscription_plan_option(plan_options, selected_plan_key)
+       when is_binary(selected_plan_key) do
+    Enum.find(plan_options, &(&1.key == selected_plan_key))
+  end
+
+  defp selected_subscription_plan_option(_plan_options, _selected_plan_key), do: nil
 end

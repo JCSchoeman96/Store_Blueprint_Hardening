@@ -1,0 +1,9 @@
+<p>Your membership access has ended.</p>
+
+<ul>
+  <li><strong>Plan:</strong> <%= @plan_name %></li>
+  <li><strong>Ended at:</strong> <%= @period_end_at %></li>
+  <li><strong>Reason:</strong> <%= @reason %></li>
+</ul>
+
+<p>If you need help restoring access, contact <%= @support_email %>.</p>

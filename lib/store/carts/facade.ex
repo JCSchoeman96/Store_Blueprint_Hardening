@@ -60,7 +60,12 @@ defmodule Store.Carts.Facade do
     {result, repo_stats} =
       RepoStats.capture(fn ->
         with {:ok, cart} <- get_cart_for_user(actor, token),
-             :ok <- ensure_variant_sellable(input) do
+             :ok <- ensure_variant_sellable(input),
+             :ok <-
+               SubscriptionsFacade.ensure_membership_purchase_allowed_for_system(
+                 cart.user_id,
+                 input.subscription_plan_id
+               ) do
           add_item_transaction(cart, input)
         end
       end)

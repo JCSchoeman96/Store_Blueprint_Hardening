@@ -8,8 +8,9 @@ defmodule Store.Comms.DomainTest do
   alias Ecto.Adapters.SQL
   alias Store.Comms.EmailOutbox
   alias Store.Orders.Order
+  alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
-  alias Store.Workers.DeliverEmailOutboxWorker
+  alias Store.Workers.{DeliverEmailOutboxWorker, EnqueueMembershipRenewalRemindersWorker}
 
   test "enqueue_order_receipt_for_system is idempotent by canonical key" do
     user = TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_receipt_user"))
@@ -57,7 +58,8 @@ defmodule Store.Comms.DomainTest do
              |> Ash.Changeset.for_create(:enqueue, attrs, context: %{system?: true})
              |> Ash.create(domain: Store.Comms, authorize?: false, context: %{system?: true})
 
-    assert Exception.message(error) =~ "template_kind/refund_id combination is invalid"
+    assert Exception.message(error) =~
+             "template_kind/order_id/refund_id/subscription_id combination is invalid"
   end
 
   test "provider enum rejects unknown values" do
@@ -144,6 +146,108 @@ defmodule Store.Comms.DomainTest do
       args: %{"email_outbox_id" => outbox.id},
       queue: "comms"
     )
+  end
+
+  test "membership renewal reminders only enqueue for active memberships and are idempotent" do
+    customer = SubscriptionsFixtures.create_customer!("phase27a_membership_reminder")
+    other_customer = SubscriptionsFixtures.create_customer!("phase27a_membership_reminder_other")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        name: "Gold Membership",
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:gold"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    target_now = ~U[2026-03-08 10:00:00Z]
+    renewal_at = DateTime.add(target_now, 7 * 86_400 + 600, :second)
+
+    %{subscription: active_subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        status: :active,
+        next_renewal_at: renewal_at
+      })
+
+    %{subscription: past_due_subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(other_customer.id, variant, plan, %{
+        status: :past_due,
+        next_renewal_at: renewal_at
+      })
+
+    assert :ok =
+             perform_job(EnqueueMembershipRenewalRemindersWorker, %{
+               "now" => DateTime.to_iso8601(target_now)
+             })
+
+    assert 1 ==
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(
+                 subscription_id == ^active_subscription.id and template_kind == :renewal_reminder
+               )
+             )
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert 0 ==
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(
+                 subscription_id == ^past_due_subscription.id and
+                   template_kind == :renewal_reminder
+               )
+             )
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert :ok =
+             perform_job(EnqueueMembershipRenewalRemindersWorker, %{
+               "now" => DateTime.to_iso8601(target_now)
+             })
+
+    assert 1 ==
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(
+                 subscription_id == ^active_subscription.id and template_kind == :renewal_reminder
+               )
+             )
+             |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+  end
+
+  test "membership access ended email is idempotent by subscription reason and period" do
+    customer = SubscriptionsFixtures.create_customer!("phase27a_access_ended")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        name: "Premium Membership",
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:premium"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        current_period_end_at: ~U[2026-03-31 00:00:00Z]
+      })
+
+    assert {:ok, first} =
+             Store.Comms.enqueue_membership_access_ended_for_system(
+               subscription.id,
+               "grace_expired"
+             )
+
+    assert {:ok, second} =
+             Store.Comms.enqueue_membership_access_ended_for_system(
+               subscription.id,
+               "grace_expired"
+             )
+
+    assert first.id == second.id
+    assert first.template_kind == :access_ended
   end
 
   defp create_finalized_order!(user_id) do

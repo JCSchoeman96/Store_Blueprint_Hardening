@@ -1,0 +1,6 @@
+We could not complete the renewal for order <%= @order_ref %> because your bank requires additional authentication.
+
+Complete authentication here:
+<%= @action_url %>
+
+If the link does not work, contact <%= @support_email %>.

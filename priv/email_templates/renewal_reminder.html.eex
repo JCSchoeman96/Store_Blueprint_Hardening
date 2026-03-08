@@ -1,0 +1,10 @@
+<p>Your membership renewal is coming up.</p>
+
+<ul>
+  <li><strong>Plan:</strong> <%= @plan_name %></li>
+  <li><strong>Renewal date:</strong> <%= @renewal_date %></li>
+  <li><strong>Renewal amount:</strong> <%= @renewal_amount %></li>
+  <li><strong>Reminder window:</strong> <%= @days_before %> day(s) before renewal</li>
+</ul>
+
+<p>If you need help before renewal, contact <%= @support_email %>.</p>

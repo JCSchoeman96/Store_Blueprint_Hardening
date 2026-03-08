@@ -4,10 +4,10 @@ defmodule Store.Subscriptions.ReplayConcurrencyTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Subscriptions.{Facade, RenewalAttempt, Scheduler, Subscription}
+  alias Store.Subscriptions.{Facade, RenewalAttempt, Subscription}
   alias Store.SubscriptionsFixtures
 
-  test "concurrent renewal ticks do not double-extend the same subscription period" do
+  test "concurrent renewal ticks create one renewal attempt and do not advance before reconciliation" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_concurrency")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!()
@@ -21,7 +21,8 @@ defmodule Store.Subscriptions.ReplayConcurrencyTest do
         next_renewal_at: DateTime.add(now, -5, :second)
       })
 
-    expected_period = Scheduler.next_period(subscription.current_period_end_at, plan)
+    current_period_end = subscription.current_period_end_at
+    current_next_renewal_at = subscription.next_renewal_at
 
     results =
       1..2
@@ -33,12 +34,14 @@ defmodule Store.Subscriptions.ReplayConcurrencyTest do
     assert Enum.all?(results, &match?({:ok, _}, &1))
 
     renewed = fetch_subscription!(subscription.id)
-    assert renewed.current_period_end_at == expected_period.current_period_end_at
-    assert renewed.next_renewal_at == expected_period.next_renewal_at
+    assert renewed.current_period_end_at == current_period_end
+    assert renewed.next_renewal_at == current_next_renewal_at
 
     attempts = list_attempts!(subscription.id)
     assert length(attempts) == 1
-    assert hd(attempts).status == :succeeded
+    assert hd(attempts).status == :processing
+    assert is_binary(hd(attempts).order_id)
+    assert is_binary(hd(attempts).payment_intent_id)
   end
 
   defp fetch_subscription!(id) do

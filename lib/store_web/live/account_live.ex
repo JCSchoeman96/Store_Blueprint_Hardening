@@ -4,6 +4,23 @@ defmodule StoreWeb.AccountLive do
   """
 
   use StoreWeb, :live_view
+  alias StoreWeb.Live.EntitlementAware
+
+  @impl true
+  def mount(_params, _session, socket) do
+    {:ok,
+     socket
+     |> EntitlementAware.maybe_subscribe()
+     |> EntitlementAware.assign_entitlement_set()}
+  end
+
+  @impl true
+  def handle_info(message, socket) do
+    case EntitlementAware.handle_invalidation(socket, message) do
+      {:handled, socket} -> {:noreply, socket}
+      :ignored -> {:noreply, socket}
+    end
+  end
 
   @impl true
   def render(assigns) do

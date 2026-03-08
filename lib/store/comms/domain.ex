@@ -4,6 +4,7 @@ defmodule Store.Comms do
   """
 
   import Ash.Expr
+  import Ecto.Query
 
   require Ash.Query
 
@@ -13,6 +14,7 @@ defmodule Store.Comms do
   alias Store.Orders.Order
   alias Store.Payments.Refund
   alias Store.Repo
+  alias Store.Subscriptions.{Scheduler, Subscription, SubscriptionPlan}
   alias Store.Workers.DeliverEmailOutboxWorker
 
   use Ash.Domain
@@ -111,6 +113,152 @@ defmodule Store.Comms do
     end
   end
 
+  @spec enqueue_payment_authentication_required_for_system(String.t(), keyword()) ::
+          {:ok, EmailOutbox.t()} | {:error, term()}
+  def enqueue_payment_authentication_required_for_system(order_id, opts \\ [])
+      when is_binary(order_id) do
+    with {:ok, order} <- fetch_order(order_id),
+         {:ok, to_email} <- resolve_recipient_email(order, opts),
+         {:ok, provider} <- resolve_provider(opts),
+         action_url when is_binary(action_url) and action_url != "" <-
+           Keyword.get(opts, :action_url),
+         {:ok, outbox} <-
+           upsert_outbox(%{
+             order_id: order.id,
+             refund_id: nil,
+             template_kind: :payment_authentication_required,
+             to_email: to_email,
+             subject: "Payment authentication required for order #{order.order_ref}",
+             idempotency_key: "payment_authentication_required:order:#{order.id}",
+             provider: provider,
+             template_assigns: %{
+               "order_id" => order.id,
+               "order_ref" => order.order_ref,
+               "action_url" => action_url,
+               "provider_client_secret" => Keyword.get(opts, :provider_client_secret),
+               "support_email" => support_email()
+             }
+           }),
+         {:ok, _job} <- enqueue_delivery_job(outbox.id) do
+      emit_outbox_insert_telemetry(outbox)
+      {:ok, outbox}
+    else
+      nil -> {:error, :missing_action_url}
+      "" -> {:error, :missing_action_url}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :missing_action_url}
+    end
+  end
+
+  @spec enqueue_membership_renewal_reminder_for_system(
+          String.t(),
+          String.t(),
+          pos_integer(),
+          keyword()
+        ) ::
+          {:ok, EmailOutbox.t()} | {:ok, :skipped} | {:error, term()}
+  def enqueue_membership_renewal_reminder_for_system(
+        subscription_id,
+        renewal_key,
+        days_before,
+        opts \\ []
+      )
+      when is_binary(subscription_id) and is_binary(renewal_key) and is_integer(days_before) and
+             days_before > 0 do
+    with {:ok, subscription} <- fetch_subscription(subscription_id),
+         {:ok, plan} <- fetch_subscription_plan(subscription.subscription_plan_id),
+         :ok <- ensure_membership_plan(plan),
+         :ok <- ensure_active_membership_subscription(subscription),
+         {:ok, to_email} <- resolve_subscription_recipient_email(subscription, opts),
+         {:ok, provider} <- resolve_provider(opts),
+         {:ok, outbox} <-
+           upsert_outbox(%{
+             order_id: nil,
+             refund_id: nil,
+             subscription_id: subscription.id,
+             template_kind: :renewal_reminder,
+             to_email: to_email,
+             subject: "Membership renewal reminder for #{plan.name || plan.key}",
+             idempotency_key:
+               "membership_renewal_reminder:sub:#{subscription.id}:renewal:#{renewal_key}:days:#{days_before}",
+             provider: provider,
+             template_assigns: %{
+               "subscription_id" => subscription.id,
+               "subscription_plan_id" => plan.id,
+               "days_before" => days_before,
+               "next_renewal_at" => subscription.next_renewal_at,
+               "renewal_amount_minor" => subscription.renewal_amount_minor,
+               "renewal_currency" => subscription.renewal_currency,
+               "support_email" => support_email()
+             }
+           }),
+         {:ok, _job} <- enqueue_delivery_job(outbox.id) do
+      emit_outbox_insert_telemetry(outbox)
+      {:ok, outbox}
+    else
+      {:error, :membership_only} -> {:ok, :skipped}
+      {:error, :inactive_membership} -> {:ok, :skipped}
+      other -> other
+    end
+  end
+
+  @spec enqueue_membership_access_ended_for_system(String.t(), String.t(), keyword()) ::
+          {:ok, EmailOutbox.t()} | {:ok, :skipped} | {:error, term()}
+  def enqueue_membership_access_ended_for_system(subscription_id, reason, opts \\ [])
+      when is_binary(subscription_id) and is_binary(reason) do
+    with {:ok, subscription} <- fetch_subscription(subscription_id),
+         {:ok, plan} <- fetch_subscription_plan(subscription.subscription_plan_id),
+         :ok <- ensure_membership_plan(plan),
+         {:ok, to_email} <- resolve_subscription_recipient_email(subscription, opts),
+         {:ok, provider} <- resolve_provider(opts),
+         period_end_key <- access_ended_period_end_key(subscription.current_period_end_at),
+         {:ok, outbox} <-
+           upsert_outbox(%{
+             order_id: nil,
+             refund_id: nil,
+             subscription_id: subscription.id,
+             template_kind: :access_ended,
+             to_email: to_email,
+             subject: "Membership access ended for #{plan.name || plan.key}",
+             idempotency_key:
+               "membership_access_ended:sub:#{subscription.id}:reason:#{reason}:period_end:#{period_end_key}",
+             provider: provider,
+             template_assigns: %{
+               "subscription_id" => subscription.id,
+               "subscription_plan_id" => plan.id,
+               "reason" => reason,
+               "current_period_end_at" => subscription.current_period_end_at,
+               "support_email" => support_email()
+             }
+           }),
+         {:ok, _job} <- enqueue_delivery_job(outbox.id) do
+      emit_outbox_insert_telemetry(outbox)
+      {:ok, outbox}
+    else
+      {:error, :membership_only} -> {:ok, :skipped}
+      other -> other
+    end
+  end
+
+  @spec enqueue_due_membership_renewal_reminders_for_system(keyword()) ::
+          {:ok, %{enqueued_count: non_neg_integer()}} | {:error, term()}
+  def enqueue_due_membership_renewal_reminders_for_system(opts \\ []) when is_list(opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now() |> DateTime.truncate(:second))
+    reminder_days = [7, 3, 1]
+
+    reminder_days
+    |> Enum.reduce_while({:ok, 0}, fn days_before, {:ok, count} ->
+      case enqueue_membership_renewal_reminders_for_offset(now, days_before, opts) do
+        {:ok, offset_count} -> {:cont, {:ok, count + offset_count}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, enqueued_count} -> {:ok, %{enqueued_count: enqueued_count}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec deliver_outbox_email_for_system(String.t()) :: :ok | {:error, term()} | {:discard, term()}
   def deliver_outbox_email_for_system(outbox_id) when is_binary(outbox_id) do
     started_at = System.monotonic_time()
@@ -203,6 +351,36 @@ defmodule Store.Comms do
     end
   end
 
+  defp fetch_subscription(subscription_id) do
+    query = Subscription |> Ash.Query.filter(expr(id == ^subscription_id))
+
+    case Ash.read(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, [%Subscription{} = subscription | _]} -> {:ok, subscription}
+      {:ok, []} -> {:error, {:subscription_not_found, subscription_id}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_subscription_plan(plan_id) when is_binary(plan_id) do
+    query = SubscriptionPlan |> Ash.Query.filter(expr(id == ^plan_id))
+
+    case Ash.read(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, [%SubscriptionPlan{} = plan | _]} -> {:ok, plan}
+      {:ok, []} -> {:error, {:subscription_plan_not_found, plan_id}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_subscription_plan(_plan_id), do: {:error, :missing_subscription_plan}
+
   defp resolve_recipient_email(order, opts) do
     case Keyword.get(opts, :to_email) do
       to_email when is_binary(to_email) and to_email != "" ->
@@ -222,6 +400,19 @@ defmodule Store.Comms do
 
       _ ->
         {:error, :missing_order_recipient}
+    end
+  end
+
+  defp resolve_subscription_recipient_email(subscription, opts) do
+    case Keyword.get(opts, :to_email) do
+      to_email when is_binary(to_email) and to_email != "" ->
+        {:ok, String.trim(to_email)}
+
+      _ ->
+        case subscription.user_id do
+          user_id when is_binary(user_id) -> fetch_user_email(user_id)
+          _ -> {:error, :missing_subscription_recipient}
+        end
     end
   end
 
@@ -403,4 +594,94 @@ defmodule Store.Comms do
       %{provider: outbox.provider, template: outbox.template_kind, outcome: outcome}
     )
   end
+
+  defp support_email do
+    Application.get_env(:store, :comms, [])
+    |> Keyword.get(:support_email, "support@store.local")
+  end
+
+  defp enqueue_membership_renewal_reminders_for_offset(now, days_before, opts) do
+    with {:ok, subscriptions} <- list_membership_reminder_candidates(now, days_before) do
+      subscriptions
+      |> Enum.reduce_while({:ok, 0}, fn subscription, acc ->
+        enqueue_membership_renewal_reminder_reducer_result(
+          acc,
+          enqueue_membership_renewal_reminder_for_offset_subscription(
+            subscription,
+            days_before,
+            opts
+          )
+        )
+      end)
+    end
+  end
+
+  defp enqueue_membership_renewal_reminder_for_offset_subscription(
+         %Subscription{} = subscription,
+         days_before,
+         opts
+       ) do
+    enqueue_membership_renewal_reminder_for_system(
+      subscription.id,
+      reminder_renewal_key(subscription),
+      days_before,
+      opts
+    )
+  end
+
+  defp enqueue_membership_renewal_reminder_reducer_result(
+         {:ok, count},
+         {:ok, %EmailOutbox{}}
+       ),
+       do: {:cont, {:ok, count + 1}}
+
+  defp enqueue_membership_renewal_reminder_reducer_result({:ok, count}, {:ok, :skipped}),
+    do: {:cont, {:ok, count}}
+
+  defp enqueue_membership_renewal_reminder_reducer_result(_acc, {:error, reason}),
+    do: {:halt, {:error, reason}}
+
+  defp list_membership_reminder_candidates(now, days_before)
+       when is_struct(now, DateTime) and is_integer(days_before) do
+    window_start = DateTime.add(now, days_before * 86_400, :second)
+    window_end = DateTime.add(window_start, 3_600, :second)
+
+    query =
+      from(subscription in Subscription,
+        join: plan in SubscriptionPlan,
+        on: plan.id == subscription.subscription_plan_id,
+        where:
+          subscription.status == :active and
+            not is_nil(subscription.next_renewal_at) and
+            subscription.next_renewal_at >= ^window_start and
+            subscription.next_renewal_at < ^window_end and
+            plan.entitlement_kind == ^:membership_access,
+        order_by: [asc: subscription.next_renewal_at, asc: subscription.id]
+      )
+
+    {:ok, Repo.all(query)}
+  rescue
+    error -> {:error, error}
+  end
+
+  defp reminder_renewal_key(subscription) do
+    period_end_at = subscription.current_period_end_at || subscription.next_renewal_at
+
+    if match?(%DateTime{}, period_end_at) do
+      Scheduler.renewal_key(subscription.id, period_end_at)
+    else
+      "renewal:#{subscription.id}:#{subscription.next_renewal_at}"
+    end
+  end
+
+  defp access_ended_period_end_key(%DateTime{} = period_end_at),
+    do: DateTime.to_iso8601(period_end_at)
+
+  defp access_ended_period_end_key(_period_end_at), do: "none"
+
+  defp ensure_membership_plan(%SubscriptionPlan{entitlement_kind: :membership_access}), do: :ok
+  defp ensure_membership_plan(%SubscriptionPlan{}), do: {:error, :membership_only}
+
+  defp ensure_active_membership_subscription(%Subscription{status: :active}), do: :ok
+  defp ensure_active_membership_subscription(%Subscription{}), do: {:error, :inactive_membership}
 end
