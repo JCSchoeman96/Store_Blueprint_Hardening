@@ -631,3 +631,112 @@
 - Operational conclusion:
   - `/shop/:slug` is healthy under concurrent checkout writes in this quick profile
   - if storefront latency reappears at higher profiles, the next optimization target should be broader DB service/pool behavior under mixed load rather than another product-detail rewrite
+
+## Phase 30.8
+### Links Consulted
+- [config/test.exs](/home/jcs/projects/store_blueprint/config/test.exs)
+- [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex)
+- [Store.Perf.ProductDetailPoller](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller.ex)
+- [Store.Perf.ProductDetailPollerSummary](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex)
+- [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs)
+- [priv/perf/run_phase_308_stress_to_failure.exs](/home/jcs/projects/store_blueprint/priv/perf/run_phase_308_stress_to_failure.exs)
+- [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js)
+
+### Decisions / Pins
+- Phase 30.8 is diagnosis-only. No route or checkout optimization lands here.
+- The Phase 30.7 model is reused unchanged:
+  - mixed storefront HTTP is the acceptance load
+  - isolated checkout writers are the pressure source
+  - server and writer stay in separate BEAM OS processes with separate repo pools
+- Red line is pinned to:
+  - `shop_show p95 > 200ms`
+  - or storefront HTTP failures
+  - or writer failed cycles / step errors above the allowed floor
+  - or orchestration-level process failure
+- Short-window validation in this workstation session used:
+  - `warmup = 5000ms`
+  - `measure = 10000ms`
+  - `cooldown = 5000ms`
+  - `mode = quick`
+- Local benchmark pools stayed pinned to the validated workstation-safe values:
+  - server: `Store.Repo=100`, `Store.DirectRepo=60`
+  - writer: `Store.Repo=20`, `Store.DirectRepo=5`
+- Writer error floor is explicit and configurable:
+  - `STORE_PHASE308_ALLOWED_FAILED_CYCLES` default `0`
+  - `STORE_PHASE308_ALLOWED_STEP_ERRORS` default `0`
+
+### Implementation
+- Added Phase 30.8 helper functions to [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex):
+  - per-rung output paths
+  - step ladder parsing
+  - warmup/measure/cooldown parsing
+  - total writer duration calculation
+- Extended [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js) with env-driven stage control:
+  - `STORE_K6_WARMUP_MS`
+  - `STORE_K6_MEASURE_MS`
+  - `STORE_K6_COOLDOWN_MS`
+- Added [priv/perf/run_phase_308_stress_to_failure.exs](/home/jcs/projects/store_blueprint/priv/perf/run_phase_308_stress_to_failure.exs):
+  - drives the writer ladder
+  - starts/stops benchmark server per rung
+  - starts/stops isolated writer process per rung
+  - runs the storefront k6 acceptance load
+  - summarizes poller output and cooldown window
+  - writes one top-level stress report
+- Hardened [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs):
+  - uncaught per-cycle exceptions are now recorded as failed cycles instead of aborting the entire writer process
+  - this keeps rung reports usable under writer-side domain failures
+- Tightened Phase 30.8 classification so writer-side failures are not mislabeled as HTTP boundary exhaustion.
+
+### Performance & Scaling Review
+- Stress model:
+  - writer ladder: `20,40,60,80,100,120,140,160,180,200`
+  - same benchmark DB
+  - same Postgres instance
+  - separate BEAM processes and separate pools for server and writers
+- Hot path attribution remained stable across the ladder:
+  - `shop_show` query count stayed flat
+  - `lock_waiters` stayed effectively `0`
+  - scheduler run queue stayed low
+  - contention remained in the “mild DB queue/service-time growth” band
+- No evidence of:
+  - Postgres lock interference leaking into storefront reads
+  - BEAM scheduler starvation
+  - cooldown recovery lag
+- The writer-side path remained healthy through the tested ceiling after the writer harness was hardened to record cycle errors instead of aborting the process.
+
+### Validation
+- `MIX_ENV=test mix check`: `PASS`
+- Benchmark DB setup:
+  - `STORE_TEST_DB_SUFFIX=phase308bench MIX_ENV=test mix ecto.create`
+  - `STORE_TEST_DB_SUFFIX=phase308bench MIX_ENV=test mix ecto.migrate`
+  - `STORE_TEST_DB_SUFFIX=phase308bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
+- Dry-run ladder:
+  - `STORE_TEST_DB_SUFFIX=phase308bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 STORE_PHASE308_WRITER_STEPS=20,40 STORE_PHASE308_WARMUP_MS=5000 STORE_PHASE308_MEASURE_MS=10000 STORE_PHASE308_COOLDOWN_MS=5000 STORE_PHASE307_MODE=quick MIX_ENV=test mix run --no-start priv/perf/run_phase_308_stress_to_failure.exs`
+- Full short-window ladder:
+  - `STORE_TEST_DB_SUFFIX=phase308bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 STORE_PHASE308_WARMUP_MS=5000 STORE_PHASE308_MEASURE_MS=10000 STORE_PHASE308_COOLDOWN_MS=5000 STORE_PHASE307_MODE=quick MIX_ENV=test mix run --no-start priv/perf/run_phase_308_stress_to_failure.exs`
+  - wrote:
+    - [tmp/perf/phase308_stress_to_failure_report.json](/home/jcs/projects/store_blueprint/tmp/perf/phase308_stress_to_failure_report.json)
+    - per-rung storefront summaries under `tmp/perf/k6_http_storefront_phase308_*.json`
+    - per-rung writer summaries under `tmp/perf/checkout_write_contention_phase308_*.json`
+    - per-rung poller summaries under `tmp/perf/product_detail_poller_summary_phase308_*.json`
+
+### Findings
+- Short-window full ladder never crossed the red line through the tested ceiling of `200` writers.
+- Final synthesized report:
+  - `last_healthy_rung = 200`
+  - `first_failing_rung = null`
+  - `recommended_waiting_room_threshold.suggested_trigger = 180`
+  - `stayed_within_target_through_tested_ceiling = true`
+- Representative rung results:
+  - `20 writers`: `shop_show p95 = 30.95ms`
+  - `100 writers`: `shop_show p95 = 38.20ms`
+  - `200 writers`: `shop_show p95 = 29.18ms`
+  - `http_req_failed_rate = 0.00%` on every tested rung
+  - `failed_cycles = 0` on every tested rung in the final pass
+- Interpretation:
+  - Pretoria hardware stayed inside the selected `shop_show < 200ms` red line through the tested ceiling in this quick-profile run
+  - the dominant observed effect is still mild DB queue/service-time growth under write load
+  - the system did not hit a practical breaking point in this short-window envelope
+- Operational pin:
+  - for this workstation and this quick-profile methodology, `180` concurrent writers is a conservative waiting-room trigger
+  - any production recommendation should still be validated with a longer measurement window before being treated as a hard launch limit

@@ -4,6 +4,10 @@ import { check, sleep } from 'k6';
 import { data, getWithCheckoutCookie, pick, storefrontUrl } from './common.js';
 
 const quickMode = __ENV.STORE_K6_QUICK === '1';
+const warmupMs = parseOptionalInt(__ENV.STORE_K6_WARMUP_MS);
+const measureMs = parseOptionalInt(__ENV.STORE_K6_MEASURE_MS);
+const cooldownMs = parseOptionalInt(__ENV.STORE_K6_COOLDOWN_MS);
+const phase308Mode = warmupMs !== null && measureMs !== null && cooldownMs !== null;
 
 export const options = {
   scenarios: {
@@ -13,7 +17,7 @@ export const options = {
       timeUnit: '1s',
       preAllocatedVUs: 50,
       maxVUs: 200,
-      stages: quickMode ? quickStages() : defaultStages()
+      stages: phase308Mode ? customStages() : quickMode ? quickStages() : defaultStages()
     }
   },
   thresholds: {
@@ -65,4 +69,28 @@ function quickStages() {
     { target: 30, duration: '40s' },
     { target: 0, duration: '20s' }
   ];
+}
+
+function customStages() {
+  const peakTarget = quickMode ? 30 : 100;
+  const warmupTarget = quickMode ? 10 : 25;
+
+  return [
+    { target: warmupTarget, duration: durationString(warmupMs) },
+    { target: peakTarget, duration: durationString(measureMs) },
+    { target: 0, duration: durationString(cooldownMs) }
+  ];
+}
+
+function durationString(ms) {
+  return `${Math.max(Math.round(ms / 1000), 1)}s`;
+}
+
+function parseOptionalInt(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }

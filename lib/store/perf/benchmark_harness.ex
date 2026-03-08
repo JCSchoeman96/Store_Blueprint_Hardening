@@ -55,6 +55,26 @@ defmodule Store.Perf.BenchmarkHarness do
     )
   end
 
+  def phase308_storefront_summary_path(rung) when is_integer(rung) do
+    "tmp/perf/k6_http_storefront_phase308_#{rung}.json"
+  end
+
+  def phase308_writer_result_path(rung) when is_integer(rung) do
+    "tmp/perf/checkout_write_contention_phase308_#{rung}.json"
+  end
+
+  def phase308_poller_log_path(rung) when is_integer(rung) do
+    "tmp/perf/product_detail_poller_phase308_#{rung}.ndjson"
+  end
+
+  def phase308_poller_summary_path(rung) when is_integer(rung) do
+    "tmp/perf/product_detail_poller_summary_phase308_#{rung}.json"
+  end
+
+  def phase308_report_path do
+    "tmp/perf/phase308_stress_to_failure_report.json"
+  end
+
   def checkout_write_contention_path do
     System.get_env(
       "STORE_CHECKOUT_WRITE_CONTENTION_PATH",
@@ -195,6 +215,13 @@ defmodule Store.Perf.BenchmarkHarness do
     )
   end
 
+  def run_poller_summary!(input_path, output_path) do
+    ProductDetailPollerSummary.run(
+      input_path: input_path,
+      output_path: output_path
+    )
+  end
+
   def run_poller_summary!(kind) do
     ProductDetailPollerSummary.run(
       input_path: poller_log_path(kind),
@@ -229,6 +256,37 @@ defmodule Store.Perf.BenchmarkHarness do
     System.get_env("STORE_PHASE307_MODE", "quick")
   end
 
+  def phase308_writer_steps do
+    System.get_env("STORE_PHASE308_WRITER_STEPS", "20,40,60,80,100,120,140,160,180,200")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&String.to_integer/1)
+  end
+
+  def phase308_warmup_ms do
+    System.get_env("STORE_PHASE308_WARMUP_MS", "30000")
+    |> String.to_integer()
+  end
+
+  def phase308_measure_ms do
+    System.get_env("STORE_PHASE308_MEASURE_MS", "120000")
+    |> String.to_integer()
+  end
+
+  def phase308_cooldown_ms do
+    System.get_env("STORE_PHASE308_COOLDOWN_MS", "30000")
+    |> String.to_integer()
+  end
+
+  def phase308_total_ms do
+    phase308_warmup_ms() + phase308_measure_ms() + phase308_cooldown_ms()
+  end
+
+  def phase308_writer_duration_ms do
+    phase308_warmup_ms() + phase308_measure_ms()
+  end
+
   def writer_users do
     case System.get_env("STORE_CONTENTION_WRITER_USERS") do
       nil -> if(benchmark_mode() == "quick", do: 20, else: 60)
@@ -258,15 +316,19 @@ defmodule Store.Perf.BenchmarkHarness do
   end
 
   def writer_env do
+    writer_env(writer_users(), writer_duration_ms(), checkout_write_contention_path())
+  end
+
+  def writer_env(users, duration_ms, output_path) do
     [
       {"STORE_BENCH_ROLE", "writer"},
       {"STORE_BENCH_WRITER_POOL_SIZE", System.get_env("STORE_BENCH_WRITER_POOL_SIZE", "20")},
       {"STORE_BENCH_WRITER_DIRECT_POOL_SIZE",
        System.get_env("STORE_BENCH_WRITER_DIRECT_POOL_SIZE", "5")},
-      {"STORE_CONTENTION_WRITER_USERS", Integer.to_string(writer_users())},
+      {"STORE_CONTENTION_WRITER_USERS", Integer.to_string(users)},
       {"STORE_CONTENTION_WRITER_RAMP_PER_SECOND", Integer.to_string(writer_ramp_per_second())},
-      {"STORE_CONTENTION_DURATION_MS", Integer.to_string(writer_duration_ms())},
-      {"STORE_CHECKOUT_WRITE_CONTENTION_PATH", checkout_write_contention_path()},
+      {"STORE_CONTENTION_DURATION_MS", Integer.to_string(duration_ms)},
+      {"STORE_CHECKOUT_WRITE_CONTENTION_PATH", output_path},
       {"STORE_BENCHMARK_DATA_PATH", benchmark_data_path()},
       {"PORT", Integer.to_string(benchmark_port())},
       {"STORE_BENCHMARK_BASE_URL", benchmark_base_url()},

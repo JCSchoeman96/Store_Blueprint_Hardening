@@ -107,18 +107,46 @@ defmodule Store.Perf.CheckoutWriteContention do
     actor = %{cart_token: cart_token}
     base = %{user_index: user_index, iteration: iteration, variant_id: variant_id}
 
-    with {:ok, _cart} <- add_item(cart_token, variant_id),
-         {:ok, start_record, checkout_key} <- run_start_step(cart_token, base),
-         {:ok, shipping_record} <- run_shipping_step(actor, checkout_key, data, base),
-         {:ok, finalize_record} <- run_finalize_step(actor, checkout_key, base),
-         {:ok, intent_record} <- run_intent_step(actor, checkout_key, base) do
-      %{
-        status: :ok,
-        steps: [start_record, shipping_record, finalize_record, intent_record]
-      }
-    else
-      {:error, record} ->
-        %{status: :error, steps: [record]}
+    try do
+      with {:ok, _cart} <- add_item(cart_token, variant_id),
+           {:ok, start_record, checkout_key} <- run_start_step(cart_token, base),
+           {:ok, shipping_record} <- run_shipping_step(actor, checkout_key, data, base),
+           {:ok, finalize_record} <- run_finalize_step(actor, checkout_key, base),
+           {:ok, intent_record} <- run_intent_step(actor, checkout_key, base) do
+        %{
+          status: :ok,
+          steps: [start_record, shipping_record, finalize_record, intent_record]
+        }
+      else
+        {:error, record} ->
+          %{status: :error, steps: [record]}
+      end
+    rescue
+      error ->
+        %{
+          status: :error,
+          steps: [
+            exception_record(
+              :start_from_cart,
+              base,
+              error,
+              __STACKTRACE__
+            )
+          ]
+        }
+    catch
+      kind, reason ->
+        %{
+          status: :error,
+          steps: [
+            throw_record(
+              :start_from_cart,
+              base,
+              kind,
+              reason
+            )
+          ]
+        }
     end
   end
 
@@ -260,6 +288,37 @@ defmodule Store.Perf.CheckoutWriteContention do
   end
 
   defp error_code(_), do: nil
+
+  defp exception_record(step, base, error, stacktrace) do
+    Map.merge(base, %{
+      step: step,
+      status: :error,
+      error_code: exception_code(error),
+      error_detail: Exception.format(:error, error, stacktrace),
+      duration_ms: 0.0,
+      query_count: 0,
+      queue_time_ms: 0.0,
+      query_time_ms: 0.0,
+      decode_time_ms: 0.0
+    })
+  end
+
+  defp throw_record(step, base, kind, reason) do
+    Map.merge(base, %{
+      step: step,
+      status: :error,
+      error_code: "UNCAUGHT_#{kind |> Atom.to_string() |> String.upcase()}",
+      error_detail: Exception.format(kind, reason, []),
+      duration_ms: 0.0,
+      query_count: 0,
+      queue_time_ms: 0.0,
+      query_time_ms: 0.0,
+      decode_time_ms: 0.0
+    })
+  end
+
+  defp exception_code(%Ecto.ConstraintError{}), do: "UNHANDLED_CONSTRAINT_ERROR"
+  defp exception_code(_error), do: "UNHANDLED_EXCEPTION"
 
   defp average(rows, key) do
     values = Enum.map(rows, &Map.get(&1, key, 0))
