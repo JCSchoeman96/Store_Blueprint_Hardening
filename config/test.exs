@@ -1,23 +1,48 @@
 import Config
 
 test_db_suffix = System.get_env("STORE_TEST_DB_SUFFIX") || System.get_env("MIX_TEST_PARTITION")
+bench_role = System.get_env("STORE_BENCH_ROLE", "server")
 
 bench_pool_size =
-  case System.get_env("STORE_BENCH_POOL_SIZE") do
-    nil ->
-      if test_db_suffix == "bench", do: 200, else: System.schedulers_online() * 2
+  case bench_role do
+    "writer" ->
+      case System.get_env("STORE_BENCH_WRITER_POOL_SIZE") do
+        nil ->
+          if test_db_suffix == "bench", do: 20, else: System.schedulers_online() * 2
 
-    value ->
-      String.to_integer(value)
+        value ->
+          String.to_integer(value)
+      end
+
+    _server ->
+      case System.get_env("STORE_BENCH_POOL_SIZE") do
+        nil ->
+          if test_db_suffix == "bench", do: 80, else: System.schedulers_online() * 2
+
+        value ->
+          String.to_integer(value)
+      end
   end
 
 bench_direct_pool_size =
-  case System.get_env("STORE_BENCH_DIRECT_POOL_SIZE") do
-    nil ->
-      if test_db_suffix == "bench", do: 200, else: 5
+  case bench_role do
+    "writer" ->
+      case System.get_env("STORE_BENCH_WRITER_DIRECT_POOL_SIZE") do
+        nil ->
+          if test_db_suffix == "bench", do: 5, else: 5
 
-    value ->
-      String.to_integer(value)
+        value ->
+          String.to_integer(value)
+      end
+
+    _server ->
+      case System.get_env("STORE_BENCH_DIRECT_POOL_SIZE") do
+        nil ->
+          if test_db_suffix == "bench", do: 40, else: 5
+
+        value ->
+          String.to_integer(value)
+      end
   end
 
 # Configure your database

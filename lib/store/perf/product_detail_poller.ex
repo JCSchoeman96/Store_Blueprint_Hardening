@@ -4,6 +4,8 @@ defmodule Store.Perf.ProductDetailPoller do
   use GenServer
   require Logger
 
+  alias Store.DirectRepo
+
   @tick_ms 1_000
 
   def record(kind, measurements, metadata) when kind in [:shop_live, :catalog] do
@@ -49,10 +51,15 @@ defmodule Store.Perf.ProductDetailPoller do
 
   @impl true
   def handle_info(:tick, state) do
+    scheduler = scheduler_sample()
+    postgres_activity = postgres_activity_sample()
+
     snapshot = %{
       captured_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       shop_live: serialize_windows(state.shop_live),
-      catalog: serialize_windows(state.catalog)
+      catalog: serialize_windows(state.catalog),
+      scheduler: scheduler,
+      postgres_activity: postgres_activity
     }
 
     print_snapshot(snapshot)
@@ -182,6 +189,50 @@ defmodule Store.Perf.ProductDetailPoller do
           "avg_cells=#{fmt_number(row.averages.availability_cell_count)} avg_cell_values=#{fmt_number(row.averages.availability_value_count)}"
       )
     end)
+
+    Logger.info(
+      "[poller][scheduler] run_queue=#{fmt_number(snapshot.scheduler.run_queue)} total_mem=#{fmt_bytes(snapshot.scheduler.memory_total)}"
+    )
+
+    Logger.info(
+      "[poller][postgres] active_backends=#{fmt_number(snapshot.postgres_activity.active_backends)} " <>
+        "lock_waiters=#{fmt_number(snapshot.postgres_activity.lock_waiters)}"
+    )
+  end
+
+  defp scheduler_sample do
+    %{
+      run_queue: :erlang.statistics(:run_queue),
+      memory_total: :erlang.memory(:total)
+    }
+  end
+
+  defp postgres_activity_sample do
+    sql = """
+    SELECT
+      COUNT(*) FILTER (WHERE state = 'active')::bigint AS active_backends,
+      COUNT(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')::bigint AS lock_waiters
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND backend_type = 'client backend'
+      AND pid <> pg_backend_pid()
+    """
+
+    case DirectRepo.query(sql, []) do
+      {:ok, %{rows: [[active_backends, lock_waiters]]}} ->
+        %{
+          active_backends: active_backends,
+          lock_waiters: lock_waiters
+        }
+
+      {:error, reason} ->
+        Logger.warning("[poller][postgres] failed to sample pg_stat_activity: #{inspect(reason)}")
+        %{active_backends: 0, lock_waiters: 0}
+    end
+  rescue
+    error ->
+      Logger.warning("[poller][postgres] sampling raised: #{inspect(error)}")
+      %{active_backends: 0, lock_waiters: 0}
   end
 
   defp fmt_ms(nil), do: "0.00"
@@ -197,5 +248,9 @@ defmodule Store.Perf.ProductDetailPoller do
   defp fmt_bytes(value), do: value |> round() |> Integer.to_string()
 
   defp fmt_number(nil), do: "0"
-  defp fmt_number(value), do: :io_lib.format("~.2f", [value]) |> IO.iodata_to_binary()
+  defp fmt_number(value) when is_integer(value), do: fmt_number(value * 1.0)
+
+  defp fmt_number(value) when is_float(value) do
+    :io_lib.format("~.2f", [value]) |> IO.iodata_to_binary()
+  end
 end

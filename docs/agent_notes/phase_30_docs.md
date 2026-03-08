@@ -498,3 +498,136 @@
 - The next route-level optimization should therefore not be another blind projection rewrite.
   - If storefront pain returns only in a broader system benchmark, the next target is system contention.
   - If the remaining concern is interactive LiveView cost, the next benchmark must be browser/live-join aware rather than more `k6/http`.
+
+## Phase 30.7
+### Links Consulted
+- [config/test.exs](/home/jcs/projects/store_blueprint/config/test.exs)
+- [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex)
+- [Store.Perf.ProductDetailPoller](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller.ex)
+- [Store.Perf.ProductDetailPollerSummary](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex)
+- [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs)
+- [priv/perf/run_phase_307_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/run_phase_307_contention.exs)
+- [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js)
+
+### Decisions / Pins
+- Phase 30.7 is diagnosis-only. No checkout optimization lands here.
+- Mixed storefront HTTP remains the acceptance load.
+- Checkout writers must run in a separate BEAM OS process with dedicated repo pools:
+  - server role defaults: `Store.Repo=80`, `Store.DirectRepo=40`
+  - writer role defaults: `Store.Repo=20`, `Store.DirectRepo=5`
+- The product-detail poller must sample both route telemetry and server-wide contention signals:
+  - `:erlang.statistics(:run_queue)`
+  - `:erlang.memory(:total)`
+  - `pg_stat_activity` active backends
+  - `pg_stat_activity` lock waiters
+- The orchestration run must include a `30s` cooldown after writers stop so recovery lag can be distinguished from active contention.
+- Healthy target for this phase:
+  - `shop_show p95 < 50ms` under concurrent checkout writes
+
+### Implementation
+- Added writer-role pool config in [config/test.exs](/home/jcs/projects/store_blueprint/config/test.exs) via:
+  - `STORE_BENCH_WRITER_POOL_SIZE`
+  - `STORE_BENCH_WRITER_DIRECT_POOL_SIZE`
+- Extended [Store.Perf.ProductDetailPoller](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller.ex) to sample and persist:
+  - scheduler run queue
+  - BEAM total memory
+  - Postgres active backends
+  - Postgres lock waiters
+- Extended [Store.Perf.ProductDetailPollerSummary](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex) with:
+  - `scheduler`
+  - `postgres_activity`
+  - `shop_show_under_contention`
+- Added [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs):
+  - standalone writer harness
+  - real domain path only:
+    - add cart item
+    - `Checkout.start_from_cart/3`
+    - `Checkout.set_shipping/3`
+    - `Checkout.finalize_totals/3`
+    - `Payments.create_intent_for_order/3`
+  - per-step query/time stats emitted to JSON
+- Added [priv/perf/run_phase_307_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/run_phase_307_contention.exs):
+  - starts benchmark server
+  - starts isolated writer process
+  - runs baseline storefront k6
+  - runs contention storefront k6
+  - enforces overlap and cooldown
+  - summarizes the poller output
+- Fixed two harness bugs discovered during validation:
+  - benchmark k6 artifact path is now absolute through the harness helper
+  - child benchmark processes now launch through `exec env ...` so killing the wrapper actually terminates the underlying `beam.smp`
+- Fixed the poller formatter crash so tick snapshots continue to append under load.
+
+### Performance & Scaling Review
+- Hot path:
+  - `/shop/:slug` stays on the read-side acceptance path while real checkout writes run concurrently in a separate BEAM.
+  - route telemetry now has enough signal to distinguish:
+    - pool queue pressure
+    - DB service-time growth
+    - scheduler growth
+    - lock contention
+- Query count / N+1 risk:
+  - `shop_show` stays flat at roughly one catalog query plus lightweight static-render work under both baseline and contention
+  - no new route-local N+1 behavior appears under write pressure
+- DB and contention signals:
+  - baseline `shop_show`:
+    - p95 `7.22ms`
+    - average route query count `1.06`
+  - contention `shop_show` with `20` isolated writers:
+    - p95 `36.41ms`
+    - average route query count `1.04`
+  - route query count stayed flat while catalog/query time and queue time increased, which points at mild DB service/queue pressure rather than route fan-out
+  - `pg_stat_activity` lock waiters stayed at `0`
+  - scheduler run queue stayed low:
+    - baseline average `0.02`, max `2`
+    - contention average `0.22`, max `3`
+- Writer-side pressure:
+  - `1965` successful checkout cycles
+  - `0` failed cycles
+  - contention step means:
+    - `start_from_cart`: `119.84ms`, `15` queries
+    - `set_shipping`: `339.48ms`, `38` queries
+    - `finalize_totals`: `191.51ms`, `22` queries
+    - `create_payment_intent`: `150.55ms`, `17` queries
+- Interpretation:
+  - the benchmark server did not collapse under concurrent writers
+  - observed storefront slowdown is attributable to moderate DB service/queue growth under write load
+  - there is no evidence here of Postgres lock contention leaking into product-detail reads
+  - there is no evidence of BEAM scheduler starvation or recovery lag in the quick run
+
+### Validation
+- `MIX_ENV=test mix check`: `PASS`
+- Isolated smoke regression:
+  - `STORE_TEST_DB_SUFFIX=phase307smoke MIX_ENV=test mix ecto.create`
+  - `STORE_TEST_DB_SUFFIX=phase307smoke MIX_ENV=test mix ecto.migrate`
+  - `STORE_TEST_DB_SUFFIX=phase307smoke MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs`
+  - `PASS`
+  - `12 tests, 0 failures`
+- Phase 30.7 quick contention run:
+  - `STORE_TEST_DB_SUFFIX=phase307bench PORT=4000 STORE_PHASE307_MODE=quick STORE_BENCH_POOL_SIZE=80 STORE_BENCH_DIRECT_POOL_SIZE=40 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 MIX_ENV=test mix run --no-start priv/perf/run_phase_307_contention.exs`
+  - wrote:
+    - [tmp/perf/phase307_contention_report.json](/home/jcs/projects/store_blueprint/tmp/perf/phase307_contention_report.json)
+    - [tmp/perf/k6_http_storefront_phase307_baseline.json](/home/jcs/projects/store_blueprint/tmp/perf/k6_http_storefront_phase307_baseline.json)
+    - [tmp/perf/k6_http_storefront_phase307_contention.json](/home/jcs/projects/store_blueprint/tmp/perf/k6_http_storefront_phase307_contention.json)
+    - [tmp/perf/checkout_write_contention.json](/home/jcs/projects/store_blueprint/tmp/perf/checkout_write_contention.json)
+    - [tmp/perf/product_detail_poller_summary_baseline.json](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller_summary_baseline.json)
+    - [tmp/perf/product_detail_poller_summary_contention.json](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller_summary_contention.json)
+
+### Findings
+- Acceptance target met:
+  - `shop_show p95 < 50ms` under concurrent writes
+  - measured contention `shop_show p95 = 36.41ms`
+- Baseline vs contention:
+  - `shop_show p95`: `7.22ms -> 36.41ms`
+  - `shop_index p95`: `7.83ms -> 41.64ms`
+  - `cart p95`: `17.09ms -> 72.97ms`
+  - `checkout p95`: `45.32ms -> 231.93ms`
+  - `http_req_failed_rate`: `0.00% -> 0.00%`
+- Classification:
+  - `query_count` stayed flat while `query_time` and `queue_time` increased
+  - `lock_waiters` remained `0`
+  - `run_queue` remained low
+  - result: mild DB service/pool queue pressure under write load, not Postgres lock contention and not BEAM scheduler collapse
+- Operational conclusion:
+  - `/shop/:slug` is healthy under concurrent checkout writes in this quick profile
+  - if storefront latency reappears at higher profiles, the next optimization target should be broader DB service/pool behavior under mixed load rather than another product-detail rewrite

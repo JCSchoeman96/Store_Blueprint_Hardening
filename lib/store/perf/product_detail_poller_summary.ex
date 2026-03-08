@@ -23,6 +23,8 @@ defmodule Store.Perf.ProductDetailPollerSummary do
     static_rows = collect_shop_live_rows(snapshots, ["static_render", false, "ok"])
     live_rows = collect_shop_live_rows(snapshots, ["live_join", true, "ok"])
     catalog_rows = collect_catalog_rows(snapshots, ["ok"])
+    scheduler = aggregate_snapshot_maps(snapshots, "scheduler")
+    postgres_activity = aggregate_snapshot_maps(snapshots, "postgres_activity")
 
     static = aggregate_rows(static_rows)
     live = aggregate_rows(live_rows)
@@ -34,6 +36,9 @@ defmodule Store.Perf.ProductDetailPollerSummary do
       static_render: static,
       live_join: live,
       catalog: catalog,
+      scheduler: scheduler,
+      postgres_activity: postgres_activity,
+      shop_show_under_contention: aggregate_rows(static_rows ++ live_rows),
       static_vs_live: compare_phase(static, live)
     }
   end
@@ -92,6 +97,35 @@ defmodule Store.Perf.ProductDetailPollerSummary do
       maxes: maxes,
       payload_hashes: payload_hashes,
       unique_payload_hash_count: length(payload_hashes)
+    }
+  end
+
+  defp aggregate_snapshot_maps(snapshots, key) do
+    maps =
+      snapshots
+      |> Enum.map(&Map.get(&1, key, %{}))
+      |> Enum.filter(&is_map/1)
+
+    count = length(maps)
+
+    averages =
+      maps
+      |> Enum.flat_map(&Map.to_list/1)
+      |> Enum.filter(fn {_key, value} -> is_number(value) end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.into(%{}, fn {metric, values} -> {metric, average(values)} end)
+
+    maxes =
+      maps
+      |> Enum.flat_map(&Map.to_list/1)
+      |> Enum.filter(fn {_key, value} -> is_number(value) end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.into(%{}, fn {metric, values} -> {metric, Enum.max(values)} end)
+
+    %{
+      count: count,
+      averages: averages,
+      maxes: maxes
     }
   end
 

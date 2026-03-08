@@ -15,6 +15,8 @@ defmodule Store.Perf.ProductDetailPollerSummaryTest do
     rows = [
       %{
         "captured_at" => "2026-03-08T10:00:00Z",
+        "scheduler" => %{"run_queue" => 2, "memory_total" => 4096},
+        "postgres_activity" => %{"active_backends" => 3, "lock_waiters" => 1},
         "shop_live" => [
           %{
             "key" => ["static_render", false, "ok"],
@@ -65,6 +67,9 @@ defmodule Store.Perf.ProductDetailPollerSummaryTest do
     assert summary.static_render.count == 2
     assert summary.live_join.count == 2
     assert summary.catalog.count == 2
+    assert summary.scheduler.averages["run_queue"] == 2.0
+    assert summary.postgres_activity.averages["lock_waiters"] == 1.0
+    assert summary.shop_show_under_contention.count == 4
     assert summary.static_vs_live.query_count_delta == 0.0
     assert summary.static_vs_live.payload_hash_match? == false
     assert summary.static_vs_live.static_payload_hashes == ["hash-static"]

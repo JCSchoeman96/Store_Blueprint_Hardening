@@ -24,6 +24,7 @@ defmodule Store.Perf.BenchmarkHarness do
 
   def benchmark_data_path do
     System.get_env("STORE_BENCHMARK_DATA_PATH", "tmp/perf/benchmark_data.json")
+    |> Path.expand(File.cwd!())
   end
 
   def product_detail_poller_log_path do
@@ -45,6 +46,28 @@ defmodule Store.Perf.BenchmarkHarness do
       "STORE_PLAYWRIGHT_RESULT_PATH",
       "tmp/perf/playwright_product_detail_live_join.json"
     )
+  end
+
+  def storefront_summary_path(kind \\ "contention") do
+    System.get_env(
+      "STORE_K6_SUMMARY_PATH",
+      "tmp/perf/k6_http_storefront_phase307_#{kind}.json"
+    )
+  end
+
+  def checkout_write_contention_path do
+    System.get_env(
+      "STORE_CHECKOUT_WRITE_CONTENTION_PATH",
+      "tmp/perf/checkout_write_contention.json"
+    )
+  end
+
+  def poller_log_path(kind \\ "contention") do
+    "tmp/perf/product_detail_poller_#{kind}.ndjson"
+  end
+
+  def poller_summary_path(kind \\ "contention") do
+    "tmp/perf/product_detail_poller_summary_#{kind}.json"
   end
 
   def require_test_env! do
@@ -172,6 +195,13 @@ defmodule Store.Perf.BenchmarkHarness do
     )
   end
 
+  def run_poller_summary!(kind) do
+    ProductDetailPollerSummary.run(
+      input_path: poller_log_path(kind),
+      output_path: poller_summary_path(kind)
+    )
+  end
+
   def print_runbook(log_path) do
     IO.puts("Benchmark server ready at #{benchmark_base_url()}")
     IO.puts("Benchmark data: #{benchmark_data_path()}")
@@ -193,6 +223,56 @@ defmodule Store.Perf.BenchmarkHarness do
 
     IO.puts("  4. MIX_ENV=test mix run --no-start priv/perf/product_detail_poller_summary.exs")
     IO.puts("  5. STORE_K6_QUICK=1 k6 run perf/k6/http_storefront.js")
+  end
+
+  def benchmark_mode do
+    System.get_env("STORE_PHASE307_MODE", "quick")
+  end
+
+  def writer_users do
+    case System.get_env("STORE_CONTENTION_WRITER_USERS") do
+      nil -> if(benchmark_mode() == "quick", do: 20, else: 60)
+      value -> String.to_integer(value)
+    end
+  end
+
+  def writer_ramp_per_second do
+    System.get_env("STORE_CONTENTION_WRITER_RAMP_PER_SECOND", "5")
+    |> String.to_integer()
+  end
+
+  def cooldown_ms do
+    System.get_env("STORE_PHASE307_COOLDOWN_MS", "30000")
+    |> String.to_integer()
+  end
+
+  def storefront_total_ms do
+    case benchmark_mode() do
+      "quick" -> 120_000
+      _ -> 600_000
+    end
+  end
+
+  def writer_duration_ms do
+    max(storefront_total_ms() - cooldown_ms(), 1_000)
+  end
+
+  def writer_env do
+    [
+      {"STORE_BENCH_ROLE", "writer"},
+      {"STORE_BENCH_WRITER_POOL_SIZE", System.get_env("STORE_BENCH_WRITER_POOL_SIZE", "20")},
+      {"STORE_BENCH_WRITER_DIRECT_POOL_SIZE",
+       System.get_env("STORE_BENCH_WRITER_DIRECT_POOL_SIZE", "5")},
+      {"STORE_CONTENTION_WRITER_USERS", Integer.to_string(writer_users())},
+      {"STORE_CONTENTION_WRITER_RAMP_PER_SECOND", Integer.to_string(writer_ramp_per_second())},
+      {"STORE_CONTENTION_DURATION_MS", Integer.to_string(writer_duration_ms())},
+      {"STORE_CHECKOUT_WRITE_CONTENTION_PATH", checkout_write_contention_path()},
+      {"STORE_BENCHMARK_DATA_PATH", benchmark_data_path()},
+      {"PORT", Integer.to_string(benchmark_port())},
+      {"STORE_BENCHMARK_BASE_URL", benchmark_base_url()},
+      {"STORE_TEST_DB_SUFFIX", require_isolated_test_db!()},
+      {"MIX_ENV", "test"}
+    ]
   end
 
   defp wait_until(deadline, fun) do
