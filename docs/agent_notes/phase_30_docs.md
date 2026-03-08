@@ -318,6 +318,110 @@
   - `MIX_ENV=test mix test test/store_web/live/shop_live/show_test.exs test/store/perf/product_detail_poller_summary_test.exs`
 - Playwright quick run:
   - artifact: [tmp/perf/playwright_product_detail_live_join.json](/home/jcs/projects/store_blueprint/tmp/perf/playwright_product_detail_live_join.json)
+
+## Phase 30.9
+### Links Consulted
+- [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex)
+- [Store.Perf.ProductDetailPollerSummary](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex)
+- [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs)
+- [priv/perf/run_phase_309_durability.exs](/home/jcs/projects/store_blueprint/priv/perf/run_phase_309_durability.exs)
+- [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js)
+- [tmp/perf/phase309_durability_report.json](/home/jcs/projects/store_blueprint/tmp/perf/phase309_durability_report.json)
+- [tmp/perf/product_detail_poller_summary_phase309.json](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller_summary_phase309.json)
+
+### Decisions / Pins
+- Phase 30.9 is durability-only. No new checkout or storefront optimization is allowed in this slice.
+- The benchmark model remains unchanged from Phase 30.8:
+  - mixed storefront HTTP is the acceptance load
+  - checkout writers run in a separate BEAM OS process
+  - server and writer keep separate pools
+  - product-detail poller remains the attribution source
+- The soak profile is pinned to:
+  - `100` isolated writers
+  - `60_000ms` warmup
+  - `600_000ms` measure
+  - `60_000ms` cooldown
+- Red lines are pinned to:
+  - `shop_show p95 > 50ms`
+  - any storefront HTTP failures
+  - any writer failed cycles
+  - any writer step error counts
+- Memory interpretation is pinned:
+  - flat or sawtooth with cooldown drop = healthy
+  - growth with cooldown recovery = temporary heap pressure
+  - growth without cooldown recovery = likely leak or process accumulation
+- The durability summarizer now realigns the measure/cooldown windows to the observed end of the k6 run if startup jitter would otherwise erase the cooldown window.
+
+### Implementation
+- Added Phase 30.9 harness paths and timing helpers to [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex).
+- Extended [Store.Perf.ProductDetailPollerSummary](/home/jcs/projects/store_blueprint/lib/store/perf/product_detail_poller_summary.ex) with:
+  - `mode: :durability`
+  - measure/cooldown trend windows
+  - memory slope and cooldown-drop classification
+  - start/mid/end/cooldown summaries for scheduler, Postgres activity, and shop-show route metrics
+- Added [priv/perf/run_phase_309_durability.exs](/home/jcs/projects/store_blueprint/priv/perf/run_phase_309_durability.exs) to:
+  - start the benchmark server in its own BEAM process
+  - start the isolated writer runner in its own BEAM process
+  - run the mixed storefront k6 load for the full warmup + measure + cooldown
+  - summarize the poller output into a single durability report
+- Added regression coverage in [test/store/perf/product_detail_poller_summary_test.exs](/home/jcs/projects/store_blueprint/test/store/perf/product_detail_poller_summary_test.exs) for the new durability summary path.
+
+### Validation
+- `MIX_ENV=test mix test test/store/perf/product_detail_poller_summary_test.exs`: `PASS`
+- Phase 30.9 preflight on isolated benchmark DB:
+  - `STORE_TEST_DB_SUFFIX=phase309bench MIX_ENV=test mix ecto.create`
+  - `STORE_TEST_DB_SUFFIX=phase309bench MIX_ENV=test mix ecto.migrate`
+  - `STORE_TEST_DB_SUFFIX=phase309bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 MIX_ENV=test mix run --no-start priv/perf/benchmark_bootstrap.exs`
+- Full soak:
+  - `STORE_TEST_DB_SUFFIX=phase309bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 MIX_ENV=test mix run --no-start priv/perf/run_phase_309_durability.exs`
+- Full soak artifacts:
+  - [tmp/perf/phase309_durability_report.json](/home/jcs/projects/store_blueprint/tmp/perf/phase309_durability_report.json)
+  - [tmp/perf/checkout_write_contention_phase309.json](/home/jcs/projects/store_blueprint/tmp/perf/checkout_write_contention_phase309.json)
+  - [tmp/perf/product_detail_poller_phase309.ndjson](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller_phase309.ndjson)
+  - [tmp/perf/product_detail_poller_summary_phase309.json](/home/jcs/projects/store_blueprint/tmp/perf/product_detail_poller_summary_phase309.json)
+
+### Performance & Scaling Review
+- Storefront acceptance metrics over the 10-minute measure window:
+  - `shop_show p95 = 16.82ms`
+  - `shop_index p95 = 18.35ms`
+  - `cart p95 = 29.66ms`
+  - `checkout p95 = 83.88ms`
+  - `http_req_failed_rate = 0.00%`
+- Writer durability totals:
+  - `28,894` successful checkout cycles
+  - `0` failed cycles
+  - writer step p95s:
+    - `start_from_cart = 196.39ms`
+    - `set_shipping = 1344.82ms`
+    - `finalize_totals = 496.73ms`
+    - `create_payment_intent = 523.36ms`
+- Durability attribution:
+  - `shop_show` query count stayed effectively flat: start `1.0199`, mid `1.0027`, end `1.0014`
+  - `shop_show` query time stayed low and stable:
+    - start `3.50ms`
+    - mid `3.08ms`
+    - end `3.30ms`
+  - `shop_show` queue time stayed low and declined:
+    - start `0.20ms`
+    - mid `0.12ms`
+    - end `0.11ms`
+  - `lock_waiters_max = 2`, with window averages near `0`
+  - scheduler run queue remained low:
+    - start average `0.48`
+    - mid average `0.51`
+    - end average `0.65`
+    - cooldown average `0.22`
+  - memory profile was healthy:
+    - start `539.4MB`
+    - mid `151.8MB`
+    - end `160.1MB`
+    - cooldown end `120.8MB`
+    - slope `-632KB/s` over the measure window
+    - cooldown drop `39.3MB`
+- Verdict:
+  - `durability_status = pass`
+  - `failure_mode = none`
+  - the current `180` waiting-room trigger remains credible after a long-window soak on this workstation profile
   - `20/20` joins successful
   - `invalid_client_saturated = false`
   - aggregate:

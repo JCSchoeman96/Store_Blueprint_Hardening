@@ -75,6 +75,26 @@ defmodule Store.Perf.BenchmarkHarness do
     "tmp/perf/phase308_stress_to_failure_report.json"
   end
 
+  def phase309_storefront_summary_path do
+    "tmp/perf/k6_http_storefront_phase309.json"
+  end
+
+  def phase309_writer_result_path do
+    "tmp/perf/checkout_write_contention_phase309.json"
+  end
+
+  def phase309_poller_log_path do
+    "tmp/perf/product_detail_poller_phase309.ndjson"
+  end
+
+  def phase309_poller_summary_path do
+    "tmp/perf/product_detail_poller_summary_phase309.json"
+  end
+
+  def phase309_report_path do
+    "tmp/perf/phase309_durability_report.json"
+  end
+
   def checkout_write_contention_path do
     System.get_env(
       "STORE_CHECKOUT_WRITE_CONTENTION_PATH",
@@ -285,6 +305,34 @@ defmodule Store.Perf.BenchmarkHarness do
 
   def phase308_writer_duration_ms do
     phase308_warmup_ms() + phase308_measure_ms()
+  end
+
+  def phase309_writer_users do
+    System.get_env("STORE_PHASE309_WRITER_USERS", "100")
+    |> String.to_integer()
+  end
+
+  def phase309_warmup_ms do
+    System.get_env("STORE_PHASE309_WARMUP_MS", "60000")
+    |> String.to_integer()
+  end
+
+  def phase309_measure_ms do
+    System.get_env("STORE_PHASE309_MEASURE_MS", "600000")
+    |> String.to_integer()
+  end
+
+  def phase309_cooldown_ms do
+    System.get_env("STORE_PHASE309_COOLDOWN_MS", "60000")
+    |> String.to_integer()
+  end
+
+  def phase309_total_ms do
+    phase309_warmup_ms() + phase309_measure_ms() + phase309_cooldown_ms()
+  end
+
+  def phase309_writer_duration_ms do
+    phase309_warmup_ms() + phase309_measure_ms()
   end
 
   def writer_users do
