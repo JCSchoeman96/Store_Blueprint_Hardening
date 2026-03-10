@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-import { buildWebhookRequest, storefrontUrl, webhookMode } from './common.js';
+import { buildWebhookRequest, chaosThinkTimeSeconds, storefrontUrl, webhookMode } from './common.js';
 
 const scenarioName = webhookMode === 'duplicate_replay' ? 'duplicate_replay' : 'unique_ingress';
 
@@ -33,5 +33,5 @@ export default function () {
   });
 
   check(response, { 'accepted': (r) => r.status === 202 });
-  sleep(1);
+  sleep(chaosThinkTimeSeconds(`webhook:${route}:${webhookMode}`));
 }

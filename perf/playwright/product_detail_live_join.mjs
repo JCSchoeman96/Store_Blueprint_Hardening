@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { test, expect, chromium } from 'playwright/test';
 
 const MODE = process.env.STORE_LIVE_JOIN_MODE || 'quick';
+const CHAOS_PROFILE = process.env.STORE_PERF_CHAOS_PROFILE || 'baseline';
+const CHAOS_SEED = process.env.STORE_PERF_CHAOS_SEED || 'store-perf-chaos';
 const QUICK_USERS = 20;
 const FULL_USERS = 100;
 const RAMP_PER_SECOND = 5;
@@ -19,6 +21,9 @@ const PID_PATH =
   process.env.STORE_PLAYWRIGHT_PID_PATH || 'tmp/perf/playwright_product_detail_live_join.pids.json';
 const CPU_THRESHOLD = floatEnv('STORE_LIVE_JOIN_CPU_THRESHOLD', 90.0);
 const MIN_FREE_MEM_BYTES = intEnv('STORE_LIVE_JOIN_MIN_FREE_MEM_BYTES', 512 * 1024 * 1024);
+const MIN_SUCCESS_RATE = floatEnv('STORE_LIVE_JOIN_MIN_SUCCESS_RATE', 0.99);
+const JOIN_ACK_P95_MAX_MS = intEnv('STORE_LIVE_JOIN_JOIN_ACK_P95_MAX_MS', 2000);
+const LIVE_SOCKET_LATENCY_MS = liveSocketLatencyMs(CHAOS_PROFILE);
 
 test.setTimeout(10 * 60 * 1000);
 
@@ -62,6 +67,9 @@ test('product detail live join attribution', async () => {
     const output = {
       generated_at: new Date().toISOString(),
       mode: MODE,
+      chaos_profile: CHAOS_PROFILE,
+      chaos_seed: CHAOS_SEED,
+      live_socket_latency_ms: LIVE_SOCKET_LATENCY_MS,
       base_url: baseUrl,
       input_path: DATA_PATH,
       user_count: USER_COUNT,
@@ -95,6 +103,11 @@ test('product detail live join attribution', async () => {
 
     expect(results.length).toBe(USER_COUNT * WAVES);
     expect(aggregate.successful).toBeGreaterThan(0);
+    expect(aggregate.successful / Math.max(results.length, 1)).toBeGreaterThanOrEqual(MIN_SUCCESS_RATE);
+
+    if (CHAOS_PROFILE === 'mobile_realistic' && Number.isFinite(aggregate.p95_join_ack_ms)) {
+      expect(aggregate.p95_join_ack_ms).toBeLessThanOrEqual(JOIN_ACK_P95_MAX_MS);
+    }
   } finally {
     await browser.close().catch(() => {});
     persistPidFile([]);
@@ -133,6 +146,7 @@ async function runJoin(browser, wave, index, slugs, baseUrl) {
   const joinSignals = createJoinSignals(page);
 
   try {
+    await installLiveSocketLatencySim(page, LIVE_SOCKET_LATENCY_MS);
     const navStarted = performance.now();
     const response = await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded' });
     const navEnded = performance.now();
@@ -422,6 +436,28 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function installLiveSocketLatencySim(page, latencyMs) {
+  if (latencyMs <= 0) {
+    return;
+  }
+
+  await page.addInitScript((ms) => {
+    Object.defineProperty(window, 'liveSocket', {
+      configurable: true,
+      get() {
+        return window.__storePerfLiveSocket;
+      },
+      set(value) {
+        window.__storePerfLiveSocket = value;
+
+        if (value && typeof value.enableLatencySim === 'function') {
+          value.enableLatencySim(ms);
+        }
+      }
+    });
+  }, latencyMs);
+}
+
 function intEnv(name, fallback) {
   const value = process.env[name];
   if (!value) return fallback;
@@ -434,6 +470,17 @@ function floatEnv(name, fallback) {
   if (!value) return fallback;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function liveSocketLatencyMs(profile) {
+  switch (profile) {
+    case 'mobile_realistic':
+      return 400;
+    case 'provider_incident':
+      return 700;
+    default:
+      return 0;
+  }
 }
 
 function ensureTmpDir() {

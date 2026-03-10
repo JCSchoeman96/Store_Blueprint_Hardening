@@ -7,6 +7,8 @@ const benchmarkData = JSON.parse(rawData);
 export const baseUrl = (__ENV.STORE_BENCHMARK_BASE_URL || benchmarkData.base_url).replace(/\/$/, '');
 export const data = benchmarkData;
 export const webhookMode = __ENV.STORE_WEBHOOK_MODE || 'unique_ingress';
+export const chaosProfile = __ENV.STORE_PERF_CHAOS_PROFILE || 'baseline';
+export const chaosSeed = __ENV.STORE_PERF_CHAOS_SEED || 'store-perf-chaos';
 
 export function storefrontUrl(path) {
   return `${baseUrl}${path}`;
@@ -46,6 +48,61 @@ export function buildWebhookRequest(route, mode = webhookMode) {
   };
 }
 
+export function chaosThinkTimeSeconds(label, fallbackSeconds = 1) {
+  if (chaosProfile === 'baseline') {
+    return fallbackSeconds;
+  }
+
+  const ranges =
+    chaosProfile === 'provider_incident'
+      ? [
+          [2000, 3500],
+          [3500, 5000],
+          [5000, 6500]
+        ]
+      : [
+          [1000, 2000],
+          [2000, 3500],
+          [3500, 5000]
+        ];
+
+  return deterministicRangeMs(`think:${label}`, ranges) / 1000;
+}
+
+export function liveSocketLatencyMs() {
+  switch (chaosProfile) {
+    case 'mobile_realistic':
+      return 400;
+    case 'provider_incident':
+      return 700;
+    default:
+      return 0;
+  }
+}
+
+export async function installLiveSocketLatencySim(target) {
+  const latencyMs = liveSocketLatencyMs();
+
+  if (latencyMs <= 0 || typeof target.addInitScript !== 'function') {
+    return latencyMs;
+  }
+
+  await target.addInitScript((ms) => {
+    const install = () => {
+      if (window.liveSocket && typeof window.liveSocket.enableLatencySim === 'function') {
+        window.liveSocket.enableLatencySim(ms);
+        return;
+      }
+
+      window.setTimeout(install, 5);
+    };
+
+    install();
+  }, latencyMs);
+
+  return latencyMs;
+}
+
 function buildStripePayload(template, mode) {
   const payload = clone(template);
 
@@ -74,6 +131,24 @@ function buildStripePayload(template, mode) {
 function stripeSignature(body, timestamp, secret) {
   const digest = crypto.hmac('sha256', secret, `${timestamp}.${body}`, 'hex');
   return `t=${timestamp},v1=${digest}`;
+}
+
+function deterministicRangeMs(label, ranges) {
+  const rangeIndex = deterministicInt(`${label}:range`, ranges.length);
+  const [minMs, maxMs] = ranges[rangeIndex];
+  const span = Math.max(maxMs - minMs + 1, 1);
+
+  return minMs + deterministicInt(`${label}:offset`, span);
+}
+
+function deterministicInt(label, modulus) {
+  if (!Number.isFinite(modulus) || modulus <= 0) {
+    return 0;
+  }
+
+  const digest = crypto.sha256(`${chaosSeed}:${chaosProfile}:${label}:${__VU}:${__ITER}`, 'hex');
+  const value = Number.parseInt(digest.slice(0, 8), 16);
+  return value % modulus;
 }
 
 function clone(value) {

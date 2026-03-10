@@ -114,6 +114,8 @@ jobs:
         env:
           STORE_PERF_SMOKE: "true"
           STORE_PERF_PROFILE: full_stress
+          STORE_PERF_CHAOS_PROFILE: provider_incident
+          STORE_PERF_CHAOS_SEED: nightly-provider-incident
         run: |
           mkdir -p tmp/nightly
           mix run --no-start priv/repo/performance_smoke_test.exs \

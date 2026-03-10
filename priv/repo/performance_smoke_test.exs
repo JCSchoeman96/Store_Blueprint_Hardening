@@ -87,6 +87,8 @@ defmodule Store.PerformanceSmoke.Config do
   @moduledoc false
 
   defstruct profile: :local_dev,
+            chaos_profile: :baseline,
+            chaos_seed: "",
             api_mean_ms: 100.0,
             checkout_p99_ms: 5_000.0,
             checkout_variant_pool_size: 20,
@@ -112,7 +114,8 @@ defmodule Store.PerformanceSmoke.Config do
             benchee_warmup_seconds: 1,
             sample_iterations: 100,
             run_id: "",
-            redis_prefix: ""
+            redis_prefix: "",
+            report_path: ""
 
   @type t :: %__MODULE__{}
 
@@ -168,6 +171,8 @@ defmodule Store.PerformanceSmoke.Config do
 
     %__MODULE__{
       profile: profile,
+      chaos_profile: Store.Perf.ChaosProfile.current_profile(),
+      chaos_seed: Store.Perf.ChaosProfile.current_seed(),
       api_mean_ms: env_float("STORE_PERF_API_MEAN_MS", 100.0),
       checkout_p99_ms: env_float("STORE_PERF_CHECKOUT_P99_MS", 5_000.0),
       checkout_variant_pool_size:
@@ -212,7 +217,8 @@ defmodule Store.PerformanceSmoke.Config do
         ),
       sample_iterations: Map.fetch!(defaults, :sample_iterations),
       run_id: run_id,
-      redis_prefix: "store:perf:#{run_id}"
+      redis_prefix: "store:perf:#{run_id}",
+      report_path: Store.Perf.ChaosProfile.report_path(Store.Perf.ChaosProfile.current_profile())
     }
   end
 
@@ -535,11 +541,11 @@ defmodule Store.PerformanceSmoke.Reporter do
     :ok
   end
 
-  @spec write_json(map()) :: :ok | {:error, term()}
-  def write_json(payload) when is_map(payload) do
-    File.mkdir_p!("tmp/perf")
+  @spec write_json(map(), String.t()) :: :ok | {:error, term()}
+  def write_json(payload, path) when is_map(payload) and is_binary(path) do
+    File.mkdir_p!(Path.dirname(path))
     encoded = Jason.encode_to_iodata!(payload, pretty: true)
-    File.write("tmp/perf/performance_smoke_report.json", encoded)
+    File.write(path, encoded)
   end
 
   defp reset_table(table_name) do
@@ -1997,10 +2003,9 @@ defmodule Store.PerformanceSmokeTest do
       Observer.capture("#{scenario_name}_observer", config, fn ->
         with_repo_query_telemetry(repo_filter, fn ->
           with_checkout_intent_telemetry(fn ->
-            Store.PerformanceSmoke.ProviderFault.with_injection(
-              config.payment_provider,
+            with_provider_fault_stub(
+              config,
               mode,
-              config.provider_fault_delay_ms,
               fn ->
                 prepared_checkouts
                 |> async_stream_with_stripe_stub(
@@ -2039,6 +2044,26 @@ defmodule Store.PerformanceSmokeTest do
 
     Reporter.record_provider_fault(summary)
     summary
+  end
+
+  defp with_provider_fault_stub(config, mode, fun) when is_function(fun, 0) do
+    override = %{
+      mode: mode,
+      delay_ms: config.provider_fault_delay_ms,
+      profile: config.chaos_profile,
+      seed: "#{config.chaos_seed}:#{mode}"
+    }
+
+    StripeAPIStub.with_chaos_override(override, fn ->
+      StripeAPIStub.stub_default()
+
+      try do
+        fun.()
+      after
+        StripeAPIStub.clear_chaos_override()
+        StripeAPIStub.stub_default()
+      end
+    end)
   end
 
   defp async_stream_with_stripe_stub(enumerable, fun, opts) when is_function(fun, 1) do
@@ -2380,6 +2405,11 @@ step_summaries = Store.PerformanceSmoke.Reporter.step_summaries()
 summary = %{
   generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
   profile: run_config.profile,
+  chaos: %{
+    profile: run_config.chaos_profile,
+    seed: run_config.chaos_seed,
+    report_path: run_config.report_path
+  },
   thresholds: %{
     api_mean_ms: run_config.api_mean_ms,
     checkout_p99_ms: run_config.checkout_p99_ms,
@@ -2419,9 +2449,9 @@ Store.PerformanceSmoke.Reporter.print_observer_table(observer_summaries)
 Store.PerformanceSmoke.Reporter.print_provider_fault_table(provider_fault_summaries)
 Store.PerformanceSmoke.Reporter.print_step_table(step_summaries)
 
-case Store.PerformanceSmoke.Reporter.write_json(summary) do
+case Store.PerformanceSmoke.Reporter.write_json(summary, run_config.report_path) do
   :ok ->
-    IO.puts("\nWrote performance report to tmp/perf/performance_smoke_report.json")
+    IO.puts("\nWrote performance report to #{run_config.report_path}")
 
   {:error, reason} ->
     IO.puts("\nFailed to write performance report: #{inspect(reason)}")

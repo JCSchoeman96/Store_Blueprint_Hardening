@@ -300,6 +300,111 @@ jobs:
       - name: Verify no generated drift
         run: git diff --exit-code
 
+  performance_smoke_chaos_required:
+    name: performance_smoke_chaos_required
+    runs-on: ubuntu-latest
+    needs: check_static
+    env:
+      MIX_ENV: test
+      STORE_DB_PORT: 5433
+      STORE_PERF_SMOKE: "true"
+      STORE_PERF_PROFILE: ci_gate
+      STORE_PERF_CHAOS_PROFILE: mobile_realistic
+      STORE_PERF_CHAOS_SEED: ci-mobile-realistic
+      STORE_PERF_REPO_POOL_SIZE: "40"
+      PGHOST: localhost
+      PGPORT: 5433
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: store_test
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5433:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: store_test
+          POSTGRES_INITDB_ARGS: "--auth-host=trust"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup BEAM
+        id: setup-beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Install system tools (pg_isready)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          pg_isready --version
+
+      - name: Cache Mix build and deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix
+          key: ${{ runner.os }}-beam-perf-chaos-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('.tool-versions') }}
+          restore-keys: |
+            ${{ runner.os }}-beam-perf-chaos-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch deps
+        run: mix deps.get
+
+      - name: Wait for Postgres (pg_isready)
+        run: |
+          for i in {1..60}; do
+            pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" && exit 0
+            sleep 1
+          done
+          echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
+          exit 1
+
+      - name: Initialize Database
+        run: mix ash_postgres.create && mix ash_postgres.migrate
+
+      - name: Run mobile-realistic chaos smoke gate
+        run: mix run --no-start priv/repo/performance_smoke_test.exs
+
+      - name: Upload chaos perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-smoke-chaos-artifacts
+          path: tmp/perf/
+
+      - name: Verify no generated drift
+        run: git diff --exit-code
+
   dialyzer_required:
     name: dialyzer_required
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 defmodule Store.Perf.BenchmarkHarness do
   @moduledoc false
 
+  alias Store.Perf.ChaosProfile
   alias Store.Perf.ProductDetailPollerSummary
 
   @default_host "127.0.0.1"
@@ -48,11 +49,37 @@ defmodule Store.Perf.BenchmarkHarness do
     )
   end
 
+  def chaos_playwright_result_path do
+    profile = chaos_profile()
+
+    System.get_env(
+      "STORE_PLAYWRIGHT_CHAOS_RESULT_PATH",
+      "tmp/perf/playwright_product_detail_live_join_#{profile}.json"
+    )
+  end
+
   def storefront_summary_path(kind \\ "contention") do
     System.get_env(
       "STORE_K6_SUMMARY_PATH",
       "tmp/perf/k6_http_storefront_phase307_#{kind}.json"
     )
+  end
+
+  def chaos_storefront_summary_path(kind \\ "contention") do
+    profile = chaos_profile()
+
+    System.get_env(
+      "STORE_K6_CHAOS_SUMMARY_PATH",
+      "tmp/perf/k6_http_storefront_#{profile}_#{kind}.json"
+    )
+  end
+
+  def chaos_profile do
+    ChaosProfile.current_profile()
+  end
+
+  def chaos_seed do
+    ChaosProfile.current_seed()
   end
 
   def phase308_storefront_summary_path(rung) when is_integer(rung) do
@@ -255,6 +282,7 @@ defmodule Store.Perf.BenchmarkHarness do
     IO.puts("Poller log: #{log_path}")
     IO.puts("Poller summary: #{product_detail_poller_summary_path()}")
     IO.puts("Playwright result: #{playwright_result_path()}")
+    IO.puts("Chaos Playwright result: #{chaos_playwright_result_path()}")
     IO.puts("")
     IO.puts("Run order:")
 
@@ -270,6 +298,14 @@ defmodule Store.Perf.BenchmarkHarness do
 
     IO.puts("  4. MIX_ENV=test mix run --no-start priv/perf/product_detail_poller_summary.exs")
     IO.puts("  5. STORE_K6_QUICK=1 k6 run perf/k6/http_storefront.js")
+
+    IO.puts(
+      "  6. STORE_PERF_CHAOS_PROFILE=mobile_realistic STORE_PERF_CHAOS_SEED=#{chaos_seed()} STORE_K6_QUICK=1 k6 run --summary-export #{chaos_storefront_summary_path("quick")} perf/k6/http_storefront.js"
+    )
+
+    IO.puts(
+      "  7. STORE_PERF_CHAOS_PROFILE=mobile_realistic STORE_PERF_CHAOS_SEED=#{chaos_seed()} STORE_PLAYWRIGHT_RESULT_PATH=#{chaos_playwright_result_path()} STORE_LIVE_JOIN_MODE=quick npx playwright test -c perf/playwright/playwright.config.mjs perf/playwright/product_detail_live_join.mjs"
+    )
   end
 
   def benchmark_mode do

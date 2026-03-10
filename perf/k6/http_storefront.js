@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-import { data, getWithCheckoutCookie, pick, storefrontUrl } from './common.js';
+import { chaosThinkTimeSeconds, data, getWithCheckoutCookie, pick, storefrontUrl } from './common.js';
 
 const quickMode = __ENV.STORE_K6_QUICK === '1';
 const warmupMs = parseOptionalInt(__ENV.STORE_K6_WARMUP_MS);
@@ -31,26 +31,29 @@ export const options = {
 
 export default function () {
   const roll = Math.random();
+  let route = 'shop_index';
 
   if (roll < 0.35) {
-    const response = http.get(storefrontUrl('/shop'), { tags: { route: 'shop_index' } });
+    route = 'shop_index';
+    const response = http.get(storefrontUrl('/shop'), { tags: { route } });
     check(response, { 'shop index ok': (r) => r.status === 200 });
   } else if (roll < 0.70) {
+    route = 'shop_show';
     const slug = pick(data.storefront.hot_slugs.concat([data.storefront.flash_sale_slug]));
-    const response = http.get(storefrontUrl(`/shop/${slug}`), { tags: { route: 'shop_show' } });
+    const response = http.get(storefrontUrl(`/shop/${slug}`), { tags: { route } });
     check(response, { 'shop show ok': (r) => r.status === 200 });
   } else if (roll < 0.85) {
-    const response = http.get(storefrontUrl('/cart'), { tags: { route: 'cart' } });
+    route = 'cart';
+    const response = http.get(storefrontUrl('/cart'), { tags: { route } });
     check(response, { 'cart ok': (r) => r.status === 200 });
   } else {
+    route = 'checkout';
     const checkout = pick(data.checkout.prepared_paths);
-    const response = getWithCheckoutCookie(checkout.path, checkout.cart_token, {
-      route: 'checkout'
-    });
+    const response = getWithCheckoutCookie(checkout.path, checkout.cart_token, { route });
     check(response, { 'checkout ok': (r) => r.status === 200 });
   }
 
-  sleep(1);
+  sleep(chaosThinkTimeSeconds(`storefront:${route}`));
 }
 
 function defaultStages() {

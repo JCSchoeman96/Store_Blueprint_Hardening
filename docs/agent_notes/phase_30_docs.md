@@ -259,6 +259,66 @@
   - the existing availability cache is retained
   - cached payload now stores more reusable derived data (`detail_options`, row/index maps) to reduce repeated transformation work
 
+## Phase 30.5
+### Links Consulted
+- [lib/store/perf/chaos_profile.ex](/home/jcs/projects/store_blueprint/lib/store/perf/chaos_profile.ex)
+- [lib/store/perf/benchmark_harness.ex](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex)
+- [priv/repo/performance_smoke_test.exs](/home/jcs/projects/store_blueprint/priv/repo/performance_smoke_test.exs)
+- [test/support/stripe_api_stub.ex](/home/jcs/projects/store_blueprint/test/support/stripe_api_stub.ex)
+- [perf/k6/common.js](/home/jcs/projects/store_blueprint/perf/k6/common.js)
+- [perf/k6/http_storefront.js](/home/jcs/projects/store_blueprint/perf/k6/http_storefront.js)
+- [perf/k6/webhook_ingress.js](/home/jcs/projects/store_blueprint/perf/k6/webhook_ingress.js)
+- [perf/k6/browser_checkout.js](/home/jcs/projects/store_blueprint/perf/k6/browser_checkout.js)
+- [perf/playwright/product_detail_live_join.mjs](/home/jcs/projects/store_blueprint/perf/playwright/product_detail_live_join.mjs)
+- [.github/workflows/ci.yml](/home/jcs/projects/store_blueprint/.github/workflows/ci.yml)
+- [.github/workflows/nightly-hardening.yml](/home/jcs/projects/store_blueprint/.github/workflows/nightly-hardening.yml)
+
+### Decisions / Pins
+- Add one shared benchmark-only chaos contract:
+  - `STORE_PERF_CHAOS_PROFILE=baseline|mobile_realistic|provider_incident`
+  - `STORE_PERF_CHAOS_SEED=<string>`
+- Keep baseline perf gates unchanged.
+- Add a second required CI smoke lane for `mobile_realistic`.
+- Keep `provider_incident` as nightly/manual only.
+- Do not add Toxiproxy, remote-region runners, or production-path changes in this slice.
+- Stripe is the only outbound provider included because shipping is still internally quoted.
+
+### Implementation
+- Added [Store.Perf.ChaosProfile](/home/jcs/projects/store_blueprint/lib/store/perf/chaos_profile.ex) for deterministic chaos profile parsing, artifact paths, provider latency buckets, and browser latency defaults.
+- Extended the standalone smoke suite to record the active chaos profile and seed in the JSON output and to write profile-specific reports for non-baseline runs.
+- Switched the perf smoke provider-fault scenario to a Stripe stub override path so request-keyed delay/error behavior stays benchmark-scoped and deterministic.
+- Extended [StripeAPIStub](/home/jcs/projects/store_blueprint/test/support/stripe_api_stub.ex) with:
+  - deterministic delay on checkout-session, setup-intent, and payment-intent requests
+  - perf-only timeout/error overrides
+  - baseline behavior preserved when no chaos profile is set
+- Extended the k6 helpers and scripts with deterministic degraded-client pacing:
+  - storefront and webhook scripts now use profile-driven think time
+  - browser checkout now enables `window.liveSocket.enableLatencySim(...)` before navigation and adds profile-driven pauses only in chaos modes
+- Extended the Playwright live-join script with:
+  - init-script LiveSocket latency simulation
+  - chaos profile metadata in the output artifact
+  - a `mobile_realistic` join-success and join-ack assertion
+- Extended CI with a second required perf smoke lane using `STORE_PERF_CHAOS_PROFILE=mobile_realistic`.
+- Extended nightly hardening to run the full-stress smoke suite with `STORE_PERF_CHAOS_PROFILE=provider_incident`.
+
+### Performance & Scaling Review
+- Hot:
+  - payment-provider wait simulation is now request-keyed and deterministic instead of a single flat synthetic delay
+  - benchmark browser flows can now simulate LiveView websocket latency without changing app runtime behavior
+- Warm:
+  - chaos profile metadata is persisted in perf artifacts for reproducible reruns
+  - benchmark runbook now prints both baseline and chaos run order
+- Cold:
+  - no schema, cache, queue, or production runtime changes
+- DB query count + N+1 risk:
+  - unchanged by design; this slice changes timing/pacing, not domain query shape
+- Caching:
+  - unchanged
+- Oban uniqueness / idempotency:
+  - unchanged
+- Telemetry / logging:
+  - smoke artifacts now carry chaos profile context so latency and pressure results can be compared against baseline without ambiguity
+
 ## Phase 30.6
 ### Links Consulted
 - [Store.Perf.BenchmarkHarness](/home/jcs/projects/store_blueprint/lib/store/perf/benchmark_harness.ex)
