@@ -24,8 +24,12 @@ defmodule StoreWeb.API.ErrorResponder do
   defp status_for_code("PAYMENT_PROVIDER_SELECTION_REQUIRED"), do: :bad_request
   defp status_for_code("PAYMENT_PROVIDER_UNSUPPORTED"), do: :bad_request
   defp status_for_code("PAYMENT_PROVIDER_DISABLED"), do: :forbidden
+  defp status_for_code("PAYMENT_PROVIDER_DOWN"), do: :bad_gateway
+  defp status_for_code("PAYMENT_PROVIDER_TIMEOUT"), do: :gateway_timeout
+  defp status_for_code("PAYMENT_PROCESSING_FAILED"), do: :bad_gateway
   defp status_for_code("PAYMENT_PAYLOAD_INVALID"), do: :bad_request
   defp status_for_code("PAYMENT_METHOD_REQUIRED"), do: :unprocessable_entity
+  defp status_for_code("RATE_LIMITED"), do: :too_many_requests
   defp status_for_code("VALIDATION_ERROR"), do: :bad_request
   defp status_for_code("CURRENCY_MISMATCH"), do: :bad_request
   defp status_for_code("PAYMENT_EVENT_UNVERIFIED"), do: :unprocessable_entity

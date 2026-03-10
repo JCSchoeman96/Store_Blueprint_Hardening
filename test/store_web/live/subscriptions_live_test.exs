@@ -7,15 +7,19 @@ defmodule StoreWeb.SubscriptionsLiveTest do
   alias Store.Entitlements.Facade, as: EntitlementsFacade
   alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
+  alias Store.TestSupport.StripeAPIStub
 
-  setup do
+  setup context do
     previous = Application.get_env(:store, :payments, [])
+    StripeAPIStub.setup_default(context)
 
     Application.put_env(:store, :payments,
       enabled_providers: [:stripe],
       stripe: [
         webhook_secret: "whsec_test_only_change_me",
-        publishable_key: "pk_test_live_subscriptions"
+        secret_key: "sk_test_live_subscriptions",
+        publishable_key: "pk_test_live_subscriptions",
+        request_options: StripeAPIStub.req_options()
       ]
     )
 

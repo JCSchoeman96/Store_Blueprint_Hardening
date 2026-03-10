@@ -77,6 +77,7 @@ defmodule Store.MixProject do
       {:swoosh, "~> 1.16"},
       {:oban, "~> 2.0"},
       {:req, "~> 0.5"},
+      {:sentry, "~> 10.8"},
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.5"},
       {:telemetry_metrics, "~> 1.0"},
@@ -88,6 +89,7 @@ defmodule Store.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.37", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.1"},
@@ -117,6 +119,7 @@ defmodule Store.MixProject do
       "check.static": [
         "format --check-formatted",
         "compile --warnings-as-errors",
+        "deps.audit",
         "check.req_usage",
         "check.web_no_http",
         "check.web_no_oban_enqueue",
@@ -136,6 +139,7 @@ defmodule Store.MixProject do
       check: [
         "format --check-formatted",
         "compile --warnings-as-errors",
+        "deps.audit",
         "check.req_usage",
         "check.web_no_http",
         "check.web_no_oban_enqueue",

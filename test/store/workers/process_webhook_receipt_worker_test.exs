@@ -18,10 +18,12 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
   alias Store.TestFixtures
+  alias Store.TestSupport.StripeAPIStub
   alias Store.Workers.{ProcessSubscriptionRenewalWorker, ProcessWebhookReceiptWorker}
 
-  setup do
+  setup context do
     previous = Application.get_env(:store, :payments, [])
+    StripeAPIStub.setup_default(context)
 
     on_exit(fn ->
       Application.put_env(:store, :payments, previous)

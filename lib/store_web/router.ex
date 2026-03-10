@@ -17,6 +17,7 @@ defmodule StoreWeb.Router do
     plug(:put_root_layout, html: {StoreWeb.Layouts, :root})
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
+    plug(StoreWeb.Plugs.PutSecurityHeaders)
   end
 
   pipeline :api do
@@ -24,6 +25,15 @@ defmodule StoreWeb.Router do
     plug(:load_from_bearer)
     plug(:set_actor, :user)
     plug(StoreWeb.Plugs.ApiV1JsonApiGuard)
+  end
+
+  pipeline :admin_rate_limit do
+    plug(StoreWeb.Plugs.RequestRateLimit, scope: :admin)
+  end
+
+  scope "/", StoreWeb do
+    get("/health/live", HealthController, :live)
+    get("/health/ready", HealthController, :ready)
   end
 
   scope "/", StoreWeb do
@@ -69,43 +79,51 @@ defmodule StoreWeb.Router do
       live("/checkout/cancel", CheckoutLive.Placeholder, :cancel)
     end
 
-    ash_authentication_live_session :authentication_required,
+    ash_authentication_live_session :admin_authentication_required,
       on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
       live("/account", AccountLive, :index)
       live("/account/orders/:order_ref", Orders.ShowLive, :show)
       live("/account/subscriptions", SubscriptionsLive.Index, :index)
       live("/account/subscriptions/:id", SubscriptionsLive.Show, :show)
       live("/account/downloads", Digital.DownloadsLive, :index)
-      live("/admin", AdminLive, :index)
-      live("/admin/subscriptions", Admin.Subscriptions.IndexLive, :index)
-      live("/admin/subscriptions/:id", Admin.Subscriptions.ShowLive, :show)
-      live("/admin/products", Admin.Products.IndexLive, :index)
-      live("/admin/products/new", Admin.Products.IndexLive, :new)
-      live("/admin/products/:id/edit", Admin.Products.IndexLive, :edit)
-      live("/admin/products/:id/variants", Admin.ProductVariants.IndexLive, :index)
-      live("/admin/digital-assets", Admin.DigitalAssets.IndexLive, :index)
-      live("/admin/digital-assets/new", Admin.DigitalAssets.IndexLive, :new)
-      live("/admin/digital-assets/:id/edit", Admin.DigitalAssets.IndexLive, :edit)
-      live("/admin/product-digital-links", Admin.ProductDigitalLinks.IndexLive, :index)
-      live("/admin/product-digital-links/new", Admin.ProductDigitalLinks.IndexLive, :new)
-      live("/admin/product-digital-links/:id/edit", Admin.ProductDigitalLinks.IndexLive, :edit)
-      live("/admin/shipping-methods", Admin.ShippingMethods.IndexLive, :index)
-      live("/admin/shipping-methods/new", Admin.ShippingMethods.IndexLive, :new)
-      live("/admin/shipping-methods/:id/edit", Admin.ShippingMethods.IndexLive, :edit)
-      live("/admin/shipping-zones", Admin.ShippingZones.IndexLive, :index)
-      live("/admin/shipping-zones/new", Admin.ShippingZones.IndexLive, :new)
-      live("/admin/shipping-zones/:id/edit", Admin.ShippingZones.IndexLive, :edit)
-      live("/admin/shipping-rates", Admin.ShippingRates.IndexLive, :index)
-      live("/admin/shipping-rates/new", Admin.ShippingRates.IndexLive, :new)
-      live("/admin/shipping-rates/:id/edit", Admin.ShippingRates.IndexLive, :edit)
-      live("/admin/fulfillment", Admin.Fulfillment.IndexLive, :index)
-      live("/admin/email-outbox", Admin.EmailOutbox.IndexLive, :index)
-      live("/admin/tax-rates", Admin.TaxRates.IndexLive, :index)
-      live("/admin/tax-rates/new", Admin.TaxRates.IndexLive, :new)
-      live("/admin/tax-rates/:id/edit", Admin.TaxRates.IndexLive, :edit)
     end
 
     get("/account/downloads/:grant_id/request", DigitalDownloadController, :create)
+  end
+
+  scope "/admin", StoreWeb do
+    pipe_through([:browser, :admin_rate_limit])
+
+    ash_authentication_live_session :authentication_required,
+      on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
+      live("/", AdminLive, :index)
+      live("/subscriptions", Admin.Subscriptions.IndexLive, :index)
+      live("/subscriptions/:id", Admin.Subscriptions.ShowLive, :show)
+      live("/products", Admin.Products.IndexLive, :index)
+      live("/products/new", Admin.Products.IndexLive, :new)
+      live("/products/:id/edit", Admin.Products.IndexLive, :edit)
+      live("/products/:id/variants", Admin.ProductVariants.IndexLive, :index)
+      live("/digital-assets", Admin.DigitalAssets.IndexLive, :index)
+      live("/digital-assets/new", Admin.DigitalAssets.IndexLive, :new)
+      live("/digital-assets/:id/edit", Admin.DigitalAssets.IndexLive, :edit)
+      live("/product-digital-links", Admin.ProductDigitalLinks.IndexLive, :index)
+      live("/product-digital-links/new", Admin.ProductDigitalLinks.IndexLive, :new)
+      live("/product-digital-links/:id/edit", Admin.ProductDigitalLinks.IndexLive, :edit)
+      live("/shipping-methods", Admin.ShippingMethods.IndexLive, :index)
+      live("/shipping-methods/new", Admin.ShippingMethods.IndexLive, :new)
+      live("/shipping-methods/:id/edit", Admin.ShippingMethods.IndexLive, :edit)
+      live("/shipping-zones", Admin.ShippingZones.IndexLive, :index)
+      live("/shipping-zones/new", Admin.ShippingZones.IndexLive, :new)
+      live("/shipping-zones/:id/edit", Admin.ShippingZones.IndexLive, :edit)
+      live("/shipping-rates", Admin.ShippingRates.IndexLive, :index)
+      live("/shipping-rates/new", Admin.ShippingRates.IndexLive, :new)
+      live("/shipping-rates/:id/edit", Admin.ShippingRates.IndexLive, :edit)
+      live("/fulfillment", Admin.Fulfillment.IndexLive, :index)
+      live("/email-outbox", Admin.EmailOutbox.IndexLive, :index)
+      live("/tax-rates", Admin.TaxRates.IndexLive, :index)
+      live("/tax-rates/new", Admin.TaxRates.IndexLive, :new)
+      live("/tax-rates/:id/edit", Admin.TaxRates.IndexLive, :edit)
+    end
   end
 
   # Other scopes may use custom stacks.

@@ -70,6 +70,11 @@ defmodule Store.Payments.WebhookReceipt do
       public?(true)
     end
 
+    attribute :evidence_purged_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :raw_body, :string do
       allow_nil?(false)
       default("")
@@ -123,6 +128,7 @@ defmodule Store.Payments.WebhookReceipt do
         :error_detail,
         :verified_at,
         :processed_at,
+        :evidence_purged_at,
         :raw_body,
         :headers,
         :received_at
@@ -159,6 +165,10 @@ defmodule Store.Payments.WebhookReceipt do
       accept([:error_code, :error_detail, :processed_at])
       change(set_attribute(:processing_status, "failed"))
     end
+
+    update :purge_evidence do
+      accept([:raw_body, :headers, :evidence_purged_at])
+    end
   end
 
   code_interface do
@@ -175,6 +185,7 @@ defmodule Store.Payments.WebhookReceipt do
       index([:verification_status], name: "webhook_receipts_verification_status_index")
       index([:processing_status], name: "webhook_receipts_processing_status_index")
       index([:provider_event_id], name: "webhook_receipts_provider_event_id_index")
+      index([:evidence_purged_at], name: "webhook_receipts_evidence_purged_at_index")
     end
   end
 
@@ -194,7 +205,7 @@ defmodule Store.Payments.WebhookReceipt do
       authorize_if(context_equals(:system?, true))
     end
 
-    policy action([:mark_processing, :mark_processed, :mark_failed]) do
+    policy action([:mark_processing, :mark_processed, :mark_failed, :purge_evidence]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
     end

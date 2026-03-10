@@ -96,6 +96,9 @@ jobs:
       - name: Verify Migration Alignment
         run: mix ash_postgres.generate_migrations --check
 
+      - name: Run dependency audit
+        run: mix deps.audit
+
       - name: Run required check gate
         run: mix check
 

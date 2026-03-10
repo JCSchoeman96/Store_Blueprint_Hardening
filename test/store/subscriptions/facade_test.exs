@@ -36,9 +36,11 @@ defmodule Store.Subscriptions.FacadeTest do
   }
 
   alias Store.SubscriptionsFixtures
+  alias Store.TestSupport.StripeAPIStub
 
-  setup do
+  setup context do
     previous = Application.get_env(:store, :payments, [])
+    StripeAPIStub.setup_default(context)
 
     on_exit(fn ->
       Application.put_env(:store, :payments, previous)
@@ -353,9 +355,21 @@ defmodule Store.Subscriptions.FacadeTest do
       enabled_providers: [:stripe],
       stripe: [
         webhook_secret: "whsec_test_only_change_me",
-        recurring_charge_status: :failed
+        secret_key: "sk_test_store_blueprint",
+        publishable_key: "pk_test_store_blueprint",
+        request_options: StripeAPIStub.req_options()
       ]
     )
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.payment_intent_error(
+        conn,
+        params,
+        "requires_payment_method",
+        "card_declined",
+        "card was declined"
+      )
+    end)
 
     customer = SubscriptionsFixtures.create_customer!("phase27_physical_release")
 
@@ -671,7 +685,9 @@ defmodule Store.Subscriptions.FacadeTest do
       enabled_providers: [:stripe],
       stripe: [
         webhook_secret: "whsec_test_only_change_me",
-        publishable_key: "pk_test_boundary_123"
+        secret_key: "sk_test_boundary_123",
+        publishable_key: "pk_test_boundary_123",
+        request_options: StripeAPIStub.req_options()
       ]
     )
 
@@ -699,13 +715,13 @@ defmodule Store.Subscriptions.FacadeTest do
 
     assert result.provider == :stripe
     assert result.publishable_key == "pk_test_boundary_123"
-    assert result.client_secret =~ "seti_secret_"
+    assert result.client_secret =~ "seti_test_"
 
     payment_intent = fetch_payment_intent!(result.payment_intent_id)
     assert payment_intent.purpose == :subscription_payment_method_update
     assert payment_intent.subscription_id == subscription.id
     assert payment_intent.provider_customer_ref == "cus_setup_001"
-    assert payment_intent.provider_payment_id =~ "seti_store_"
+    assert payment_intent.provider_payment_id =~ "seti_test_"
     assert payment_intent.state == :submitted
   end
 

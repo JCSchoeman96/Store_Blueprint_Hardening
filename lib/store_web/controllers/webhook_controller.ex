@@ -12,6 +12,8 @@ defmodule StoreWeb.WebhookController do
   alias StoreWeb.API.ErrorResponder
   alias StoreWeb.PaymentIngressTelemetry
 
+  plug(StoreWeb.Plugs.RequestRateLimit, [scope: :webhook] when action in [:create])
+
   @job_unique_opts [
     fields: [:worker, :args],
     states: [:available, :scheduled, :executing, :retryable, :completed],

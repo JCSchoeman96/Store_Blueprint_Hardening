@@ -3,6 +3,11 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
 
   alias Store.Payments.Providers.Stripe
   alias Store.Payments.Types.CanonicalReceipt
+  alias Store.TestSupport.StripeAPIStub
+
+  setup context do
+    StripeAPIStub.setup_default(context)
+  end
 
   test "stripe capabilities include provider-managed subscriptions" do
     capabilities = Stripe.capabilities()
@@ -37,6 +42,9 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
   test "create_intent response does not expose provider string field" do
     attrs = %{
       order_ref: "ORDP26STRIPE",
+      order_id: "order_001",
+      checkout_key: "checkout_key_001",
+      local_intent_id: "pi_local_order_001",
       amount_minor: 1_999,
       currency: "USD",
       payment_intent_key: "pi_key_001",
@@ -55,6 +63,9 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
   test "create_intent switches to setup mode for zero-total subscription carts" do
     attrs = %{
       order_ref: "ORDP27SETUP",
+      order_id: "order_setup_001",
+      checkout_key: "checkout_setup_001",
+      local_intent_id: "pi_local_setup_001",
       amount_minor: 0,
       currency: "USD",
       payment_intent_key: "pi_key_setup_001",
@@ -68,11 +79,10 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
     assert {:ok, payload} = Stripe.create_intent(attrs, [])
     assert payload.checkout_mode == :setup
     assert payload.provider_payment_id == nil
-    assert payload.provider_checkout_url =~ "mode=setup"
-    assert payload.provider_checkout_url =~ "save_for_off_session=true"
+    assert payload.provider_checkout_url =~ "checkout.stripe.test/session/"
   end
 
-  test "charge_off_session returns deterministic metadata and auth action evidence" do
+  test "charge_off_session returns provider payment details" do
     attrs = %{
       amount_minor: 1_999,
       currency: "USD",
@@ -82,18 +92,18 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
       renewal_attempt_id: "attempt_001",
       subscription_id: "sub_001",
       provider_customer_ref: "cus_001",
-      provider_payment_method_ref: "pm_001",
-      simulate_status: :requires_action
+      provider_payment_method_ref: "pm_001"
     }
 
     assert {:ok, payload} = Stripe.charge_off_session(attrs, [])
-    assert payload.status == :requires_action
+    assert payload.status == :succeeded
     assert payload.idempotency_key == "renewal_sub_20260401"
     assert payload.metadata.local_intent_id == "pi_local_001"
     assert payload.metadata.order_id == "order_001"
     assert payload.metadata.renewal_attempt_id == "attempt_001"
     assert payload.metadata.subscription_id == "sub_001"
-    assert payload.action_url =~ payload.provider_payment_id
+    assert payload.provider_payment_id =~ "pi_test_"
+    assert payload.provider_client_secret =~ payload.provider_payment_id
   end
 
   test "normalize_webhook extracts local payment intent metadata for off-session events" do

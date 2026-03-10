@@ -24,7 +24,9 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:ingest_webhook_receipt_for_system, 1},
         {:get_webhook_receipt_for_system, 1},
         {:process_payment_webhook_receipt_for_system, 1},
-        {:process_refund_webhook_receipt_for_system, 1}
+        {:process_refund_webhook_receipt_for_system, 1},
+        {:purge_expired_webhook_evidence_for_system, 0},
+        {:purge_expired_webhook_evidence_for_system, 1}
       ]
     },
     Store.Pricing.Facade => %{

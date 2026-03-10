@@ -6,6 +6,11 @@ defmodule Store.Subscriptions.ReplayConcurrencyTest do
 
   alias Store.Subscriptions.{Facade, RenewalAttempt, Subscription}
   alias Store.SubscriptionsFixtures
+  alias Store.TestSupport.StripeAPIStub
+
+  setup context do
+    StripeAPIStub.setup_default(context)
+  end
 
   test "concurrent renewal ticks create one renewal attempt and do not advance before reconciliation" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_concurrency")

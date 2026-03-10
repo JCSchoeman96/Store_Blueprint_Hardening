@@ -31,6 +31,7 @@ config :store,
 config :store, StoreWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
+  session_secure: false,
   render_errors: [
     formats: [html: StoreWeb.ErrorHTML, json: StoreWeb.ErrorJSON, jsonapi: StoreWeb.ErrorJSON],
     layout: false
@@ -55,7 +56,13 @@ config :store, :payments,
     cancel_base_url: "http://localhost:4000/checkout/cancel"
   ],
   stripe: [
-    checkout_base_url: "https://checkout.stripe.example"
+    api_base_url: "https://api.stripe.com",
+    webhook_secret: nil,
+    secret_key: nil,
+    publishable_key: "pk_test_store_blueprint",
+    api_version: "2025-02-24.acacia",
+    payment_timeout_ms: 5_000,
+    request_options: []
   ]
 
 config :store, :subscription_features,
@@ -86,8 +93,20 @@ config :store, :digital,
 
 config :store, :rate_limit,
   backend: Store.Support.RateLimit.EtsBackend,
+  webhook_limit: 120,
+  webhook_window_seconds: 60,
+  admin_limit: 300,
+  admin_window_seconds: 60,
   signed_download_limit: 10,
   signed_download_window_seconds: 60
+
+config :store, :operations, webhook_retention_days: 30
+config :store, :enable_ops_telemetry_poller, true
+
+config :store, :security_headers,
+  csp_mode: :disabled,
+  csp_policy: nil,
+  csp_report_uri: nil
 
 # Ensure DirectRepo uses the primary migration path and delegates schema management
 config :store, Store.DirectRepo,
@@ -103,7 +122,8 @@ config :store, Oban,
        {"* * * * *", Store.Workers.ExpireInventoryReservationsWorker},
        {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker},
        {"*/5 * * * *", Store.Workers.RunDueSubscriptionRenewalsWorker},
-       {"0 * * * *", Store.Workers.EnqueueMembershipRenewalRemindersWorker}
+       {"0 * * * *", Store.Workers.EnqueueMembershipRenewalRemindersWorker},
+       {"15 2 * * *", Store.Workers.PurgeWebhookReceiptEvidenceWorker}
      ]}
   ],
   queues: [
@@ -113,7 +133,8 @@ config :store, Oban,
     comms: 10,
     fulfillment: 10,
     digital: 10,
-    subscriptions: 10
+    subscriptions: 10,
+    ops: 5
   ]
 
 # Configure esbuild (the version is required)
@@ -140,7 +161,40 @@ config :tailwind,
 # Configure Elixir's Logger
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id]
+  metadata: [
+    :request_id,
+    :actor_id,
+    :order_id,
+    :order_ref,
+    :provider,
+    :provider_event_id,
+    :error_code,
+    :oban_job_id,
+    :worker
+  ]
+
+config :phoenix, :filter_parameters, [
+  "password",
+  "token",
+  "secret",
+  "api_key",
+  "client_secret",
+  "signing_secret",
+  "webhook_secret",
+  "card",
+  "payment_method",
+  "address",
+  "phone",
+  "email"
+]
+
+config :sentry,
+  client: Store.Support.SentryHTTPClient,
+  dsn: nil,
+  environment_name: to_string(config_env()),
+  enable_source_code_context: false,
+  root_source_code_paths: [File.cwd!()],
+  filter: Store.Support.SentryEventFilter
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason

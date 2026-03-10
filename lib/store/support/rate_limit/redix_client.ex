@@ -44,6 +44,15 @@ defmodule Store.Support.RateLimit.RedixClient do
     end
   end
 
+  @spec ping() :: :ok | {:error, term()}
+  def ping do
+    case Redix.command(connection_name(), ["PING"]) do
+      {:ok, "PONG"} -> :ok
+      {:ok, unexpected} -> {:error, {:unexpected_redis_reply, unexpected}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec connection_name() :: atom()
   def connection_name do
     Application.get_env(:store, :rate_limit, [])

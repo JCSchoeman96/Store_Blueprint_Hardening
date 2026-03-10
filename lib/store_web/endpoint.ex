@@ -1,16 +1,19 @@
 defmodule StoreWeb.Endpoint do
   @moduledoc false
 
+  use Sentry.PlugCapture
   use Phoenix.Endpoint, otp_app: :store
 
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
+  @session_secure Application.compile_env(:store, [StoreWeb.Endpoint, :session_secure], false)
   @session_options [
     store: :cookie,
     key: "_store_key",
     signing_salt: "AJ3cgUJW",
-    same_site: "Lax"
+    same_site: "Lax",
+    secure: @session_secure
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
@@ -44,6 +47,7 @@ defmodule StoreWeb.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug Sentry.PlugContext
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

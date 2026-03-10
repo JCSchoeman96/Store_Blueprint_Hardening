@@ -4,6 +4,8 @@ defmodule StoreWeb.Telemetry do
   use Supervisor
   import Telemetry.Metrics
 
+  @enable_ops_telemetry_poller Application.compile_env(:store, :enable_ops_telemetry_poller, true)
+
   def start_link(arg) do
     Supervisor.start_link(__MODULE__, arg, name: __MODULE__)
   end
@@ -209,6 +211,24 @@ defmodule StoreWeb.Telemetry do
         tags: [:route, :provider, :result, :status_bucket, :error_code],
         unit: {:native, :millisecond}
       ),
+      summary("store.payments.webhook_processed.duration",
+        tags: [:provider, :outcome],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.refund_webhook_processed.duration",
+        tags: [:provider, :outcome],
+        unit: {:native, :millisecond}
+      ),
+      last_value("store.ops.queues.webhook_backlog_age_seconds"),
+      last_value("store.ops.queues.webhook_failed_count"),
+      last_value("store.ops.queues.outbox_backlog_age_seconds"),
+      last_value("store.ops.queues.outbox_pending_count"),
+      last_value("store.ops.queues.outbox_failed_count"),
+      last_value("store.ops.queues.renewal_backlog_age_seconds"),
+      summary("store.digital.signed_url.duration",
+        tags: [:outcome],
+        unit: {:native, :millisecond}
+      ),
 
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
@@ -219,10 +239,10 @@ defmodule StoreWeb.Telemetry do
   end
 
   defp periodic_measurements do
-    [
-      # A module, function and arguments to be invoked periodically.
-      # This function must call :telemetry.execute/3 and a metric must be added above.
-      # {StoreWeb, :count_users, []}
-    ]
+    if @enable_ops_telemetry_poller do
+      [{Store.Operations.TelemetryPoller, :emit_queue_metrics, []}]
+    else
+      []
+    end
   end
 end

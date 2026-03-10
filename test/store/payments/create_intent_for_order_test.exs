@@ -17,9 +17,11 @@ defmodule Store.Payments.CreateIntentForOrderTest do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.TestFixtures
+  alias Store.TestSupport.StripeAPIStub
 
-  setup do
+  setup context do
     previous = Application.get_env(:store, :payments, [])
+    StripeAPIStub.setup_default(context)
 
     on_exit(fn ->
       Application.put_env(:store, :payments, previous)

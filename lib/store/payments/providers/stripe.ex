@@ -2,15 +2,18 @@ defmodule Store.Payments.Providers.Stripe do
   @moduledoc """
   Stripe provider boundary adapter.
 
-  This adapter verifies webhook signatures and normalizes Stripe event payloads.
-  Intent creation returns deterministic redirect metadata for checkout orchestration.
+  This adapter performs Stripe API calls, verifies webhook signatures, and
+  normalizes Stripe payloads into canonical receipts.
   """
 
   @behaviour Store.Payments.Providers.Behaviour
 
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Support.Errors.Error
+  alias Store.Support.HTTP.ReqClient
 
+  @default_api_base_url "https://api.stripe.com"
+  @default_api_version "2024-06-20"
   @default_tolerance_seconds 300
 
   @impl true
@@ -28,18 +31,18 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   @impl true
-  def create_intent(attrs, _opts) when is_map(attrs) do
+  def create_intent(attrs, opts) when is_map(attrs) and is_list(opts) do
     case attr(attrs, :intent_purpose) do
       :subscription_payment_method_update ->
-        create_setup_intent(attrs)
+        create_setup_intent(attrs, opts)
 
       _ ->
-        create_checkout_intent(attrs)
+        create_checkout_intent(attrs, opts)
     end
   end
 
   @impl true
-  def charge_off_session(attrs, _opts) when is_map(attrs) do
+  def charge_off_session(attrs, opts) when is_map(attrs) and is_list(opts) do
     with {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
          {:ok, currency} <- fetch_required_binary(attrs, :currency),
          {:ok, renewal_key} <- fetch_required_binary(attrs, :renewal_key),
@@ -49,28 +52,42 @@ defmodule Store.Payments.Providers.Stripe do
          {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
          {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
          {:ok, provider_payment_method_ref} <-
-           fetch_required_binary(attrs, :provider_payment_method_ref) do
-      provider_payment_id = "pi_store_#{short_hash(renewal_key)}"
-
-      provider_client_secret =
-        "pi_secret_#{short_hash("#{provider_payment_id}:#{local_intent_id}")}"
-
-      action_url = recurring_action_url(provider_payment_id)
-      status = recurring_charge_status(attrs)
-
+           fetch_required_binary(attrs, :provider_payment_method_ref),
+         {:ok, response} <-
+           stripe_post(
+             "/v1/payment_intents",
+             %{
+               "amount" => Integer.to_string(amount_minor),
+               "confirm" => "true",
+               "currency" => stripe_currency(currency),
+               "customer" => provider_customer_ref,
+               "description" => "Subscription renewal #{renewal_key}",
+               "metadata[local_intent_id]" => local_intent_id,
+               "metadata[order_id]" => order_id,
+               "metadata[renewal_attempt_id]" => renewal_attempt_id,
+               "metadata[renewal_key]" => renewal_key,
+               "metadata[subscription_id]" => subscription_id,
+               "off_session" => "true",
+               "payment_method" => provider_payment_method_ref
+             },
+             renewal_key,
+             opts
+           ),
+         {:ok, payment_intent} <- extract_payment_intent_response(response) do
       {:ok,
        %{
-         status: status,
+         status: normalize_charge_status(payment_intent, response),
          idempotency_key: renewal_key,
          confirm: true,
          off_session: true,
          amount_minor: amount_minor,
          currency: String.upcase(currency),
-         provider_payment_id: provider_payment_id,
-         provider_customer_ref: provider_customer_ref,
-         provider_payment_method_ref: provider_payment_method_ref,
-         provider_client_secret: if(status == :requires_action, do: provider_client_secret),
-         action_url: if(status == :requires_action, do: action_url),
+         provider_payment_id: payment_intent["id"],
+         provider_customer_ref: payment_intent["customer"] || provider_customer_ref,
+         provider_payment_method_ref:
+           payment_intent["payment_method"] || provider_payment_method_ref,
+         provider_client_secret: payment_intent["client_secret"],
+         action_url: extract_action_url(%{"data" => %{"object" => payment_intent}}),
          metadata: %{
            local_intent_id: local_intent_id,
            order_id: order_id,
@@ -126,6 +143,108 @@ defmodule Store.Payments.Providers.Stripe do
 
   def normalize_webhook(_payload) do
     {:error, Error.new("PAYMENT_PAYLOAD_INVALID", "stripe webhook payload must be a map")}
+  end
+
+  defp create_checkout_intent(attrs, opts) do
+    with {:ok, order_ref} <- fetch_required_binary(attrs, :order_ref),
+         {:ok, order_id} <- fetch_required_binary(attrs, :order_id),
+         {:ok, checkout_key} <- fetch_required_binary(attrs, :checkout_key),
+         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
+         {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
+         {:ok, currency} <- fetch_required_binary(attrs, :currency),
+         {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
+         {:ok, idempotency_key} <- fetch_required_binary(attrs, :idempotency_key),
+         {:ok, return_url} <- fetch_required_binary(attrs, :return_url),
+         {:ok, cancel_url} <- fetch_required_binary(attrs, :cancel_url) do
+      has_subscription_lines? = truthy_attr?(attrs, :has_subscription_lines?)
+      save_for_off_session? = truthy_attr?(attrs, :save_payment_method_for_off_session?)
+
+      checkout_mode =
+        derive_checkout_mode(amount_minor, attr(attrs, :checkout_mode), has_subscription_lines?)
+
+      metadata = %{
+        "checkout_key" => checkout_key,
+        "local_intent_id" => local_intent_id,
+        "order_id" => order_id,
+        "order_ref" => order_ref,
+        "payment_intent_key" => payment_intent_key
+      }
+
+      form =
+        %{
+          "cancel_url" => cancel_url,
+          "customer_creation" => "always",
+          "metadata[checkout_key]" => metadata["checkout_key"],
+          "metadata[local_intent_id]" => metadata["local_intent_id"],
+          "metadata[order_id]" => metadata["order_id"],
+          "metadata[order_ref]" => metadata["order_ref"],
+          "metadata[payment_intent_key]" => metadata["payment_intent_key"],
+          "mode" => Atom.to_string(checkout_mode),
+          "payment_method_types[0]" => "card",
+          "success_url" => return_url
+        }
+        |> maybe_put_payment_line_item(checkout_mode, amount_minor, currency, order_ref)
+        |> maybe_put_payment_intent_data(checkout_mode, metadata, currency, save_for_off_session?)
+        |> maybe_put_setup_intent_data(checkout_mode, metadata, currency)
+
+      case stripe_post("/v1/checkout/sessions", form, idempotency_key, opts) do
+        {:ok, %{status: status, body: body}} when status in 200..299 ->
+          {:ok,
+           %{
+             provider_session_id: body["id"],
+             provider_payment_id: stripe_id(body["payment_intent"]),
+             provider_customer_ref: body["customer"],
+             provider_checkout_url: body["url"],
+             provider_client_secret: nil,
+             checkout_mode: checkout_mode
+           }}
+
+        {:ok, response} ->
+          stripe_error(response)
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp create_setup_intent(attrs, opts) do
+    with {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
+         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
+         {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
+         {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
+         {:ok, currency} <- fetch_required_binary(attrs, :currency),
+         {:ok, %{status: status, body: body}} when status in 200..299 <-
+           stripe_post(
+             "/v1/setup_intents",
+             %{
+               "customer" => provider_customer_ref,
+               "metadata[currency]" => String.upcase(currency),
+               "metadata[local_intent_id]" => local_intent_id,
+               "metadata[payment_intent_key]" => payment_intent_key,
+               "metadata[subscription_id]" => subscription_id,
+               "payment_method_types[0]" => "card",
+               "usage" => "off_session"
+             },
+             payment_intent_key,
+             opts
+           ) do
+      {:ok,
+       %{
+         provider_session_id: nil,
+         provider_payment_id: body["id"],
+         provider_customer_ref: body["customer"] || provider_customer_ref,
+         provider_client_secret: body["client_secret"],
+         metadata: %{
+           local_intent_id: local_intent_id,
+           subscription_id: subscription_id,
+           currency: String.upcase(currency)
+         }
+       }}
+    else
+      {:ok, response} -> stripe_error(response)
+      {:error, _reason} = error -> error
+    end
   end
 
   defp fetch_signature_header(headers) do
@@ -268,10 +387,10 @@ defmodule Store.Payments.Providers.Stripe do
     candidate =
       case event_type do
         <<"checkout.session.", _::binary>> ->
-          object["payment_intent"] || Map.get(payload, "payment_intent_id")
+          stripe_id(object["payment_intent"]) || Map.get(payload, "payment_intent_id")
 
         _ ->
-          object["id"] || Map.get(payload, "payment_intent_id")
+          stripe_id(object["id"]) || Map.get(payload, "payment_intent_id")
       end
 
     case candidate do
@@ -323,13 +442,13 @@ defmodule Store.Payments.Providers.Stripe do
 
   defp extract_provider_customer_ref(payload) do
     object = payload_object(payload)
-    object["customer"] || Map.get(payload, "provider_customer_ref")
+    stripe_id(object["customer"]) || Map.get(payload, "provider_customer_ref")
   end
 
   defp extract_provider_payment_method_ref(payload) do
     object = payload_object(payload)
 
-    object["payment_method"] ||
+    stripe_id(object["payment_method"]) ||
       get_in(object, ["payment_method_details", "id"]) ||
       Map.get(payload, "provider_payment_method_ref")
   end
@@ -392,79 +511,51 @@ defmodule Store.Payments.Providers.Stripe do
     get_in(payload, ["data", "object"]) || Map.get(payload, "data_object") || %{}
   end
 
-  defp create_checkout_intent(attrs) do
-    with {:ok, order_ref} <- fetch_required_binary(attrs, :order_ref),
-         {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
-         {:ok, currency} <- fetch_required_binary(attrs, :currency),
-         {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
-         {:ok, idempotency_key} <- fetch_required_binary(attrs, :idempotency_key),
-         {:ok, return_url} <- fetch_required_binary(attrs, :return_url),
-         {:ok, cancel_url} <- fetch_required_binary(attrs, :cancel_url) do
-      has_subscription_lines? = truthy_attr?(attrs, :has_subscription_lines?)
-      save_for_off_session? = truthy_attr?(attrs, :save_payment_method_for_off_session?)
-
-      checkout_mode =
-        derive_checkout_mode(amount_minor, attr(attrs, :checkout_mode), has_subscription_lines?)
-
-      provider_session_id = "cs_store_#{short_hash(payment_intent_key)}"
-
-      provider_payment_id =
-        case checkout_mode do
-          :setup -> nil
-          :payment -> "pi_store_#{short_hash("#{payment_intent_key}:#{idempotency_key}")}"
-        end
-
-      checkout_base_url =
-        Application.get_env(:store, :payments, [])
-        |> Keyword.get(:stripe, [])
-        |> Keyword.get(:checkout_base_url, "https://checkout.stripe.example")
-
-      checkout_url =
-        "#{String.trim_trailing(checkout_base_url, "/")}/" <>
-          "#{provider_session_id}?order_ref=#{order_ref}&amount=#{amount_minor}&currency=#{String.downcase(currency)}" <>
-          "&mode=#{Atom.to_string(checkout_mode)}" <>
-          "&has_subscription_lines=#{has_subscription_lines?}" <>
-          "&save_for_off_session=#{save_for_off_session?}" <>
-          maybe_payment_intent_query(provider_payment_id) <>
-          "&idempotency_key=#{URI.encode(idempotency_key)}" <>
-          "&return_url=#{URI.encode(return_url)}&cancel_url=#{URI.encode(cancel_url)}"
-
-      {:ok,
-       %{
-         provider_session_id: provider_session_id,
-         provider_payment_id: provider_payment_id,
-         provider_checkout_url: checkout_url,
-         provider_client_secret: nil,
-         checkout_mode: checkout_mode
-       }}
-    end
+  defp maybe_put_payment_line_item(form, :payment, amount_minor, currency, order_ref) do
+    Map.merge(form, %{
+      "line_items[0][price_data][currency]" => stripe_currency(currency),
+      "line_items[0][price_data][product_data][name]" => "Order #{order_ref}",
+      "line_items[0][price_data][unit_amount]" => Integer.to_string(amount_minor),
+      "line_items[0][quantity]" => "1"
+    })
   end
 
-  defp create_setup_intent(attrs) do
-    with {:ok, payment_intent_key} <- fetch_required_binary(attrs, :payment_intent_key),
-         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
-         {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
-         {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
-         {:ok, currency} <- fetch_required_binary(attrs, :currency) do
-      provider_payment_id = "seti_store_#{short_hash(payment_intent_key)}"
+  defp maybe_put_payment_line_item(form, _checkout_mode, _amount_minor, _currency, _order_ref),
+    do: form
 
-      provider_client_secret =
-        "seti_secret_#{short_hash("#{provider_payment_id}:#{local_intent_id}")}"
-
-      {:ok,
-       %{
-         provider_session_id: nil,
-         provider_payment_id: provider_payment_id,
-         provider_customer_ref: provider_customer_ref,
-         provider_client_secret: provider_client_secret,
-         metadata: %{
-           local_intent_id: local_intent_id,
-           subscription_id: subscription_id,
-           currency: String.upcase(currency)
-         }
-       }}
-    end
+  defp maybe_put_payment_intent_data(form, :payment, metadata, currency, save_for_off_session?) do
+    form
+    |> Map.put("payment_intent_data[metadata][checkout_key]", metadata["checkout_key"])
+    |> Map.put("payment_intent_data[metadata][local_intent_id]", metadata["local_intent_id"])
+    |> Map.put("payment_intent_data[metadata][order_id]", metadata["order_id"])
+    |> Map.put("payment_intent_data[metadata][order_ref]", metadata["order_ref"])
+    |> Map.put(
+      "payment_intent_data[metadata][payment_intent_key]",
+      metadata["payment_intent_key"]
+    )
+    |> maybe_put_setup_future_usage(save_for_off_session?)
+    |> Map.put("payment_intent_data[currency]", stripe_currency(currency))
   end
+
+  defp maybe_put_payment_intent_data(form, _checkout_mode, _metadata, _currency, _save?),
+    do: form
+
+  defp maybe_put_setup_future_usage(form, true),
+    do: Map.put(form, "payment_intent_data[setup_future_usage]", "off_session")
+
+  defp maybe_put_setup_future_usage(form, _value), do: form
+
+  defp maybe_put_setup_intent_data(form, :setup, metadata, currency) do
+    form
+    |> Map.put("setup_intent_data[metadata][checkout_key]", metadata["checkout_key"])
+    |> Map.put("setup_intent_data[metadata][currency]", String.upcase(currency))
+    |> Map.put("setup_intent_data[metadata][local_intent_id]", metadata["local_intent_id"])
+    |> Map.put("setup_intent_data[metadata][order_id]", metadata["order_id"])
+    |> Map.put("setup_intent_data[metadata][order_ref]", metadata["order_ref"])
+    |> Map.put("setup_intent_data[metadata][payment_intent_key]", metadata["payment_intent_key"])
+  end
+
+  defp maybe_put_setup_intent_data(form, _checkout_mode, _metadata, _currency), do: form
 
   defp setup_intent_amount(event_type)
        when event_type in [
@@ -475,6 +566,119 @@ defmodule Store.Payments.Providers.Stripe do
        do: 0
 
   defp setup_intent_amount(_event_type), do: nil
+
+  defp stripe_post(path, form, idempotency_key, opts) do
+    with {:ok, config} <- stripe_config(opts),
+         request_opts <- stripe_request_opts(config, path, form, idempotency_key),
+         {:ok, response} <- ReqClient.post(request_opts[:url], Keyword.delete(request_opts, :url)) do
+      {:ok, response}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, transport_error(reason)}
+    end
+  end
+
+  defp stripe_request_opts(config, path, form, idempotency_key) do
+    config.request_options
+    |> Keyword.merge(
+      url: stripe_url(config.api_base_url, path),
+      form: form,
+      headers: stripe_headers(config, idempotency_key),
+      retry: false
+    )
+  end
+
+  defp stripe_headers(config, idempotency_key) do
+    [
+      {"authorization", "Bearer #{config.secret_key}"},
+      {"idempotency-key", idempotency_key},
+      {"stripe-version", config.api_version}
+    ]
+  end
+
+  defp stripe_url(base_url, path) do
+    "#{String.trim_trailing(base_url, "/")}#{path}"
+  end
+
+  defp stripe_config(opts) do
+    payments = Application.get_env(:store, :payments, [])
+    stripe = Keyword.get(payments, :stripe, [])
+
+    config = %{
+      api_base_url: Keyword.get(stripe, :api_base_url, @default_api_base_url),
+      api_version: Keyword.get(stripe, :api_version, @default_api_version),
+      request_options: Keyword.get(stripe, :request_options, []),
+      secret_key: Keyword.get(opts, :secret_key) || Keyword.get(stripe, :secret_key)
+    }
+
+    case config.secret_key do
+      secret_key when is_binary(secret_key) and secret_key != "" ->
+        {:ok, config}
+
+      _ ->
+        {:error, Error.new("PAYMENT_PROVIDER_DOWN", "stripe secret key is not configured")}
+    end
+  end
+
+  defp extract_payment_intent_response(%{status: status, body: body})
+       when status in 200..299 and is_map(body),
+       do: {:ok, body}
+
+  defp extract_payment_intent_response(%{status: 402, body: body}) when is_map(body) do
+    case get_in(body, ["error", "payment_intent"]) do
+      payment_intent when is_map(payment_intent) -> {:ok, payment_intent}
+      _ -> stripe_error(%{status: 402, body: body})
+    end
+  end
+
+  defp extract_payment_intent_response(response), do: stripe_error(response)
+
+  defp stripe_error(%{status: status, body: body}) do
+    message =
+      body
+      |> stripe_error_message()
+
+    code =
+      cond do
+        status == 408 -> "PAYMENT_PROVIDER_TIMEOUT"
+        status >= 500 -> "PAYMENT_PROVIDER_DOWN"
+        true -> "PAYMENT_PROCESSING_FAILED"
+      end
+
+    {:error, Error.new(code, message, %{provider: "stripe", status: status})}
+  end
+
+  defp stripe_error_message(%{"error" => %{"message" => message}})
+       when is_binary(message) and message != "",
+       do: message
+
+  defp stripe_error_message(%{"error" => %{"code" => code}})
+       when is_binary(code) and code != "",
+       do: "stripe request failed: #{code}"
+
+  defp stripe_error_message(_body), do: "stripe request failed"
+
+  defp transport_error(reason) do
+    Error.new("PAYMENT_PROVIDER_DOWN", Exception.message(reason), %{provider: "stripe"})
+  end
+
+  defp normalize_charge_status(%{"status" => "succeeded"}, _response), do: :succeeded
+
+  defp normalize_charge_status(%{"status" => status}, _response)
+       when status in ["requires_action", "requires_confirmation"],
+       do: :requires_action
+
+  defp normalize_charge_status(%{"status" => status}, response)
+       when status in ["requires_payment_method", "canceled"] do
+    if response.status == 402, do: :failed, else: :failed
+  end
+
+  defp normalize_charge_status(_payment_intent, %{status: 402}), do: :failed
+  defp normalize_charge_status(_payment_intent, _response), do: :failed
+
+  defp stripe_id(%{"id" => id}) when is_binary(id), do: id
+  defp stripe_id(id) when is_binary(id), do: id
+  defp stripe_id(_value), do: nil
 
   defp header_value(headers, key) do
     case Map.get(headers, key) || Map.get(headers, String.downcase(key)) do
@@ -509,16 +713,6 @@ defmodule Store.Payments.Providers.Stripe do
     end
   end
 
-  defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
-
-  defp truthy_attr?(attrs, key) do
-    case attr(attrs, key) do
-      true -> true
-      "true" -> true
-      _ -> false
-    end
-  end
-
   defp derive_checkout_mode(amount_minor, explicit_mode, has_subscription_lines?) do
     case normalize_checkout_mode(explicit_mode) do
       {:ok, checkout_mode} ->
@@ -536,48 +730,19 @@ defmodule Store.Payments.Providers.Stripe do
   defp normalize_checkout_mode("setup"), do: {:ok, :setup}
   defp normalize_checkout_mode(_value), do: :error
 
-  defp maybe_payment_intent_query(nil), do: ""
+  defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
 
-  defp maybe_payment_intent_query(provider_payment_id),
-    do: "&payment_intent_id=#{provider_payment_id}"
-
-  defp recurring_charge_status(attrs) do
-    case attr(attrs, :simulate_status) || configured_recurring_charge_status() do
-      status when status in [:succeeded, :failed, :requires_action] ->
-        status
-
-      "succeeded" ->
-        :succeeded
-
-      "failed" ->
-        :failed
-
-      "requires_action" ->
-        :requires_action
-
-      _ ->
-        :succeeded
+  defp truthy_attr?(attrs, key) do
+    case attr(attrs, key) do
+      true -> true
+      "true" -> true
+      _ -> false
     end
   end
 
-  defp configured_recurring_charge_status do
-    Application.get_env(:store, :payments, [])
-    |> Keyword.get(:stripe, [])
-    |> Keyword.get(:recurring_charge_status)
-  end
-
-  defp recurring_action_url(provider_payment_id) do
-    base_url =
-      Application.get_env(:store, :payments, [])
-      |> Keyword.get(:stripe, [])
-      |> Keyword.get(:authentication_base_url, "https://billing.stripe.example/authenticate")
-
-    "#{String.trim_trailing(base_url, "/")}/#{provider_payment_id}"
-  end
-
-  defp short_hash(value) when is_binary(value) do
-    :crypto.hash(:sha256, value)
-    |> Base.encode16(case: :lower)
-    |> binary_part(0, 24)
+  defp stripe_currency(currency) when is_binary(currency) do
+    currency
+    |> String.trim()
+    |> String.downcase()
   end
 end

@@ -89,7 +89,12 @@ config :store, :google_oauth,
 config :store, :payments,
   enabled_providers: [:stripe],
   default_purchase_provider_for_ui: :stripe,
-  stripe: [webhook_secret: "whsec_test_only_change_me"]
+  stripe: [
+    webhook_secret: "whsec_test_only_change_me",
+    secret_key: "sk_test_store_blueprint",
+    publishable_key: "pk_test_store_blueprint",
+    request_options: [plug: {Req.Test, Store.Payments.Providers.Stripe}]
+  ]
 
 config :store, :shipping, quote_hash_secret: "phase22-test-only-change-me"
 
@@ -155,3 +160,9 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+config :sentry,
+  dsn: nil,
+  environment_name: :test
+
+config :store, :enable_ops_telemetry_poller, false

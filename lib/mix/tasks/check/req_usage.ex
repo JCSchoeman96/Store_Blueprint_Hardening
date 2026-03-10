@@ -37,6 +37,8 @@ defmodule Mix.Tasks.Check.ReqUsage do
       "!lib/mix/tasks/check/web_no_http.ex",
       "--glob",
       "!test/store/support/http/req_client_test.exs",
+      "--glob",
+      "!test/support/stripe_api_stub.ex",
       "lib",
       "test"
     ]

@@ -9,10 +9,15 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
   alias Store.Payments.PaymentIntent
   alias Store.Subscriptions.{RenewalAttempt, Scheduler, Subscription}
   alias Store.SubscriptionsFixtures
+  alias Store.TestSupport.StripeAPIStub
   alias Store.Workers.ProcessSubscriptionRenewalWorker
   alias Store.Workers.ProcessWebhookReceiptWorker
   alias Store.Workers.ReconcilePaidSubscriptionRenewalWorker
   alias Store.Workers.RunDueSubscriptionRenewalsWorker
+
+  setup context do
+    StripeAPIStub.setup_default(context)
+  end
 
   test "tick worker enqueues one jittered renewal job and paid renewal reconciliation advances the period once" do
     customer = SubscriptionsFixtures.create_customer!("phase26_worker_due")

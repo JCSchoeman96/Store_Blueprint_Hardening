@@ -8,6 +8,11 @@ defmodule Store.Entitlements.FacadeTest do
   alias Store.Entitlements.Types.EntitlementSet
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.SubscriptionsFixtures
+  alias Store.TestSupport.StripeAPIStub
+
+  setup context do
+    StripeAPIStub.setup_default(context)
+  end
 
   test "issue_subscription_entitlement_for_system upserts and refreshes validity window" do
     customer = SubscriptionsFixtures.create_customer!("phase26_entitlement_issue")

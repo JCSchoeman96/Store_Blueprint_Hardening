@@ -18,6 +18,7 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Support.Errors.Error
   alias Store.TestFixtures
+  alias Store.TestSupport.StripeAPIStub
 
   @activity_query """
   SELECT
@@ -29,9 +30,10 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
     AND pid <> pg_backend_pid()
   """
 
-  setup do
+  setup context do
     previous_payments = Application.get_env(:store, :payments, [])
     previous_fault = Application.get_env(:store, :payment_provider_fault_injection, [])
+    StripeAPIStub.setup_default(context)
 
     on_exit(fn ->
       Application.put_env(:store, :payments, previous_payments)

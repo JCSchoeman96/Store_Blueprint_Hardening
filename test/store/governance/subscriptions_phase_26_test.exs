@@ -55,8 +55,9 @@ defmodule Store.Governance.SubscriptionsPhase26Test do
 
     assert router =~ "live(\"/account/subscriptions\", SubscriptionsLive.Index, :index)"
     assert router =~ "live(\"/account/subscriptions/:id\", SubscriptionsLive.Show, :show)"
-    assert router =~ "live(\"/admin/subscriptions\", Admin.Subscriptions.IndexLive, :index)"
-    assert router =~ "live(\"/admin/subscriptions/:id\", Admin.Subscriptions.ShowLive, :show)"
+    assert router =~ "scope \"/admin\", StoreWeb do"
+    assert router =~ "live(\"/subscriptions\", Admin.Subscriptions.IndexLive, :index)"
+    assert router =~ "live(\"/subscriptions/:id\", Admin.Subscriptions.ShowLive, :show)"
 
     assert route_inventory =~ "| GET | `/account/subscriptions` |"
     assert route_inventory =~ "| GET | `/account/subscriptions/:id` |"

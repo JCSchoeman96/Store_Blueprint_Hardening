@@ -131,15 +131,26 @@ defmodule Store.Digital.Facade do
           | {:error, Error.t() | term()}
   def issue_signed_download_url_for_user(actor, grant_id, opts \\ [])
       when is_map(actor) and is_binary(grant_id) and is_list(opts) do
-    with {:ok, actor_id} <- extract_actor_id(actor),
-         {:ok, grant} <- fetch_download_grant_for_user(actor, grant_id),
-         :ok <- ensure_downloadable(grant),
-         :ok <- enforce_signed_url_rate_limit(grant.id, actor_id),
-         {:ok, asset} <- fetch_active_asset(grant.digital_asset_id),
-         {:ok, signed_url} <- sign_asset_url(asset, opts),
-         :ok <- RedirectGuard.validate_signed_url(signed_url) do
-      {:ok, %{grant: grant, signed_url: signed_url}}
-    end
+    started_at = System.monotonic_time()
+
+    result =
+      with {:ok, actor_id} <- extract_actor_id(actor),
+           {:ok, grant} <- fetch_download_grant_for_user(actor, grant_id),
+           :ok <- ensure_downloadable(grant),
+           :ok <- enforce_signed_url_rate_limit(grant.id, actor_id),
+           {:ok, asset} <- fetch_active_asset(grant.digital_asset_id),
+           {:ok, signed_url} <- sign_asset_url(asset, opts),
+           :ok <- RedirectGuard.validate_signed_url(signed_url) do
+        {:ok, %{grant: grant, signed_url: signed_url}}
+      end
+
+    :telemetry.execute(
+      [:store, :digital, :signed_url],
+      %{duration: System.monotonic_time() - started_at},
+      %{outcome: signed_url_outcome(result)}
+    )
+
+    result
   end
 
   @spec ensure_paid_order_download_grants_for_system(Ecto.UUID.t()) ::
@@ -802,4 +813,13 @@ defmodule Store.Digital.Facade do
   defp digital_config do
     Application.get_env(:store, :digital, [])
   end
+
+  defp signed_url_outcome({:ok, _result}), do: :ok
+
+  defp signed_url_outcome({:error, %Error{code: "DIGITAL_DOWNLOAD_RATE_LIMITED"}}),
+    do: :denied
+
+  defp signed_url_outcome({:error, %Error{code: "DIGITAL_GRANT_EXPIRED"}}), do: :expired
+  defp signed_url_outcome({:error, %Error{code: "DIGITAL_GRANT_REVOKED"}}), do: :denied
+  defp signed_url_outcome({:error, _reason}), do: :error
 end

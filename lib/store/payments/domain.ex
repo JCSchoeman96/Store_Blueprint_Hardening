@@ -179,6 +179,7 @@ defmodule Store.Payments do
                input.provider,
                provider_create_intent_attrs(
                  checkout,
+                 payment_intent.id,
                  payment_intent_key,
                  has_subscription_lines?
                ),
@@ -189,7 +190,12 @@ defmodule Store.Payments do
     end
   end
 
-  defp provider_create_intent_attrs(checkout, payment_intent_key, has_subscription_lines?) do
+  defp provider_create_intent_attrs(
+         checkout,
+         local_intent_id,
+         payment_intent_key,
+         has_subscription_lines?
+       ) do
     urls = provider_return_urls(checkout.checkout_key)
     checkout_mode = provider_checkout_mode(checkout.grand_total_minor, has_subscription_lines?)
 
@@ -197,6 +203,7 @@ defmodule Store.Payments do
       order_ref: checkout.order_ref,
       order_id: checkout.order_id,
       checkout_key: checkout.checkout_key,
+      local_intent_id: local_intent_id,
       amount_minor: checkout.grand_total_minor,
       currency: checkout.currency_code,
       payment_intent_key: payment_intent_key,
