@@ -7,7 +7,7 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
 
   alias Store.Orders.Order
   alias Store.Payments.PaymentIntent
-  alias Store.Subscriptions.{RenewalAttempt, Subscription}
+  alias Store.Subscriptions.{RenewalAttempt, Scheduler, Subscription}
   alias Store.SubscriptionsFixtures
   alias Store.Workers.ProcessSubscriptionRenewalWorker
   alias Store.Workers.ProcessWebhookReceiptWorker
@@ -82,6 +82,70 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
 
     attempt = fetch_latest_attempt!(subscription.id)
     assert attempt.status == :succeeded
+  end
+
+  test "tick worker enqueues deterministic jitter within the expected window for multiple subscriptions" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    subscriptions =
+      for suffix <- ~w(alpha beta gamma) do
+        customer = SubscriptionsFixtures.create_customer!("phase27_worker_jitter_#{suffix}")
+
+        %{subscription: subscription} =
+          SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+            provider_billing_ref: "pm_phase27_worker_jitter_#{suffix}",
+            next_renewal_at: DateTime.add(now, -30, :second)
+          })
+
+        subscription
+      end
+
+    assert :ok = perform_job(RunDueSubscriptionRenewalsWorker, %{"limit" => 50})
+
+    first_jobs =
+      all_enqueued(worker: ProcessSubscriptionRenewalWorker)
+      |> Enum.sort_by(& &1.args["subscription_id"])
+
+    assert length(first_jobs) == 3
+
+    first_schedule_deltas =
+      first_jobs
+      |> Enum.map(fn job ->
+        subscription_id = job.args["subscription_id"]
+        delta = DateTime.diff(job.scheduled_at, job.inserted_at, :second)
+
+        assert job.queue == "subscriptions"
+        assert is_binary(job.args["renewal_key"])
+        assert delta >= 0
+        assert delta <= 3_600
+        assert delta == Scheduler.renewal_jitter_seconds(subscription_id)
+
+        {subscription_id, delta}
+      end)
+      |> Map.new()
+
+    assert :ok = perform_job(RunDueSubscriptionRenewalsWorker, %{"limit" => 50})
+
+    second_jobs =
+      all_enqueued(worker: ProcessSubscriptionRenewalWorker)
+      |> Enum.sort_by(& &1.args["subscription_id"])
+
+    assert length(second_jobs) == 3
+
+    second_schedule_deltas =
+      second_jobs
+      |> Enum.map(fn job ->
+        {job.args["subscription_id"], DateTime.diff(job.scheduled_at, job.inserted_at, :second)}
+      end)
+      |> Map.new()
+
+    assert MapSet.new(Map.keys(first_schedule_deltas)) ==
+             MapSet.new(Enum.map(subscriptions, & &1.id))
+
+    assert second_schedule_deltas == first_schedule_deltas
   end
 
   defp fetch_subscription!(id) do

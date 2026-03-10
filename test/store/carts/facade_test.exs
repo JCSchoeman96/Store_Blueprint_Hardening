@@ -1,11 +1,15 @@
 defmodule Store.Carts.FacadeTest do
   use Store.DataCase, async: false
 
+  import Ash.Expr
+  require Ash.Query
+
   alias Store.Carts.{Cart, Facade}
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Carts.Queries.CartLoadQuery
   alias Store.Checkout
   alias Store.Checkout.Inputs.CheckoutStartInput
+  alias Store.Orders.Order
   alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
 
@@ -139,6 +143,87 @@ defmodule Store.Carts.FacadeTest do
 
     assert {:error, error} = Facade.add_item_for_user(user, token, add_input)
     assert error.code == "SUBSCRIPTION_DUPLICATE"
+  end
+
+  test "membership add-to-cart is blocked when the user already has a past-due membership" do
+    enable_subscription_purchase!()
+
+    user = SubscriptionsFixtures.create_customer!("cart_membership_past_due")
+    token = Ash.UUIDv7.generate()
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:cart-past-due"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    _existing =
+      SubscriptionsFixtures.create_subscription_fixture!(user.id, variant, plan, %{
+        status: :past_due,
+        billing_status_reason: "PAYMENT_FAILED",
+        next_retry_at: DateTime.add(DateTime.utc_now(), 3_600, :second)
+      })
+
+    assert {:ok, add_input} =
+             CartItemInput.new(%{
+               "variant_id" => variant.id,
+               "subscription_plan_id" => plan.id,
+               "qty" => 1
+             })
+
+    assert {:error, error} = Facade.add_item_for_user(user, token, add_input)
+    assert error.code == "SUBSCRIPTION_DUPLICATE"
+  end
+
+  test "membership pending-order guard stops blocking once the prior order is no longer collectible" do
+    enable_subscription_purchase!()
+
+    user = SubscriptionsFixtures.create_customer!("cart_membership_terminal_pending")
+    first_token = Ash.UUIDv7.generate()
+    second_token = Ash.UUIDv7.generate()
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:cart-terminal-pending"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    assert {:ok, add_input} =
+             CartItemInput.new(%{
+               "variant_id" => variant.id,
+               "subscription_plan_id" => plan.id,
+               "qty" => 1
+             })
+
+    assert {:ok, _cart} = Facade.add_item_for_user(user, first_token, add_input)
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, started} = Checkout.start_from_cart(user, first_token, start_input)
+
+    assert {:error, error} = Facade.add_item_for_user(user, second_token, add_input)
+    assert error.code == "SUBSCRIPTION_DUPLICATE"
+
+    order =
+      Order
+      |> Ash.Query.filter(expr(id == ^started.order_id))
+      |> Ash.read!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+      |> List.first()
+
+    assert {:ok, _updated_order} =
+             order
+             |> Ash.Changeset.for_update(:mark_payment_failed, %{}, context: %{system?: true})
+             |> Ash.update(
+               domain: Store.Orders,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert {:ok, _cart} = Facade.add_item_for_user(user, second_token, add_input)
   end
 
   defp published_variant_id! do

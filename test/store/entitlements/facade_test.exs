@@ -6,6 +6,7 @@ defmodule Store.Entitlements.FacadeTest do
 
   alias Store.Entitlements.{Cache, EntitlementGrant, Facade}
   alias Store.Entitlements.Types.EntitlementSet
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.SubscriptionsFixtures
 
   test "issue_subscription_entitlement_for_system upserts and refreshes validity window" do
@@ -207,6 +208,50 @@ defmodule Store.Entitlements.FacadeTest do
     after
       :telemetry.detach("entitlement-cache-test-#{inspect(telemetry_ref)}")
     end
+  end
+
+  test "worker-driven membership expiration invalidates the entitlement cache post-commit" do
+    customer = SubscriptionsFixtures.create_customer!("phase27a_worker_revoke")
+    customer_id = customer.id
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:worker-revoke",
+        max_retry_attempts: 0
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: nil,
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
+    assert {:ok, cached_set} = Facade.entitlement_set_for_user(customer)
+
+    assert EntitlementSet.has_entitlement?(
+             cached_set,
+             :membership_access,
+             "membership:worker-revoke"
+           )
+
+    Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(customer.id))
+
+    assert {:error, _reason} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert_receive {:entitlements_invalidated, ^customer_id, "grace_expired", _occurred_at}
+
+    assert {:ok, refreshed_set} = Facade.entitlement_set_for_user(customer)
+    assert EntitlementSet.effective_grants(refreshed_set) == []
   end
 
   defp fetch_entitlement!(subscription_id) do

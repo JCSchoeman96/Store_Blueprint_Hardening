@@ -1,10 +1,14 @@
 defmodule Store.Catalog.FacadePublicProductTest do
   use Store.DataCase, async: false
 
+  use Oban.Testing, repo: Store.DirectRepo
+
   alias Store.Catalog.Facade, as: CatalogFacade
   alias Store.Catalog.Product
   alias Store.Catalog.Queries.ProductDetailQuery
   alias Store.Catalog.Types.ProductDetail
+  alias Store.SubscriptionsFixtures
+  alias Store.Support.Telemetry.RepoStats
   alias Store.TestFixtures
 
   test "get_product_for_public returns a published product by slug" do
@@ -63,6 +67,50 @@ defmodule Store.Catalog.FacadePublicProductTest do
     after
       :telemetry.detach(handler_id)
     end
+  end
+
+  test "get_product_detail_for_public keeps subscription plan option loading query count bounded" do
+    %{product: product, variant: variant} =
+      SubscriptionsFixtures.create_subscription_sellable!(%{
+        base_variant_price_minor: 1_000
+      })
+
+    monthly_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        key: "perf-monthly",
+        name: "Perf Monthly",
+        amount_minor: 1_999
+      })
+
+    yearly_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        key: "perf-yearly",
+        name: "Perf Yearly",
+        amount_minor: 19_999
+      })
+
+    _monthly_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, monthly_plan.id)
+    _yearly_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, yearly_plan.id)
+
+    assert {:ok, query} =
+             ProductDetailQuery.new(%{
+               slug: product.slug,
+               selection: %{},
+               subscription_plan_key: yearly_plan.key
+             })
+
+    {result, stats} =
+      Oban.Testing.with_testing_mode(:manual, fn ->
+        RepoStats.capture(fn ->
+          CatalogFacade.get_product_detail_for_public(nil, query)
+        end)
+      end)
+
+    assert {:ok, detail} = result
+    assert detail.subscription_plan_required?
+    assert length(detail.subscription_plan_options) == 2
+    assert detail.selected_subscription_plan_id == yearly_plan.id
+    assert stats.query_count <= 8
   end
 
   defp published_product_fixture do
