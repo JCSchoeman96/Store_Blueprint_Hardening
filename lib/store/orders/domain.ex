@@ -55,6 +55,7 @@ defmodule Store.Orders do
           required(:currency) => String.t(),
           required(:as_of) => DateTime.t() | String.t(),
           optional(:user_id) => String.t(),
+          optional(:checkout_scope) => String.t(),
           optional(:pricing_contract_version) => String.t(),
           optional(:tax_shipping_inputs) => map()
         }
@@ -80,7 +81,16 @@ defmodule Store.Orders do
           | {:error, Error.t() | term()}
   def begin_checkout(attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
     return_notifications? = Keyword.get(opts, :return_notifications?, false)
-    ash_opts = Keyword.drop(opts, [:pricing_contract_version, :return_notifications?])
+    generator = Keyword.get(opts, :order_ref_generator, &OrderRef.generate/0)
+    max_attempts = Keyword.get(opts, :max_attempts, @max_order_ref_attempts)
+
+    ash_opts =
+      Keyword.drop(opts, [
+        :pricing_contract_version,
+        :return_notifications?,
+        :order_ref_generator,
+        :max_attempts
+      ])
 
     with {:ok, request} <- normalize_begin_checkout_request(attrs, opts),
          cart_fingerprint <-
@@ -91,9 +101,21 @@ defmodule Store.Orders do
              request.pricing_contract_version,
              request.tax_shipping_inputs
            ),
-         checkout_key <- Idempotency.checkout_key(request.user_id, cart_fingerprint),
+         checkout_key <-
+           Idempotency.checkout_key(
+             request.user_id,
+             cart_fingerprint,
+             request.checkout_scope
+           ),
          {:ok, order, duplicate?, notifications} <-
-           create_or_reuse_checkout_order(request, checkout_key, ash_opts, return_notifications?) do
+           create_or_reuse_checkout_order(
+             request,
+             checkout_key,
+             ash_opts,
+             return_notifications?,
+             generator,
+             max_attempts
+           ) do
       {:ok,
        %{
          order: order,
@@ -215,6 +237,7 @@ defmodule Store.Orders do
   defp normalize_begin_checkout_request(attrs, opts) do
     request = %{
       user_id: attr(attrs, :user_id),
+      checkout_scope: attr(attrs, :checkout_scope),
       line_items: attr(attrs, :line_items, []),
       currency: attr(attrs, :currency),
       as_of: attr(attrs, :as_of),
@@ -224,6 +247,7 @@ defmodule Store.Orders do
     }
 
     with :ok <- validate_user_id(request.user_id),
+         :ok <- validate_checkout_scope(request.checkout_scope),
          :ok <- validate_line_items(request.line_items),
          :ok <- require_binary(request.currency, "currency is required"),
          :ok <- validate_as_of(request.as_of),
@@ -237,7 +261,14 @@ defmodule Store.Orders do
     end
   end
 
-  defp create_or_reuse_checkout_order(request, checkout_key, ash_opts, return_notifications?) do
+  defp create_or_reuse_checkout_order(
+         request,
+         checkout_key,
+         ash_opts,
+         return_notifications?,
+         generator,
+         max_attempts
+       ) do
     with {:ok, existing_order} <- find_order_by_checkout_key(checkout_key, ash_opts) do
       case existing_order do
         %Order{state: :pending_payment} = order ->
@@ -251,13 +282,39 @@ defmodule Store.Orders do
            )}
 
         nil ->
-          create_checkout_order(request.user_id, checkout_key, ash_opts, return_notifications?)
+          create_checkout_order(
+            request.user_id,
+            checkout_key,
+            ash_opts,
+            return_notifications?,
+            generator,
+            max_attempts
+          )
       end
     end
   end
 
-  defp create_checkout_order(user_id, checkout_key, ash_opts, return_notifications?) do
-    create_attrs = %{user_id: user_id, checkout_key: checkout_key}
+  defp create_checkout_order(
+         _user_id,
+         _checkout_key,
+         _ash_opts,
+         _return_notifications?,
+         _generator,
+         attempts
+       )
+       when attempts <= 0 do
+    {:error, Error.new("INTERNAL_ERROR", "unable to generate unique order_ref after retry limit")}
+  end
+
+  defp create_checkout_order(
+         user_id,
+         checkout_key,
+         ash_opts,
+         return_notifications?,
+         generator,
+         attempts
+       ) do
+    create_attrs = %{user_id: user_id, checkout_key: checkout_key, order_ref: generator.()}
 
     create_ash_opts =
       if return_notifications? do
@@ -285,7 +342,18 @@ defmodule Store.Orders do
          Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
 
       {:error, error} ->
-        {:error, error}
+        if order_ref_conflict?(error) and attempts > 1 do
+          create_checkout_order(
+            user_id,
+            checkout_key,
+            ash_opts,
+            return_notifications?,
+            generator,
+            attempts - 1
+          )
+        else
+          {:error, error}
+        end
     end
   end
 
@@ -389,6 +457,12 @@ defmodule Store.Orders do
   defp validate_as_of(%DateTime{}), do: :ok
   defp validate_as_of(as_of) when is_binary(as_of), do: :ok
   defp validate_as_of(_as_of), do: {:error, Error.new("VALIDATION_ERROR", "as_of is required")}
+
+  defp validate_checkout_scope(nil), do: :ok
+  defp validate_checkout_scope(scope) when is_binary(scope), do: :ok
+
+  defp validate_checkout_scope(_scope),
+    do: {:error, Error.new("VALIDATION_ERROR", "checkout_scope must be a string")}
 
   defp require_binary(value, _message) when is_binary(value), do: :ok
   defp require_binary(_value, message), do: {:error, Error.new("VALIDATION_ERROR", message)}

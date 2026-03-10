@@ -41,13 +41,18 @@ defmodule Store.Support.Governance.Idempotency do
   @spec checkout_key(String.t() | nil, String.t()) :: String.t()
   def checkout_key(user_id, cart_fingerprint)
       when (is_binary(user_id) or is_nil(user_id)) and is_binary(cart_fingerprint) do
-    user_scope =
-      case user_id do
-        value when is_binary(value) -> value
-        _ -> "guest"
-      end
+    checkout_key(user_id, cart_fingerprint, nil)
+  end
 
-    "ck:" <> hash_base32("user:#{user_scope}|cart:#{cart_fingerprint}")
+  @spec checkout_key(String.t() | nil, String.t(), String.t() | nil) :: String.t()
+  def checkout_key(user_id, cart_fingerprint, checkout_scope)
+      when (is_binary(user_id) or is_nil(user_id)) and is_binary(cart_fingerprint) and
+             (is_binary(checkout_scope) or is_nil(checkout_scope)) do
+    payload =
+      "user:#{normalize_checkout_user_scope(user_id)}|cart:#{cart_fingerprint}" <>
+        normalized_checkout_scope(checkout_scope)
+
+    "ck:" <> hash_base32(payload)
   end
 
   @spec payment_intent_key(String.t(), integer(), String.t(), String.t() | atom()) :: String.t()
@@ -121,6 +126,14 @@ defmodule Store.Support.Governance.Idempotency do
   end
 
   def payload_hash(payload), do: payload |> inspect() |> hash_sha256()
+
+  defp normalize_checkout_user_scope(value) when is_binary(value), do: value
+  defp normalize_checkout_user_scope(_value), do: "guest"
+
+  defp normalized_checkout_scope(value) when is_binary(value) and value != "",
+    do: "|scope:#{value}"
+
+  defp normalized_checkout_scope(_value), do: ""
 
   defp normalize_checkout_lines(line_items) do
     line_items

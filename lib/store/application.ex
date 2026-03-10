@@ -7,6 +7,7 @@ defmodule Store.Application do
 
   alias Store.Catalog.ProductListCache
   alias Store.Shipping.QuoteCache
+  alias Store.Support.EtsTableOwner
   alias Store.Support.RateLimit.RedixClient
   alias Store.Support.Redis
   alias Store.Support.Telemetry.RedisAggregates
@@ -23,6 +24,9 @@ defmodule Store.Application do
         {DNSCluster, query: Application.get_env(:store, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Store.PubSub},
         Store.Entitlements.Cache,
+        {EtsTableOwner, table: :store_catalog_availability_cache},
+        {EtsTableOwner, table: :store_catalog_stock_fast_path},
+        {EtsTableOwner, table: :store_rate_limit},
         ProductListCache,
         QuoteCache,
         maybe_redis_child_spec(),

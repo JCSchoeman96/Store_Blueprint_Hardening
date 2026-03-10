@@ -2,8 +2,10 @@ defmodule Store.CheckoutTest do
   use Store.DataCase, async: false
 
   import Ash.Expr
+  import Ecto.Query
   require Ash.Query
 
+  alias Store.Carts.Cart
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Catalog.InventoryItem
@@ -11,6 +13,7 @@ defmodule Store.CheckoutTest do
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
   alias Store.Orders.{InventoryReservation, Order, OrderAdjustment, OrderLineItem}
   alias Store.Pricing.TaxRate
+  alias Store.Repo
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
@@ -52,6 +55,79 @@ defmodule Store.CheckoutTest do
     assert {:ok, third} = Checkout.start_from_cart(nil, token, start_input)
     refute third.checkout_key == first.checkout_key
     assert third.cart_version == first.cart_version + 1
+  end
+
+  test "parallel start_from_cart returns only success or canonical domain errors" do
+    variant_id = published_variant_id!()
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+
+    results =
+      1..20
+      |> Task.async_stream(
+        fn _index ->
+          token = Ash.UUIDv7.generate()
+
+          assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+          assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
+
+          Checkout.start_from_cart(nil, token, start_input)
+        end,
+        max_concurrency: 20,
+        timeout: 15_000,
+        ordered: false
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        other -> flunk("unexpected task result: #{inspect(other)}")
+      end)
+
+    assert Enum.all?(results, fn
+             {:ok, %{checkout_key: checkout_key, duplicate?: duplicate?}}
+             when is_binary(checkout_key) and is_boolean(duplicate?) ->
+               true
+
+             {:error, %{code: code}} ->
+               code in [
+                 "STALE_RECORD",
+                 "CHECKOUT_DUPLICATE",
+                 "RESERVATION_CONFLICT",
+                 "OUT_OF_STOCK"
+               ]
+
+             _ ->
+               false
+           end)
+  end
+
+  test "start_from_cart isolates guest checkout keys across carts with identical timestamps" do
+    variant_id = published_variant_id!()
+    token_a = Ash.UUIDv7.generate()
+    token_b = Ash.UUIDv7.generate()
+    fixed_time = ~U[2026-03-10 15:00:00.000000Z]
+
+    assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token_a, add_input)
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token_b, add_input)
+
+    cart_ids =
+      Cart
+      |> where([cart], cart.token in ^[token_a, token_b] and cart.status == :active)
+      |> select([cart], cart.id)
+      |> Repo.all()
+
+    assert length(cart_ids) == 2
+
+    Repo.update_all(from(cart in Cart, where: cart.id in ^cart_ids),
+      set: [updated_at: fixed_time]
+    )
+
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, first} = Checkout.start_from_cart(nil, token_a, start_input)
+    assert {:ok, second} = Checkout.start_from_cart(nil, token_b, start_input)
+
+    refute first.checkout_key == second.checkout_key
+    assert first.duplicate? == false
+    assert second.duplicate? == false
   end
 
   test "start_from_cart rejects unpublished sellables" do

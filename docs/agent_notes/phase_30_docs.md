@@ -904,3 +904,94 @@
 - Operational pin:
   - for this workstation and this quick-profile methodology, `180` concurrent writers is a conservative waiting-room trigger
   - any production recommendation should still be validated with a longer measurement window before being treated as a hard launch limit
+
+## Phase 30.10
+### Links Consulted
+- [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs)
+- [lib/store/perf/checkout_write_report.ex](/home/jcs/projects/store_blueprint/lib/store/perf/checkout_write_report.ex)
+- [lib/store/checkout/domain.ex](/home/jcs/projects/store_blueprint/lib/store/checkout/domain.ex)
+- [lib/store/orders/domain.ex](/home/jcs/projects/store_blueprint/lib/store/orders/domain.ex)
+- [lib/store_web/controllers/api/error_responder.ex](/home/jcs/projects/store_blueprint/lib/store_web/controllers/api/error_responder.ex)
+- [lib/store_web/live/cart_live.ex](/home/jcs/projects/store_blueprint/lib/store_web/live/cart_live.ex)
+- [lib/store_web/live/checkout_live/placeholder.ex](/home/jcs/projects/store_blueprint/lib/store_web/live/checkout_live/placeholder.ex)
+- [test/store/checkout/domain_test.exs](/home/jcs/projects/store_blueprint/test/store/checkout/domain_test.exs)
+- [test/store/governance/checkout_interlocks_test.exs](/home/jcs/projects/store_blueprint/test/store/governance/checkout_interlocks_test.exs)
+- [test/store_web/live/cart_checkout_live_test.exs](/home/jcs/projects/store_blueprint/test/store_web/live/cart_checkout_live_test.exs)
+
+### Decisions / Pins
+- Treat the Phase 30.8/30.9 writer failure as a direct domain-path defect until trace data proves otherwise; no Stripe mock widening is included in this pass.
+- Writer artifacts must preserve stable failure fingerprints and bounded sample errors so contention reruns stay diagnosable under repeated failures.
+- `Checkout.start_from_cart/3` must carry safe `checkout_stage` metadata for the failing sub-step without leaking stack traces over the web boundary.
+- Checkout-start order creation must inherit the same order-ref retry semantics already used by `Store.Orders.create_order/2`.
+- Known checkout concurrency outcomes must map to `409`/`422` instead of falling through to generic `500` behavior.
+- Guest checkout idempotency must be scoped to the cart so distinct anonymous carts with identical contents do not collide on `checkout_drafts.checkout_key`.
+- Named ETS hot-path tables must be owned by supervised long-lived processes rather than request processes, otherwise the table can disappear under contention when its creator exits.
+
+### Implementation
+- Added [Store.Perf.CheckoutWriteReport](/home/jcs/projects/store_blueprint/lib/store/perf/checkout_write_report.ex) to centralize:
+  - stable failure fingerprints
+  - bounded sample error extraction
+  - step summary aggregation for contention artifacts
+- Extended [priv/perf/checkout_write_contention.exs](/home/jcs/projects/store_blueprint/priv/perf/checkout_write_contention.exs):
+  - per-step rows now carry `exception_module`, normalized `message`, truncated `error_detail`, `checkout_stage`, and `failure_fingerprint`
+  - summary JSON now includes `error_fingerprints` and `sample_errors`
+  - `STORE_CHECKOUT_WRITE_CONTENTION_SAMPLE_CAP` controls bounded error samples
+  - first-seen failure fingerprints are emitted immediately during the run
+  - each spawned writer task now installs the Stripe `Req.Test` stub before executing checkout cycles, eliminating the false-negative “cannot find mock/stub Store.Payments.Providers.Stripe” concurrency failure
+- Hardened [Store.Checkout](/home/jcs/projects/store_blueprint/lib/store/checkout/domain.ex):
+  - removed the draft attach bang-update path
+  - added stage-aware tagging for `cart_load`, `cart_lock`, `order_begin`, `draft_insert`, `draft_attach`, and `post_commit_notification`
+  - expanded DB/Ash normalization for stale writes, duplicate checkout keys, and retry-oriented reservation conflicts
+  - guest checkout starts now pass a cart-scoped checkout idempotency salt into `Store.Orders.begin_checkout/2`
+  - checkout draft insert now rescues raw constraint violations and retries same-cart conflicts instead of leaking `Ecto.ConstraintError`
+- Hardened [Store.Orders.begin_checkout/2](/home/jcs/projects/store_blueprint/lib/store/orders/domain.ex):
+  - now accepts `order_ref_generator` and `max_attempts`
+  - retries generated `order_ref` collisions in the checkout path before surfacing an error
+  - now accepts optional `checkout_scope` so guest checkout idempotency can stay deterministic without colliding across distinct carts
+- Hardened web boundaries:
+  - [StoreWeb.API.ErrorResponder](/home/jcs/projects/store_blueprint/lib/store_web/controllers/api/error_responder.ex) now maps `STALE_RECORD`, `CHECKOUT_DUPLICATE`, and `RESERVATION_CONFLICT` to `409`, and `OUT_OF_STOCK` to `422`
+  - [StoreWeb.CartLive](/home/jcs/projects/store_blueprint/lib/store_web/live/cart_live.ex) and [StoreWeb.CheckoutLive.Placeholder](/home/jcs/projects/store_blueprint/lib/store_web/live/checkout_live/placeholder.ex) now render retry-oriented error copy for known checkout conflicts
+- Fixed the storefront hot-path ETS ownership race:
+  - [Store.Support.EtsTableOwner](/home/jcs/projects/store_blueprint/lib/store/support/ets_table_owner.ex) now supervises named ETS tables with stable child IDs
+  - [Store.Application](/home/jcs/projects/store_blueprint/lib/store/application.ex) starts dedicated owners for `:store_catalog_availability_cache`, `:store_catalog_stock_fast_path`, and `:store_rate_limit`
+  - [Store.Catalog.AvailabilityCache](/home/jcs/projects/store_blueprint/lib/store/catalog/availability_cache.ex), [Store.Catalog.StockFastPath](/home/jcs/projects/store_blueprint/lib/store/catalog/stock_fast_path.ex), and [Store.Support.RateLimit.EtsBackend](/home/jcs/projects/store_blueprint/lib/store/support/rate_limit/ets_backend.ex) now tolerate named-table creation races cleanly
+
+### Performance & Scaling Review
+- Hot path:
+  - checkout contention diagnostics are now rich enough to identify repeated failure classes without crashing the writer process or burying the error shape
+  - checkout start no longer has a raw `Repo.update!/1` attach path under concurrency
+  - guest cart checkout keys are now stable per cart while remaining collision-free across distinct anonymous carts
+  - ETS-backed storefront helpers now survive concurrent request churn because the named tables are supervisor-owned
+- DB query count + N+1 risk:
+  - this pass is correctness-oriented; it does not add new query fan-out or change the steady-state read shape
+  - per-step writer rows now preserve repo timing stats so contention reruns can distinguish DB pressure from fast-failing domain errors
+- Indexes:
+  - unchanged in this pass
+- Caching:
+  - unchanged in this pass
+- Oban uniqueness / idempotency:
+  - unchanged in this pass
+  - checkout idempotency is strengthened by bringing `begin_checkout/2` order-ref retry semantics in line with `create_order/2`
+- Telemetry / logging:
+  - perf writer output now includes stable fingerprint aggregation and bounded diagnostic samples
+  - checkout-stage metadata is safe to flow through normalization and the perf harness without exposing secrets
+
+### Validation
+- Focused validation:
+  - `source ~/.asdf/asdf.sh && mix test test/store/catalog/availability_cache_test.exs test/store/perf/checkout_write_report_test.exs test/store/checkout/domain_test.exs test/store/governance/checkout_interlocks_test.exs test/store_web/controllers/api/error_responder_test.exs test/store_web/live/cart_checkout_live_test.exs`
+  - result: `31 tests, 0 failures`
+- Writer-only contention rerun:
+  - `source ~/.asdf/asdf.sh && ERL_AFLAGS='-kernel logger_level warning' STORE_TEST_DB_SUFFIX=phase3010bench STORE_CONTENTION_WRITER_USERS=20 STORE_CONTENTION_WRITER_RAMP_PER_SECOND=5 STORE_CONTENTION_DURATION_MS=10000 STORE_CHECKOUT_WRITE_CONTENTION_SAMPLE_CAP=20 STORE_CHECKOUT_WRITE_CONTENTION_PATH=tmp/perf/checkout_write_contention_phase3010_20.json MIX_ENV=test mix run --no-start priv/perf/checkout_write_contention.exs`
+  - result: `20` writers, `444` successful cycles, `0` failed cycles, `0` step errors
+- Phase 30.8 ladder rerun:
+  - `source ~/.asdf/asdf.sh && mkdir -p tmp/perf && ERL_AFLAGS='-kernel logger_level warning' STORE_TEST_DB_SUFFIX=phase3010bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 STORE_PHASE308_WRITER_STEPS=20,40,60,80,100,120,140,160,180,200,220 STORE_PHASE308_WARMUP_MS=5000 STORE_PHASE308_MEASURE_MS=10000 STORE_PHASE308_COOLDOWN_MS=5000 STORE_PHASE307_MODE=quick MIX_ENV=test mix run --no-start priv/perf/run_phase_308_stress_to_failure.exs`
+  - result: healthy through `220` writers, `shop_show p95 = 28.57ms`, `http_req_failed_rate = 0`, `failed_cycles = 0`
+  - artifacts:
+    - [tmp/perf/phase308_stress_to_failure_report.json](/home/jcs/projects/store_blueprint/tmp/perf/phase308_stress_to_failure_report.json)
+    - [tmp/perf/checkout_write_contention_phase308_220.json](/home/jcs/projects/store_blueprint/tmp/perf/checkout_write_contention_phase308_220.json)
+- Phase 30.9 durability rerun:
+  - `source ~/.asdf/asdf.sh && mkdir -p tmp/perf && ERL_AFLAGS='-kernel logger_level warning' STORE_TEST_DB_SUFFIX=phase3010bench PORT=4000 STORE_BENCH_POOL_SIZE=100 STORE_BENCH_DIRECT_POOL_SIZE=60 STORE_BENCH_WRITER_POOL_SIZE=20 STORE_BENCH_WRITER_DIRECT_POOL_SIZE=5 STORE_PHASE309_WRITER_USERS=220 MIX_ENV=test mix run --no-start priv/perf/run_phase_309_durability.exs`
+  - result: `durability_status = pass`, `failure_mode = recovery_lag`, `shop_show p95 = 18.15ms`, `checkout p95 = 86.58ms`, `http_req_failed_rate = 0`, `22293` successful writer cycles, `0` failed cycles, `0` step errors
+  - artifacts:
+    - [tmp/perf/phase309_durability_report.json](/home/jcs/projects/store_blueprint/tmp/perf/phase309_durability_report.json)
+    - [tmp/perf/checkout_write_contention_phase309.json](/home/jcs/projects/store_blueprint/tmp/perf/checkout_write_contention_phase309.json)

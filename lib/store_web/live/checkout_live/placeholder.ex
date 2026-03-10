@@ -7,6 +7,7 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
 
   alias Store.Checkout
   alias Store.Payments
+  alias Store.Support.Errors.Normalize
   alias StoreWeb.Params.Checkout.{CheckoutFinalizeParams, CheckoutShippingParams}
   alias StoreWeb.Params.Payments.CreateIntentForOrderParams
 
@@ -60,7 +61,11 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
          |> assign(:checkout, checkout)
          |> put_flash(:info, "Shipping details saved")}
       else
-        _ -> {:noreply, put_flash(socket, :error, "Unable to save shipping details")}
+        {:error, error} ->
+          {:noreply, put_flash(socket, :error, checkout_error_message(error, :shipping))}
+
+        _ ->
+          {:noreply, put_flash(socket, :error, "Unable to save shipping details")}
       end
     end
   end
@@ -79,7 +84,11 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
          |> assign(:checkout, checkout)
          |> put_flash(:info, "Totals finalized")}
       else
-        _ -> {:noreply, put_flash(socket, :error, "Unable to finalize totals")}
+        {:error, error} ->
+          {:noreply, put_flash(socket, :error, checkout_error_message(error, :finalize))}
+
+        _ ->
+          {:noreply, put_flash(socket, :error, "Unable to finalize totals")}
       end
     end
   end
@@ -102,7 +111,11 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
 
         {:noreply, maybe_redirect_to_payment(socket, intent)}
       else
-        _ -> {:noreply, put_flash(socket, :error, "Unable to create payment intent")}
+        {:error, error} ->
+          {:noreply, put_flash(socket, :error, checkout_error_message(error, :payment_intent))}
+
+        _ ->
+          {:noreply, put_flash(socket, :error, "Unable to create payment intent")}
       end
     end
   end
@@ -361,6 +374,35 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
   defp return_mode?(socket) do
     socket.assigns.live_action in [:return, :cancel]
   end
+
+  defp checkout_error_message(error, context) do
+    case Normalize.normalize(error).code do
+      "STALE_RECORD" ->
+        "Your checkout changed while processing. Please retry."
+
+      "CHECKOUT_DUPLICATE" ->
+        "This checkout is already in progress. Please refresh and retry."
+
+      "RESERVATION_CONFLICT" ->
+        reservation_conflict_message(context)
+
+      "OUT_OF_STOCK" ->
+        "One or more items are no longer available. Review your cart and try again."
+
+      _ ->
+        fallback_checkout_error_message(context)
+    end
+  end
+
+  defp reservation_conflict_message(:payment_intent),
+    do: "Checkout is busy right now. Please retry payment in a moment."
+
+  defp reservation_conflict_message(_context),
+    do: "Checkout is busy right now. Please retry in a moment."
+
+  defp fallback_checkout_error_message(:shipping), do: "Unable to save shipping details"
+  defp fallback_checkout_error_message(:finalize), do: "Unable to finalize totals"
+  defp fallback_checkout_error_message(:payment_intent), do: "Unable to create payment intent"
 
   defp maybe_redirect_to_payment(socket, %{redirect_url: url})
        when is_binary(url) and url != "" do

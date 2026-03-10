@@ -33,5 +33,9 @@ defmodule StoreWeb.API.ErrorResponder do
   defp status_for_code("VALIDATION_ERROR"), do: :bad_request
   defp status_for_code("CURRENCY_MISMATCH"), do: :bad_request
   defp status_for_code("PAYMENT_EVENT_UNVERIFIED"), do: :unprocessable_entity
+  defp status_for_code("STALE_RECORD"), do: :conflict
+  defp status_for_code("CHECKOUT_DUPLICATE"), do: :conflict
+  defp status_for_code("RESERVATION_CONFLICT"), do: :conflict
+  defp status_for_code("OUT_OF_STOCK"), do: :unprocessable_entity
   defp status_for_code(_), do: :internal_server_error
 end

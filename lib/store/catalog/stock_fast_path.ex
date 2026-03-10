@@ -142,13 +142,17 @@ defmodule Store.Catalog.StockFastPath do
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined ->
-        :ets.new(@table, [
-          :set,
-          :public,
-          :named_table,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
+        try do
+          :ets.new(@table, [
+            :set,
+            :public,
+            :named_table,
+            read_concurrency: true,
+            write_concurrency: true
+          ])
+        rescue
+          ArgumentError -> @table
+        end
 
       table ->
         table

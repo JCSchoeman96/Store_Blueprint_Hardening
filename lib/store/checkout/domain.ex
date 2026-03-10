@@ -53,7 +53,8 @@ defmodule Store.Checkout do
 
     {result, repo_stats} =
       RepoStats.capture(fn ->
-        with {:ok, cart} <- CartsFacade.get_cart_for_user(actor, token),
+        with {:ok, cart} <-
+               CartsFacade.get_cart_for_user(actor, token) |> with_checkout_stage(:cart_load),
              {:ok, draft, order, duplicate?} <- get_or_create_checkout(cart) do
           {:ok,
            %{
@@ -330,14 +331,18 @@ defmodule Store.Checkout do
 
   defp create_or_reuse_checkout_in_transaction(cart_id) do
     Repo.transaction(fn ->
-      locked_cart = lock_active_cart!(cart_id)
+      locked_cart = lock_active_cart_for_checkout_start!(cart_id)
       locked_items = lock_cart_items(locked_cart.id)
 
       :ok = ensure_cart_not_empty!(locked_items)
       {variants_by_id, products_by_id} = catalog_maps(locked_items)
       :ok = ensure_published_sellables!(locked_items, variants_by_id, products_by_id)
 
-      resolve_checkout_for_cart(locked_cart, locked_items, variants_by_id)
+      case resolve_checkout_for_cart(locked_cart, locked_items, variants_by_id) do
+        {:error, %Error{} = error} -> Repo.rollback(error)
+        {:error, reason} -> Repo.rollback(reason)
+        result -> result
+      end
     end)
   end
 
@@ -375,8 +380,9 @@ defmodule Store.Checkout do
        ) do
     case order_by_checkout_key(draft.checkout_key) do
       %Order{} = order ->
-        updated_draft = attach_order_to_draft!(draft, order.id)
-        {updated_draft, order, true, []}
+        with {:ok, updated_draft} <- attach_order_to_draft(draft, order.id) do
+          {updated_draft, order, true, []}
+        end
 
       nil ->
         create_checkout!(locked_cart, locked_items, variants_by_id)
@@ -391,7 +397,8 @@ defmodule Store.Checkout do
            AshNotifications.notify_post_commit(
              notifications,
              context: %{flow: :checkout_start_from_cart, order_id: order.id, cart_id: cart_id}
-           ) do
+           )
+           |> normalize_post_commit_result() do
       {:ok, draft, order, duplicate?}
     end
   end
@@ -414,6 +421,7 @@ defmodule Store.Checkout do
 
     begin_attrs = %{
       user_id: locked_cart.user_id,
+      checkout_scope: checkout_scope_for_cart(locked_cart),
       currency: currency,
       as_of: as_of,
       pricing_contract_version: "phase-21-v1",
@@ -434,7 +442,8 @@ defmodule Store.Checkout do
              plan_ids
            ),
          {:ok, begin_checkout} <-
-           Store.Orders.begin_checkout(begin_attrs, return_notifications?: true),
+           Store.Orders.begin_checkout(begin_attrs, return_notifications?: true)
+           |> with_checkout_stage(:order_begin),
          {:ok, draft, duplicate?} <-
            create_or_reuse_checkout_draft(locked_cart, begin_checkout.order) do
       {draft, begin_checkout.order, duplicate?, begin_checkout.notifications || []}
@@ -447,7 +456,9 @@ defmodule Store.Checkout do
   defp create_or_reuse_checkout_draft(%Cart{} = cart, %Order{} = order) do
     case Repo.get_by(CheckoutDraft, cart_id: cart.id, cart_version: cart.version) do
       %CheckoutDraft{} = draft ->
-        {:ok, attach_order_to_draft!(draft, order.id), true}
+        with {:ok, updated_draft} <- attach_order_to_draft(draft, order.id) do
+          {:ok, updated_draft, true}
+        end
 
       nil ->
         insert_checkout_draft(cart, order)
@@ -457,8 +468,7 @@ defmodule Store.Checkout do
   defp insert_checkout_draft(%Cart{} = cart, %Order{} = order) do
     %CheckoutDraft{}
     |> Changeset.change(checkout_draft_attrs(cart, order))
-    |> Repo.insert()
-    |> handle_checkout_draft_insert_result(cart, order)
+    |> insert_checkout_draft_changeset(cart, order)
   end
 
   defp checkout_draft_attrs(%Cart{} = cart, %Order{} = order) do
@@ -481,29 +491,88 @@ defmodule Store.Checkout do
          cart,
          order
        ) do
-    if unique_cart_version_conflict?(changeset) do
-      load_checkout_draft_after_conflict(cart, order.id)
-    else
-      {:error, normalize_db_error(changeset)}
+    cond do
+      unique_cart_version_conflict?(changeset) ->
+        load_checkout_draft_after_conflict(cart, order.id)
+
+      unique_checkout_key_conflict?(changeset) ->
+        load_checkout_draft_after_checkout_key_conflict(cart, order)
+
+      true ->
+        {:error, normalize_db_error(changeset) |> put_checkout_stage(:draft_insert)}
+    end
+  end
+
+  defp insert_checkout_draft_changeset(changeset, %Cart{} = cart, %Order{} = order) do
+    changeset
+    |> Repo.insert()
+    |> handle_checkout_draft_insert_result(cart, order)
+  rescue
+    error in Ecto.ConstraintError ->
+      handle_checkout_draft_constraint_error(error, cart, order)
+  end
+
+  defp handle_checkout_draft_constraint_error(%Ecto.ConstraintError{} = error, cart, order) do
+    cond do
+      constraint_error?(error, "checkout_drafts_unique_cart_id_cart_version_index") ->
+        load_checkout_draft_after_conflict(cart, order.id)
+
+      constraint_error?(error, "checkout_drafts_unique_checkout_key_index") ->
+        load_checkout_draft_after_checkout_key_conflict(cart, order)
+
+      true ->
+        {:error, normalize_db_error(error) |> put_checkout_stage(:draft_insert)}
     end
   end
 
   defp load_checkout_draft_after_conflict(%Cart{} = cart, order_id) when is_binary(order_id) do
     case Repo.get_by(CheckoutDraft, cart_id: cart.id, cart_version: cart.version) do
       %CheckoutDraft{} = draft ->
-        {:ok, attach_order_to_draft!(draft, order_id), true}
+        with {:ok, updated_draft} <- attach_order_to_draft(draft, order_id) do
+          {:ok, updated_draft, true}
+        end
 
       nil ->
-        {:error, Error.new("STALE_RECORD", "checkout draft conflict retry failed")}
+        {:error,
+         Error.new("STALE_RECORD", "checkout draft conflict retry failed")
+         |> put_checkout_stage(:draft_insert)}
     end
   end
 
-  defp attach_order_to_draft!(%CheckoutDraft{order_id: order_id} = draft, order_id), do: draft
+  defp load_checkout_draft_after_checkout_key_conflict(%Cart{} = cart, %Order{} = order) do
+    case Repo.get_by(CheckoutDraft, checkout_key: order.checkout_key) do
+      %CheckoutDraft{cart_id: cart_id, cart_version: cart_version} = draft
+      when cart_id == cart.id and cart_version == cart.version ->
+        with {:ok, updated_draft} <- attach_order_to_draft(draft, order.id) do
+          {:ok, updated_draft, true}
+        end
 
-  defp attach_order_to_draft!(%CheckoutDraft{} = draft, order_id) do
+      %CheckoutDraft{} ->
+        {:error,
+         Error.new("CHECKOUT_DUPLICATE", "checkout draft already exists for a different cart")
+         |> put_checkout_stage(:draft_insert)}
+
+      nil ->
+        {:error,
+         Error.new("STALE_RECORD", "checkout draft checkout key conflict retry failed")
+         |> put_checkout_stage(:draft_insert)}
+    end
+  end
+
+  defp attach_order_to_draft(%CheckoutDraft{order_id: order_id} = draft, order_id),
+    do: {:ok, draft}
+
+  defp attach_order_to_draft(%CheckoutDraft{} = draft, order_id) do
     draft
     |> Changeset.change(order_id: order_id, checkout_key: draft.checkout_key)
-    |> Repo.update!()
+    |> Repo.update()
+    |> case do
+      {:ok, updated_draft} ->
+        {:ok, updated_draft}
+
+      {:error, error} ->
+        {:error, normalize_db_error(error) |> put_checkout_stage(:draft_attach)}
+    end
   end
 
   defp write_priced_snapshot(
@@ -1294,15 +1363,26 @@ defmodule Store.Checkout do
     end
   end
 
-  defp lock_active_cart!(nil), do: Repo.rollback(Error.new("NOT_FOUND", "active cart not found"))
+  defp lock_active_cart_for_checkout_start!(nil) do
+    Repo.rollback(
+      Error.new("NOT_FOUND", "active cart not found")
+      |> put_checkout_stage(:cart_lock)
+    )
+  end
 
-  defp lock_active_cart!(cart_id) do
+  defp lock_active_cart_for_checkout_start!(cart_id) do
     case Cart
          |> where([c], c.id == ^cart_id and c.status == :active)
          |> lock("FOR UPDATE")
          |> Repo.one() do
-      %Cart{} = cart -> cart
-      nil -> Repo.rollback(Error.new("NOT_FOUND", "active cart not found"))
+      %Cart{} = cart ->
+        cart
+
+      nil ->
+        Repo.rollback(
+          Error.new("NOT_FOUND", "active cart not found")
+          |> put_checkout_stage(:cart_lock)
+        )
     end
   end
 
@@ -1564,6 +1644,27 @@ defmodule Store.Checkout do
     end)
   end
 
+  defp unique_checkout_key_conflict?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {_field, {_message, opts}} ->
+        to_string(opts[:constraint_name] || "") ==
+          "checkout_drafts_unique_checkout_key_index"
+
+      _ ->
+        false
+    end)
+  end
+
+  defp constraint_error?(%Ecto.ConstraintError{} = error, constraint_name) do
+    Exception.message(error)
+    |> String.contains?(constraint_name)
+  end
+
+  defp checkout_scope_for_cart(%Cart{user_id: nil, id: cart_id}) when is_binary(cart_id),
+    do: "guest_cart:#{cart_id}"
+
+  defp checkout_scope_for_cart(_cart), do: nil
+
   defp resolve_subscription_plans_for_items(items) when is_list(items) do
     variant_ids =
       items
@@ -1676,15 +1777,104 @@ defmodule Store.Checkout do
     end
   end
 
-  defp normalize_db_error(%Ecto.Changeset{} = changeset) do
-    if unique_cart_version_conflict?(changeset) do
-      Error.new("STALE_RECORD", "checkout draft already exists")
-    else
-      Error.new("VALIDATION_ERROR", "invalid checkout data")
+  defp normalize_db_error(%Error{} = error), do: error
+
+  defp normalize_db_error(%Ecto.StaleEntryError{}) do
+    Error.new("STALE_RECORD", "checkout state changed during write")
+  end
+
+  defp normalize_db_error(%Ecto.ConstraintError{} = error) do
+    message = Exception.message(error)
+
+    cond do
+      is_binary(message) and
+          String.contains?(message, "checkout_drafts_unique_cart_id_cart_version_index") ->
+        Error.new("STALE_RECORD", "checkout draft already exists")
+
+      is_binary(message) and
+          String.contains?(message, "checkout_drafts_unique_checkout_key_index") ->
+        Error.new("CHECKOUT_DUPLICATE", "checkout draft already exists for checkout key")
+
+      is_binary(message) and String.contains?(message, "orders_unique_checkout_key_index") ->
+        Error.new("CHECKOUT_DUPLICATE", "checkout key already exists")
+
+      true ->
+        Error.new("VALIDATION_ERROR", "invalid checkout data")
     end
   end
 
-  defp normalize_db_error(_other), do: Error.new("INTERNAL_ERROR", "checkout operation failed")
+  defp normalize_db_error(%Ecto.Changeset{} = changeset) do
+    case first_constraint(changeset) do
+      "checkout_drafts_unique_cart_id_cart_version_index" ->
+        Error.new("STALE_RECORD", "checkout draft already exists")
+
+      "checkout_drafts_unique_checkout_key_index" ->
+        Error.new("CHECKOUT_DUPLICATE", "checkout draft already exists for checkout key")
+
+      "orders_unique_checkout_key_index" ->
+        Error.new("CHECKOUT_DUPLICATE", "checkout key already exists")
+
+      _ ->
+        Error.new("VALIDATION_ERROR", "invalid checkout data")
+    end
+  end
+
+  defp normalize_db_error(%DBConnection.ConnectionError{} = error) do
+    message = Exception.message(error) |> String.downcase()
+
+    cond do
+      String.contains?(message, "deadlock") ->
+        Error.new("RESERVATION_CONFLICT", "checkout write conflict; retry checkout")
+
+      String.contains?(message, "timeout") ->
+        Error.new("RESERVATION_CONFLICT", "checkout write timed out; retry checkout")
+
+      true ->
+        Error.new("INTERNAL_ERROR", "checkout operation failed")
+    end
+  end
+
+  defp normalize_db_error(%Postgrex.Error{} = error) do
+    message = Exception.message(error)
+
+    cond do
+      String.contains?(message, "deadlock") ->
+        Error.new("RESERVATION_CONFLICT", "checkout write conflict; retry checkout")
+
+      String.contains?(message, "could not serialize") ->
+        Error.new("STALE_RECORD", "checkout state changed during write")
+
+      true ->
+        Error.new("INTERNAL_ERROR", "checkout operation failed")
+    end
+  end
+
+  defp normalize_db_error(%Ash.Error.Invalid{} = error) do
+    normalized = Normalize.normalize(error)
+    message = Exception.message(error)
+
+    cond do
+      is_binary(message) and String.contains?(message, "order_ref") and
+          String.contains?(message, "already been taken") ->
+        Error.new("CHECKOUT_DUPLICATE", "checkout order reference conflict")
+
+      is_binary(message) and String.contains?(message, "checkout_key") and
+          String.contains?(message, "already been taken") ->
+        Error.new("CHECKOUT_DUPLICATE", "checkout key already exists")
+
+      true ->
+        normalized
+    end
+  end
+
+  defp normalize_db_error(other) do
+    other
+    |> Normalize.normalize()
+    |> case do
+      %Error{code: "INTERNAL_ERROR"} -> Error.new("INTERNAL_ERROR", "checkout operation failed")
+      %Error{} = error -> error
+    end
+  end
 
   defp telemetry_result({:ok, %{duplicate?: true}}), do: :duplicate
   defp telemetry_result({:ok, _}), do: :ok
@@ -1707,4 +1897,40 @@ defmodule Store.Checkout do
   defp non_neg_int(value, _fallback) when is_integer(value) and value >= 0, do: value
   defp non_neg_int(_value, fallback) when is_integer(fallback) and fallback >= 0, do: fallback
   defp non_neg_int(_value, _fallback), do: 0
+
+  defp with_checkout_stage({:error, error}, stage) do
+    {:error, error |> normalize_db_error() |> put_checkout_stage(stage)}
+  end
+
+  defp with_checkout_stage(result, _stage), do: result
+
+  defp normalize_post_commit_result(:ok), do: :ok
+
+  defp normalize_post_commit_result(other) do
+    {:error, other |> normalize_db_error() |> put_checkout_stage(:post_commit_notification)}
+  end
+
+  defp put_checkout_stage(%Error{} = error, stage) when is_atom(stage) do
+    meta =
+      error.meta
+      |> Map.new()
+      |> Map.put_new(:checkout_stage, Atom.to_string(stage))
+
+    %Error{error | meta: meta}
+  end
+
+  defp put_checkout_stage(other, stage),
+    do: normalize_db_error(other) |> put_checkout_stage(stage)
+
+  defp first_constraint(%Ecto.Changeset{errors: errors}) do
+    errors
+    |> Enum.find_value(fn
+      {_field, {_message, opts}} ->
+        opts[:constraint_name] || opts[:constraint]
+
+      _ ->
+        nil
+    end)
+    |> to_string()
+  end
 end

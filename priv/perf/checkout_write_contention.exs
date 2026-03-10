@@ -2,6 +2,8 @@ if Mix.env() != :test do
   raise "checkout_write_contention.exs must be run with MIX_ENV=test"
 end
 
+Code.require_file(Path.expand("../../test/support/stripe_api_stub.ex", __DIR__))
+
 Code.ensure_loaded!(Store.Perf.BenchmarkHarness)
 Store.Perf.BenchmarkHarness.require_isolated_test_db!()
 
@@ -35,9 +37,11 @@ defmodule Store.Perf.CheckoutWriteContention do
   alias Store.Checkout
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
   alias Store.Payments
+  alias Store.Perf.CheckoutWriteReport
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Support.Errors.Normalize
   alias Store.Support.Telemetry.RepoStats
+  alias Store.TestSupport.StripeAPIStub
 
   def run do
     started_at = System.monotonic_time()
@@ -50,6 +54,7 @@ defmodule Store.Perf.CheckoutWriteContention do
       |> Jason.decode!()
 
     {:ok, metrics_agent} = Agent.start_link(fn -> [] end)
+    {:ok, fingerprint_agent} = Agent.start_link(fn -> MapSet.new() end)
 
     maybe_write_ready_file(ready_path)
     IO.puts("WRITER_READY")
@@ -60,13 +65,15 @@ defmodule Store.Perf.CheckoutWriteContention do
 
         Task.async(fn ->
           Process.sleep(delay_ms)
-          writer_loop(data, index, deadline, 0, metrics_agent)
+          setup_stripe_stub()
+          writer_loop(data, index, deadline, 0, metrics_agent, fingerprint_agent)
         end)
       end
 
     task_results = Task.await_many(tasks, duration_ms() + 60_000)
     metrics = Agent.get(metrics_agent, &Enum.reverse/1)
     Agent.stop(metrics_agent)
+    Agent.stop(fingerprint_agent)
 
     result = %{
       generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -75,7 +82,7 @@ defmodule Store.Perf.CheckoutWriteContention do
       ramp_per_second: writer_ramp_per_second(),
       duration_ms: duration_ms(),
       totals: summarize_task_results(task_results, metrics),
-      steps: summarize_steps(metrics)
+      steps: summarize_steps(metrics, sample_cap: sample_cap())
     }
 
     output_path =
@@ -91,13 +98,14 @@ defmodule Store.Perf.CheckoutWriteContention do
     result
   end
 
-  defp writer_loop(data, user_index, deadline, iteration, metrics_agent) do
+  defp writer_loop(data, user_index, deadline, iteration, metrics_agent, fingerprint_agent) do
     if System.monotonic_time() >= deadline do
       :ok
     else
       record = execute_checkout_cycle(data, user_index, iteration)
+      emit_new_failure_fingerprints(record, fingerprint_agent)
       Agent.update(metrics_agent, &[record | &1])
-      writer_loop(data, user_index, deadline, iteration + 1, metrics_agent)
+      writer_loop(data, user_index, deadline, iteration + 1, metrics_agent, fingerprint_agent)
     end
   end
 
@@ -223,16 +231,23 @@ defmodule Store.Perf.CheckoutWriteContention do
   end
 
   defp record(step, base, result, repo_stats, duration_native) do
+    error_meta = error_meta(result)
+
     Map.merge(base, %{
       step: step,
       status: step_status(result),
-      error_code: error_code(result),
+      error_code: Map.get(error_meta, :error_code),
+      exception_module: Map.get(error_meta, :exception_module),
+      message: Map.get(error_meta, :message),
+      error_detail: Map.get(error_meta, :error_detail),
+      checkout_stage: Map.get(error_meta, :checkout_stage),
       duration_ms: native_to_ms(duration_native),
       query_count: Map.get(repo_stats, :query_count, 0),
       queue_time_ms: native_to_ms(Map.get(repo_stats, :queue_time, 0)),
       query_time_ms: native_to_ms(Map.get(repo_stats, :query_time, 0)),
       decode_time_ms: native_to_ms(Map.get(repo_stats, :decode_time, 0))
     })
+    |> put_failure_fingerprint()
   end
 
   defp summarize_task_results(task_results, metrics) do
@@ -247,25 +262,12 @@ defmodule Store.Perf.CheckoutWriteContention do
     }
   end
 
-  defp summarize_steps(metrics) do
+  defp summarize_steps(metrics, opts) do
     metrics
     |> Enum.flat_map(&Map.get(&1, :steps, []))
     |> Enum.group_by(& &1.step)
     |> Enum.into(%{}, fn {step, rows} ->
-      {to_string(step),
-       %{
-         count: length(rows),
-         success_count: Enum.count(rows, &(&1.status == :ok)),
-         error_count: Enum.count(rows, &(&1.status == :error)),
-         mean_duration_ms: average(rows, :duration_ms),
-         p95_duration_ms: percentile(rows, :duration_ms, 0.95),
-         mean_query_count: average(rows, :query_count),
-         p95_query_count: percentile(rows, :query_count, 0.95),
-         mean_queue_time_ms: average(rows, :queue_time_ms),
-         mean_query_time_ms: average(rows, :query_time_ms),
-         error_codes:
-           rows |> Enum.map(& &1.error_code) |> Enum.reject(&is_nil/1) |> Enum.frequencies()
-       }}
+      {to_string(step), CheckoutWriteReport.summarize_step_rows(rows, opts)}
     end)
   end
 
@@ -278,29 +280,30 @@ defmodule Store.Perf.CheckoutWriteContention do
   defp maybe_write_ready_file(""), do: :ok
   defp maybe_write_ready_file(path), do: File.write!(path, "ready\n")
 
-  defp step_status({:ok, _}), do: :ok
-  defp step_status(_), do: :error
-
-  defp error_code({:error, error}) do
-    error
-    |> Normalize.normalize()
-    |> Map.get(:code, "INTERNAL_ERROR")
+  defp setup_stripe_stub do
+    :ok = Req.Test.set_req_test_to_private(%{})
+    StripeAPIStub.stub_default()
   end
 
-  defp error_code(_), do: nil
+  defp step_status({:ok, _}), do: :ok
+  defp step_status(_), do: :error
 
   defp exception_record(step, base, error, stacktrace) do
     Map.merge(base, %{
       step: step,
       status: :error,
       error_code: exception_code(error),
+      exception_module: inspect(error.__struct__),
+      message: Exception.message(error),
       error_detail: Exception.format(:error, error, stacktrace),
+      checkout_stage: nil,
       duration_ms: 0.0,
       query_count: 0,
       queue_time_ms: 0.0,
       query_time_ms: 0.0,
       decode_time_ms: 0.0
     })
+    |> put_failure_fingerprint()
   end
 
   defp throw_record(step, base, kind, reason) do
@@ -308,34 +311,96 @@ defmodule Store.Perf.CheckoutWriteContention do
       step: step,
       status: :error,
       error_code: "UNCAUGHT_#{kind |> Atom.to_string() |> String.upcase()}",
+      exception_module: nil,
+      message: inspect(reason),
       error_detail: Exception.format(kind, reason, []),
+      checkout_stage: nil,
       duration_ms: 0.0,
       query_count: 0,
       queue_time_ms: 0.0,
       query_time_ms: 0.0,
       decode_time_ms: 0.0
     })
+    |> put_failure_fingerprint()
   end
 
   defp exception_code(%Ecto.ConstraintError{}), do: "UNHANDLED_CONSTRAINT_ERROR"
   defp exception_code(_error), do: "UNHANDLED_EXCEPTION"
 
-  defp average(rows, key) do
-    values = Enum.map(rows, &Map.get(&1, key, 0))
-    Enum.sum(values) / max(length(values), 1)
+  defp error_meta({:error, error}) do
+    normalized = Normalize.normalize(error)
+
+    %{
+      error_code: Map.get(normalized, :code, "INTERNAL_ERROR"),
+      exception_module: exception_module(error),
+      message: Map.get(normalized, :message),
+      error_detail: format_error_detail(error),
+      checkout_stage: error_checkout_stage(normalized)
+    }
   end
 
-  defp percentile(rows, key, ratio) do
-    values = rows |> Enum.map(&Map.get(&1, key, 0)) |> Enum.sort()
+  defp error_meta(_result), do: %{}
 
-    case values do
-      [] -> 0
-      _ -> Enum.at(values, min(length(values) - 1, floor(length(values) * ratio)))
-    end
+  defp exception_module(%{__struct__: module}) when is_atom(module), do: inspect(module)
+  defp exception_module(_error), do: nil
+
+  defp format_error_detail(error) do
+    error
+    |> Exception.message()
+    |> CheckoutWriteReport.truncate_detail()
+  rescue
+    _ -> CheckoutWriteReport.truncate_detail(error)
+  end
+
+  defp error_checkout_stage(%{meta: meta}) when is_map(meta) do
+    Map.get(meta, :checkout_stage) || Map.get(meta, "checkout_stage")
+  end
+
+  defp error_checkout_stage(_error), do: nil
+
+  defp put_failure_fingerprint(%{status: :error} = row) do
+    Map.put(row, :failure_fingerprint, CheckoutWriteReport.failure_fingerprint(row))
+  end
+
+  defp put_failure_fingerprint(row), do: row
+
+  defp emit_new_failure_fingerprints(record, fingerprint_agent) do
+    record
+    |> Map.get(:steps, [])
+    |> Enum.filter(&(&1.status == :error))
+    |> Enum.each(fn step ->
+      fingerprint = Map.get(step, :failure_fingerprint)
+
+      if is_binary(fingerprint) do
+        is_new? =
+          Agent.get_and_update(fingerprint_agent, fn fingerprints ->
+            if MapSet.member?(fingerprints, fingerprint) do
+              {false, fingerprints}
+            else
+              {true, MapSet.put(fingerprints, fingerprint)}
+            end
+          end)
+
+        if is_new? do
+          IO.puts(
+            "WRITER_FAILURE_FINGERPRINT " <>
+              "#{fingerprint} step=#{step.step} code=#{step.error_code} " <>
+              "stage=#{step.checkout_stage || "unknown"} " <>
+              "exception=#{step.exception_module || "n/a"} " <>
+              "message=#{step.message || "unknown"}"
+          )
+        end
+      end
+    end)
   end
 
   defp native_to_ms(value) when is_integer(value) do
     value / System.convert_time_unit(1, :millisecond, :native)
+  end
+
+  defp sample_cap do
+    System.get_env("STORE_CHECKOUT_WRITE_CONTENTION_SAMPLE_CAP", "20")
+    |> String.to_integer()
   end
 
   defp writer_users do

@@ -8,6 +8,7 @@ defmodule StoreWeb.CartLive do
   alias Store.Carts.Facade, as: CartsFacade
   alias Store.Carts.Queries.CartLoadQuery
   alias Store.Checkout
+  alias Store.Support.Errors.Normalize
   alias StoreWeb.Params.Carts.CartItemParams
   alias StoreWeb.Params.Checkout.CheckoutStartParams
 
@@ -56,6 +57,12 @@ defmodule StoreWeb.CartLive do
          {:ok, result} <- Checkout.start_from_cart(actor, socket.assigns.cart_token, input) do
       {:noreply, push_navigate(socket, to: ~p"/checkout?checkout_key=#{result.checkout_key}")}
     else
+      {:error, error} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, checkout_start_error_message(error))
+         |> load_cart_view()}
+
       _ ->
         {:noreply,
          socket
@@ -175,5 +182,24 @@ defmodule StoreWeb.CartLive do
   defp format_money(minor, currency) when is_integer(minor) do
     code = if is_binary(currency), do: String.upcase(currency), else: "USD"
     "#{code} #{:erlang.float_to_binary(minor / 100, decimals: 2)}"
+  end
+
+  defp checkout_start_error_message(error) do
+    case Normalize.normalize(error).code do
+      "STALE_RECORD" ->
+        "Your cart changed during checkout. Please try again."
+
+      "CHECKOUT_DUPLICATE" ->
+        "Checkout is already in progress for this cart. Please try again."
+
+      "RESERVATION_CONFLICT" ->
+        "Checkout is busy right now. Please retry in a moment."
+
+      "OUT_OF_STOCK" ->
+        "One or more items are no longer available. Review your cart and try again."
+
+      _ ->
+        "Unable to start checkout"
+    end
   end
 end

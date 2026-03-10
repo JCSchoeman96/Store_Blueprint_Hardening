@@ -74,6 +74,62 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     refute first.order.id == second.order.id
   end
 
+  test "begin_checkout guest checkout_scope isolates otherwise identical checkouts" do
+    attrs = %{
+      user_id: nil,
+      currency: "USD",
+      as_of: ~U[2026-02-25 18:00:00Z],
+      pricing_contract_version: "phase-13-v1",
+      tax_shipping_inputs: %{},
+      line_items: [%{variant_id: UUIDv7.generate(), quantity: 1}]
+    }
+
+    assert {:ok, first} =
+             Store.Orders.begin_checkout(Map.put(attrs, :checkout_scope, "guest_cart:one"))
+
+    assert {:ok, duplicate} =
+             Store.Orders.begin_checkout(Map.put(attrs, :checkout_scope, "guest_cart:one"))
+
+    assert {:ok, second} =
+             Store.Orders.begin_checkout(Map.put(attrs, :checkout_scope, "guest_cart:two"))
+
+    assert first.checkout_key == duplicate.checkout_key
+    assert duplicate.duplicate? == true
+    refute first.checkout_key == second.checkout_key
+    refute first.order.id == second.order.id
+  end
+
+  test "begin_checkout retries generated order_ref collisions and succeeds" do
+    duplicate_ref = "ORDREF_CHECKOUT_RETRY_DUP"
+    unique_ref = "ORDREF_CHECKOUT_RETRY_OK"
+
+    assert {:ok, _existing} =
+             Order
+             |> Ash.Changeset.for_create(:create, %{order_ref: duplicate_ref})
+             |> Ash.create(domain: Store.Orders, authorize?: false)
+
+    attrs = %{
+      user_id: UUIDv7.generate(),
+      currency: "USD",
+      as_of: ~U[2026-02-25 18:00:00Z],
+      pricing_contract_version: "phase-13-v1",
+      tax_shipping_inputs: %{},
+      line_items: [%{variant_id: UUIDv7.generate(), quantity: 1}]
+    }
+
+    generator = sequence_generator([duplicate_ref, unique_ref])
+
+    assert {:ok, result} =
+             Store.Orders.begin_checkout(
+               attrs,
+               order_ref_generator: generator,
+               max_attempts: 3
+             )
+
+    assert result.order.order_ref == unique_ref
+    assert result.duplicate? == false
+  end
+
   test "create_or_reuse_payment_intent is idempotent for same key payload" do
     order = create_order!()
 
@@ -282,5 +338,22 @@ defmodule Store.Governance.CheckoutInterlocksTest do
              |> Ash.read(domain: Store.Payments, authorize?: false)
 
     payment_intent
+  end
+
+  defp sequence_generator(sequence) do
+    parent = self()
+    ref = make_ref()
+    send(parent, {ref, sequence})
+
+    fn ->
+      receive do
+        {^ref, [next | rest]} ->
+          send(parent, {ref, rest})
+          next
+      after
+        0 ->
+          raise "sequence exhausted for order_ref generator"
+      end
+    end
   end
 end
