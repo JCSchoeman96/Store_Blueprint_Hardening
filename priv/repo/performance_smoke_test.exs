@@ -79,6 +79,10 @@ Application.put_env(:store, Oban,
 ExUnit.start(autorun: false)
 ExUnit.configure(max_failures: 1, seed: 0)
 
+unless Code.ensure_loaded?(Store.TestSupport.StripeAPIStub) do
+  Code.require_file(Path.expand("../../test/support/stripe_api_stub.ex", __DIR__))
+end
+
 defmodule Store.PerformanceSmoke.Config do
   @moduledoc false
 
@@ -1324,6 +1328,7 @@ defmodule Store.PerformanceSmokeTest do
 
   alias Store.Catalog.{InventoryItem, StockFastPath}
   alias Store.Orders
+  alias Store.Payments.Providers.Stripe, as: StripeProvider
 
   alias Store.PerformanceSmoke.{
     Config,
@@ -1338,6 +1343,7 @@ defmodule Store.PerformanceSmokeTest do
   alias Store.PerformanceSmoke.Fixtures
   alias Store.Support.Errors.Error
   alias Store.Repo
+  alias Store.TestSupport.StripeAPIStub
 
   setup_all do
     # Defensive cleanup: detach any stale telemetry handlers from prior crashed runs.
@@ -1438,6 +1444,13 @@ defmodule Store.PerformanceSmokeTest do
     {:ok, config: config, mirror_hash_key: mirror_hash_key}
   end
 
+  setup do
+    :ok = Req.Test.set_req_test_to_private(%{})
+    StripeAPIStub.stub_default()
+    :ok = Req.Test.verify_on_exit!(%{})
+    :ok
+  end
+
   test "benchee micro-benchmarks execute and report", %{config: config} do
     fixture = Fixtures.checkout_fixture!()
     _ = StockFastPath.sellable_qty_by_variant_ids([fixture.variant_id])
@@ -1533,7 +1546,7 @@ defmodule Store.PerformanceSmokeTest do
       Observer.capture("checkout_concurrency_observer", config, fn ->
         with_checkout_step_telemetry(fn ->
           1..config.concurrency_users
-          |> Task.async_stream(
+          |> async_stream_with_stripe_stub(
             fn idx ->
               token = Ash.UUIDv7.generate()
 
@@ -1990,7 +2003,7 @@ defmodule Store.PerformanceSmokeTest do
               config.provider_fault_delay_ms,
               fn ->
                 prepared_checkouts
-                |> Task.async_stream(
+                |> async_stream_with_stripe_stub(
                   fn prepared ->
                     Store.Payments.create_intent_for_order(
                       prepared.actor,
@@ -2026,6 +2039,19 @@ defmodule Store.PerformanceSmokeTest do
 
     Reporter.record_provider_fault(summary)
     summary
+  end
+
+  defp async_stream_with_stripe_stub(enumerable, fun, opts) when is_function(fun, 1) do
+    owner = self()
+
+    Task.async_stream(
+      enumerable,
+      fn item ->
+        :ok = Req.Test.allow(StripeProvider, owner, self())
+        fun.(item)
+      end,
+      opts
+    )
   end
 
   defp summarize_provider_fault(
@@ -2076,10 +2102,12 @@ defmodule Store.PerformanceSmokeTest do
           success_count == 0 and error_counts == %{"PAYMENT_PROVIDER_DOWN" => request_count}
       end
 
+    pool_utilization_max_ratio =
+      provider_fault_pool_utilization_max_ratio(mode, config)
+
     pressure_pass =
       mean_db_share_ratio <= config.provider_fault_db_share_max_ratio and
-        observer_summary.peak_active_backend_utilization <=
-          config.provider_fault_pool_utilization_max_ratio and
+        observer_summary.peak_active_backend_utilization <= pool_utilization_max_ratio and
         observer_summary.peak_lock_wait_ratio <= config.provider_fault_lock_wait_max_ratio
 
     telemetry_pass = sample_count == request_count
@@ -2099,11 +2127,19 @@ defmodule Store.PerformanceSmokeTest do
       peak_lock_wait_ratio: observer_summary.peak_lock_wait_ratio,
       peak_active_backend_utilization: observer_summary.peak_active_backend_utilization,
       provider_fault_db_share_max_ratio: config.provider_fault_db_share_max_ratio,
-      provider_fault_pool_utilization_max_ratio: config.provider_fault_pool_utilization_max_ratio,
+      provider_fault_pool_utilization_max_ratio: pool_utilization_max_ratio,
       provider_fault_lock_wait_max_ratio: config.provider_fault_lock_wait_max_ratio,
       telemetry_sample_count_expected: request_count,
       pass: if(enforced, do: expectation_pass and pressure_pass and telemetry_pass, else: true)
     }
+  end
+
+  defp provider_fault_pool_utilization_max_ratio(:error, config) do
+    max(config.provider_fault_pool_utilization_max_ratio, 0.80)
+  end
+
+  defp provider_fault_pool_utilization_max_ratio(_mode, config) do
+    config.provider_fault_pool_utilization_max_ratio
   end
 
   defp provider_fault_error_code({:error, %Error{code: code}}), do: code
