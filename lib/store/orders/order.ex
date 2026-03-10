@@ -231,7 +231,7 @@ defmodule Store.Orders.Order do
     defaults([:read])
 
     read :read_for_user do
-      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 50)
+      pagination(keyset?: true, required?: false, default_limit: 20, max_page_size: 50)
       prepare(build(sort: [inserted_at: :desc, id: :desc]))
     end
 
@@ -256,7 +256,7 @@ defmodule Store.Orders.Order do
     end
 
     read :read_for_admin do
-      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 50)
+      pagination(keyset?: true, required?: false, default_limit: 20, max_page_size: 50)
       prepare(build(sort: [inserted_at: :desc, id: :desc]))
     end
 
@@ -413,6 +413,8 @@ defmodule Store.Orders.Order do
       index([:state], name: "orders_state_index")
       index([:order_ref], name: "orders_order_ref_index")
       index([:user_id], name: "orders_user_id_index")
+      index([:user_id, :inserted_at, :id], name: "orders_user_id_inserted_at_id_index")
+      index([:state, :inserted_at, :id], name: "orders_state_inserted_at_id_index")
       index([:shipping_rate_id], name: "orders_shipping_rate_id_index")
       index([:tax_as_of], name: "orders_tax_as_of_index")
       index([:currency_code], name: "orders_currency_code_index")

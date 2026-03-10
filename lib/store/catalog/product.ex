@@ -237,6 +237,7 @@ defmodule Store.Catalog.Product do
       index([:status], name: "products_status_index")
       index([:category_id], name: "products_category_id_index")
       index([:published_at], name: "products_published_at_index")
+      index([:status, :published_at], name: "products_status_published_at_index")
       index([:product_kind], name: "products_product_kind_index")
     end
   end

@@ -142,20 +142,45 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   test "apply_payment_success_once is replay-safe and inserts one payment_application" do
     order = create_customer_order!()
     payment_intent = create_submitted_payment_intent!(order.id)
+    parent = self()
+    handler_id = {__MODULE__, :apply_payment_success_once, System.unique_integer([:positive])}
 
-    assert {:ok, first_result} = Store.Payments.apply_payment_success_once(payment_intent.id)
-    assert first_result.applied? == true
+    :telemetry.attach(
+      handler_id,
+      [:store, :payments, :interlock_apply_payment_success_once],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:apply_payment_success_once, measurements, metadata})
+      end,
+      parent
+    )
 
-    assert {:ok, second_result} = Store.Payments.apply_payment_success_once(payment_intent.id)
-    assert second_result.applied? == false
+    try do
+      assert {:ok, first_result} = Store.Payments.apply_payment_success_once(payment_intent.id)
+      assert first_result.applied? == true
 
-    assert 1 ==
-             PaymentApplication
-             |> Ash.Query.filter(expr(order_id == ^order.id))
-             |> Ash.count!(domain: Store.Orders, authorize?: false)
+      assert_receive {:apply_payment_success_once, first_measurements, first_metadata}
+      assert first_measurements.duration > 0
+      assert first_metadata.replay == false
+      assert first_metadata.outcome == :ok
 
-    assert :paid == fetch_order!(order.id).state
-    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+      assert {:ok, second_result} = Store.Payments.apply_payment_success_once(payment_intent.id)
+      assert second_result.applied? == false
+
+      assert_receive {:apply_payment_success_once, second_measurements, second_metadata}
+      assert second_measurements.duration > 0
+      assert second_metadata.replay == true
+      assert second_metadata.outcome == :ok
+
+      assert 1 ==
+               PaymentApplication
+               |> Ash.Query.filter(expr(order_id == ^order.id))
+               |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+      assert :paid == fetch_order!(order.id).state
+      assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    after
+      :telemetry.detach(handler_id)
+    end
   end
 
   test "create_or_reuse_payment_intent fails closed for missing or unsupported provider" do

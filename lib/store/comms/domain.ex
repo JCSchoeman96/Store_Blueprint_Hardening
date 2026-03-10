@@ -583,7 +583,7 @@ defmodule Store.Comms do
     :telemetry.execute(
       [:store, :comms, :outbox_insert],
       %{count: 1},
-      %{kind: outbox.template_kind, provider: outbox.provider}
+      %{kind: outbox.template_kind, provider: outbox.provider, outbox_id: outbox.id}
     )
   end
 
@@ -591,7 +591,12 @@ defmodule Store.Comms do
     :telemetry.execute(
       [:store, :comms, :delivery_attempt],
       %{duration: System.monotonic_time() - started_at},
-      %{provider: outbox.provider, template: outbox.template_kind, outcome: outcome}
+      %{
+        provider: outbox.provider,
+        template: outbox.template_kind,
+        outcome: outcome,
+        outbox_id: outbox.id
+      }
     )
   end
 

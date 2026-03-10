@@ -417,6 +417,7 @@ if config_env() == :prod do
     backend: rate_limit_backend,
     redis_client: Store.Support.RateLimit.RedixClient,
     redis_name: :store_rate_limit_redis,
+    redis_key_prefix: System.get_env("STORE_REDIS_KEY_PREFIX", "prod:store"),
     webhook_limit: parse_positive_integer!.("STORE_WEBHOOK_RATE_LIMIT_LIMIT", "120"),
     webhook_window_seconds:
       parse_positive_integer!.("STORE_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "60"),

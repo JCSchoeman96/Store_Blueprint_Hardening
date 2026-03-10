@@ -254,6 +254,18 @@ defmodule Store.Payments.PaymentIntent do
       index([:provider_payment_method_ref],
         name: "payment_intents_provider_payment_method_ref_index"
       )
+
+      index([:provider, :provider_payment_id],
+        unique: true,
+        where: "provider_payment_id IS NOT NULL",
+        name: "payment_intents_unique_provider_payment_id_index"
+      )
+
+      index([:provider, :provider_session_id],
+        unique: true,
+        where: "provider_session_id IS NOT NULL",
+        name: "payment_intents_unique_provider_session_id_index"
+      )
     end
   end
 

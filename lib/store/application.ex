@@ -5,8 +5,11 @@ defmodule Store.Application do
 
   use Application
 
-  alias Store.Support.RateLimit.RedisBackend
+  alias Store.Catalog.ProductListCache
+  alias Store.Shipping.QuoteCache
   alias Store.Support.RateLimit.RedixClient
+  alias Store.Support.Redis
+  alias Store.Support.Telemetry.RedisAggregates
 
   @impl true
   def start(_type, _args) do
@@ -20,7 +23,10 @@ defmodule Store.Application do
         {DNSCluster, query: Application.get_env(:store, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Store.PubSub},
         Store.Entitlements.Cache,
-        maybe_rate_limit_redis_child_spec(),
+        ProductListCache,
+        QuoteCache,
+        maybe_redis_child_spec(),
+        RedisAggregates,
         # Start a worker by calling: Store.Worker.start_link(arg)
         # {Store.Worker, arg},
         # Start to serve requests, typically the last entry
@@ -42,16 +48,15 @@ defmodule Store.Application do
     :ok
   end
 
-  defp maybe_rate_limit_redis_child_spec do
+  defp maybe_redis_child_spec do
     rate_limit_config = Application.get_env(:store, :rate_limit, [])
 
-    backend = Keyword.get(rate_limit_config, :backend)
     redis_client = Keyword.get(rate_limit_config, :redis_client)
+    redis_config = Keyword.get(rate_limit_config, :redis, [])
 
-    if backend == RedisBackend and redis_client == RedixClient do
-      rate_limit_config
-      |> Keyword.get(:redis, [])
-      |> Keyword.put_new(:name, RedixClient.connection_name())
+    if redis_client == RedixClient and redis_config != [] do
+      redis_config
+      |> Keyword.put_new(:name, Redis.connection_name())
       |> Keyword.put_new(:sync_connect, true)
       |> then(&{Redix, &1})
     end

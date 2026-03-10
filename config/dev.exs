@@ -57,6 +57,7 @@ config :store, :rate_limit,
   backend: rate_limit_backend,
   redis_client: Store.Support.RateLimit.RedixClient,
   redis_name: :store_rate_limit_redis,
+  redis_key_prefix: System.get_env("STORE_REDIS_KEY_PREFIX", "dev:store"),
   # For host-based dev with Docker Redis, publish the container port (e.g. -p 6379:6379).
   redis: [
     host: System.get_env("STORE_REDIS_HOST", "localhost"),

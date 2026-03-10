@@ -80,33 +80,39 @@ defmodule Store.Payments.Interlocks do
   def apply_payment_success_once(payment_intent_or_id, opts \\ [])
 
   def apply_payment_success_once(%PaymentIntent{} = payment_intent, _opts) do
-    with true <- is_binary(payment_intent.order_id),
-         {:ok, order} <- fetch_order(payment_intent.order_id),
-         {:ok, result, notifications} <-
-           Repo.transaction(fn -> run_apply_payment_success_once(payment_intent, order) end)
-           |> normalize_transaction_result(),
-         :ok <-
-           AshNotifications.notify_post_commit(
-             notifications,
-             context: %{
-               flow: :apply_payment_success_once,
-               order_id: order.id,
-               payment_intent_id: payment_intent.id
-             }
-           ),
-         :ok <- maybe_enqueue_fulfillment(result),
-         :ok <- maybe_enqueue_digital_grants(result),
-         :ok <- maybe_enqueue_subscriptions(result),
-         :ok <- maybe_enqueue_order_receipt(result) do
-      {:ok, result}
-    else
-      false ->
-        {:error,
-         Error.new("PAYMENT_EVENT_UNVERIFIED", "payment intent is not attached to an order")}
+    started_at = System.monotonic_time()
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+    result =
+      with true <- is_binary(payment_intent.order_id),
+           {:ok, order} <- fetch_order(payment_intent.order_id),
+           {:ok, result, notifications} <-
+             Repo.transaction(fn -> run_apply_payment_success_once(payment_intent, order) end)
+             |> normalize_transaction_result(),
+           :ok <-
+             AshNotifications.notify_post_commit(
+               notifications,
+               context: %{
+                 flow: :apply_payment_success_once,
+                 order_id: order.id,
+                 payment_intent_id: payment_intent.id
+               }
+             ),
+           :ok <- maybe_enqueue_fulfillment(result),
+           :ok <- maybe_enqueue_digital_grants(result),
+           :ok <- maybe_enqueue_subscriptions(result),
+           :ok <- maybe_enqueue_order_receipt(result) do
+        {:ok, result}
+      else
+        false ->
+          {:error,
+           Error.new("PAYMENT_EVENT_UNVERIFIED", "payment intent is not attached to an order")}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    emit_apply_payment_success_once_telemetry(result, started_at)
+    result
   end
 
   def apply_payment_success_once(payment_intent_id, opts)
@@ -258,6 +264,24 @@ defmodule Store.Payments.Interlocks do
       Enum.find(intents, &(&1.state == :succeeded)) ||
       List.first(intents)
   end
+
+  defp emit_apply_payment_success_once_telemetry(result, started_at) do
+    :telemetry.execute(
+      [:store, :payments, :interlock_apply_payment_success_once],
+      %{duration: System.monotonic_time() - started_at},
+      %{
+        replay: apply_payment_success_once_replay?(result),
+        outcome: apply_payment_success_once_outcome(result)
+      }
+    )
+  end
+
+  defp apply_payment_success_once_replay?({:ok, %{applied?: false}}), do: true
+  defp apply_payment_success_once_replay?(_result), do: false
+
+  defp apply_payment_success_once_outcome({:ok, _result}), do: :ok
+  defp apply_payment_success_once_outcome({:error, _reason}), do: :error
+  defp apply_payment_success_once_outcome(_result), do: :unknown
 
   defp payment_intent_duplicate?(%PaymentIntent{} = intent) do
     Ash.Resource.get_metadata(intent, :upsert_skipped) == true

@@ -1262,6 +1262,7 @@ defmodule Store.Subscriptions.Facade do
            }}
           | {:error, Error.t() | term()}
   def run_due_renewals_for_system(opts \\ []) when is_list(opts) do
+    started_at = System.monotonic_time()
     now = Keyword.get(opts, :now, DateTime.utc_now() |> DateTime.truncate(:microsecond))
     limit = Keyword.get(opts, :limit, @default_due_limit)
 
@@ -1270,6 +1271,7 @@ defmodule Store.Subscriptions.Facade do
     case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
       {:ok, due_subscriptions} ->
         result = count_due_renewal_results(due_subscriptions, now)
+        emit_subscription_tick_telemetry(started_at, length(due_subscriptions), result)
 
         {:ok,
          %{
@@ -1484,52 +1486,58 @@ defmodule Store.Subscriptions.Facade do
   defp ensure_matching_renewal_key(_expected_renewal_key, _current_renewal_key), do: :stale
 
   defp run_single_due_renewal(%Subscription{} = subscription, now) do
-    with {:ok, plan} <- fetch_plan(subscription.subscription_plan_id),
-         :continue <- maybe_expire_past_due(subscription, plan, now),
-         {:ok, renewal_period} <- renewal_period(subscription, plan, now),
-         renewal_key <-
-           Scheduler.renewal_key(subscription.id, renewal_period.current_period_end_at),
-         {:ok, attempt} <-
-           create_or_reuse_renewal_attempt(subscription, renewal_period, renewal_key) do
-      result =
-        case claim_renewal_attempt(attempt) do
-          :ok ->
-            run_claimed_due_renewal(subscription, plan, renewal_period, attempt, now)
+    started_at = System.monotonic_time()
 
-          {:skip, :already_claimed} ->
+    result =
+      with {:ok, plan} <- fetch_plan(subscription.subscription_plan_id),
+           :continue <- maybe_expire_past_due(subscription, plan, now),
+           {:ok, renewal_period} <- renewal_period(subscription, plan, now),
+           renewal_key <-
+             Scheduler.renewal_key(subscription.id, renewal_period.current_period_end_at),
+           {:ok, attempt} <-
+             create_or_reuse_renewal_attempt(subscription, renewal_period, renewal_key) do
+        result =
+          case claim_renewal_attempt(attempt) do
+            :ok ->
+              run_claimed_due_renewal(subscription, plan, renewal_period, attempt, now)
+
+            {:skip, :already_claimed} ->
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        case result do
+          :ok ->
             :ok
 
+          {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = error} ->
+            {:error, error}
+
+          {:error, %Error{} = error} ->
+            mark_subscription_past_due(subscription, plan, error, now)
+            {:error, error}
+
           {:error, reason} ->
+            mark_subscription_past_due(subscription, plan, reason, now)
             {:error, reason}
         end
-
-      case result do
-        :ok ->
+      else
+        :expired ->
           :ok
 
-        {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = error} ->
-          {:error, error}
-
         {:error, %Error{} = error} ->
-          mark_subscription_past_due(subscription, plan, error, now)
+          mark_subscription_past_due(subscription, error)
           {:error, error}
 
         {:error, reason} ->
-          mark_subscription_past_due(subscription, plan, reason, now)
+          mark_subscription_past_due(subscription, reason)
           {:error, reason}
       end
-    else
-      :expired ->
-        :ok
 
-      {:error, %Error{} = error} ->
-        mark_subscription_past_due(subscription, error)
-        {:error, error}
-
-      {:error, reason} ->
-        mark_subscription_past_due(subscription, reason)
-        {:error, reason}
-    end
+    emit_subscription_renewal_attempt_telemetry(subscription, result, started_at)
+    result
   end
 
   defp run_claimed_due_renewal(subscription, plan, renewal_period, attempt, now) do
@@ -3114,7 +3122,14 @@ defmodule Store.Subscriptions.Facade do
     max_retry_attempts = Map.get(plan, :max_retry_attempts) || 0
     retry_suppressed? = hard_retry_suppressed_reason?(message)
 
-    if next_attempt_count > max_retry_attempts do
+    status =
+      if next_attempt_count > max_retry_attempts do
+        :expired
+      else
+        :past_due
+      end
+
+    if status == :expired do
       _ = expire_past_due_subscription(subscription)
       :ok
     else
@@ -3140,6 +3155,8 @@ defmodule Store.Subscriptions.Facade do
         |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
     end
 
+    emit_subscription_dunning_telemetry(subscription, status, next_attempt_count)
+
     :ok
   end
 
@@ -3159,7 +3176,46 @@ defmodule Store.Subscriptions.Facade do
       )
       |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
 
+    emit_subscription_dunning_telemetry(
+      subscription,
+      :past_due,
+      subscription.dunning_attempt_count || 0
+    )
+
     :ok
+  end
+
+  defp emit_subscription_tick_telemetry(started_at, due_count, result) do
+    :telemetry.execute(
+      [:store, :subscriptions, :tick],
+      %{
+        duration: System.monotonic_time() - started_at,
+        due_count: due_count,
+        success_count: result.success,
+        failed_count: result.failed
+      },
+      %{due_count: due_count}
+    )
+  end
+
+  defp emit_subscription_renewal_attempt_telemetry(subscription, result, started_at) do
+    :telemetry.execute(
+      [:store, :subscriptions, :renewal_attempt],
+      %{duration: System.monotonic_time() - started_at},
+      %{subscription_id: subscription.id, outcome: renewal_attempt_outcome(result)}
+    )
+  end
+
+  defp renewal_attempt_outcome(:ok), do: :ok
+  defp renewal_attempt_outcome({:error, _reason}), do: :error
+  defp renewal_attempt_outcome(_result), do: :unknown
+
+  defp emit_subscription_dunning_telemetry(subscription, status, attempt_no) do
+    :telemetry.execute(
+      [:store, :subscriptions, :dunning],
+      %{count: 1},
+      %{subscription_id: subscription.id, status: status, attempt_no: attempt_no}
+    )
   end
 
   defp membership_keys_for_plan_ids([]), do: {:ok, []}

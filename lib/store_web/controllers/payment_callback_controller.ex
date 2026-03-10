@@ -78,6 +78,8 @@ defmodule StoreWeb.PaymentCallbackController do
   defp run_create(conn, provider) do
     telemetry_provider = telemetry_provider(provider)
 
+    received_started_at = System.monotonic_time()
+
     with {:ok, normalized_provider} <- normalize_provider_param(provider),
          {:ok, raw_body, conn} <- extract_raw_body(conn),
          headers <- headers_to_map(conn.req_headers),
@@ -85,7 +87,23 @@ defmodule StoreWeb.PaymentCallbackController do
            verify_and_normalize(normalized_provider, headers, raw_body, :callback),
          {:ok, receipt_result} <-
            ingest_receipt(normalized_provider, raw_body, headers, canonical_receipt, :callback),
-         {:ok, _job} <- enqueue_processing_job(receipt_result, :callback) do
+         :ok <-
+           emit_webhook_received(
+             normalized_provider,
+             canonical_receipt,
+             receipt_result,
+             received_started_at
+           ),
+         enqueue_started_at = System.monotonic_time(),
+         {:ok, enqueue_result} <- enqueue_processing_job(receipt_result, :callback),
+         :ok <-
+           emit_webhook_enqueued(
+             normalized_provider,
+             canonical_receipt,
+             receipt_result,
+             {:ok, enqueue_result},
+             enqueue_started_at
+           ) do
       {:ok, conn, normalized_provider, receipt_result.receipt.id}
     else
       {:error, error} -> {:error, telemetry_provider, error}
@@ -151,6 +169,33 @@ defmodule StoreWeb.PaymentCallbackController do
       |> ProcessWebhookReceiptWorker.new(unique: @job_unique_opts)
       |> Oban.insert()
     end)
+  end
+
+  defp emit_webhook_received(provider, canonical_receipt, receipt_result, started_at) do
+    PaymentIngressTelemetry.emit_webhook_received(
+      :callback,
+      provider,
+      canonical_receipt,
+      receipt_result,
+      started_at
+    )
+  end
+
+  defp emit_webhook_enqueued(
+         provider,
+         canonical_receipt,
+         receipt_result,
+         enqueue_result,
+         started_at
+       ) do
+    PaymentIngressTelemetry.emit_webhook_enqueued(
+      :callback,
+      provider,
+      canonical_receipt,
+      receipt_result,
+      enqueue_result,
+      started_at
+    )
   end
 
   defp headers_to_map(headers) when is_list(headers) do

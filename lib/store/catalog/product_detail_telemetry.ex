@@ -8,6 +8,7 @@ defmodule Store.Catalog.ProductDetailTelemetry do
 
   @shop_live_event [:store, :shop_live, :product_detail]
   @catalog_event [:store, :catalog, :product_detail, :public]
+  @catalog_compat_event [:store, :catalog, :product_detail]
 
   @type process_snapshot :: %{reductions: non_neg_integer(), memory: non_neg_integer()}
 
@@ -96,6 +97,17 @@ defmodule Store.Catalog.ProductDetailTelemetry do
       @catalog_event,
       measurements,
       metadata
+    )
+
+    :telemetry.execute(
+      @catalog_compat_event,
+      %{duration: measurements.duration},
+      %{
+        slug: slug,
+        cache: "miss",
+        result: metadata.result,
+        payload_hash: metadata.payload_hash
+      }
     )
 
     ProductDetailPoller.record(:catalog, measurements, metadata)

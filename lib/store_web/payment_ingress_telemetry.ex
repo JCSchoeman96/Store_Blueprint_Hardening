@@ -62,6 +62,72 @@ defmodule StoreWeb.PaymentIngressTelemetry do
   def telemetry_error_code({:discard, _}), do: "VALIDATION_ERROR"
   def telemetry_error_code(_), do: nil
 
+  @spec emit_webhook_received(
+          atom(),
+          atom() | String.t(),
+          map(),
+          map(),
+          integer(),
+          keyword()
+        ) :: :ok
+  def emit_webhook_received(
+        route,
+        provider,
+        canonical_receipt,
+        receipt_result,
+        started_at,
+        opts \\ []
+      )
+      when is_atom(route) and is_integer(started_at) and is_map(canonical_receipt) and
+             is_map(receipt_result) do
+    :telemetry.execute(
+      [:store, :payments, :webhook_received],
+      %{duration: System.monotonic_time() - started_at},
+      %{
+        route: route,
+        provider: provider_to_string(provider),
+        event_type: Map.get(canonical_receipt, :event_type),
+        verified: Keyword.get(opts, :verified, true),
+        provider_event_id: Map.get(canonical_receipt, :provider_event_id),
+        receipt_id: receipt_id(receipt_result),
+        duplicate: Map.get(receipt_result, :duplicate?, false)
+      }
+    )
+  end
+
+  @spec emit_webhook_enqueued(
+          atom(),
+          atom() | String.t(),
+          map(),
+          map(),
+          term(),
+          integer()
+        ) :: :ok
+  def emit_webhook_enqueued(
+        route,
+        provider,
+        canonical_receipt,
+        receipt_result,
+        enqueue_result,
+        started_at
+      )
+      when is_atom(route) and is_integer(started_at) and is_map(canonical_receipt) and
+             is_map(receipt_result) do
+    :telemetry.execute(
+      [:store, :payments, :webhook_enqueued],
+      %{duration: System.monotonic_time() - started_at},
+      %{
+        route: route,
+        provider: provider_to_string(provider),
+        event_type: Map.get(canonical_receipt, :event_type),
+        provider_event_id: Map.get(canonical_receipt, :provider_event_id),
+        receipt_id: receipt_id(receipt_result),
+        duplicate: Map.get(receipt_result, :duplicate?, false),
+        result: webhook_enqueue_result(enqueue_result, receipt_result)
+      }
+    )
+  end
+
   defp emit_stage(stage, route, provider, started_at, result, repo_stats)
        when is_atom(stage) and is_atom(route) and is_map(repo_stats) do
     :telemetry.execute(
@@ -103,4 +169,12 @@ defmodule StoreWeb.PaymentIngressTelemetry do
 
   defp result_from_error_code("VALIDATION_ERROR"), do: :discard
   defp result_from_error_code(_code), do: :error
+
+  defp webhook_enqueue_result({:ok, :duplicate}, _receipt_result), do: :duplicate
+  defp webhook_enqueue_result({:ok, _job}, _receipt_result), do: :ok
+  defp webhook_enqueue_result(_enqueue_result, %{duplicate?: true}), do: :duplicate
+  defp webhook_enqueue_result(_enqueue_result, _receipt_result), do: :error
+
+  defp receipt_id(%{receipt: %{id: id}}) when is_binary(id), do: id
+  defp receipt_id(_receipt_result), do: nil
 end

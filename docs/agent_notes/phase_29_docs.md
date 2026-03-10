@@ -1,174 +1,292 @@
-# Phase 29 — Performance Architecture & Smoke Gates
+# Phase 29 — Architecture Closure and Hot-Path Governance Alignment
 
 ## GOAL
 
-Implement a deterministic, CI-enforced performance suite for hot/warm/cold paths with explicit latency gates:
-- critical-path mean latency < 100ms
-- checkout p99 < 5s
-- Redis warm-layer required for CI/stress profiles
-- concurrency, thundering-herd, stampede, mirror-consistency, and HLL coverage
+Close the non-benchmark remainder of Phase 29 so the blueprint matches the
+authoritative performance architecture contract for:
+
+- cluster-safe hot/warm/cold caching
+- Redis-backed high-velocity telemetry aggregates
+- hot-path compatibility telemetry
+- justified hot-path index closure
+- keyset pagination on the order surfaces touched by those new indexes
+
+This follow-up explicitly reuses the existing benchmark infrastructure from the
+closed Phase 29 smoke-suite bead and does not absorb Phase 30 benchmark or
+route-specific diagnosis scope.
 
 ## LINKS CONSULTED
 
+### Project docs
+
 - `AGENTS.md`
+- `docs/phases/phase_28_production_readiness_release_checklist.md`
 - `docs/phases/phase_29_performance_architecture_optimizations.md`
 - `docs/governance/performance_scaling.md`
 - `docs/governance/observability_slos.md`
-- `docs/governance/inventory_reservations.md`
-- `test/store/checkout/domain_test.exs`
-- `test/store/governance/inventory_reservations_test.exs`
-- `test/store/subscriptions/performance_test.exs`
+- `docs/agent_notes/phase_28_docs.md`
+- `docs/agent_notes/phase_30_docs.md`
+
+### Key implementation files reviewed
+
+- `lib/store/application.ex`
+- `lib/store_web/telemetry.ex`
+- `lib/store_web/controllers/webhook_controller.ex`
+- `lib/store_web/controllers/payment_callback_controller.ex`
+- `lib/store_web/payment_ingress_telemetry.ex`
+- `lib/store/catalog/facade.ex`
+- `lib/store/catalog/product.ex`
+- `lib/store/shipping/domain.ex`
+- `lib/store/shipping/facade.ex`
+- `lib/store/orders/order.ex`
+- `lib/store/orders/facade.ex`
+- `lib/store/orders/queries/order_index_query.ex`
+- `lib/store/payments/payment_intent.ex`
+- `lib/store/payments/interlocks.ex`
+- `lib/store/digital/facade.ex`
+- `lib/store/subscriptions/facade.ex`
+- `lib/store/support/rate_limit/redix_client.ex`
+- `lib/store/entitlements/cache.ex`
+- `priv/repo/performance_smoke_test.exs`
+
+### External references
+
+- https://hexdocs.pm/ash/pagination.html
+- https://hexdocs.pm/phoenix_live_view/Phoenix.LiveView.html#stream/4
+- https://hexdocs.pm/oban/Oban.Worker.html
+- https://hexdocs.pm/oban/unique_jobs.html
+- https://hexdocs.pm/oban/Oban.Telemetry.html
+- https://www.postgresql.org/docs/current/indexes-ordering.html
 
 ## DECISIONS / PINS
 
-1. Performance suite entrypoint is `priv/repo/performance_smoke_test.exs`.
-2. Suite is self-running via standalone invocation:
-   - `MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs`
-   - script exits early (code 0) if `STORE_PERF_SMOKE` is not enabled.
-3. Redis is mandatory for `ci_gate` and `full_stress` profiles; script fails immediately if Redis ping fails.
-4. Profiles:
-   - `ci_gate`: scheduler-scaled concurrency
-   - `full_stress`: 100+ user and 1000-request style stress defaults
-   - `local_dev`: reduced load for local validation
-5. Stampede gate is resource-scoped using repo telemetry filter and bounded by `STORE_PERF_STAMPEDE_MAX_RESOURCE_QUERIES` (default 1).
-6. HLL gate uses relative error, not exact cardinality equality.
-7. Mirror consistency uses a counted quiescent barrier (`barrier(expected_updates)`) that waits for all async updates, preventing false negatives from cross-process cast ordering.
-8. CI adds required `performance_smoke_required` job; nightly adds `full_stress` execution.
-9. Repo pool size is scheduler-aware by default (`min(max(schedulers * 4, 20), 60)`) and can be overridden via `STORE_PERF_REPO_POOL_SIZE`.
-10. Checkout payment provider is env/config driven (`STORE_PERF_PROVIDER` or enabled/default provider config), fail-closed if unsupported/disabled.
-11. v0.0.8 adds an async observer scaffold to the standalone smoke script instead of a separate profiler entrypoint.
-12. The first observer dimensions are DB lock contention and pool-pressure, scoped only to the checkout concurrency and domain thundering-herd scenarios.
-13. Observer metrics are report-only in `local_dev` and enforced as hard gates in `ci_gate` / `full_stress`.
-14. Pool pressure is defined for v0.0.8 as active Postgres client-backend utilization against configured repo pool size, not DBConnection checkout telemetry.
-15. Phase 29.1 adds a test-only payment-provider fault injector at `Store.Payments.Providers.create_intent/3`, driven by app config instead of env reads inside the provider boundary.
-16. Provider fault modes are `:slow`, `:timeout`, and `:error`, mapped to `PAYMENT_PROVIDER_TIMEOUT` / `PAYMENT_PROVIDER_DOWN` for negative-path assertions.
-17. Provider-fault smoke scenarios prepare finalized checkout state first, then measure only concurrent `create_intent_for_order/3` execution.
-18. Provider slowness is interpreted via `mean_db_share_ratio`: high end-to-end latency with low DB share and low pool/lock pressure is acceptable isolation; high latency with high DB share or DB pressure is a failure.
-19. `checkout_concurrency` now distributes users across a variant pool, while `domain_thundering_herd` remains the explicit same-SKU contention scenario.
+1. The closed smoke/benchmark work under `store_blueprint-7yf.22` remains the
+   Phase 29 benchmark history. The new implementation tree is a fresh follow-up
+   epic:
+   - `store_blueprint-7yf.26`
+   - `store_blueprint-7yf.26.1` through `.26.5`
+2. Phase 29 follow-up is architectural only. It must not absorb:
+   - Phase 28 ops/readiness work
+   - Phase 30 k6/Playwright harness work
+   - route-specific latency diagnosis beyond what is required for cache,
+     telemetry, or index correctness
+3. Cache model is explicitly multi-layer:
+   - hot: Cachex/ETS
+   - warm: Redis
+   - cold: Postgres
+4. Catalog list and shipping quote caches must invalidate in this order:
+   - clear/update Redis warm entries
+   - broadcast Phoenix.PubSub invalidation
+   - every node clears its hot Cachex layer
+5. Hot cache misses must fall back in this order:
+   - local Cachex
+   - Redis warm cache
+   - Postgres/domain read
+6. High-velocity aggregates must bypass Postgres. Redis is the sink for:
+   - rolling counters
+   - event windows
+   - queue helper state
+   - approximate unique counts where acceptable
+7. Existing low-frequency DB-backed queue/backlog polling may remain as
+   fallback/verification, but it is no longer the primary spike-time aggregate
+   strategy.
+8. Compatibility telemetry is additive. Existing richer telemetry names stay in
+   place and new governance-compatible events are emitted alongside them.
+9. Public `/shop` stays offset/page based in this phase because the
+   authoritative Phase 29 doc explicitly allows offset pagination for public
+   lists.
+10. Order surfaces touched by the new hot-path composite indexes must move to
+    keyset pagination. Offset pagination is explicitly rejected for:
+    - user order history
+    - admin order history
+11. Payment-intent provider reference closure must be the narrowest safe change:
+    prefer provider-scoped uniqueness for provider payment/session references,
+    aligned with the uniqueness registry already present in the repo.
+12. Redis plumbing should reuse the existing Redix seam and Redis runtime
+    configuration rather than adding a second Redis stack.
+
+## PREVIOUS/NEXT PHASE BOUNDARY CHECK
+
+### Previous phase (28) protections
+
+- Do not re-open runtime hardening, release entrypoints, Sentry wiring, health
+  probes, or production runbook scope unless directly required by the new Redis
+  cache/telemetry code paths.
+- Keep Phase 28 as operational hardening only; no new benchmark harness or
+  route-specific load work belongs there.
+
+### Next phase (30) protections
+
+- Do not add new k6 or Playwright harnesses in this follow-up.
+- Do not pull product-detail route diagnosis, browser join attribution, or
+  durability soak work back into Phase 29; those remain documented in
+  `docs/agent_notes/phase_30_docs.md`.
+- Query-count reduction is only in scope where needed to support cache,
+  telemetry, or pagination/index correctness.
+
+## CURRENT-STATE AUDIT
+
+### Already implemented
+
+- Standalone performance smoke suite with Benchee + ExUnit exists at:
+  - `priv/repo/performance_smoke_test.exs`
+- CI and nightly workflows already enforce:
+  - required perf smoke in CI
+  - full-stress smoke in nightly
+- Existing telemetry already covers:
+  - cart get/mutate/merge
+  - checkout start/create-intent step timing
+  - payment ingress verify/persist/enqueue/response timing
+  - webhook/refund worker processing timing
+  - digital signed URL timing
+  - backlog polling gauges
+- Existing cache patterns already exist for:
+  - entitlements hot cache with Cachex + PubSub
+  - inventory/availability hot cache paths
+- Existing uniqueness registry already expects payment-intent provider reference
+  uniqueness entries.
+
+### Missing or incomplete for Phase 29 proper
+
+- No cluster-safe product-list hot/warm cache.
+- No cluster-safe shipping quote hot/warm cache.
+- No Redis-backed high-velocity telemetry aggregate spine.
+- No compatibility telemetry for:
+  - catalog list
+  - shipping quote
+  - webhook received/enqueued
+  - payment apply-once
+  - digital grant issuance
+  - subscription tick/renewal/dunning
+- `StoreWeb.Telemetry` does not yet expose all mandatory governance event
+  metrics.
+- Orders still use offset pagination in resource reads and facade query
+  contracts.
+- Hot-path order composites for keyset traversal are missing.
+- `products(status, published_at)` composite is missing.
+- Payment-intent provider reference uniqueness/index posture is only partially
+  implemented relative to the uniqueness registry.
 
 ## PLAN
 
-1. Add `benchee` dependency.
-2. Implement performance script modules:
-   - config/profile scaling
-   - stats/percentiles
-   - fail-fast gate checks
-   - Redis round-robin pool
-   - single-flight cache primitive
-   - write-through mirror GenServer
-   - fixtures + domain-flow runners
-3. Add Benchee micro-benchmarks for hot/warm/cold primitives.
-4. Add ExUnit smoke gates for:
-   - hot/warm/cold latency
-   - checkout concurrency
-   - seat-hold concurrency
-   - domain/Redis thundering herd
-   - single-flight stampede
-   - HLL relative error
-   - cold saturation including `query_time + queue_time`
-   - mirror consistency with barrier
-5. Print summary table and emit JSON report at `tmp/perf/performance_smoke_report.json`.
-6. Wire CI and nightly workflows to run the suite and upload artifacts.
+1. Update this note first, then implement the Phase 29 follow-up under
+   `store_blueprint-7yf.26`.
+2. Add a shared Redis support layer plus Redis-backed telemetry aggregate
+   helpers.
+3. Add additive compatibility telemetry and metric definitions for the missing
+   Phase 29 hot paths.
+4. Implement multi-layer Cachex + Redis caches for product list and shipping
+   quote reads, with PubSub invalidation from domain mutation paths.
+5. Add justified composite indexes and convert order list surfaces to keyset
+   pagination.
+6. Run focused tests, perf smoke, and `mix check`, then finalize bead notes and
+   closure details.
 
 ## DONE
 
-- Added `benchee` dependency.
-- Added `priv/repo/performance_smoke_test.exs` with Benchee + ExUnit performance gate suite.
-- Added Redis round-robin benchmark pool for concurrent warm-path command execution.
-- Added deterministic Redis ping gate at startup for required profiles.
-- Added explicit perf-smoke enable switch (`STORE_PERF_SMOKE=true`) and standalone `--no-start` execution contract.
-- Added adaptive repo pool sizing and explicit repo timeout/queue tuning for stress runs.
-- Replaced mirror pseudo-barrier with a counted barrier to guarantee quiescent consistency checks.
-- Made checkout payment provider configurable/validated against enabled providers.
-- Added summary table output and JSON artifact in `tmp/perf/`.
-- Updated CI and nightly jobs to run smoke suite with `STORE_PERF_SMOKE=true` and `--no-start`.
-- Added `Store.PerformanceSmoke.Observer` sampling around the DB-heavy burst scenarios.
-- Added `pg_stat_activity` lock-wait and active-backend utilization summaries to the smoke report.
-- Added observer threshold env overrides:
-  - `STORE_PERF_OBSERVER_INTERVAL_MS`
-  - `STORE_PERF_LOCK_WAIT_MAX_RATIO`
-  - `STORE_PERF_LOCK_WAIT_MIN_ACTIVE_BACKENDS`
-  - `STORE_PERF_POOL_UTILIZATION_MAX_RATIO`
-- Added a second console/report section for observer summaries keyed by scenario.
-- Added provider fault injection to `Store.Payments.Providers.create_intent/3` with app-configured `:slow`, `:timeout`, and `:error` modes plus optional notify hooks for integration tests.
-- Added provider-fault smoke scenarios and reporting for:
-  - `provider_fault_slow`
-  - `provider_fault_timeout`
-  - `provider_fault_error`
-- Added provider-fault thresholds and env overrides:
-  - `STORE_PERF_PROVIDER_DELAY_MS`
-  - `STORE_PERF_PROVIDER_USERS`
-  - `STORE_PERF_PROVIDER_MODE`
-  - `STORE_PERF_PROVIDER_DB_SHARE_MAX_RATIO`
-  - `STORE_PERF_PROVIDER_POOL_UTILIZATION_MAX_RATIO`
-  - `STORE_PERF_PROVIDER_LOCK_WAIT_MAX_RATIO`
-- Added focused payment integration coverage for:
-  - no `idle in transaction` leak during slow provider delay
-  - retry/idempotent reuse after `PAYMENT_PROVIDER_TIMEOUT`
-  - retry/idempotent reuse after `PAYMENT_PROVIDER_DOWN`
-- Added checkout fixture pool sizing via `STORE_PERF_CHECKOUT_VARIANT_POOL_SIZE`.
-- Changed `checkout_concurrency` to spread users across a configurable variant pool instead of colliding on one inventory row.
-- Added a fixture uniqueness assertion so the checkout throughput scenario cannot silently regress into a de facto single-SKU contention test.
+- Session start protocol completed:
+  - `bd dolt test`
+  - `bd status`
+  - `bd ready`
+- Reviewed the authoritative Phase 29 doc, governance docs, adjacent phase
+  notes, and current implementation state.
+- Created the Phase 29 follow-up bead tree:
+  - `store_blueprint-7yf.26`
+  - `store_blueprint-7yf.26.1`
+  - `store_blueprint-7yf.26.2`
+  - `store_blueprint-7yf.26.3`
+  - `store_blueprint-7yf.26.4`
+  - `store_blueprint-7yf.26.5`
+- Added bead dependencies and claimed `store_blueprint-7yf.26.1`.
+- Replaced the old smoke-suite-only Phase 29 note with this follow-up scope
+  lock before implementation edits.
 
 ## NEXT
 
-1. Monitor CI behavior for threshold stability under real runner load.
-2. Tune per-profile load defaults if CI noise exceeds acceptable variance.
-3. Expand observer coverage later with VM memory / reductions and, if needed, event-driven provider telemetry beyond the current create-intent smoke scenarios.
+1. Implement the Redis-backed telemetry aggregate spine and compatibility event
+   coverage.
+2. Implement cluster-safe product-list and shipping quote caches.
+3. Add order keyset pagination plus hot-path composite indexes.
+4. Validate with focused tests, perf smoke, and `mix check`.
 
 ## BLOCKERS
 
-- None.
+- None at note creation time.
 
 ## COMMANDS RUN
 
 - `bd dolt test`
 - `bd status`
 - `bd ready`
-- `bd create ...`
-- `bd update store_blueprint-7yf.22 --claim`
-- `mix run priv/repo/performance_smoke_test.exs` (validation)
-- `MIX_ENV=test STORE_PERF_SMOKE=true mix run --no-start priv/repo/performance_smoke_test.exs` (intended invocation)
-- `mix check` (validation)
+- `git status -sb`
+- `git diff -- priv/repo/performance_smoke_test.exs`
+- `sed -n ...` against phase, governance, app, domain, telemetry, cache, and
+  query files
+- `rg ...` across docs, config, lib, test, and deps
+- `bd create ...` for `store_blueprint-7yf.26` through `.26.5`
+- `bd dep add ...`
+- `bd update store_blueprint-7yf.26.1 --claim`
 
 ## GATES
 
-- Performance smoke script: passing after v0.0.8 observer expansion.
-- `mix check`: pending validation after implementation.
+- Docs-first note updated before implementation edits.
+- Scope pins explicitly preserve the Phase 28 and Phase 30 boundaries.
+- Phase 29 follow-up pins explicitly require:
+  - hot/warm/cold cache layering
+  - Redis-backed high-velocity aggregates
+  - additive telemetry compatibility
+  - keyset pagination on touched order surfaces
 
 ## PERFORMANCE & SCALING REVIEW
 
-- **Hot path touched**:
-  - catalog stock fast path (ETS)
-  - checkout orchestration (cart -> checkout -> shipping -> finalize -> payment intent)
-  - reservation contention path
-  - Redis seat/visitor primitives
-- **Data layers**:
-  - Hot: ETS (`StockFastPath`, mirror table)
-  - Warm: Redis (HASH/ZSET/HLL + lock key)
-  - Cold: Postgres (inventory reads under invalidation/saturation)
-- **Query count / N+1 risk**:
-  - stampede scenario explicitly bounds same-resource query amplification
-  - saturation scenario captures repo query and queue times under concurrency
-- **Observer coverage / contention insight**:
-  - checkout concurrency and domain thundering herd now sample `pg_stat_activity` every 500ms
-  - captures peak lock wait ratio, peak lock waiters, and active-backend utilization
-  - lock contention is only considered actionable once active backends reach a minimum threshold, to avoid false positives on low-volume samples
-  - checkout throughput is now measured with distributed variant selection, so the checkout observer gate reflects general checkout headroom instead of intentional same-row serialization
-  - single-SKU lock contention remains intentionally measured by `domain_thundering_herd`
-- **Provider fault isolation**:
-  - `create_intent_for_order/3` is now exercised under slow, timeout, and provider-down conditions without changing production runtime behavior
-  - provider-fault summaries separate total request duration from aggregate DB queue/query time via `mean_db_share_ratio`
-  - passing behavior is explicit: provider waits may increase request latency, but must not materially increase lock pressure or active-backend utilization
-- **Indexes / DB posture**:
-  - relies on existing inventory/order indexes and row-lock semantics
-  - no new schema/index changes in this phase
-- **Caching strategy**:
-  - single-flight cache primitive used to validate stampede protection behavior
-  - explicit invalidation used to force cold-path sampling
-- **Oban idempotency/uniqueness**:
-  - no new Oban workloads introduced by this phase
-- **Telemetry / observability**:
-  - repo query telemetry used for resource-filtered counting and queue/query timing
-  - JSON artifact + console summary for regression tracking
-  - observer metrics intentionally stay within gate scope, not full profiling scope, to preserve fast smoke-suite runtime
+### Hot / warm / cold
+
+- Hot:
+  - product list reads
+  - shipping quote reads
+  - webhook ingress and apply-once transition
+  - digital grant issuance
+  - subscription renewal orchestration
+- Warm:
+  - Redis cache fallback for catalog and shipping
+  - Redis telemetry aggregates for rolling counters and event windows
+- Cold:
+  - Postgres truth for catalog, shipping rules, orders, payments, grants, and
+    subscriptions
+
+### Query count + N+1 risk
+
+- Product list cache must prevent repeated Postgres reads on identical page keys.
+- Shipping quote cache must prevent repeated rule reads on identical quote
+  inputs.
+- Order keyset pagination must avoid deep offset scans.
+- Compatibility telemetry must not introduce request-path Postgres writes.
+
+### Indexes
+
+- Expected additions in this follow-up:
+  - `products(status, published_at)`
+  - `orders(user_id, inserted_at, id)` or equivalent deterministic keyset index
+  - `orders(state, inserted_at, id)` or equivalent deterministic keyset index
+- Payment-intent provider reference uniqueness/index posture must be reconciled
+  with the uniqueness registry.
+
+### Caching strategy
+
+- Hot cache: Cachex/ETS with short TTL and single-flight protection.
+- Warm cache: Redis with longer TTL and cluster-consistent values.
+- Invalidation: Redis delete/update first, then PubSub fanout, then local hot
+  cache clear on every node.
+
+### Oban uniqueness / idempotency
+
+- No new queue semantics are introduced.
+- Existing unique-job/idempotency anchors remain authoritative.
+
+### Telemetry / observability
+
+- Compatibility telemetry events are additive on top of the existing richer
+  events.
+- High-velocity aggregates must land in Redis, not Postgres.
+- Existing DB-backed queue polling can remain as low-frequency fallback
+  verification only.

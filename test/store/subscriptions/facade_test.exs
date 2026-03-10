@@ -212,6 +212,58 @@ defmodule Store.Subscriptions.FacadeTest do
     assert attempt.failure_code == "PAYMENT_PROVIDER_DISABLED"
   end
 
+  test "run_due_renewals_for_system emits tick, renewal attempt, and dunning telemetry" do
+    customer = SubscriptionsFixtures.create_customer!("phase29_subs_telemetry")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    parent = self()
+    handler_id = {__MODULE__, :phase29_subscriptions, System.unique_integer([:positive])}
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    :telemetry.attach_many(
+      handler_id,
+      [
+        [:store, :subscriptions, :tick],
+        [:store, :subscriptions, :renewal_attempt],
+        [:store, :subscriptions, :dunning]
+      ],
+      fn event, measurements, metadata, pid ->
+        send(pid, {List.to_tuple(event), measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      assert {:ok, %{due_count: 1, failed_count: 1}} =
+               SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+
+      assert_receive {{:store, :subscriptions, :dunning}, %{count: 1}, dunning_metadata}
+      assert dunning_metadata.subscription_id == subscription.id
+      assert dunning_metadata.status == :past_due
+
+      assert_receive {{:store, :subscriptions, :renewal_attempt}, renewal_measurements,
+                      renewal_metadata}
+
+      assert renewal_metadata.subscription_id == subscription.id
+      assert renewal_metadata.outcome == :error
+      assert renewal_measurements.duration > 0
+
+      assert_receive {{:store, :subscriptions, :tick}, tick_measurements, tick_metadata}
+      assert tick_measurements.due_count == 1
+      assert tick_measurements.failed_count == 1
+      assert tick_measurements.success_count == 0
+      assert tick_metadata.due_count == 1
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
   test "physical renewal reserves inventory, writes live shipping, and leaves reservation active before payment success" do
     customer = SubscriptionsFixtures.create_customer!("phase27_physical_success")
 

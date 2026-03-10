@@ -6,12 +6,17 @@ defmodule Store.Contracts.Phase18ContractsTest do
   alias Store.Payments.Queries.{PaymentIntentIndexQuery, PaymentIntentShowQuery}
   alias StoreWeb.Params.Admin.{ShippingRatesParams, ShippingZonesParams, TaxRatesParams}
 
-  test "order index query rejects unknown keys and coerces limit/offset" do
-    assert {:ok, %OrderIndexQuery{limit: 25, offset: 4}} =
-             OrderIndexQuery.new(%{"limit" => "25", "offset" => "4"})
+  test "order index query rejects unknown keys and coerces limit/cursors" do
+    assert {:ok, %OrderIndexQuery{limit: 25, after: "cursor_1", before: nil}} =
+             OrderIndexQuery.new(%{"limit" => "25", "after" => "cursor_1"})
 
     assert {:error, error} = OrderIndexQuery.new(%{"limit" => "1", "unexpected" => "x"})
     assert error.code == "VALIDATION_ERROR"
+
+    assert {:error, cursor_error} =
+             OrderIndexQuery.new(%{"after" => "cursor_1", "before" => "cursor_2"})
+
+    assert cursor_error.code == "VALIDATION_ERROR"
   end
 
   test "order show query validates UUID and rejects unknown keys" do

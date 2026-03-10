@@ -154,6 +154,17 @@ defmodule StoreWeb.Telemetry do
       summary("store.catalog.product_detail.public.availability_value_count",
         tags: [:result]
       ),
+      summary("store.catalog.product_list.duration",
+        tags: [:cache, :layer, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.catalog.product_list.result_count",
+        tags: [:cache, :layer, :result]
+      ),
+      summary("store.catalog.product_detail.duration",
+        tags: [:cache, :result],
+        unit: {:native, :millisecond}
+      ),
       summary("store.shop_live.product_detail.duration",
         tags: [:phase, :connected, :result],
         unit: {:native, :millisecond}
@@ -211,6 +222,21 @@ defmodule StoreWeb.Telemetry do
         tags: [:route, :provider, :result, :status_bucket, :error_code],
         unit: {:native, :millisecond}
       ),
+      summary("store.shipping.quote.duration",
+        tags: [:cache, :layer, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.shipping.quote.result_count",
+        tags: [:cache, :layer, :result]
+      ),
+      summary("store.payments.webhook_received.duration",
+        tags: [:route, :provider, :event_type, :verified],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.payments.webhook_enqueued.duration",
+        tags: [:route, :provider, :event_type, :result],
+        unit: {:native, :millisecond}
+      ),
       summary("store.payments.webhook_processed.duration",
         tags: [:provider, :outcome],
         unit: {:native, :millisecond}
@@ -219,15 +245,36 @@ defmodule StoreWeb.Telemetry do
         tags: [:provider, :outcome],
         unit: {:native, :millisecond}
       ),
+      summary("store.payments.interlock_apply_payment_success_once.duration",
+        tags: [:replay, :outcome],
+        unit: {:native, :millisecond}
+      ),
+      counter("store.comms.outbox_insert.count",
+        tags: [:kind, :provider]
+      ),
       last_value("store.ops.queues.webhook_backlog_age_seconds"),
       last_value("store.ops.queues.webhook_failed_count"),
       last_value("store.ops.queues.outbox_backlog_age_seconds"),
       last_value("store.ops.queues.outbox_pending_count"),
       last_value("store.ops.queues.outbox_failed_count"),
       last_value("store.ops.queues.renewal_backlog_age_seconds"),
+      counter("store.digital.grant_issued.count"),
       summary("store.digital.signed_url.duration",
         tags: [:outcome],
         unit: {:native, :millisecond}
+      ),
+      summary("store.subscriptions.tick.duration",
+        unit: {:native, :millisecond}
+      ),
+      summary("store.subscriptions.tick.due_count"),
+      summary("store.subscriptions.tick.success_count"),
+      summary("store.subscriptions.tick.failed_count"),
+      summary("store.subscriptions.renewal_attempt.duration",
+        tags: [:outcome],
+        unit: {:native, :millisecond}
+      ),
+      counter("store.subscriptions.dunning.count",
+        tags: [:status]
       ),
 
       # VM Metrics

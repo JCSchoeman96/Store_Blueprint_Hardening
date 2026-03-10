@@ -120,6 +120,7 @@ config :store, :rate_limit,
   backend: rate_limit_backend,
   redis_client: Store.Support.RateLimit.RedixClient,
   redis_name: :store_rate_limit_redis,
+  redis_key_prefix: System.get_env("STORE_REDIS_KEY_PREFIX", "test:store"),
   # Use a dedicated Redis DB for tests; this should not be shared with dev/prod.
   redis: [
     host: System.get_env("STORE_REDIS_HOST", "localhost"),

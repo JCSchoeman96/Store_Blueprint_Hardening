@@ -16,7 +16,7 @@ defmodule Store.Shipping do
     AdminShippingZonesQuery
   }
 
-  alias Store.Shipping.{QuoteHash, ShippingMethod, ShippingRateRule, ShippingZone}
+  alias Store.Shipping.{QuoteCache, QuoteHash, ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Shipping.Types.{QuoteEvidence, QuoteOption}
   alias Store.Support.Errors.Error
   alias Store.Support.ID.BinaryUuidSort
@@ -99,7 +99,20 @@ defmodule Store.Shipping do
 
   def quote_options(%QuoteRequest{} = request, opts) when is_list(opts) do
     now = Keyword.get(opts, :as_of, DateTime.utc_now() |> DateTime.truncate(:microsecond))
+    started_at = System.monotonic_time()
 
+    with {:ok, options, cache_metadata} <-
+           QuoteCache.fetch(request, fn -> quote_options_from_db(request, now) end) do
+      emit_quote_telemetry(started_at, options, cache_metadata)
+      {:ok, options}
+    end
+  end
+
+  def quote_options(_request, _opts) do
+    {:error, Error.new("VALIDATION_ERROR", "quote request is required")}
+  end
+
+  defp quote_options_from_db(request, now) do
     query =
       ShippingRateRule
       |> Ash.Query.filter(expr(currency == ^request.currency_code and active == true))
@@ -111,15 +124,10 @@ defmodule Store.Shipping do
         |> Enum.filter(&eligible_rule?(&1, request, now))
         |> Enum.map(&to_quote_option(&1, request))
         |> Enum.sort_by(&quote_option_sort_tuple/1)
-        |> then(&{:ok, &1})
 
       {:error, _error} ->
-        {:error, Error.new("INTERNAL_ERROR", "unable to read shipping quote rules")}
+        raise Error.new("INTERNAL_ERROR", "unable to read shipping quote rules")
     end
-  end
-
-  def quote_options(_request, _opts) do
-    {:error, Error.new("VALIDATION_ERROR", "quote request is required")}
   end
 
   defp eligible_rule?(%ShippingRateRule{} = rule, %QuoteRequest{} = request, %DateTime{} = now) do
@@ -228,5 +236,22 @@ defmodule Store.Shipping do
 
   defp uuid_sort_key(uuid) when is_binary(uuid) do
     {1, BinaryUuidSort.normalize_raw16!(uuid)}
+  end
+
+  defp emit_quote_telemetry(started_at, options, cache_metadata)
+       when is_integer(started_at) and is_list(options) and is_map(cache_metadata) do
+    :telemetry.execute(
+      [:store, :shipping, :quote],
+      %{
+        duration: System.monotonic_time() - started_at,
+        result_count: length(options)
+      },
+      %{
+        cache: Map.get(cache_metadata, :cache, "miss"),
+        layer: Map.get(cache_metadata, :layer, "cold"),
+        result: :ok,
+        request_key: Map.get(cache_metadata, :request_key)
+      }
+    )
   end
 end

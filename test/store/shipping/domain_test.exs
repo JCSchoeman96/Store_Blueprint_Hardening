@@ -3,8 +3,13 @@ defmodule Store.Shipping.DomainTest do
 
   alias Store.Shipping
   alias Store.Shipping.Inputs.QuoteRequest
-  alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
+  alias Store.Shipping.{QuoteCache, ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Support.ID.BinaryUuidSort
+
+  setup do
+    :ok = QuoteCache.invalidate_all("shipping_domain_test")
+    :ok
+  end
 
   test "same quote request returns stable option ordering and hashes" do
     zone = create_zone!("US", "CA")
@@ -47,6 +52,54 @@ defmodule Store.Shipping.DomainTest do
       |> Enum.map(& &1.shipping_rule_id)
 
     assert alpha_rule_ids == BinaryUuidSort.sort_uuids(alpha_rule_ids)
+  end
+
+  test "quote_options emits cold then hot cache telemetry" do
+    zone = create_zone!("ZA", "GP")
+    method = create_method!("GROUND", "Ground")
+    _rule = create_rule!(zone.id, method.id, 750)
+    parent = self()
+    handler_id = {__MODULE__, :shipping_quote, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      handler_id,
+      [:store, :shipping, :quote],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:shipping_quote, measurements, metadata})
+      end,
+      parent
+    )
+
+    request =
+      quote_request!(%{
+        destination_country_code: "ZA",
+        destination_region_code: "GP",
+        destination_postal_code: "2000",
+        currency_code: "USD",
+        shipping_weight_grams: 500
+      })
+
+    try do
+      assert {:ok, [_option]} = Shipping.quote_options(request)
+      assert {:ok, [_option]} = Shipping.quote_options(request)
+
+      assert_receive {:shipping_quote, first_measurements, first_metadata}
+      assert_receive {:shipping_quote, second_measurements, second_metadata}
+
+      assert first_metadata.cache == "miss"
+      assert first_metadata.layer == "cold"
+      assert first_metadata.result == :ok
+      assert is_binary(first_metadata.request_key)
+      assert first_measurements.result_count == 1
+
+      assert second_metadata.cache == "hit"
+      assert second_metadata.layer == "hot"
+      assert second_metadata.result == :ok
+      assert second_metadata.request_key == first_metadata.request_key
+      assert second_measurements.result_count == 1
+    after
+      :telemetry.detach(handler_id)
+    end
   end
 
   defp quote_request!(attrs) do

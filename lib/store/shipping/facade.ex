@@ -5,6 +5,7 @@ defmodule Store.Shipping.Facade do
 
   alias Store.Shipping
   alias Store.Shipping.Inputs.QuoteRequest
+  alias Store.Shipping.QuoteCache
 
   alias Store.Shipping.Queries.{
     AdminShippingMethodsQuery,
@@ -44,6 +45,7 @@ defmodule Store.Shipping.Facade do
     |> Ash.Changeset.for_create(:create, attrs, context: context)
     |> Ash.create(domain: Shipping, actor: actor, context: context)
     |> normalize_result()
+    |> maybe_invalidate_quote_cache()
   end
 
   @spec update_shipping_zone_for_admin(map(), Ecto.UUID.t(), map(), keyword()) ::
@@ -110,6 +112,7 @@ defmodule Store.Shipping.Facade do
         |> Ash.Changeset.for_update(:update, attrs, context: context)
         |> Ash.update(domain: Shipping, actor: actor, context: context)
         |> normalize_result()
+        |> maybe_invalidate_quote_cache()
 
       {:ok, nil} ->
         {:error, Error.new("NOT_FOUND", "Shipping method not found")}
@@ -148,6 +151,7 @@ defmodule Store.Shipping.Facade do
     |> Ash.Changeset.for_create(:create, attrs, context: context)
     |> Ash.create(domain: Shipping, actor: actor, context: context)
     |> normalize_result()
+    |> maybe_invalidate_quote_cache()
   end
 
   @spec update_shipping_rate_rule_for_admin(map(), Ecto.UUID.t(), map(), keyword()) ::
@@ -162,6 +166,7 @@ defmodule Store.Shipping.Facade do
         |> Ash.Changeset.for_update(:update, attrs, context: context)
         |> Ash.update(domain: Shipping, actor: actor, context: context)
         |> normalize_result()
+        |> maybe_invalidate_quote_cache()
 
       {:ok, nil} ->
         {:error, Error.new("NOT_FOUND", "Shipping rate rule not found")}
@@ -182,4 +187,11 @@ defmodule Store.Shipping.Facade do
 
   defp normalize_result({:ok, result}), do: {:ok, result}
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}
+
+  defp maybe_invalidate_quote_cache({:ok, result}) do
+    _ = QuoteCache.invalidate_all("shipping_mutation")
+    {:ok, result}
+  end
+
+  defp maybe_invalidate_quote_cache({:error, _} = error), do: error
 end

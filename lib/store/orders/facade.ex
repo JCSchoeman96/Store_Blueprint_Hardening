@@ -13,30 +13,30 @@ defmodule Store.Orders.Facade do
   alias Store.Support.Errors.Error
   alias Store.Support.Errors.Normalize
 
-  @spec list_orders_for_user(map(), OrderIndexQuery.t()) :: {:ok, [Order.t()]} | {:error, term()}
+  @spec list_orders_for_user(map(), OrderIndexQuery.t()) ::
+          {:ok, Ash.Page.Keyset.t()} | {:error, term()}
   def list_orders_for_user(actor, %OrderIndexQuery{} = query) when is_map(actor) do
     ash_query =
       Order
       |> Ash.Query.for_read(:read_for_user, %{}, actor: actor)
-      |> Ash.Query.limit(query.limit)
-      |> Ash.Query.offset(query.offset)
+      |> Ash.Query.page(order_page_opts(query))
 
     case Ash.read(ash_query, domain: Store.Orders, actor: actor) do
-      {:ok, orders} -> {:ok, orders}
+      {:ok, %Ash.Page.Keyset{} = orders} -> {:ok, orders}
       {:error, error} -> {:error, Normalize.normalize(error)}
     end
   end
 
-  @spec list_orders_for_admin(map(), OrderIndexQuery.t()) :: {:ok, [Order.t()]} | {:error, term()}
+  @spec list_orders_for_admin(map(), OrderIndexQuery.t()) ::
+          {:ok, Ash.Page.Keyset.t()} | {:error, term()}
   def list_orders_for_admin(actor, %OrderIndexQuery{} = query) when is_map(actor) do
     ash_query =
       Order
       |> Ash.Query.for_read(:read_for_admin, %{}, actor: actor)
-      |> Ash.Query.limit(query.limit)
-      |> Ash.Query.offset(query.offset)
+      |> Ash.Query.page(order_page_opts(query))
 
     case Ash.read(ash_query, domain: Store.Orders, actor: actor) do
-      {:ok, orders} -> {:ok, orders}
+      {:ok, %Ash.Page.Keyset{} = orders} -> {:ok, orders}
       {:error, error} -> {:error, Normalize.normalize(error)}
     end
   end
@@ -106,4 +106,13 @@ defmodule Store.Orders.Facade do
        }}
     end
   end
+
+  defp order_page_opts(%OrderIndexQuery{} = query) do
+    [limit: query.limit]
+    |> maybe_put_page_cursor(:after, query.after)
+    |> maybe_put_page_cursor(:before, query.before)
+  end
+
+  defp maybe_put_page_cursor(opts, _key, nil), do: opts
+  defp maybe_put_page_cursor(opts, key, value), do: Keyword.put(opts, key, value)
 end

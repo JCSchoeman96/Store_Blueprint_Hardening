@@ -5,7 +5,7 @@ defmodule Store.Catalog.FacadePublicProductTest do
 
   alias Store.Catalog.Facade, as: CatalogFacade
   alias Store.Catalog.Product
-  alias Store.Catalog.Queries.ProductDetailQuery
+  alias Store.Catalog.Queries.{ProductDetailQuery, ProductIndexQuery}
   alias Store.Catalog.Types.ProductDetail
   alias Store.SubscriptionsFixtures
   alias Store.Support.Telemetry.RepoStats
@@ -113,10 +113,50 @@ defmodule Store.Catalog.FacadePublicProductTest do
     assert stats.query_count <= 8
   end
 
+  test "list_products_for_public emits cold then hot cache telemetry" do
+    %{title: title} = published_product_fixture()
+    parent = self()
+    handler_id = {__MODULE__, :catalog_product_list, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      handler_id,
+      [:store, :catalog, :product_list],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:catalog_product_list, measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      assert {:ok, query} = ProductIndexQuery.new(%{"q" => title, "page_size" => "10"})
+      assert {:ok, [_product | _]} = CatalogFacade.list_products_for_public(nil, query)
+      assert {:ok, [_product | _]} = CatalogFacade.list_products_for_public(nil, query)
+
+      assert_receive {:catalog_product_list, first_measurements, first_metadata}
+      assert_receive {:catalog_product_list, second_measurements, second_metadata}
+
+      assert first_metadata.cache == "miss"
+      assert first_metadata.layer == "cold"
+      assert first_metadata.result == :ok
+      assert is_binary(first_metadata.cache_key)
+      assert first_measurements.result_count >= 1
+
+      assert second_metadata.cache == "hit"
+      assert second_metadata.layer == "hot"
+      assert second_metadata.result == :ok
+      assert second_metadata.cache_key == first_metadata.cache_key
+      assert second_measurements.result_count == first_measurements.result_count
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
   defp published_product_fixture do
     admin = TestFixtures.register_user!(email: TestFixtures.unique_email("shop_public_admin"))
     _role = TestFixtures.assign_role!(admin, :admin)
     slug = "shop-public-#{System.unique_integer([:positive])}"
+
+    title = "Shop Public Product #{System.unique_integer([:positive])}"
 
     product =
       Product
@@ -124,7 +164,7 @@ defmodule Store.Catalog.FacadePublicProductTest do
         :create_draft,
         %{
           slug: slug,
-          title: "Shop Public Product",
+          title: title,
           base_variant_sku: "SHOP-PUBLIC-#{System.unique_integer([:positive])}",
           base_variant_currency_code: "USD",
           base_variant_price_minor: 2_000,
@@ -133,8 +173,11 @@ defmodule Store.Catalog.FacadePublicProductTest do
       )
       |> Ash.create!(domain: Store.Catalog, actor: admin)
 
-    product
-    |> Ash.Changeset.for_update(:publish, %{})
-    |> Ash.update!(domain: Store.Catalog, actor: admin)
+    published =
+      product
+      |> Ash.Changeset.for_update(:publish, %{})
+      |> Ash.update!(domain: Store.Catalog, actor: admin)
+
+    Map.put(published, :title, title)
   end
 end

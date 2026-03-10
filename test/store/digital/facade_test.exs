@@ -68,21 +68,44 @@ defmodule Store.Digital.FacadeTest do
         grant_max_downloads: 7
       })
 
-    assert {:ok, %{processed_count: 2}} =
-             Facade.ensure_paid_order_download_grants_for_system(order.id)
+    parent = self()
+    handler_id = {__MODULE__, :grant_issued, System.unique_integer([:positive])}
 
-    assert {:ok, %{processed_count: 2}} =
-             Facade.ensure_paid_order_download_grants_for_system(order.id)
+    :telemetry.attach(
+      handler_id,
+      [:store, :digital, :grant_issued],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:grant_issued, measurements, metadata})
+      end,
+      parent
+    )
 
-    grants = fetch_grants_for_line_item!(line_item.id)
-    assert length(grants) == 2
+    try do
+      assert {:ok, %{processed_count: 2}} =
+               Facade.ensure_paid_order_download_grants_for_system(order.id)
 
-    assert Enum.any?(grants, fn grant -> grant.digital_asset_id == asset_a.id end)
+      assert_receive {:grant_issued, %{count: 1}, first_metadata}
+      assert_receive {:grant_issued, %{count: 1}, second_metadata}
+      assert first_metadata.order_id == order.id
+      assert second_metadata.order_id == order.id
 
-    asset_b_grant =
-      Enum.find(grants, fn grant -> grant.digital_asset_id == asset_b.id end)
+      assert {:ok, %{processed_count: 2}} =
+               Facade.ensure_paid_order_download_grants_for_system(order.id)
 
-    assert asset_b_grant.max_downloads == 7
+      refute_receive {:grant_issued, _measurements, _metadata}, 100
+
+      grants = fetch_grants_for_line_item!(line_item.id)
+      assert length(grants) == 2
+
+      assert Enum.any?(grants, fn grant -> grant.digital_asset_id == asset_a.id end)
+
+      asset_b_grant =
+        Enum.find(grants, fn grant -> grant.digital_asset_id == asset_b.id end)
+
+      assert asset_b_grant.max_downloads == 7
+    after
+      :telemetry.detach(handler_id)
+    end
   end
 
   test "signed URL issuance validates grant state and applies rate limiting" do

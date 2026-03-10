@@ -280,7 +280,9 @@ defmodule Store.Payments.Facade do
       %{duration: System.monotonic_time() - started_at},
       %{
         provider: receipt.provider,
-        outcome: webhook_outcome(result, fallback_outcome)
+        outcome: webhook_outcome(result, fallback_outcome),
+        receipt_id: receipt.id,
+        provider_event_id: receipt.provider_event_id
       }
     )
   end

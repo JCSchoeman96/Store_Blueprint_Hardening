@@ -460,13 +460,34 @@ defmodule Store.Digital.Facade do
     |> Ash.Changeset.for_create(:issue, attrs, context: %{system?: true})
     |> Ash.create(domain: Digital, authorize?: false, context: %{system?: true})
     |> case do
-      {:ok, _grant} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, grant} ->
+        maybe_emit_grant_issued_telemetry(grant, order.id, now)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp grant_idempotency_key(line_item_id, asset_id),
     do: "grant:line_item:#{line_item_id}:asset:#{asset_id}"
+
+  defp maybe_emit_grant_issued_telemetry(%DownloadGrant{} = grant, order_id, expected_issued_at) do
+    if Ash.Resource.get_metadata(grant, :upsert_skipped) == true or
+         DateTime.compare(grant.issued_at, expected_issued_at) != :eq do
+      :ok
+    else
+      emit_grant_issued_telemetry(grant, order_id)
+    end
+  end
+
+  defp emit_grant_issued_telemetry(%DownloadGrant{} = grant, order_id) do
+    :telemetry.execute(
+      [:store, :digital, :grant_issued],
+      %{count: 1},
+      %{asset_id: grant.digital_asset_id, order_id: order_id, grant_id: grant.id}
+    )
+  end
 
   defp grant_expires_at(%ProductDigitalLink{} = link, default_ttl_days, now) do
     expires_in_days =

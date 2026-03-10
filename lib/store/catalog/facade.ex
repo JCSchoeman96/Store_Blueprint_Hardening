@@ -14,6 +14,7 @@ defmodule Store.Catalog.Facade do
     Product,
     ProductDetailProjection,
     ProductDetailTelemetry,
+    ProductListCache,
     ProductOption,
     ProductOptionValue,
     StockFastPath,
@@ -45,10 +46,17 @@ defmodule Store.Catalog.Facade do
   @spec list_products_for_public(map() | nil, ProductIndexQuery.t()) ::
           {:ok, [Product.t()]} | {:error, term()}
   def list_products_for_public(_actor, %ProductIndexQuery{} = query) do
-    query
-    |> public_product_query()
-    |> Repo.all()
-    |> then(&{:ok, &1})
+    started_at = System.monotonic_time()
+
+    with {:ok, products, cache_metadata} <-
+           ProductListCache.fetch(query, fn ->
+             query
+             |> public_product_query()
+             |> Repo.all()
+           end) do
+      emit_product_list_telemetry(started_at, products, cache_metadata)
+      {:ok, products}
+    end
   rescue
     error -> {:error, Normalize.normalize(error)}
   end
@@ -237,6 +245,7 @@ defmodule Store.Catalog.Facade do
            |> Ash.destroy(domain: Catalog, actor: actor)
            |> normalize_result() do
       _ = AvailabilityCache.invalidate_product(option.product_id)
+      _ = ProductListCache.invalidate_all("catalog_mutation")
       :ok
     else
       nil -> {:error, Error.new("NOT_FOUND", "product option not found")}
@@ -301,6 +310,7 @@ defmodule Store.Catalog.Facade do
            |> Ash.destroy(domain: Catalog, actor: actor)
            |> normalize_result() do
       _ = AvailabilityCache.invalidate_product(option.product_id)
+      _ = ProductListCache.invalidate_all("catalog_mutation")
       :ok
     else
       nil -> {:error, Error.new("NOT_FOUND", "product option value not found")}
@@ -410,6 +420,7 @@ defmodule Store.Catalog.Facade do
            |> Ash.destroy(domain: Catalog, actor: actor)
            |> normalize_variant_delete_result() do
       _ = AvailabilityCache.invalidate_product(variant.product_id)
+      _ = ProductListCache.invalidate_all("catalog_mutation")
       _ = StockFastPath.invalidate_variant_ids([variant.id])
       :ok
     else
@@ -457,6 +468,7 @@ defmodule Store.Catalog.Facade do
     |> case do
       {:ok, %VariantOptionSelection{} = selection} ->
         _ = AvailabilityCache.invalidate_product(selection.product_id)
+        _ = ProductListCache.invalidate_all("catalog_mutation")
         {:ok, selection}
 
       {:error, _} = error ->
@@ -479,6 +491,7 @@ defmodule Store.Catalog.Facade do
            |> Ash.destroy(domain: Catalog, actor: actor)
            |> normalize_result() do
       _ = AvailabilityCache.invalidate_product(selection.product_id)
+      _ = ProductListCache.invalidate_all("catalog_mutation")
       :ok
     else
       nil -> {:error, Error.new("NOT_FOUND", "variant selection not found")}
@@ -625,6 +638,7 @@ defmodule Store.Catalog.Facade do
 
   defp maybe_invalidate_product_cache({:ok, result}, product_id) when is_binary(product_id) do
     _ = AvailabilityCache.invalidate_product(product_id)
+    _ = ProductListCache.invalidate_all("catalog_mutation")
 
     variant_ids =
       Variant
@@ -638,6 +652,23 @@ defmodule Store.Catalog.Facade do
   end
 
   defp maybe_invalidate_product_cache({:error, _} = error, _product_id), do: error
+
+  defp emit_product_list_telemetry(started_at, products, cache_metadata)
+       when is_integer(started_at) and is_list(products) and is_map(cache_metadata) do
+    :telemetry.execute(
+      [:store, :catalog, :product_list],
+      %{
+        duration: System.monotonic_time() - started_at,
+        result_count: length(products)
+      },
+      %{
+        cache: Map.get(cache_metadata, :cache, "miss"),
+        layer: Map.get(cache_metadata, :layer, "cold"),
+        result: :ok,
+        cache_key: Map.get(cache_metadata, :cache_key)
+      }
+    )
+  end
 
   defp variant_ids_for_product(product_id) do
     Variant
