@@ -74,6 +74,19 @@ defmodule Store.Support.Redis do
     do_delete_prefix(key(relative_prefix) <> "*", "0")
   end
 
+  @spec delete_many([String.t()]) :: :ok | {:error, term()}
+  def delete_many(relative_keys) when is_list(relative_keys) do
+    relative_keys
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&key/1)
+    |> delete_keys()
+  end
+
+  @spec scan_prefix(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def scan_prefix(relative_prefix) when is_binary(relative_prefix) do
+    do_scan_prefix(key(relative_prefix) <> "*", "0", [])
+  end
+
   @spec hash_incr_by(String.t(), String.t(), integer(), pos_integer()) :: :ok | {:error, term()}
   def hash_incr_by(relative_key, field, increment, ttl_seconds)
       when is_binary(relative_key) and is_binary(field) and is_integer(increment) and
@@ -216,6 +229,41 @@ defmodule Store.Support.Redis do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp do_scan_prefix(match, cursor, acc) do
+    case command([
+           "SCAN",
+           cursor,
+           "MATCH",
+           match,
+           "COUNT",
+           Integer.to_string(@default_scan_count)
+         ]) do
+      {:ok, [next_cursor, keys]} when is_binary(next_cursor) and is_list(keys) ->
+        relative_keys = relative_scan_keys(keys, acc)
+        continue_scan(match, next_cursor, relative_keys)
+
+      {:ok, unexpected} ->
+        {:error, {:unexpected_redis_reply, unexpected}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp continue_scan(_match, "0", relative_keys), do: {:ok, Enum.reverse(relative_keys)}
+
+  defp continue_scan(match, next_cursor, relative_keys),
+    do: do_scan_prefix(match, next_cursor, relative_keys)
+
+  defp relative_scan_keys(keys, acc) do
+    Enum.reduce(keys, acc, fn full_key, collected ->
+      case String.split(full_key, "#{key_prefix()}:", parts: 2) do
+        [_prefix, relative_key] -> [relative_key | collected]
+        _ -> collected
+      end
+    end)
   end
 
   defp delete_keys([]), do: :ok

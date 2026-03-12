@@ -54,12 +54,19 @@ defmodule Store.Perf.ProductDetailPoller do
     scheduler = scheduler_sample()
     postgres_activity = postgres_activity_sample()
 
+    pending_provider_setup_backlog =
+      Store.Orders.pending_provider_setup_backlog_snapshot(
+        DateTime.utc_now(),
+        source: :perf_poller
+      )
+
     snapshot = %{
       captured_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       shop_live: serialize_windows(state.shop_live),
       catalog: serialize_windows(state.catalog),
       scheduler: scheduler,
-      postgres_activity: postgres_activity
+      postgres_activity: postgres_activity,
+      pending_provider_setup_backlog: pending_provider_setup_backlog
     }
 
     print_snapshot(snapshot)
@@ -197,6 +204,12 @@ defmodule Store.Perf.ProductDetailPoller do
     Logger.info(
       "[poller][postgres] active_backends=#{fmt_number(snapshot.postgres_activity.active_backends)} " <>
         "lock_waiters=#{fmt_number(snapshot.postgres_activity.lock_waiters)}"
+    )
+
+    Logger.info(
+      "[poller][pending_provider_setup] count=#{fmt_number(snapshot.pending_provider_setup_backlog.count)} " <>
+        "oldest_age_s=#{fmt_number(snapshot.pending_provider_setup_backlog.oldest_age_seconds)} " <>
+        "reserved_variants=#{fmt_number(snapshot.pending_provider_setup_backlog.reserved_variant_count)}"
     )
   end
 

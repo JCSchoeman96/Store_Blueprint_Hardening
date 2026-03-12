@@ -11,6 +11,7 @@ defmodule Store.Fulfillment.DomainTest do
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
   alias Store.Fulfillment
   alias Store.Fulfillment.Facade, as: FulfillmentFacade
+  alias Store.Fulfillment.Queries.AdminFulfillmentQueueQuery
   alias Store.Orders.Facade, as: OrdersFacade
   alias Store.Orders.{Order, OrderLineItem}
   alias Store.Pricing.TaxRate
@@ -127,6 +128,43 @@ defmodule Store.Fulfillment.DomainTest do
     assert owner_detail.fulfillment_order.id == ensured.fulfillment_order.id
 
     assert {:ok, nil} = OrdersFacade.get_order_detail_for_user(other, checkout.order_ref)
+  end
+
+  test "admin fulfillment queue uses deterministic keyset pagination" do
+    admin = support_actor!()
+    actor = %{id: admin.id, role: :support}
+
+    older_checkout = setup_paid_finalized_checkout!()
+    middle_checkout = setup_paid_finalized_checkout!()
+    newest_checkout = setup_paid_finalized_checkout!()
+
+    assert {:ok, _older} = Fulfillment.ensure_fulfillment_for_paid_order(older_checkout.order_id)
+
+    assert {:ok, _middle} =
+             Fulfillment.ensure_fulfillment_for_paid_order(middle_checkout.order_id)
+
+    assert {:ok, _newest} =
+             Fulfillment.ensure_fulfillment_for_paid_order(newest_checkout.order_id)
+
+    assert {:ok, first_query} = AdminFulfillmentQueueQuery.new(%{"limit" => "2"})
+
+    assert {:ok, first_page} =
+             FulfillmentFacade.list_fulfillment_orders_for_admin(actor, first_query)
+
+    assert %Ash.Page.Keyset{} = first_page
+    assert length(first_page.results) == 2
+    assert first_page.more?
+
+    after_cursor = List.last(first_page.results).__metadata__.keyset
+
+    assert {:ok, second_query} =
+             AdminFulfillmentQueueQuery.new(%{"limit" => "2", "after" => after_cursor})
+
+    assert {:ok, second_page} =
+             FulfillmentFacade.list_fulfillment_orders_for_admin(actor, second_query)
+
+    assert length(second_page.results) == 1
+    refute second_page.more?
   end
 
   defp setup_paid_finalized_checkout!(user \\ nil) do

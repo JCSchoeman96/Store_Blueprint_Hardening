@@ -23,10 +23,11 @@ defmodule Store.Catalog.ProductListCache do
     }
   end
 
-  @spec fetch(ProductIndexQuery.t(), (-> [term()])) ::
+  @spec fetch(ProductIndexQuery.t(), (-> [term()]), keyword()) ::
           {:ok, [term()], %{cache: String.t(), layer: String.t(), cache_key: String.t()}}
-  def fetch(%ProductIndexQuery{} = query, fallback) when is_function(fallback, 0) do
-    key = cache_key(query)
+  def fetch(%ProductIndexQuery{} = query, fallback, opts \\ [])
+      when is_function(fallback, 0) and is_list(opts) do
+    key = cache_key(query, opts)
 
     case Cachex.get(__MODULE__, key) do
       {:ok, {value, _source_layer}} ->
@@ -63,9 +64,12 @@ defmodule Store.Catalog.ProductListCache do
     :ok
   end
 
-  @spec cache_key(ProductIndexQuery.t()) :: String.t()
-  def cache_key(%ProductIndexQuery{} = query) do
+  @spec cache_key(ProductIndexQuery.t(), keyword()) :: String.t()
+  def cache_key(%ProductIndexQuery{} = query, opts \\ []) do
+    variant = Keyword.get(opts, :variant, :default)
+
     payload = %{
+      variant: variant,
       q: query.q,
       category: query.category,
       sort: query.sort,

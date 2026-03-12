@@ -116,38 +116,20 @@ defmodule Store.Fulfillment.FulfillmentOrder do
     end
 
     read :admin_queue do
-      argument :limit, :integer do
-        allow_nil?(false)
-        default(20)
-        constraints(min: 1, max: 100)
-      end
-
-      argument :offset, :integer do
-        allow_nil?(false)
-        default(0)
-        constraints(min: 0)
-      end
-
       argument :state, Store.Fulfillment.Types.FulfillmentOrderState do
         allow_nil?(true)
       end
 
+      pagination(keyset?: true, required?: false, default_limit: 20, max_page_size: 100)
+
       prepare(fn query, _context ->
         state = Ash.Query.get_argument(query, :state)
-        limit = Ash.Query.get_argument(query, :limit) || 20
-        offset = Ash.Query.get_argument(query, :offset) || 0
 
-        query =
-          if is_atom(state) do
-            Ash.Query.filter(query, expr(state == ^state))
-          else
-            query
-          end
-
-        query
+        case state do
+          nil -> query
+          state_value -> Ash.Query.filter(query, expr(state == ^state_value))
+        end
         |> Ash.Query.sort(inserted_at: :desc, id: :desc)
-        |> Ash.Query.offset(offset)
-        |> Ash.Query.limit(limit)
       end)
     end
 
@@ -210,6 +192,7 @@ defmodule Store.Fulfillment.FulfillmentOrder do
     custom_indexes do
       index([:order_id], name: "fulfillment_orders_unique_order_id_index")
       index([:state, :inserted_at], name: "fulfillment_orders_state_inserted_at_index")
+      index([:state, :inserted_at, :id], name: "fulfillment_orders_state_inserted_at_id_index")
     end
   end
 

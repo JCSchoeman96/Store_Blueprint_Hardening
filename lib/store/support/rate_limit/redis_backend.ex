@@ -11,19 +11,33 @@ defmodule Store.Support.RateLimit.RedisBackend do
   @behaviour Store.Support.RateLimit
 
   @impl true
-  def allow?(scope, key, limit, window_seconds, _opts)
+  def check(scope, key, limit, window_seconds, _opts)
       when (is_atom(scope) or is_binary(scope)) and is_binary(key) and is_integer(limit) and
              limit > 0 and is_integer(window_seconds) and window_seconds > 0 do
     redis_key = redis_key(scope, key)
 
     with {:ok, client} <- redis_client(),
          {:ok, count} <- client.incr_with_ttl(redis_key, window_seconds) do
-      if count <= limit, do: {:ok, :allow}, else: {:ok, :deny}
+      {:ok,
+       %{
+         decision: if(count <= limit, do: :allow, else: :deny),
+         count: count,
+         limit: limit,
+         window_seconds: window_seconds
+       }}
     end
   end
 
-  def allow?(_scope, _key, _limit, _window_seconds, _opts),
+  def check(_scope, _key, _limit, _window_seconds, _opts),
     do: {:error, :invalid_rate_limit_args}
+
+  @impl true
+  def allow?(scope, key, limit, window_seconds, opts) do
+    case check(scope, key, limit, window_seconds, opts) do
+      {:ok, %{decision: decision}} -> {:ok, decision}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp redis_client do
     case Application.get_env(:store, :rate_limit, []) |> Keyword.get(:redis_client) do

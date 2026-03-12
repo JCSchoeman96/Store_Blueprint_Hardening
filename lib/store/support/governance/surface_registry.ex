@@ -46,6 +46,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
       allowed_consumers: [:public, :admin],
       exports: [
         {:list_products_for_public, 2},
+        {:list_product_cards_for_public, 2},
         {:get_product_for_public, 2},
         {:get_product_detail_for_public, 2},
         {:normalize_cart_line_for_public, 1},

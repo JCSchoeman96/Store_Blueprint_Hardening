@@ -11,7 +11,7 @@ defmodule Store.Fulfillment.Facade do
   alias Store.Workers.EnsureFulfillmentForPaidOrderWorker
 
   @spec list_fulfillment_orders_for_admin(map(), AdminFulfillmentQueueQuery.t()) ::
-          {:ok, [FulfillmentOrder.t()]} | {:error, term()}
+          {:ok, Ash.Page.Keyset.t()} | {:error, term()}
   def list_fulfillment_orders_for_admin(actor, %AdminFulfillmentQueueQuery{} = query)
       when is_map(actor) do
     case Fulfillment.list_fulfillment_orders_for_admin(query, actor) do

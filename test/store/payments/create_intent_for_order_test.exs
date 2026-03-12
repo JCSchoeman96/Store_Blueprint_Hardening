@@ -9,6 +9,7 @@ defmodule Store.Payments.CreateIntentForOrderTest do
   alias Store.Checkout
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
   alias Store.Digital.{DigitalAsset, ProductDigitalLink}
+  alias Store.Orders.Order
   alias Store.Payments
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Payments.PaymentIntent
@@ -112,6 +113,9 @@ defmodule Store.Payments.CreateIntentForOrderTest do
     assert first.state == :submitted
     assert is_binary(first.provider_session_id)
     assert is_binary(first.redirect_url)
+    ready_order = fetch_order!(checkout_start.order_id)
+    assert ready_order.state == :pending_payment
+    assert is_nil(ready_order.provider_setup_started_at)
 
     assert {:ok, second} =
              Payments.create_intent_for_order(
@@ -351,6 +355,15 @@ defmodule Store.Payments.CreateIntentForOrderTest do
         context: %{system?: true}
       )
       |> Ash.create!(domain: Store.Pricing, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_order!(order_id) do
+    assert {:ok, [order]} =
+             Order
+             |> Ash.Query.filter(expr(id == ^order_id))
+             |> Ash.read(domain: Store.Orders, authorize?: false)
+
+    order
   end
 
   defp quote_selection!(attrs) do

@@ -7,10 +7,22 @@ defmodule StoreWeb.ShopLive.ShowTest do
   alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
 
+  setup do
+    previous = Application.get_env(:store, :live_warm_load_jitter_ms)
+    Application.put_env(:store, :live_warm_load_jitter_ms, {0, 0})
+
+    on_exit(fn ->
+      Application.put_env(:store, :live_warm_load_jitter_ms, previous)
+    end)
+
+    :ok
+  end
+
   test "/shop renders published products", %{conn: conn} do
     product = published_product_fixture()
 
-    {:ok, _view, html} = live(conn, ~p"/shop")
+    {:ok, view, _html} = live(conn, ~p"/shop")
+    html = render_until(view, product.title)
 
     assert html =~ product.title
     assert html =~ "View Product"
@@ -19,11 +31,42 @@ defmodule StoreWeb.ShopLive.ShowTest do
   test "/shop/:slug renders a published product detail page", %{conn: conn} do
     product = published_product_fixture()
 
-    {:ok, _view, html} = live(conn, ~p"/shop/#{product.slug}")
+    {:ok, view, _html} = live(conn, ~p"/shop/#{product.slug}")
+    html = render_until(view, product.title)
 
     assert html =~ product.title
     assert html =~ product.slug
     assert html =~ "Add to Cart"
+  end
+
+  test "/shop emits static-to-live mount telemetry with zero-query static pass", %{conn: conn} do
+    _product = published_product_fixture()
+    parent = self()
+    handler = {__MODULE__, :shop_index_mount, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      handler,
+      [:store, :shop_live, :index, :mount],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:shop_index_mount, measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      {:ok, view, _html} = live(conn, ~p"/shop")
+      _ = render_until(view, "View Product")
+
+      assert_receive {:shop_index_mount, measurements, %{phase: :static} = metadata}
+      assert measurements.query_count == 0
+      assert metadata.result == :ok
+
+      assert_receive {:shop_index_mount, measurements, %{phase: :live} = metadata}
+      assert is_integer(measurements.query_count)
+      assert metadata.result == :ok
+    after
+      :telemetry.detach(handler)
+    end
   end
 
   test "/shop/:slug emits static and live-join telemetry with BEAM diagnostics", %{conn: conn} do
@@ -31,6 +74,7 @@ defmodule StoreWeb.ShopLive.ShowTest do
     parent = self()
     shop_live_handler = {__MODULE__, :shop_live, System.unique_integer([:positive])}
     catalog_handler = {__MODULE__, :catalog_detail, System.unique_integer([:positive])}
+    mount_handler = {__MODULE__, :shop_show_mount, System.unique_integer([:positive])}
 
     :telemetry.attach(
       shop_live_handler,
@@ -50,27 +94,46 @@ defmodule StoreWeb.ShopLive.ShowTest do
       parent
     )
 
+    :telemetry.attach(
+      mount_handler,
+      [:store, :shop_live, :show, :mount],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:shop_show_mount, measurements, metadata})
+      end,
+      parent
+    )
+
     try do
-      {:ok, _view, html} = live(conn, ~p"/shop/#{product.slug}")
+      {:ok, view, _html} = live(conn, ~p"/shop/#{product.slug}")
+      html = render_until(view, product.title)
 
       assert html =~ product.title
 
-      phases =
+      details =
         1..2
         |> Enum.map(fn _ ->
           assert_receive {:shop_live_detail, measurements, metadata}
           assert metadata.slug == product.slug
           assert is_boolean(metadata.connected?)
           assert metadata.result == :ok
-          assert is_binary(metadata.payload_hash)
           assert is_integer(measurements.reductions_delta)
           assert measurements.reductions_delta >= 0
           assert is_integer(measurements.memory_delta)
-          metadata.phase
+          {metadata.phase, metadata.payload_hash}
         end)
-        |> MapSet.new()
+        |> Map.new()
 
-      assert phases == MapSet.new([:static_render, :live_join])
+      assert Map.keys(details) |> MapSet.new() == MapSet.new([:static_render, :live_join])
+      assert details.static_render == nil
+      assert is_binary(details.live_join)
+
+      assert_receive {:shop_show_mount, measurements, %{phase: :static} = metadata}
+      assert measurements.query_count == 0
+      assert metadata.result == :ok
+
+      assert_receive {:shop_show_mount, measurements, %{phase: :live} = metadata}
+      assert is_integer(measurements.query_count)
+      assert metadata.result == :ok
 
       assert_receive {:catalog_detail, measurements, metadata}
       assert metadata.slug == product.slug
@@ -83,6 +146,7 @@ defmodule StoreWeb.ShopLive.ShowTest do
     after
       :telemetry.detach(shop_live_handler)
       :telemetry.detach(catalog_handler)
+      :telemetry.detach(mount_handler)
     end
   end
 
@@ -103,7 +167,8 @@ defmodule StoreWeb.ShopLive.ShowTest do
 
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
 
-    {:ok, view, html} = live(conn, ~p"/shop/#{product.slug}")
+    {:ok, view, _html} = live(conn, ~p"/shop/#{product.slug}")
+    html = render_until(view, "Solo Plan")
 
     assert html =~ "Solo Plan"
     assert html =~ "$31.99"
@@ -135,14 +200,17 @@ defmodule StoreWeb.ShopLive.ShowTest do
     _basic_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, basic_plan.id)
     _premium_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, premium_plan.id)
 
-    {:ok, view, html} = live(conn, ~p"/shop/#{product.slug}")
+    {:ok, view, _html} = live(conn, ~p"/shop/#{product.slug}")
+    html = render_until(view, "Basic Plan")
 
     assert html =~ "Basic Plan"
     assert html =~ "Premium Plan"
     assert has_element?(view, "#add-to-cart-handoff[disabled]")
 
-    {:ok, selected_view, selected_html} =
+    {:ok, selected_view, _selected_html} =
       live(conn, ~p"/shop/#{product.slug}?subscription_plan_key=#{premium_plan.key}")
+
+    selected_html = render_until(selected_view, "$29.99")
 
     assert selected_html =~ "$29.99"
     refute has_element?(selected_view, "#add-to-cart-handoff[disabled]")
@@ -173,4 +241,19 @@ defmodule StoreWeb.ShopLive.ShowTest do
     |> Ash.Changeset.for_update(:publish, %{})
     |> Ash.update!(domain: Store.Catalog, actor: admin)
   end
+
+  defp render_until(view, needle, attempts \\ 20)
+
+  defp render_until(view, needle, attempts) when attempts > 0 do
+    html = render(view)
+
+    if html =~ needle do
+      html
+    else
+      Process.sleep(20)
+      render_until(view, needle, attempts - 1)
+    end
+  end
+
+  defp render_until(view, _needle, 0), do: render(view)
 end

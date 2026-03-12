@@ -24,17 +24,21 @@ defmodule Store.Fulfillment do
           | {:error, Error.t() | term()}
 
   @spec list_fulfillment_orders_for_admin(Queries.AdminFulfillmentQueueQuery.t(), map()) ::
-          {:ok, [FulfillmentOrder.t()]} | {:error, term()}
+          {:ok, Ash.Page.Keyset.t()} | {:error, term()}
   def list_fulfillment_orders_for_admin(
-        %Queries.AdminFulfillmentQueueQuery{limit: limit, offset: offset, state: state},
+        %Queries.AdminFulfillmentQueueQuery{
+          limit: limit,
+          after: after_cursor,
+          before: before_cursor,
+          state: state
+        },
         actor
       )
       when is_map(actor) do
     FulfillmentOrder
-    |> Ash.Query.for_read(:admin_queue, %{limit: limit, offset: offset, state: state},
-      actor: actor
-    )
-    |> Ash.Query.load([:shipments, :items])
+    |> Ash.Query.for_read(:admin_queue, %{state: state}, actor: actor)
+    |> Ash.Query.select([:id, :order_id, :state, :shipping_method_code, :inserted_at])
+    |> Ash.Query.page(fulfillment_page_opts(limit, after_cursor, before_cursor))
     |> Ash.read(domain: __MODULE__, actor: actor)
   end
 
@@ -343,4 +347,13 @@ defmodule Store.Fulfillment do
         {:error, Error.new("INTERNAL_ERROR", "unable to read shipping adjustment")}
     end
   end
+
+  defp fulfillment_page_opts(limit, after_cursor, before_cursor) do
+    [limit: limit]
+    |> maybe_put_page_cursor(:after, after_cursor)
+    |> maybe_put_page_cursor(:before, before_cursor)
+  end
+
+  defp maybe_put_page_cursor(opts, _key, nil), do: opts
+  defp maybe_put_page_cursor(opts, key, value), do: Keyword.put(opts, key, value)
 end

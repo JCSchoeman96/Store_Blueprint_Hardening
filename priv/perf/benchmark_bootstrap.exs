@@ -75,6 +75,8 @@ defmodule Store.Perf.BenchmarkBootstrap do
   @hot_storefront_count 5
   @distributed_checkout_count 12
   @prepared_checkout_count 12
+  @crucible_checkout_count 10
+  @crucible_stock_on_hand 20
   @benchmark_country_code "ZA"
   @benchmark_region_code "GP"
   @benchmark_postal_code "2000"
@@ -86,6 +88,8 @@ defmodule Store.Perf.BenchmarkBootstrap do
     storefront_products = create_products!(admin, @hot_storefront_count, "phase30-hot")
     flash_sale = create_products!(admin, 1, "phase30-flash") |> hd()
     checkout_products = create_products!(admin, @distributed_checkout_count, "phase30-checkout")
+    crucible_products =
+      create_products!(admin, @crucible_checkout_count, "phase31-crucible", @crucible_stock_on_hand)
     pricing = create_pricing_rules!()
     prepared_checkouts = create_prepared_checkouts!(checkout_products, pricing)
     browser_ready_checkout = create_browser_ready_checkout!(checkout_products, pricing)
@@ -107,6 +111,10 @@ defmodule Store.Perf.BenchmarkBootstrap do
       checkout: %{
         distributed_slugs: Enum.map(checkout_products, & &1.slug),
         distributed_variant_ids: Enum.map(checkout_products, & &1.variant_id),
+        crucible_slugs: Enum.map(crucible_products, & &1.slug),
+        crucible_variant_ids: Enum.map(crucible_products, & &1.variant_id),
+        crucible_stock_on_hand: @crucible_stock_on_hand,
+        crucible_total_stock: @crucible_checkout_count * @crucible_stock_on_hand,
         prepared_paths:
           Enum.map(prepared_checkouts, fn checkout ->
             %{
@@ -167,7 +175,7 @@ defmodule Store.Perf.BenchmarkBootstrap do
     admin
   end
 
-  defp create_products!(admin, count, prefix) do
+  defp create_products!(admin, count, prefix, stock_on_hand \\ 50_000) do
     Enum.map(1..count, fn idx ->
       unique = Ash.UUIDv7.generate() |> String.replace("-", "")
 
@@ -181,7 +189,7 @@ defmodule Store.Perf.BenchmarkBootstrap do
             base_variant_sku: "P30-#{prefix}-#{unique}",
             base_variant_currency_code: "USD",
             base_variant_price_minor: 2_000,
-            base_variant_stock_on_hand: 50_000
+            base_variant_stock_on_hand: stock_on_hand
           }
         )
         |> Ash.create!(domain: Store.Catalog, actor: admin)

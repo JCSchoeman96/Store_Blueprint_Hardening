@@ -26,6 +26,27 @@ defmodule Store.Governance.StateMachinesTest do
     assert failed_order.version == 2
   end
 
+  test "order supports pending provider setup transition and return to pending payment" do
+    order = create_order!()
+
+    pending_provider_setup_order =
+      order
+      |> Ash.Changeset.for_update(
+        :begin_provider_setup,
+        %{provider_setup_started_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)},
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Orders, authorize?: false)
+
+    assert pending_provider_setup_order.state == :pending_provider_setup
+    assert %DateTime{} = pending_provider_setup_order.provider_setup_started_at
+
+    ready_order = update_order!(pending_provider_setup_order, :provider_setup_ready)
+
+    assert ready_order.state == :pending_payment
+    assert is_nil(ready_order.provider_setup_started_at)
+  end
+
   test "order forbidden transition returns INVALID_STATE_TRANSITION" do
     order = create_order!()
 

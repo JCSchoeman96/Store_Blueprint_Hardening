@@ -97,6 +97,12 @@ defmodule Store.Payments.Interlocks do
                  payment_intent_id: payment_intent.id
                }
              ),
+           :ok <-
+             Store.Orders.notify_order_state_change(
+               result.order.id,
+               result.order.state,
+               :payment_succeeded
+             ),
            :ok <- maybe_enqueue_fulfillment(result),
            :ok <- maybe_enqueue_digital_grants(result),
            :ok <- maybe_enqueue_subscriptions(result),
@@ -714,7 +720,8 @@ defmodule Store.Payments.Interlocks do
 
   defp maybe_mark_order_paid(%Order{state: :paid} = order), do: {:ok, order, []}
 
-  defp maybe_mark_order_paid(%Order{state: :pending_payment} = order) do
+  defp maybe_mark_order_paid(%Order{state: state} = order)
+       when state in [:pending_payment, :pending_provider_setup] do
     order
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
     |> Ash.update(order_ash_opts(return_notifications?: true))
@@ -725,7 +732,7 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp maybe_mark_order_paid(_order) do
-    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "order is not in pending_payment state")}
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "order is not in a payable state")}
   end
 
   defp renewal_order?(order_id) when is_binary(order_id) do

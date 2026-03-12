@@ -206,6 +206,11 @@ defmodule Store.Orders.Order do
       public?(true)
     end
 
+    attribute :provider_setup_started_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -215,9 +220,14 @@ defmodule Store.Orders.Order do
     default_initial_state(:pending_payment)
 
     transitions do
+      transition(:begin_provider_setup, from: :pending_payment, to: :pending_provider_setup)
+      transition(:provider_setup_ready, from: :pending_provider_setup, to: :pending_payment)
       transition(:mark_paid, from: :pending_payment, to: :paid)
+      transition(:mark_paid, from: :pending_provider_setup, to: :paid)
       transition(:mark_payment_failed, from: :pending_payment, to: :payment_failed)
+      transition(:mark_payment_failed, from: :pending_provider_setup, to: :payment_failed)
       transition(:cancel, from: :pending_payment, to: :cancelled)
+      transition(:cancel, from: :pending_provider_setup, to: :cancelled)
       transition(:mark_refunded, from: :paid, to: :refunded)
     end
   end
@@ -300,18 +310,33 @@ defmodule Store.Orders.Order do
     update :mark_paid do
       require_atomic?(false)
       accept([])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(changeset, :provider_setup_started_at, nil)
+      end)
+
       change({Store.Support.Governance.TransitionState, target: :paid})
     end
 
     update :mark_payment_failed do
       require_atomic?(false)
       accept([])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(changeset, :provider_setup_started_at, nil)
+      end)
+
       change({Store.Support.Governance.TransitionState, target: :payment_failed})
     end
 
     update :cancel do
       require_atomic?(false)
       accept([])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(changeset, :provider_setup_started_at, nil)
+      end)
+
       change({Store.Support.Governance.TransitionState, target: :cancelled})
     end
 
@@ -376,6 +401,38 @@ defmodule Store.Orders.Order do
       ])
     end
 
+    update :begin_provider_setup do
+      require_atomic?(false)
+      accept([:provider_setup_started_at])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(
+          changeset,
+          :provider_setup_started_at,
+          Ash.Changeset.get_attribute(changeset, :provider_setup_started_at) ||
+            DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        )
+      end)
+
+      change({Store.Support.Governance.TransitionState, target: :pending_provider_setup})
+    end
+
+    update :refresh_provider_setup do
+      require_atomic?(false)
+      accept([:provider_setup_started_at])
+    end
+
+    update :provider_setup_ready do
+      require_atomic?(false)
+      accept([])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(changeset, :provider_setup_started_at, nil)
+      end)
+
+      change({Store.Support.Governance.TransitionState, target: :pending_payment})
+    end
+
     update :finalize_checkout_totals do
       require_atomic?(false)
       accept([:currency_code, :items_subtotal_minor, :shipping_total_minor, :grand_total_minor])
@@ -411,6 +468,11 @@ defmodule Store.Orders.Order do
 
     custom_indexes do
       index([:state], name: "orders_state_index")
+
+      index([:state, :provider_setup_started_at],
+        name: "orders_state_provider_setup_started_at_index"
+      )
+
       index([:order_ref], name: "orders_order_ref_index")
       index([:user_id], name: "orders_user_id_index")
       index([:user_id, :inserted_at, :id], name: "orders_user_id_inserted_at_id_index")
@@ -451,6 +513,24 @@ defmodule Store.Orders.Order do
     end
 
     policy action(:mark_paid) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:begin_provider_setup) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:provider_setup_ready) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:refresh_provider_setup) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

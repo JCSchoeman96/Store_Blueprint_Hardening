@@ -23,16 +23,50 @@ defmodule Store.Governance.CommsPolicyTest do
     other_customer =
       TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_comms_other"))
 
-    query = %AdminEmailOutboxIndexQuery{limit: 20, offset: 0, state: nil, template_kind: nil}
+    query = %AdminEmailOutboxIndexQuery{
+      limit: 20,
+      after: nil,
+      before: nil,
+      state: nil,
+      template_kind: nil
+    }
 
     assert {:ok, admin_rows} = CommsFacade.list_email_outboxes_for_admin(admin, query)
-    refute admin_rows == []
+    refute admin_rows.results == []
 
     assert {:ok, support_rows} = CommsFacade.list_email_outboxes_for_admin(support, query)
-    refute support_rows == []
+    refute support_rows.results == []
 
     assert {:error, error} = CommsFacade.list_email_outboxes_for_admin(other_customer, query)
     assert error.code == "FORBIDDEN"
+  end
+
+  test "admin email outbox listing uses deterministic keyset pagination" do
+    admin = TestFixtures.register_user!(email: TestFixtures.unique_email("phase31c_comms_admin"))
+    _role = TestFixtures.assign_role!(admin, :admin)
+
+    user =
+      TestFixtures.register_user!(email: TestFixtures.unique_email("phase31c_comms_customer"))
+
+    _older = create_order_for_user_and_enqueue!(user.id)
+    _middle = create_order_for_user_and_enqueue!(user.id)
+    _newest = create_order_for_user_and_enqueue!(user.id)
+
+    assert {:ok, first_query} = AdminEmailOutboxIndexQuery.new(%{"limit" => "2"})
+    assert {:ok, first_page} = CommsFacade.list_email_outboxes_for_admin(admin, first_query)
+
+    assert %Ash.Page.Keyset{} = first_page
+    assert length(first_page.results) == 2
+    assert first_page.more?
+
+    after_cursor = List.last(first_page.results).__metadata__.keyset
+
+    assert {:ok, second_query} =
+             AdminEmailOutboxIndexQuery.new(%{"limit" => "2", "after" => after_cursor})
+
+    assert {:ok, second_page} = CommsFacade.list_email_outboxes_for_admin(admin, second_query)
+    assert length(second_page.results) == 1
+    refute second_page.more?
   end
 
   defp create_order_for_user_and_enqueue!(user_id) do

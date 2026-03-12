@@ -92,15 +92,20 @@ defmodule Store.Checkout do
 
     {result, repo_stats} =
       RepoStats.capture(fn ->
-        with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key),
-             {:ok, quote_options} <- quote_options_for_checkout(checkout, input),
-             {:ok, selected_option} <- select_quote_option(quote_options, input),
-             {:ok, updated_order} <- update_order_shipping_address(checkout.order, input),
-             {:ok, updated_order} <- update_order_shipping_method(updated_order, selected_option),
-             {:ok, updated_order} <-
-               update_order_shipping_quote_evidence(updated_order, selected_option) do
+        with {:ok, checkout} <-
+               traced_set_shipping_checkout_context(actor, checkout_key),
+             {:ok, quote_result} <-
+               traced_set_shipping_quote_options(checkout, input),
+             {:ok, selected_option} <-
+               traced_set_shipping_selection(quote_result.options, input),
+             {:ok, updated_order} <- traced_set_shipping_address(checkout.order, input),
+             {:ok, updated_order} <- traced_set_shipping_method(updated_order, selected_option),
+             {:ok, updated_order} <- traced_set_shipping_quote(updated_order, selected_option) do
           checkout
           |> Map.put(:order, updated_order)
+          |> Map.put(:shipping_quote_options, quote_result.options)
+          |> Map.put(:shipping_quote_request, quote_result.request_attrs)
+          |> Map.put(:shipping_weight_grams, quote_result.shipping_weight_grams)
           |> checkout_summary_from_context()
         end
       end)
@@ -121,7 +126,7 @@ defmodule Store.Checkout do
 
     {result, repo_stats} =
       RepoStats.capture(fn ->
-        with {:ok, checkout} <- checkout_context_for_user(actor, checkout_key) do
+        with {:ok, checkout} <- traced_finalize_checkout_context(actor, checkout_key) do
           do_finalize_totals(actor, checkout_key, checkout)
         end
       end)
@@ -203,6 +208,7 @@ defmodule Store.Checkout do
       order_id: order.id,
       order_ref: order.order_ref,
       state: order.state,
+      provider_setup_started_at: order.provider_setup_started_at,
       grand_total_minor: non_neg_int(order.grand_total_minor, 0),
       currency_code: order.currency_code || "USD",
       totals_finalized_at: order.totals_finalized_at,
@@ -973,7 +979,12 @@ defmodule Store.Checkout do
          {:ok, request} <- QuoteRequest.new(request_attrs),
          {:ok, options} <- Shipping.quote_options(request),
          :ok <- ensure_quote_options_present(options) do
-      {:ok, options}
+      {:ok,
+       %{
+         options: options,
+         request_attrs: request_attrs,
+         shipping_weight_grams: weight_grams
+       }}
     end
   end
 
@@ -1286,19 +1297,14 @@ defmodule Store.Checkout do
       output = subscription_only_totals_output(line_items, order)
       finalize_order_totals(order, output)
     else
-      with {:ok, quote_evidence} <- quote_evidence_from_order(order),
-           :ok <- validate_quote_integrity(quote_evidence),
-           {:ok, tax_rates} <- fetch_tax_rates(order.shipping_country_code),
+      with {:ok, quote_evidence} <- traced_quote_evidence(order),
+           :ok <- traced_quote_integrity(quote_evidence),
+           {:ok, tax_rates} <- traced_fetch_tax_rates(order.shipping_country_code),
            {:ok, output} <-
-             evaluate_tax_shipping_from_quote_evidence(
-               line_items,
-               order,
-               quote_evidence,
-               tax_rates
-             ),
+             traced_tax_shipping_evaluation(line_items, order, quote_evidence, tax_rates),
            {:ok, _adjustment, _idempotent?} <-
-             ensure_shipping_adjustment(order, quote_evidence, pricing_adjustment_count),
-           {:ok, _snapshot} <- Store.Orders.write_tax_shipping_snapshot(order.id, output) do
+             traced_shipping_adjustment(order, quote_evidence, pricing_adjustment_count),
+           {:ok, _snapshot} <- traced_write_tax_shipping_snapshot(order.id, output) do
         finalize_order_totals(order, output)
       end
     end
@@ -1879,6 +1885,8 @@ defmodule Store.Checkout do
   defp telemetry_result({:ok, %{duplicate?: true}}), do: :duplicate
   defp telemetry_result({:ok, _}), do: :ok
   defp telemetry_result({:error, _}), do: :error
+  defp telemetry_result(:ok), do: :ok
+  defp telemetry_result(_), do: :ok
 
   defp emit_step_telemetry(step, started_at, result, repo_stats) when is_atom(step) do
     :telemetry.execute(
@@ -1892,6 +1900,102 @@ defmodule Store.Checkout do
       },
       %{step: step, result: telemetry_result(result)}
     )
+  end
+
+  defp traced_checkout_step(step, substep, fun)
+       when is_atom(step) and is_atom(substep) and is_function(fun, 0) do
+    if checkout_trace_enabled?() do
+      started_at = System.monotonic_time()
+      result = fun.()
+
+      :telemetry.execute(
+        [:store, :checkout, :trace],
+        %{duration: System.monotonic_time() - started_at},
+        %{step: step, substep: substep, result: telemetry_result(result)}
+      )
+
+      result
+    else
+      fun.()
+    end
+  end
+
+  defp traced_set_shipping_checkout_context(actor, checkout_key) do
+    traced_checkout_step(:set_shipping, :checkout_context, fn ->
+      checkout_context_for_user(actor, checkout_key)
+    end)
+  end
+
+  defp traced_set_shipping_quote_options(checkout, input) do
+    traced_checkout_step(:set_shipping, :quote_options, fn ->
+      quote_options_for_checkout(checkout, input)
+    end)
+  end
+
+  defp traced_set_shipping_selection(options, input) do
+    traced_checkout_step(:set_shipping, :select_quote_option, fn ->
+      select_quote_option(options, input)
+    end)
+  end
+
+  defp traced_set_shipping_address(order, input) do
+    traced_checkout_step(:set_shipping, :set_shipping_address, fn ->
+      update_order_shipping_address(order, input)
+    end)
+  end
+
+  defp traced_set_shipping_method(order, selected_option) do
+    traced_checkout_step(:set_shipping, :set_shipping_method, fn ->
+      update_order_shipping_method(order, selected_option)
+    end)
+  end
+
+  defp traced_set_shipping_quote(order, selected_option) do
+    traced_checkout_step(:set_shipping, :set_shipping_quote_evidence, fn ->
+      update_order_shipping_quote_evidence(order, selected_option)
+    end)
+  end
+
+  defp traced_finalize_checkout_context(actor, checkout_key) do
+    traced_checkout_step(:finalize_totals, :checkout_context, fn ->
+      checkout_context_for_user(actor, checkout_key)
+    end)
+  end
+
+  defp traced_quote_evidence(order) do
+    traced_checkout_step(:finalize_totals, :quote_evidence, fn ->
+      quote_evidence_from_order(order)
+    end)
+  end
+
+  defp traced_quote_integrity(quote_evidence) do
+    traced_checkout_step(:finalize_totals, :quote_integrity, fn ->
+      validate_quote_integrity(quote_evidence)
+    end)
+  end
+
+  defp traced_fetch_tax_rates(country_code) do
+    traced_checkout_step(:finalize_totals, :fetch_tax_rates, fn ->
+      fetch_tax_rates(country_code)
+    end)
+  end
+
+  defp traced_tax_shipping_evaluation(line_items, order, quote_evidence, tax_rates) do
+    traced_checkout_step(:finalize_totals, :evaluate_tax_shipping, fn ->
+      evaluate_tax_shipping_from_quote_evidence(line_items, order, quote_evidence, tax_rates)
+    end)
+  end
+
+  defp traced_shipping_adjustment(order, quote_evidence, pricing_adjustment_count) do
+    traced_checkout_step(:finalize_totals, :ensure_shipping_adjustment, fn ->
+      ensure_shipping_adjustment(order, quote_evidence, pricing_adjustment_count)
+    end)
+  end
+
+  defp traced_write_tax_shipping_snapshot(order_id, output) do
+    traced_checkout_step(:finalize_totals, :write_tax_shipping_snapshot, fn ->
+      Store.Orders.write_tax_shipping_snapshot(order_id, output)
+    end)
   end
 
   defp non_neg_int(value, _fallback) when is_integer(value) and value >= 0, do: value
@@ -1932,5 +2036,10 @@ defmodule Store.Checkout do
         nil
     end)
     |> to_string()
+  end
+
+  defp checkout_trace_enabled? do
+    System.get_env("STORE_CHECKOUT_TRACE", "false") == "true" or
+      Application.get_env(:store, :checkout_trace_enabled, false)
   end
 end

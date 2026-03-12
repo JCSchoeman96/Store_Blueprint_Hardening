@@ -151,6 +151,20 @@ defmodule Store.Catalog.FacadePublicProductTest do
     end
   end
 
+  test "list_product_cards_for_public returns plain map view models" do
+    %{title: title} = published_product_fixture()
+
+    assert {:ok, query} = ProductIndexQuery.new(%{"q" => title, "page_size" => "10"})
+    assert {:ok, [product | _]} = CatalogFacade.list_product_cards_for_public(nil, query)
+
+    assert is_map(product)
+    refute match?(%Product{}, product)
+    assert is_binary(product.slug)
+    assert is_binary(product.title)
+    assert is_map(product.default_variant)
+    assert Map.has_key?(product.default_variant, :price_minor)
+  end
+
   defp published_product_fixture do
     admin = TestFixtures.register_user!(email: TestFixtures.unique_email("shop_public_admin"))
     _role = TestFixtures.assign_role!(admin, :admin)

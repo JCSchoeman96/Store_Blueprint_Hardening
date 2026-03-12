@@ -1,0 +1,16 @@
+.git
+.beads
+_build
+deps
+node_modules
+tmp
+test
+test-results
+perf
+doc
+docs
+erl_crash.dump
+PATCH_NOTES.md
+TOON_PROMPTS.md
+README.md
+STORE_BLUEPRINT.md

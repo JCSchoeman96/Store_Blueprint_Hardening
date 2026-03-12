@@ -2,6 +2,7 @@ defmodule Store.Support.Telemetry.RedisAggregatesTest do
   use Store.DataCase, async: false
 
   alias Store.Support.Redis
+  alias Store.Support.Telemetry.RedisAggregates
 
   setup do
     assert :ok = Redis.flush_db()
@@ -9,7 +10,7 @@ defmodule Store.Support.Telemetry.RedisAggregatesTest do
   end
 
   test "redis aggregate sink records counters, uniques, and queue helpers" do
-    date_bucket = Date.utc_today() |> Date.to_iso8601()
+    bucket_id = RedisAggregates.current_bucket_id()
 
     :telemetry.execute(
       [:store, :payments, :webhook_received],
@@ -68,18 +69,24 @@ defmodule Store.Support.Telemetry.RedisAggregatesTest do
     assert_eventually(fn ->
       assert {:ok, webhook_counters} =
                Redis.hash_get_all(
-                 "metrics:counters:#{date_bucket}:store.payments.webhook_received"
+                 "metrics:counter_buckets:#{bucket_id}:store.payments.webhook_received"
                )
 
       assert webhook_counters != %{}
 
-      assert {:ok, catalog_uniques} = Redis.pfcount("metrics:unique:catalog_product_list")
+      assert {:ok, catalog_uniques} =
+               Redis.pfcount("metrics:unique_buckets:#{bucket_id}:catalog_product_list")
+
       assert catalog_uniques == 1
 
-      assert {:ok, shipping_uniques} = Redis.pfcount("metrics:unique:shipping_quote")
+      assert {:ok, shipping_uniques} =
+               Redis.pfcount("metrics:unique_buckets:#{bucket_id}:shipping_quote")
+
       assert shipping_uniques == 1
 
-      assert {:ok, webhook_uniques} = Redis.pfcount("metrics:unique:webhook_events")
+      assert {:ok, webhook_uniques} =
+               Redis.pfcount("metrics:unique_buckets:#{bucket_id}:webhook_events")
+
       assert webhook_uniques == 1
 
       assert {:ok, pending_webhooks} = Redis.zmembers("queues:webhook:pending")

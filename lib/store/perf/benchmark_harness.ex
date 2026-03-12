@@ -122,6 +122,22 @@ defmodule Store.Perf.BenchmarkHarness do
     "tmp/perf/phase309_durability_report.json"
   end
 
+  def phase311_storefront_summary_path do
+    "tmp/perf/k6_http_storefront_phase311_pending_provider_setup_crucible.json"
+  end
+
+  def phase311_poller_log_path do
+    "tmp/perf/product_detail_poller_phase311_pending_provider_setup_crucible.ndjson"
+  end
+
+  def phase311_poller_summary_path do
+    "tmp/perf/product_detail_poller_summary_phase311_pending_provider_setup_crucible.json"
+  end
+
+  def phase311_report_path do
+    "tmp/perf/phase31_pending_provider_setup_crucible_report.json"
+  end
+
   def checkout_write_contention_path do
     System.get_env(
       "STORE_CHECKOUT_WRITE_CONTENTION_PATH",

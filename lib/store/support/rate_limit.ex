@@ -10,22 +10,40 @@ defmodule Store.Support.RateLimit do
   @type decision :: :allow | :deny
   @type scope :: atom() | String.t()
   @type key :: String.t()
+  @type check_result :: %{
+          decision: decision(),
+          count: pos_integer(),
+          limit: pos_integer(),
+          window_seconds: pos_integer()
+        }
 
+  @callback check(scope(), key(), pos_integer(), pos_integer(), keyword()) ::
+              {:ok, check_result()} | {:error, term()}
   @callback allow?(scope(), key(), pos_integer(), pos_integer(), keyword()) ::
               {:ok, decision()} | {:error, term()}
+
+  @spec check(scope(), key(), pos_integer(), pos_integer(), keyword()) ::
+          {:ok, check_result()} | {:error, term()}
+  def check(scope, key, limit, window_seconds, opts \\ [])
+
+  def check(scope, key, limit, window_seconds, opts)
+      when (is_atom(scope) or is_binary(scope)) and is_binary(key) and is_integer(limit) and
+             limit > 0 and is_integer(window_seconds) and window_seconds > 0 and is_list(opts) do
+    backend().check(scope, key, limit, window_seconds, opts)
+  end
+
+  def check(_scope, _key, _limit, _window_seconds, _opts),
+    do: {:error, :invalid_rate_limit_args}
 
   @spec allow?(scope(), key(), pos_integer(), pos_integer(), keyword()) ::
           {:ok, decision()} | {:error, term()}
   def allow?(scope, key, limit, window_seconds, opts \\ [])
 
-  def allow?(scope, key, limit, window_seconds, opts)
-      when (is_atom(scope) or is_binary(scope)) and is_binary(key) and is_integer(limit) and
-             limit > 0 and is_integer(window_seconds) and window_seconds > 0 and is_list(opts) do
-    backend().allow?(scope, key, limit, window_seconds, opts)
+  def allow?(scope, key, limit, window_seconds, opts) do
+    with {:ok, %{decision: decision}} <- check(scope, key, limit, window_seconds, opts) do
+      {:ok, decision}
+    end
   end
-
-  def allow?(_scope, _key, _limit, _window_seconds, _opts),
-    do: {:error, :invalid_rate_limit_args}
 
   @spec backend() :: module()
   def backend do

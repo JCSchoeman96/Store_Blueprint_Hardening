@@ -8,6 +8,7 @@ defmodule Store.Payments.Providers.Stripe do
 
   @behaviour Store.Payments.Providers.Behaviour
 
+  alias Store.Payments.ProviderConfig
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Support.Errors.Error
   alias Store.Support.HTTP.ReqClient
@@ -601,22 +602,24 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   defp stripe_config(opts) do
-    payments = Application.get_env(:store, :payments, [])
-    stripe = Keyword.get(payments, :stripe, [])
+    with :ok <- ProviderConfig.validate_timeout_hierarchy() do
+      payments = Application.get_env(:store, :payments, [])
+      stripe = Keyword.get(payments, :stripe, [])
 
-    config = %{
-      api_base_url: Keyword.get(stripe, :api_base_url, @default_api_base_url),
-      api_version: Keyword.get(stripe, :api_version, @default_api_version),
-      request_options: Keyword.get(stripe, :request_options, []),
-      secret_key: Keyword.get(opts, :secret_key) || Keyword.get(stripe, :secret_key)
-    }
+      config = %{
+        api_base_url: Keyword.get(stripe, :api_base_url, @default_api_base_url),
+        api_version: Keyword.get(stripe, :api_version, @default_api_version),
+        request_options: ProviderConfig.request_options(),
+        secret_key: Keyword.get(opts, :secret_key) || Keyword.get(stripe, :secret_key)
+      }
 
-    case config.secret_key do
-      secret_key when is_binary(secret_key) and secret_key != "" ->
-        {:ok, config}
+      case config.secret_key do
+        secret_key when is_binary(secret_key) and secret_key != "" ->
+          {:ok, config}
 
-      _ ->
-        {:error, Error.new("PAYMENT_PROVIDER_DOWN", "stripe secret key is not configured")}
+        _ ->
+          {:error, Error.new("PAYMENT_PROVIDER_DOWN", "stripe secret key is not configured")}
+      end
     end
   end
 

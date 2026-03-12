@@ -61,6 +61,28 @@ defmodule Store.Catalog.Facade do
     error -> {:error, Normalize.normalize(error)}
   end
 
+  @spec list_product_cards_for_public(map() | nil, ProductIndexQuery.t()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_product_cards_for_public(_actor, %ProductIndexQuery{} = query) do
+    started_at = System.monotonic_time()
+
+    with {:ok, product_cards, cache_metadata} <-
+           ProductListCache.fetch(
+             query,
+             fn ->
+               query
+               |> public_product_card_query()
+               |> Repo.all()
+             end,
+             variant: :product_cards
+           ) do
+      emit_product_list_telemetry(started_at, product_cards, cache_metadata)
+      {:ok, Enum.map(product_cards, &product_card_view_model/1)}
+    end
+  rescue
+    error -> {:error, Normalize.normalize(error)}
+  end
+
   @spec get_product_for_public(map() | nil, String.t()) ::
           {:ok, Product.t() | nil} | {:error, term()}
   def get_product_for_public(actor, slug) when is_binary(slug) do
@@ -515,6 +537,28 @@ defmodule Store.Catalog.Facade do
     )
   end
 
+  defp public_product_card_query(%ProductIndexQuery{} = query) do
+    public_product_base_query()
+    |> maybe_filter_public_query(query.q)
+    |> maybe_filter_public_category(query.category)
+    |> apply_public_query_sort(query.sort)
+    |> limit(^query.page_size)
+    |> offset(^ProductIndexQuery.offset(query))
+    |> select([product, default_variant, category], %{
+      id: product.id,
+      slug: product.slug,
+      title: product.title,
+      subtitle: product.subtitle,
+      category_slug: category.slug,
+      default_variant: %{
+        id: default_variant.id,
+        sku: default_variant.sku,
+        price_minor: default_variant.price_minor,
+        currency_code: default_variant.currency_code
+      }
+    })
+  end
+
   defp apply_admin_filters(products, query) do
     products
     |> maybe_filter_query(query.q)
@@ -669,6 +713,48 @@ defmodule Store.Catalog.Facade do
       }
     )
   end
+
+  defp product_card_view_model(%Product{} = product) do
+    %{
+      id: product.id,
+      slug: product.slug,
+      title: product.title,
+      subtitle: product.subtitle,
+      category_slug: product.category && product.category.slug,
+      default_variant: default_variant_card(product.default_variant)
+    }
+  end
+
+  defp product_card_view_model(%{} = product_card) do
+    %{
+      id: product_card.id,
+      slug: product_card.slug,
+      title: product_card.title,
+      subtitle: product_card.subtitle,
+      category_slug: product_card.category_slug,
+      default_variant: default_variant_card(product_card.default_variant)
+    }
+  end
+
+  defp default_variant_card(%Variant{} = variant) do
+    %{
+      id: variant.id,
+      sku: variant.sku,
+      price_minor: variant.price_minor,
+      currency_code: variant.currency_code
+    }
+  end
+
+  defp default_variant_card(%{} = variant) do
+    %{
+      id: variant.id,
+      sku: variant.sku,
+      price_minor: variant.price_minor,
+      currency_code: variant.currency_code
+    }
+  end
+
+  defp default_variant_card(_variant), do: nil
 
   defp variant_ids_for_product(product_id) do
     Variant

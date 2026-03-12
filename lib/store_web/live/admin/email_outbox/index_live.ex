@@ -19,10 +19,14 @@ defmodule StoreWeb.Admin.EmailOutbox.IndexLive do
        socket
        |> assign(:query, %AdminEmailOutboxIndexQuery{
          limit: 20,
-         offset: 0,
+         after: nil,
+         before: nil,
          state: nil,
          template_kind: nil
        })
+       |> assign(:page, nil)
+       |> assign(:next_cursor, nil)
+       |> assign(:previous_cursor, nil)
        |> stream(:outboxes, [])}
     else
       {:ok, Phoenix.LiveView.redirect(socket, to: ~p"/")}
@@ -34,16 +38,22 @@ defmodule StoreWeb.Admin.EmailOutbox.IndexLive do
     actor = socket.assigns.current_user
 
     with {:ok, query} <- EmailOutboxIndexParams.index_query(extract_query_params(uri)),
-         {:ok, outboxes} <- CommsFacade.list_email_outboxes_for_admin(actor, query) do
+         {:ok, page} <- CommsFacade.list_email_outboxes_for_admin(actor, query) do
       {:noreply,
        socket
        |> assign(:query, query)
-       |> stream(:outboxes, outboxes, reset: true)}
+       |> assign(:page, page)
+       |> assign(:next_cursor, next_cursor(page))
+       |> assign(:previous_cursor, previous_cursor(query, page))
+       |> stream(:outboxes, page.results, reset: true)}
     else
       _ ->
         {:noreply,
          socket
          |> put_flash(:error, "Unable to load email outbox")
+         |> assign(:page, nil)
+         |> assign(:next_cursor, nil)
+         |> assign(:previous_cursor, nil)
          |> stream(:outboxes, [], reset: true)}
     end
   end
@@ -54,6 +64,7 @@ defmodule StoreWeb.Admin.EmailOutbox.IndexLive do
       socket.assigns.query
       |> query_to_params()
       |> Map.merge(Map.take(params, ["state", "template_kind"]))
+      |> Map.drop(["after", "before"])
       |> cleanup_blank("state")
       |> cleanup_blank("template_kind")
 
@@ -120,19 +131,64 @@ defmodule StoreWeb.Admin.EmailOutbox.IndexLive do
           <:col :let={row} label="Sent">{row.sent_at}</:col>
           <:col :let={row} label="Last Error">{truncate_error(row.last_error)}</:col>
         </.table>
+
+        <div class="flex items-center justify-end gap-2">
+          <.link
+            :if={@previous_cursor}
+            patch={~p"/admin/email-outbox?#{page_params(@query, %{before: @previous_cursor})}"}
+            class="rounded-lg border border-base-content/20 px-3 py-2 text-sm hover:bg-base-300"
+          >
+            Previous
+          </.link>
+          <.link
+            :if={@next_cursor}
+            patch={~p"/admin/email-outbox?#{page_params(@query, %{after: @next_cursor})}"}
+            class="rounded-lg border border-base-content/20 px-3 py-2 text-sm hover:bg-base-300"
+          >
+            Next
+          </.link>
+        </div>
       </section>
     </Layouts.app>
     """
   end
 
   defp query_to_params(query) do
-    %{"limit" => to_string(query.limit), "offset" => to_string(query.offset)}
+    %{"limit" => to_string(query.limit)}
     |> maybe_put("state", query.state)
     |> maybe_put("template_kind", query.template_kind)
+    |> maybe_put("after", query.after)
+    |> maybe_put("before", query.before)
+  end
+
+  defp page_params(query, cursor_updates) do
+    query
+    |> query_to_params()
+    |> Map.drop(["after", "before"])
+    |> maybe_put("after", Map.get(cursor_updates, :after))
+    |> maybe_put("before", Map.get(cursor_updates, :before))
   end
 
   defp maybe_put(params, _key, nil), do: params
   defp maybe_put(params, key, value), do: Map.put(params, key, to_string(value))
+
+  defp next_cursor(%Ash.Page.Keyset{more?: true, results: results}) do
+    results
+    |> List.last()
+    |> case do
+      nil -> nil
+      result -> result.__metadata__.keyset
+    end
+  end
+
+  defp next_cursor(_page), do: nil
+
+  defp previous_cursor(%AdminEmailOutboxIndexQuery{after: nil, before: nil}, _page), do: nil
+
+  defp previous_cursor(_query, %Ash.Page.Keyset{results: [first | _rest]}),
+    do: first.__metadata__.keyset
+
+  defp previous_cursor(_query, _page), do: nil
 
   defp cleanup_blank(params, key) do
     case Map.get(params, key) do

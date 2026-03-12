@@ -144,7 +144,39 @@ if config_env() == :prod do
         )
     end
 
-  config :store, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  dns_cluster_query =
+    System.get_env("DNS_CLUSTER_QUERY") ||
+      System.get_env("RAILWAY_PRIVATE_DOMAIN") ||
+      System.get_env("RAILWAY_PRIVATE_NETWORKING_DOMAIN")
+
+  trusted_proxy_defaults =
+    Application.get_env(:store, :trusted_proxy, [])
+    |> Keyword.get(:proxies, [])
+
+  trusted_proxy_proxies =
+    System.get_env("STORE_TRUSTED_PROXY_PROXIES")
+    |> case do
+      nil ->
+        trusted_proxy_defaults
+
+      value ->
+        value
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+    end
+
+  trusted_proxy_headers =
+    System.get_env("STORE_TRUSTED_PROXY_HEADERS", "cf-connecting-ip,x-forwarded-for")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+
+  config :store, :dns_cluster_query, dns_cluster_query
+
+  config :store, :trusted_proxy,
+    headers: trusted_proxy_headers,
+    proxies: trusted_proxy_proxies
 
   config :store, :token_signing_secret, token_signing_secret
 
@@ -317,6 +349,28 @@ if config_env() == :prod do
 
   payment_timeout_ms = parse_positive_integer!.("STORE_PAYMENT_TIMEOUT_MS", "5000")
 
+  payment_provider_task_timeout_ms =
+    parse_positive_integer!.("STORE_PAYMENT_PROVIDER_TASK_TIMEOUT_MS", "3000")
+
+  payment_http_pool_size = parse_positive_integer!.("STORE_PAYMENT_HTTP_POOL_SIZE", "400")
+
+  payment_http_receive_timeout_ms =
+    parse_positive_integer!.(
+      "STORE_PAYMENT_HTTP_RECEIVE_TIMEOUT_MS",
+      System.get_env("STORE_PAYMENT_TIMEOUT_MS", "5000")
+    )
+
+  payment_http_pool_timeout_ms =
+    parse_positive_integer!.("STORE_PAYMENT_HTTP_POOL_TIMEOUT_MS", "4000")
+
+  if payment_http_receive_timeout_ms <= payment_provider_task_timeout_ms do
+    raise "STORE_PAYMENT_HTTP_RECEIVE_TIMEOUT_MS must be greater than STORE_PAYMENT_PROVIDER_TASK_TIMEOUT_MS"
+  end
+
+  if payment_http_pool_timeout_ms <= payment_provider_task_timeout_ms do
+    raise "STORE_PAYMENT_HTTP_POOL_TIMEOUT_MS must be greater than STORE_PAYMENT_PROVIDER_TASK_TIMEOUT_MS"
+  end
+
   config :store, :payments,
     enabled_providers: enabled_payment_providers,
     default_purchase_provider_for_ui: default_purchase_provider_for_ui,
@@ -327,6 +381,10 @@ if config_env() == :prod do
       api_base_url: System.get_env("STORE_STRIPE_API_BASE_URL", "https://api.stripe.com"),
       api_version: System.get_env("STORE_STRIPE_API_VERSION", "2025-02-24.acacia"),
       payment_timeout_ms: payment_timeout_ms,
+      payment_provider_task_timeout_ms: payment_provider_task_timeout_ms,
+      payment_http_pool_size: payment_http_pool_size,
+      payment_http_receive_timeout_ms: payment_http_receive_timeout_ms,
+      payment_http_pool_timeout_ms: payment_http_pool_timeout_ms,
       request_options: []
     ]
 
@@ -423,6 +481,18 @@ if config_env() == :prod do
       parse_positive_integer!.("STORE_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "60"),
     admin_limit: parse_positive_integer!.("STORE_ADMIN_RATE_LIMIT_LIMIT", "300"),
     admin_window_seconds: parse_positive_integer!.("STORE_ADMIN_RATE_LIMIT_WINDOW_SECONDS", "60"),
+    public_waiting_room_limit: parse_positive_integer!.("STORE_PUBLIC_WAITING_ROOM_LIMIT", "380"),
+    public_waiting_room_hard_limit:
+      parse_positive_integer!.("STORE_PUBLIC_WAITING_ROOM_HARD_LIMIT", "450"),
+    public_waiting_room_window_seconds:
+      parse_positive_integer!.("STORE_PUBLIC_WAITING_ROOM_WINDOW_SECONDS", "10"),
+    live_waiting_room_limit: parse_positive_integer!.("STORE_LIVE_WAITING_ROOM_LIMIT", "380"),
+    live_waiting_room_hard_limit:
+      parse_positive_integer!.("STORE_LIVE_WAITING_ROOM_HARD_LIMIT", "450"),
+    live_waiting_room_window_seconds:
+      parse_positive_integer!.("STORE_LIVE_WAITING_ROOM_WINDOW_SECONDS", "10"),
+    waiting_room_refresh_seconds:
+      parse_positive_integer!.("STORE_WAITING_ROOM_REFRESH_SECONDS", "10"),
     redis: [
       host: System.get_env("STORE_REDIS_HOST", "localhost"),
       port: String.to_integer(System.get_env("STORE_REDIS_PORT", "6379")),

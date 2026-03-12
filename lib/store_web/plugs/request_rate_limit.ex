@@ -34,11 +34,9 @@ defmodule StoreWeb.Plugs.RequestRateLimit do
   end
 
   defp rate_limit_key(scope, conn) do
-    ip =
-      conn.remote_ip
-      |> Tuple.to_list()
-      |> Enum.join(".")
-
-    "#{scope}:#{ip}"
+    "#{scope}:#{format_ip(conn.remote_ip)}"
   end
+
+  defp format_ip(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> List.to_string()
+  defp format_ip(ip), do: to_string(ip)
 end

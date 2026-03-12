@@ -6,37 +6,70 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
   use StoreWeb, :live_view
 
   alias Store.Checkout
+  alias Store.Orders
   alias Store.Payments
   alias Store.Support.Errors.Normalize
+  alias Store.Support.Telemetry.RepoStats
+  alias StoreWeb.Live.StaticToLive
   alias StoreWeb.Params.Checkout.{CheckoutFinalizeParams, CheckoutShippingParams}
   alias StoreWeb.Params.Payments.CreateIntentForOrderParams
 
+  @mount_event [:store, :checkout_live, :mount]
+
   @impl true
   def mount(_params, session, socket) do
-    {:ok,
-     socket
-     |> assign(:checkout, nil)
-     |> assign(:cart_token, Map.get(session, "cart_token"))
-     |> assign(:checkout_key, nil)
-     |> assign(:payment_intent, nil)}
+    started_at = System.monotonic_time()
+
+    socket =
+      socket
+      |> assign(:checkout, nil)
+      |> assign(:cart_token, Map.get(session, "cart_token"))
+      |> assign(:checkout_key, nil)
+      |> assign(:payment_intent, nil)
+      |> assign(:hydrating?, true)
+      |> assign(:resume_state, :loading)
+      |> assign(:order_topic, nil)
+      |> assign(:warm_load_ref, nil)
+
+    if connected?(socket) do
+      {:ok, socket}
+    else
+      StaticToLive.emit_mount_telemetry(
+        @mount_event,
+        started_at,
+        %{jitter_delay_ms: 0},
+        %{phase: :static, result: :ok, live_action: socket.assigns.live_action}
+      )
+
+      {:ok, socket}
+    end
   end
 
   @impl true
   def handle_params(%{"checkout_key" => checkout_key}, _uri, socket) do
-    actor = checkout_actor(socket)
+    started_at = System.monotonic_time()
+    socket = assign(socket, :checkout_key, checkout_key)
 
-    case Checkout.get_checkout_for_user(actor, checkout_key) do
-      {:ok, checkout} ->
-        {:noreply,
-         socket
-         |> assign(:checkout_key, checkout_key)
-         |> assign(:checkout, checkout)}
+    if connected?(socket) do
+      ref = make_ref()
 
-      {:error, _error} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Checkout not found")
-         |> push_navigate(to: ~p"/cart")}
+      {socket, jitter_ms} =
+        StaticToLive.schedule_warm_load(
+          assign(socket, :warm_load_ref, ref),
+          {:load_warm_checkout, checkout_key, ref, started_at},
+          jitter?: false
+        )
+
+      {:noreply, assign(socket, :warm_load_jitter_ms, jitter_ms)}
+    else
+      StaticToLive.emit_mount_telemetry(
+        @mount_event,
+        started_at,
+        %{jitter_delay_ms: 0},
+        %{phase: :static, result: :ok, live_action: socket.assigns.live_action}
+      )
+
+      {:noreply, socket}
     end
   end
 
@@ -49,7 +82,7 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
 
   @impl true
   def handle_event("set_shipping", params, socket) do
-    if return_mode?(socket) do
+    if return_mode?(socket) or expired_resume?(socket) do
       {:noreply, socket}
     else
       actor = checkout_actor(socket)
@@ -72,7 +105,7 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
 
   @impl true
   def handle_event("finalize_totals", _params, socket) do
-    if return_mode?(socket) do
+    if return_mode?(socket) or expired_resume?(socket) do
       {:noreply, socket}
     else
       actor = checkout_actor(socket)
@@ -95,7 +128,7 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
 
   @impl true
   def handle_event("create_payment_intent", params, socket) do
-    if return_mode?(socket) do
+    if return_mode?(socket) or expired_resume?(socket) do
       {:noreply, socket}
     else
       actor = checkout_actor(socket)
@@ -121,6 +154,82 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
   end
 
   @impl true
+  def handle_info(
+        {:load_warm_checkout, checkout_key, ref, started_at},
+        %{assigns: %{warm_load_ref: ref}} = socket
+      ) do
+    actor = checkout_actor(socket)
+
+    {{updated_socket, result}, repo_stats} =
+      RepoStats.capture(fn ->
+        case Checkout.get_checkout_for_user(actor, checkout_key) do
+          {:ok, checkout} ->
+            socket =
+              socket
+              |> assign(:checkout, checkout)
+              |> assign(:hydrating?, false)
+              |> assign(:resume_state, resume_state_for_checkout(checkout))
+              |> subscribe_order_topic(checkout.order_id)
+
+            {socket, :ok}
+
+          {:error, _error} ->
+            {not_found_socket(socket), :error}
+        end
+      end)
+
+    StaticToLive.emit_mount_telemetry(
+      @mount_event,
+      started_at,
+      Map.merge(repo_stats, %{jitter_delay_ms: Map.get(socket.assigns, :warm_load_jitter_ms, 0)}),
+      %{phase: :live, result: result, live_action: socket.assigns.live_action}
+    )
+
+    {:noreply, updated_socket}
+  end
+
+  def handle_info(
+        {:order_state_changed, order_id, :paid, _reason, _occurred_at},
+        %{assigns: %{checkout: %{order_id: order_id, checkout_key: checkout_key}}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(:resume_state, :ready)
+     |> put_flash(:info, "Payment completed. Showing the latest order state.")
+     |> push_navigate(to: ~p"/checkout/return?checkout_key=#{checkout_key}")}
+  end
+
+  def handle_info(
+        {:order_state_changed, order_id, :pending_provider_setup, _reason, _occurred_at},
+        %{assigns: %{checkout: %{order_id: order_id}}} = socket
+      ) do
+    {:noreply, assign(socket, :resume_state, :pending_provider_setup)}
+  end
+
+  def handle_info(
+        {:order_state_changed, order_id, :pending_payment, _reason, _occurred_at},
+        %{assigns: %{checkout: %{order_id: order_id}}} = socket
+      ) do
+    {:noreply, assign(socket, :resume_state, :ready)}
+  end
+
+  def handle_info(
+        {:order_state_changed, order_id, :cancelled, :pending_provider_setup_expired,
+         _occurred_at},
+        %{assigns: %{checkout: %{order_id: order_id}}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(:resume_state, :expired_restart_required)
+     |> put_flash(
+       :error,
+       "This checkout expired while waiting for payment setup. Please restart checkout."
+     )}
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
@@ -142,6 +251,35 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
           <p :if={@live_action == :cancel} class="font-semibold">
             Payment was canceled. This page is read-only and no payment state was applied from URL params.
           </p>
+        </div>
+
+        <div
+          :if={@resume_state == :expired_restart_required}
+          class="rounded-xl border border-warning bg-warning/10 p-4 text-sm"
+        >
+          <p class="font-semibold">
+            This checkout expired before payment setup completed.
+          </p>
+          <.link
+            navigate={~p"/cart"}
+            class="mt-3 inline-flex rounded-lg border border-base-content/30 px-3 py-2 text-sm font-medium hover:bg-base-300"
+          >
+            Restart Checkout
+          </.link>
+        </div>
+
+        <div
+          :if={@resume_state == :pending_provider_setup and @live_action == :index}
+          class="rounded-xl border border-info bg-info/10 p-4 text-sm"
+        >
+          Payment setup is already in progress for this order. Use the button below to resume safely.
+        </div>
+
+        <div
+          :if={@hydrating? and is_nil(@checkout)}
+          class="rounded-xl border border-base-300 bg-base-200/50 p-6 text-sm"
+        >
+          Loading checkout...
         </div>
 
         <div :if={@checkout} class="grid gap-4 lg:grid-cols-2">
@@ -312,9 +450,9 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
                 phx-click="create_payment_intent"
                 phx-value-provider="stripe"
                 class="w-full"
-                disabled={!@checkout.totals_finalized?}
+                disabled={!@checkout.totals_finalized? or @resume_state == :expired_restart_required}
               >
-                Continue To Payment
+                {payment_button_label(@resume_state)}
               </.button>
             </div>
 
@@ -373,6 +511,33 @@ defmodule StoreWeb.CheckoutLive.Placeholder do
 
   defp return_mode?(socket) do
     socket.assigns.live_action in [:return, :cancel]
+  end
+
+  defp expired_resume?(socket), do: socket.assigns.resume_state == :expired_restart_required
+
+  defp resume_state_for_checkout(%{state: :pending_provider_setup}), do: :pending_provider_setup
+  defp resume_state_for_checkout(%{state: :cancelled}), do: :expired_restart_required
+  defp resume_state_for_checkout(_checkout), do: :ready
+
+  defp subscribe_order_topic(socket, order_id) when is_binary(order_id) do
+    topic = Orders.order_topic(order_id)
+
+    if connected?(socket) and socket.assigns.order_topic != topic do
+      Phoenix.PubSub.subscribe(Store.PubSub, topic)
+    end
+
+    assign(socket, :order_topic, topic)
+  end
+
+  defp subscribe_order_topic(socket, _order_id), do: socket
+
+  defp payment_button_label(:pending_provider_setup), do: "Resume Payment"
+  defp payment_button_label(_resume_state), do: "Continue To Payment"
+
+  defp not_found_socket(socket) do
+    socket
+    |> put_flash(:error, "Checkout not found")
+    |> push_navigate(to: ~p"/cart")
   end
 
   defp checkout_error_message(error, context) do

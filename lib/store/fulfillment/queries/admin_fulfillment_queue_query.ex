@@ -8,24 +8,25 @@ defmodule Store.Fulfillment.Queries.AdminFulfillmentQueueQuery do
   @default_limit 20
   @min_limit 1
   @max_limit 100
-  @default_offset 0
-  @max_offset 10_000
 
   @allowed_keys MapSet.new([
                   "limit",
                   :limit,
-                  "offset",
-                  :offset,
+                  "after",
+                  :after,
+                  "before",
+                  :before,
                   "state",
                   :state
                 ])
 
-  @enforce_keys [:limit, :offset]
-  defstruct [:limit, :offset, :state]
+  @enforce_keys [:limit]
+  defstruct [:limit, :after, :before, :state]
 
   @type t :: %__MODULE__{
           limit: pos_integer(),
-          offset: non_neg_integer(),
+          after: String.t() | nil,
+          before: String.t() | nil,
           state: Store.Fulfillment.Types.FulfillmentOrderState.t() | nil
         }
 
@@ -33,9 +34,11 @@ defmodule Store.Fulfillment.Queries.AdminFulfillmentQueueQuery do
   def new(params) when is_map(params) do
     with :ok <- validate_keys(params),
          {:ok, limit} <- parse_limit(params),
-         {:ok, offset} <- parse_offset(params),
+         {:ok, after_cursor} <- parse_cursor(params, :after),
+         {:ok, before_cursor} <- parse_cursor(params, :before),
+         :ok <- validate_cursor_direction(after_cursor, before_cursor),
          {:ok, state} <- parse_state(params) do
-      {:ok, %__MODULE__{limit: limit, offset: offset, state: state}}
+      {:ok, %__MODULE__{limit: limit, after: after_cursor, before: before_cursor, state: state}}
     end
   end
 
@@ -76,19 +79,11 @@ defmodule Store.Fulfillment.Queries.AdminFulfillmentQueueQuery do
     end
   end
 
-  defp parse_offset(params) do
-    case Map.get(params, :offset) || Map.get(params, "offset") do
-      nil -> {:ok, @default_offset}
-      value when is_integer(value) -> validate_offset(value)
-      value when is_binary(value) -> parse_offset_string(value)
-      _ -> {:error, Error.new("VALIDATION_ERROR", "offset must be an integer")}
-    end
-  end
-
-  defp parse_offset_string(value) do
-    case Integer.parse(value) do
-      {parsed, ""} -> validate_offset(parsed)
-      _ -> {:error, Error.new("VALIDATION_ERROR", "offset must be an integer")}
+  defp parse_cursor(params, key) do
+    case Map.get(params, key) || Map.get(params, Atom.to_string(key)) do
+      nil -> {:ok, nil}
+      value when is_binary(value) -> validate_cursor(value, key)
+      _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} must be a string")}
     end
   end
 
@@ -121,10 +116,23 @@ defmodule Store.Fulfillment.Queries.AdminFulfillmentQueueQuery do
 
   defp cast_state(_state), do: {:error, Error.new("VALIDATION_ERROR", "state is invalid")}
 
-  defp validate_offset(value) when value in 0..@max_offset, do: {:ok, value}
+  defp validate_cursor(value, key) do
+    trimmed = String.trim(value)
 
-  defp validate_offset(_value),
-    do: {:error, Error.new("VALIDATION_ERROR", "offset is out of range")}
+    if trimmed == "" do
+      {:error, Error.new("VALIDATION_ERROR", "#{key} must not be blank")}
+    else
+      {:ok, trimmed}
+    end
+  end
+
+  defp validate_cursor_direction(nil, nil), do: :ok
+  defp validate_cursor_direction(_after_cursor, nil), do: :ok
+  defp validate_cursor_direction(nil, _before_cursor), do: :ok
+
+  defp validate_cursor_direction(_after_cursor, _before_cursor) do
+    {:error, Error.new("VALIDATION_ERROR", "after and before are mutually exclusive")}
+  end
 
   defp clamp_limit(limit) when limit < @min_limit, do: @min_limit
   defp clamp_limit(limit) when limit > @max_limit, do: @max_limit

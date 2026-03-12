@@ -17,7 +17,15 @@ defmodule StoreWeb.Admin.Fulfillment.IndexLive do
     if Authorization.has_any_role?(actor, [:super_admin, :admin, :support]) do
       {:ok,
        socket
-       |> assign(:query, %AdminFulfillmentQueueQuery{limit: 20, offset: 0, state: nil})
+       |> assign(:query, %AdminFulfillmentQueueQuery{
+         limit: 20,
+         after: nil,
+         before: nil,
+         state: nil
+       })
+       |> assign(:page, nil)
+       |> assign(:next_cursor, nil)
+       |> assign(:previous_cursor, nil)
        |> stream(:fulfillment_orders, [])}
     else
       {:ok, Phoenix.LiveView.redirect(socket, to: ~p"/")}
@@ -29,17 +37,23 @@ defmodule StoreWeb.Admin.Fulfillment.IndexLive do
     actor = socket.assigns.current_user
 
     with {:ok, query} <- FulfillmentQueueParams.index_query(extract_query_params(uri)),
-         {:ok, fulfillment_orders} <-
+         {:ok, page} <-
            FulfillmentFacade.list_fulfillment_orders_for_admin(actor, query) do
       {:noreply,
        socket
        |> assign(:query, query)
-       |> stream(:fulfillment_orders, fulfillment_orders, reset: true)}
+       |> assign(:page, page)
+       |> assign(:next_cursor, next_cursor(page))
+       |> assign(:previous_cursor, previous_cursor(query, page))
+       |> stream(:fulfillment_orders, page.results, reset: true)}
     else
       _error ->
         {:noreply,
          socket
          |> put_flash(:error, "Unable to load fulfillment queue")
+         |> assign(:page, nil)
+         |> assign(:next_cursor, nil)
+         |> assign(:previous_cursor, nil)
          |> stream(:fulfillment_orders, [], reset: true)}
     end
   end
@@ -49,6 +63,7 @@ defmodule StoreWeb.Admin.Fulfillment.IndexLive do
     params =
       socket.assigns.query
       |> query_to_params()
+      |> Map.drop(["after", "before"])
       |> put_state_filter(state)
 
     {:noreply, push_patch(socket, to: ~p"/admin/fulfillment?#{params}")}
@@ -176,6 +191,23 @@ defmodule StoreWeb.Admin.Fulfillment.IndexLive do
             </.button>
           </:action>
         </.table>
+
+        <div class="flex items-center justify-end gap-2">
+          <.link
+            :if={@previous_cursor}
+            patch={~p"/admin/fulfillment?#{page_params(@query, %{before: @previous_cursor})}"}
+            class="rounded-lg border border-base-content/20 px-3 py-2 text-sm hover:bg-base-300"
+          >
+            Previous
+          </.link>
+          <.link
+            :if={@next_cursor}
+            patch={~p"/admin/fulfillment?#{page_params(@query, %{after: @next_cursor})}"}
+            class="rounded-lg border border-base-content/20 px-3 py-2 text-sm hover:bg-base-300"
+          >
+            Next
+          </.link>
+        </div>
       </section>
     </Layouts.app>
     """
@@ -187,16 +219,47 @@ defmodule StoreWeb.Admin.Fulfillment.IndexLive do
     |> push_patch(to: ~p"/admin/fulfillment?#{query_to_params(socket.assigns.query)}")
   end
 
-  defp query_to_params(nil), do: %{"limit" => "20", "offset" => "0"}
+  defp query_to_params(nil), do: %{"limit" => "20"}
 
   defp query_to_params(query) do
-    %{"limit" => to_string(query.limit), "offset" => to_string(query.offset)}
+    %{"limit" => to_string(query.limit)}
     |> put_state_filter(query.state)
+    |> maybe_put("after", query.after)
+    |> maybe_put("before", query.before)
+  end
+
+  defp page_params(query, cursor_updates) do
+    query
+    |> query_to_params()
+    |> Map.drop(["after", "before"])
+    |> maybe_put("after", Map.get(cursor_updates, :after))
+    |> maybe_put("before", Map.get(cursor_updates, :before))
   end
 
   defp put_state_filter(params, nil), do: Map.delete(params, "state")
   defp put_state_filter(params, ""), do: Map.delete(params, "state")
   defp put_state_filter(params, state), do: Map.put(params, "state", to_string(state))
+
+  defp maybe_put(params, _key, nil), do: params
+  defp maybe_put(params, key, value), do: Map.put(params, key, to_string(value))
+
+  defp next_cursor(%Ash.Page.Keyset{more?: true, results: results}) do
+    results
+    |> List.last()
+    |> case do
+      nil -> nil
+      result -> result.__metadata__.keyset
+    end
+  end
+
+  defp next_cursor(_page), do: nil
+
+  defp previous_cursor(%AdminFulfillmentQueueQuery{after: nil, before: nil}, _page), do: nil
+
+  defp previous_cursor(_query, %Ash.Page.Keyset{results: [first | _rest]}),
+    do: first.__metadata__.keyset
+
+  defp previous_cursor(_query, _page), do: nil
 
   defp extract_query_params(uri) when is_binary(uri) do
     uri

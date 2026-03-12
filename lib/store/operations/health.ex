@@ -39,7 +39,9 @@ defmodule Store.Operations.Health do
       comms: comms_runtime_status(),
       digital: digital_runtime_status(),
       security_headers: security_headers_status(),
-      rate_limits: rate_limit_status()
+      rate_limits: rate_limit_status(),
+      trusted_proxy: trusted_proxy_status(),
+      cluster: cluster_status()
     }
 
     overall_status(checks)
@@ -154,8 +156,51 @@ defmodule Store.Operations.Health do
       {:webhook_limit, integer_positive?(Keyword.get(config, :webhook_limit))},
       {:webhook_window_seconds, integer_positive?(Keyword.get(config, :webhook_window_seconds))},
       {:admin_limit, integer_positive?(Keyword.get(config, :admin_limit))},
-      {:admin_window_seconds, integer_positive?(Keyword.get(config, :admin_window_seconds))}
+      {:admin_window_seconds, integer_positive?(Keyword.get(config, :admin_window_seconds))},
+      {:public_waiting_room_limit,
+       integer_positive?(Keyword.get(config, :public_waiting_room_limit))},
+      {:public_waiting_room_window_seconds,
+       integer_positive?(Keyword.get(config, :public_waiting_room_window_seconds))},
+      {:live_waiting_room_limit,
+       integer_positive?(Keyword.get(config, :live_waiting_room_limit))},
+      {:live_waiting_room_window_seconds,
+       integer_positive?(Keyword.get(config, :live_waiting_room_window_seconds))},
+      {:waiting_room_refresh_seconds,
+       integer_positive?(Keyword.get(config, :waiting_room_refresh_seconds))}
     ])
+  end
+
+  defp trusted_proxy_status do
+    config = Application.get_env(:store, :trusted_proxy, [])
+    headers = Keyword.get(config, :headers, [])
+    proxies = Keyword.get(config, :proxies, [])
+
+    predicate_status([
+      {:trusted_proxy_headers, is_list(headers) and headers != []},
+      {:trusted_proxy_proxies, is_list(proxies) and proxies != []}
+    ])
+  end
+
+  defp cluster_status do
+    dns_cluster_query = Application.get_env(:store, :dns_cluster_query)
+
+    details = %{
+      node: Atom.to_string(Node.self()),
+      peers: Enum.map(Node.list(), &Atom.to_string/1)
+    }
+
+    conditions =
+      if present?(dns_cluster_query) do
+        [
+          {:distribution_enabled, Node.alive?()},
+          {:release_cookie, present?(System.get_env("RELEASE_COOKIE"))}
+        ]
+      else
+        [{:distribution_optional, true}]
+      end
+
+    predicate_status(conditions)
+    |> Map.put(:details, Map.put(details, :dns_cluster_query, dns_cluster_query))
   end
 
   defp count_status(table) when is_binary(table) do

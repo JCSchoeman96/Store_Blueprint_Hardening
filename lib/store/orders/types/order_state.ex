@@ -4,5 +4,12 @@ defmodule Store.Orders.Types.OrderState do
   """
 
   use Ash.Type.Enum,
-    values: [:pending_payment, :paid, :payment_failed, :cancelled, :refunded]
+    values: [
+      :pending_payment,
+      :pending_provider_setup,
+      :paid,
+      :payment_failed,
+      :cancelled,
+      :refunded
+    ]
 end

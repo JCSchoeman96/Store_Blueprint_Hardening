@@ -13,7 +13,7 @@ defmodule Store.Payments.Providers do
   @type normalized_provider :: known_provider() | :unknown
   @type provider :: known_provider() | String.t()
   @type enabled_provider_config :: [provider()] | String.t() | nil
-  @type fault_mode :: :none | :slow | :timeout | :error
+  @type fault_mode :: :none | :slow | :timeout | :error | :crash
 
   @known_providers [:stripe, :payfast, :paystack, :yoco, :peach_payments]
 
@@ -214,6 +214,15 @@ defmodule Store.Payments.Providers do
            provider: provider_metadata(provider),
            delay_ms: delay_ms
          })}
+
+      %{mode: :crash, delay_ms: delay_ms} = config ->
+        notify_fault_hook(config, :crash)
+
+        if delay_ms > 0 do
+          Process.sleep(delay_ms)
+        end
+
+        exit({:payment_provider_fault, normalize_provider(provider), :crash})
     end
   end
 
@@ -246,10 +255,11 @@ defmodule Store.Payments.Providers do
     normalize_provider(configured_provider) == normalize_provider(provider)
   end
 
-  defp normalize_fault_mode(mode) when mode in [:slow, :timeout, :error], do: mode
+  defp normalize_fault_mode(mode) when mode in [:slow, :timeout, :error, :crash], do: mode
   defp normalize_fault_mode("slow"), do: :slow
   defp normalize_fault_mode("timeout"), do: :timeout
   defp normalize_fault_mode("error"), do: :error
+  defp normalize_fault_mode("crash"), do: :crash
   defp normalize_fault_mode(_mode), do: :none
 
   defp normalize_delay_ms(value) when is_integer(value), do: max(value, 0)

@@ -204,8 +204,8 @@ defmodule Store.Carts.Facade do
   defp maybe_reload_cart(%Cart{} = cart, _attrs), do: {:ok, cart}
 
   defp build_cart_view(%Cart{} = cart, %CartLoadQuery{include_items: true}) do
-    items = load_cart_items(cart.id)
-    {variants_by_id, products_by_id} = catalog_maps(items)
+    items = load_cart_items_for_view(cart.id)
+    {variants_by_id, products_by_id} = catalog_maps_for_view(items)
 
     line_items =
       Enum.map(items, fn item ->
@@ -264,7 +264,21 @@ defmodule Store.Carts.Facade do
     |> Repo.all()
   end
 
-  defp catalog_maps(items) do
+  defp load_cart_items_for_view(cart_id) do
+    CartItem
+    |> where([i], i.cart_id == ^cart_id)
+    |> order_by([i], asc: i.inserted_at, asc: i.id)
+    |> select([i], %{
+      id: i.id,
+      cart_id: i.cart_id,
+      variant_id: i.variant_id,
+      subscription_plan_id: i.subscription_plan_id,
+      qty: i.qty
+    })
+    |> Repo.all()
+  end
+
+  defp catalog_maps_for_view(items) do
     variant_ids =
       items
       |> Enum.map(& &1.variant_id)
@@ -276,6 +290,14 @@ defmodule Store.Carts.Facade do
       else
         Variant
         |> where([v], v.id in ^variant_ids)
+        |> select([v], %{
+          id: v.id,
+          product_id: v.product_id,
+          sku: v.sku,
+          title: v.title,
+          price_minor: v.price_minor,
+          currency_code: v.currency_code
+        })
         |> Repo.all()
       end
 
@@ -290,6 +312,7 @@ defmodule Store.Carts.Facade do
         product_ids ->
           Product
           |> where([p], p.id in ^product_ids)
+          |> select([p], %{id: p.id, title: p.title, slug: p.slug})
           |> Repo.all()
       end
 
@@ -297,6 +320,9 @@ defmodule Store.Carts.Facade do
   end
 
   defp line_total(%Variant{price_minor: price_minor}, qty) when is_integer(price_minor),
+    do: price_minor * qty
+
+  defp line_total(%{price_minor: price_minor}, qty) when is_integer(price_minor),
     do: price_minor * qty
 
   defp line_total(_variant, _qty), do: 0

@@ -10,7 +10,7 @@
 - Restore audit:
   - `bin/store eval "Store.Release.restore_audit()"`
 - Migrations:
-  - `bin/store eval "Ecto.Migrator.with_repo(Store.Repo, &Ecto.Migrator.run(&1, :up, all: true))"`
+  - `bin/store eval "Store.Release.migrate_all()"`
 
 ## Go-Live Checklist
 - Verify production env vars are present:
@@ -18,10 +18,13 @@
   - `SECRET_KEY_BASE`
   - `PHX_HOST`
   - `PORT`
+  - `RELEASE_COOKIE`
+  - `DNS_CLUSTER_QUERY` (or `RAILWAY_PRIVATE_DOMAIN` fallback)
   - `STORE_DB_POOL_MODE`
   - `STORE_STRIPE_SECRET_KEY`
   - `STORE_STRIPE_PUBLISHABLE_KEY`
   - `STORE_STRIPE_WEBHOOK_SECRET`
+  - `STORE_TRUSTED_PROXY_PROXIES` if Cloudflare ranges are overridden
   - `SENTRY_DSN`
   - `STORE_WEBHOOK_RETENTION_DAYS`
   - `STORE_WEBHOOK_RATE_LIMIT_LIMIT`
@@ -30,7 +33,9 @@
   - `STORE_ADMIN_RATE_LIMIT_WINDOW_SECONDS`
 - Run preflight from the release:
   - `bin/store eval "Store.Release.preflight()"`
-- Run migrations before shifting traffic.
+- Railway deploys must run migrations through the pre-deploy command in `railway.toml`:
+  - `bin/store eval "Store.Release.migrate_all()"`
+- Do not run migrations manually after traffic has already shifted to the new web containers.
 - Confirm health endpoints:
   - `GET /health/live`
   - `GET /health/ready`
@@ -44,11 +49,23 @@
   - for digital goods, verify signed URL issuance
 
 ## Edge and WAF Requirements
+- Trust Cloudflare as a proxy only after the origin rewrites `conn.remote_ip` from `CF-Connecting-IP` / forwarded headers.
+- Keep the trusted proxy CIDR list aligned with Cloudflare's published ranges if `STORE_TRUSTED_PROXY_PROXIES` is overridden.
+- Do not point the waiting room or app-level rate limits at raw Cloudflare edge IPs.
 - Keep Stripe signature verification enabled at the app boundary.
 - Also allow Stripe webhook traffic at the edge or reverse proxy using Stripe’s published IP list:
   - [Stripe IP addresses](https://docs.stripe.com/ips)
 - Re-check the published Stripe ranges during go-live and whenever firewall rules change.
 - Do not rely on IP allowlisting as the only control; signature verification remains mandatory.
+
+## Clustering and CDN
+- `DNS_CLUSTER_QUERY` should resolve to the Railway private service domain (`*.railway.internal`).
+- `rel/env.sh.eex` sets named distribution and IPv6 transport for Railway-compatible clustering; keep `RELEASE_COOKIE` consistent across replicas.
+- After autoscaling, verify that PubSub-sensitive flows propagate across nodes:
+  - checkout/order state changes
+  - catalog/shipping cache invalidations
+- Cloudflare should cache digested static assets aggressively.
+- Cloudflare must not cache cart, checkout, order, waiting-room, or authenticated account pages.
 
 ## Rollback
 - If the release is unhealthy, roll back application code first.

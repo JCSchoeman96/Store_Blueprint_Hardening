@@ -6,6 +6,7 @@ defmodule Store.Orders do
   use Ash.Domain, extensions: [AshJsonApi.Domain]
 
   import Ash.Expr
+  import Ecto.Query
   require Ash.Query
 
   alias Store.Orders.{
@@ -17,12 +18,16 @@ defmodule Store.Orders do
   }
 
   alias Store.Pricing.Contract
+  alias Store.Repo
+  alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.Governance.Idempotency
   alias Store.Support.ID.OrderRef
   alias Store.Support.ID.UUIDv7
 
   @max_order_ref_attempts 5
+  @default_pending_provider_setup_ttl_seconds 15 * 60
+  @default_pending_provider_setup_batch_size 200
 
   resources do
     resource(Store.Orders.Order)
@@ -196,6 +201,79 @@ defmodule Store.Orders do
     InventoryReservations.expire_reservations(now, opts)
   end
 
+  @spec sweep_stale_pending_provider_setup(DateTime.t(), keyword()) ::
+          {:ok,
+           %{
+             swept_count: non_neg_integer(),
+             released_count: non_neg_integer(),
+             order_ids: [String.t()]
+           }}
+          | {:error, term()}
+  def sweep_stale_pending_provider_setup(now \\ DateTime.utc_now(), opts \\ [])
+      when is_struct(now, DateTime) and is_list(opts) do
+    ttl_seconds =
+      Keyword.get(opts, :ttl_seconds, pending_provider_setup_ttl_seconds())
+
+    batch_size = Keyword.get(opts, :batch_size, pending_provider_setup_batch_size())
+    cutoff = DateTime.add(DateTime.truncate(now, :microsecond), -ttl_seconds, :second)
+
+    stale_pending_provider_setup_orders(cutoff, batch_size)
+    |> Enum.reduce_while(
+      {:ok, %{swept_count: 0, released_count: 0, order_ids: [], notifications: []}},
+      &sweep_pending_provider_setup_order(&1, &2, now)
+    )
+    |> finalize_pending_provider_setup_sweep_notifications()
+  end
+
+  @spec pending_provider_setup_backlog_snapshot(DateTime.t(), keyword()) ::
+          %{
+            count: non_neg_integer(),
+            oldest_age_seconds: non_neg_integer(),
+            newest_age_seconds: non_neg_integer(),
+            distinct_order_count: non_neg_integer(),
+            reserved_variant_count: non_neg_integer()
+          }
+  def pending_provider_setup_backlog_snapshot(now \\ DateTime.utc_now(), opts \\ [])
+      when is_struct(now, DateTime) and is_list(opts) do
+    now = DateTime.truncate(now, :microsecond)
+
+    stats =
+      Repo.one(
+        from(order in Order,
+          where:
+            order.state == ^:pending_provider_setup and
+              not is_nil(order.provider_setup_started_at),
+          select: %{
+            count: count(order.id),
+            distinct_order_count: count(order.id, :distinct),
+            oldest_started_at: min(order.provider_setup_started_at),
+            newest_started_at: max(order.provider_setup_started_at)
+          }
+        )
+      ) || %{}
+
+    snapshot = %{
+      count: Map.get(stats, :count, 0),
+      oldest_age_seconds: started_at_age_seconds(Map.get(stats, :oldest_started_at), now),
+      newest_age_seconds: started_at_age_seconds(Map.get(stats, :newest_started_at), now),
+      distinct_order_count: Map.get(stats, :distinct_order_count, 0),
+      reserved_variant_count: pending_provider_reserved_variant_count()
+    }
+
+    if Keyword.get(opts, :emit_telemetry?, true) do
+      :telemetry.execute(
+        [:store, :checkout, :pending_provider_setup, :backlog],
+        snapshot,
+        %{source: Keyword.get(opts, :source, :snapshot)}
+      )
+    end
+
+    snapshot
+  end
+
+  @spec order_topic(String.t()) :: String.t()
+  def order_topic(order_id) when is_binary(order_id), do: "store:orders:#{order_id}"
+
   defp do_create_order(_attrs, _generator, _ash_opts, attempts) when attempts <= 0 do
     {:error, "unable to generate unique order_ref after retry limit"}
   end
@@ -271,7 +349,7 @@ defmodule Store.Orders do
        ) do
     with {:ok, existing_order} <- find_order_by_checkout_key(checkout_key, ash_opts) do
       case existing_order do
-        %Order{state: :pending_payment} = order ->
+        %Order{state: state} = order when state in [:pending_payment, :pending_provider_setup] ->
           {:ok, order, true, []}
 
         %Order{} ->
@@ -326,35 +404,14 @@ defmodule Store.Orders do
     Order
     |> Ash.Changeset.for_create(:begin_checkout, create_attrs, context: %{system?: true})
     |> Ash.create(checkout_ash_opts(create_ash_opts))
-    |> case do
-      {:ok, %Order{state: :pending_payment} = order} ->
-        {:ok, order, false, []}
-
-      {:ok, %Order{state: :pending_payment} = order, notifications} when is_list(notifications) ->
-        {:ok, order, false, notifications}
-
-      {:ok, %Order{}} ->
-        {:error,
-         Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
-
-      {:ok, %Order{}, _notifications} ->
-        {:error,
-         Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
-
-      {:error, error} ->
-        if order_ref_conflict?(error) and attempts > 1 do
-          create_checkout_order(
-            user_id,
-            checkout_key,
-            ash_opts,
-            return_notifications?,
-            generator,
-            attempts - 1
-          )
-        else
-          {:error, error}
-        end
-    end
+    |> unwrap_checkout_order_create_result(
+      user_id,
+      checkout_key,
+      ash_opts,
+      return_notifications?,
+      generator,
+      attempts
+    )
   end
 
   defp find_order_by_checkout_key(checkout_key, ash_opts) do
@@ -477,5 +534,256 @@ defmodule Store.Orders do
   defp order_ref_conflict?(error) do
     message = Exception.message(error)
     String.contains?(message, "order_ref") and String.contains?(message, "already been taken")
+  end
+
+  defp stale_pending_provider_setup_orders(cutoff, batch_size) do
+    Order
+    |> where(
+      [order],
+      order.state == ^:pending_provider_setup and
+        not is_nil(order.provider_setup_started_at) and
+        order.provider_setup_started_at <= ^cutoff
+    )
+    |> order_by([order], asc: order.provider_setup_started_at, asc: order.id)
+    |> limit(^batch_size)
+    |> Repo.all()
+  end
+
+  defp sweep_pending_provider_setup_order(
+         %Order{id: order_id} = order,
+         {:ok, acc},
+         now
+       ) do
+    case cancel_stale_pending_provider_setup(order, now) do
+      {:ok, %{released_count: released_count, notifications: notifications}} ->
+        {:cont,
+         {:ok,
+          %{
+            swept_count: acc.swept_count + 1,
+            released_count: acc.released_count + released_count,
+            order_ids: [order_id | acc.order_ids],
+            notifications: [notifications | acc.notifications]
+          }}}
+
+      {:skip, _reason} ->
+        {:cont, {:ok, acc}}
+
+      {:error, reason} ->
+        {:halt, {:error, reason}}
+    end
+  end
+
+  defp cancel_stale_pending_provider_setup(%Order{id: order_id}, now) do
+    cancel_stale_pending_provider_setup_transaction(order_id, now)
+  end
+
+  defp pending_provider_setup_ttl_seconds do
+    Application.get_env(:store, :payments, [])
+    |> Keyword.get(
+      :provider_setup_ttl_seconds,
+      env_positive_integer(
+        "STORE_PROVIDER_SETUP_TTL_SECONDS",
+        @default_pending_provider_setup_ttl_seconds
+      )
+    )
+  end
+
+  defp pending_provider_setup_batch_size do
+    env_positive_integer(
+      "STORE_PROVIDER_SETUP_SWEEP_BATCH_SIZE",
+      @default_pending_provider_setup_batch_size
+    )
+  end
+
+  defp unwrap_checkout_order_create_result(
+         {:ok, %Order{state: state} = order},
+         _user_id,
+         _checkout_key,
+         _ash_opts,
+         _return_notifications?,
+         _generator,
+         _attempts
+       )
+       when state in [:pending_payment, :pending_provider_setup],
+       do: {:ok, order, false, []}
+
+  defp unwrap_checkout_order_create_result(
+         {:ok, %Order{state: state} = order, notifications},
+         _user_id,
+         _checkout_key,
+         _ash_opts,
+         _return_notifications?,
+         _generator,
+         _attempts
+       )
+       when state in [:pending_payment, :pending_provider_setup] and is_list(notifications),
+       do: {:ok, order, false, notifications}
+
+  defp unwrap_checkout_order_create_result(
+         {:ok, %Order{}},
+         _user_id,
+         _checkout_key,
+         _ash_opts,
+         _return_notifications?,
+         _generator,
+         _attempts
+       ) do
+    {:error,
+     Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
+  end
+
+  defp unwrap_checkout_order_create_result(
+         {:ok, %Order{}, _notifications},
+         _user_id,
+         _checkout_key,
+         _ash_opts,
+         _return_notifications?,
+         _generator,
+         _attempts
+       ) do
+    {:error,
+     Error.new("CHECKOUT_DUPLICATE", "checkout key did not resolve to pending_payment state")}
+  end
+
+  defp unwrap_checkout_order_create_result(
+         {:error, error},
+         user_id,
+         checkout_key,
+         ash_opts,
+         return_notifications?,
+         generator,
+         attempts
+       ) do
+    if order_ref_conflict?(error) and attempts > 1 do
+      create_checkout_order(
+        user_id,
+        checkout_key,
+        ash_opts,
+        return_notifications?,
+        generator,
+        attempts - 1
+      )
+    else
+      {:error, error}
+    end
+  end
+
+  defp cancel_stale_pending_provider_setup_transaction(order_id, now) do
+    Repo.transaction(fn ->
+      case locked_pending_provider_setup_order(order_id) do
+        nil ->
+          Repo.rollback(:skip)
+
+        %Order{} = locked_order ->
+          maybe_cancel_locked_pending_provider_setup(locked_order, now)
+      end
+    end)
+  end
+
+  defp locked_pending_provider_setup_order(order_id) do
+    Repo.one(
+      from(order in Order,
+        where: order.id == ^order_id and order.state == ^:pending_provider_setup,
+        lock: "FOR UPDATE"
+      )
+    )
+  end
+
+  defp maybe_cancel_locked_pending_provider_setup(%Order{} = locked_order, now) do
+    with {:ok, release_result} <-
+           InventoryReservations.release_reservations_for_order(locked_order.id, now: now),
+         {:ok, _cancelled_order, notifications} <-
+           cancel_pending_provider_setup_order(locked_order) do
+      %{released_count: release_result.released_count, notifications: notifications}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp cancel_pending_provider_setup_order(%Order{} = order) do
+    order
+    |> Ash.Changeset.for_update(:cancel, %{}, context: %{system?: true})
+    |> Ash.update(
+      domain: __MODULE__,
+      authorize?: false,
+      return_notifications?: true,
+      context: %{system?: true}
+    )
+  end
+
+  defp finalize_pending_provider_setup_sweep_notifications(
+         {:ok, %{notifications: notifications} = result}
+       ) do
+    ordered_order_ids = Enum.reverse(result.order_ids)
+    batched_notifications = notifications |> Enum.reverse() |> List.flatten()
+
+    case AshNotifications.notify_post_commit(
+           batched_notifications,
+           context: %{flow: :expire_pending_provider_setup, order_ids: ordered_order_ids}
+         ) do
+      :ok ->
+        Enum.each(ordered_order_ids, fn order_id ->
+          notify_order_state_change(order_id, :cancelled, :pending_provider_setup_expired)
+        end)
+
+        {:ok,
+         result
+         |> Map.put(:order_ids, ordered_order_ids)
+         |> Map.delete(:notifications)}
+
+      other ->
+        {:error, other}
+    end
+  end
+
+  defp finalize_pending_provider_setup_sweep_notifications({:skip, reason}),
+    do: {:skip, reason}
+
+  defp finalize_pending_provider_setup_sweep_notifications({:error, reason}),
+    do: {:error, reason}
+
+  @spec notify_order_state_change(String.t(), atom(), atom()) :: :ok
+  def notify_order_state_change(order_id, state, reason)
+      when is_binary(order_id) and is_atom(state) and is_atom(reason) do
+    Phoenix.PubSub.broadcast(
+      Store.PubSub,
+      order_topic(order_id),
+      {:order_state_changed, order_id, state, reason,
+       DateTime.utc_now() |> DateTime.truncate(:microsecond)}
+    )
+
+    :ok
+  end
+
+  defp pending_provider_reserved_variant_count do
+    Repo.one(
+      from(reservation in InventoryReservation,
+        join: order in Order,
+        on: order.id == reservation.order_id,
+        where:
+          order.state == ^:pending_provider_setup and
+            reservation.state == ^:active,
+        select: count(reservation.variant_id, :distinct)
+      )
+    ) || 0
+  end
+
+  defp started_at_age_seconds(nil, _now), do: 0
+
+  defp started_at_age_seconds(%DateTime{} = started_at, %DateTime{} = now) do
+    Kernel.max(DateTime.diff(now, started_at, :second), 0)
+  end
+
+  defp env_positive_integer(name, default) do
+    case System.get_env(name) do
+      nil ->
+        default
+
+      value ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> default
+        end
+    end
   end
 end

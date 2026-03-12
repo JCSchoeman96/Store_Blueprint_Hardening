@@ -116,6 +116,59 @@ defmodule StoreWeb.Telemetry do
         tags: [:step, :result],
         unit: {:native, :millisecond}
       ),
+      summary("store.checkout.trace.duration",
+        tags: [:step, :substep, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.provider_setup.duration",
+        tags: [:phase, :provider, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.provider_setup_task.duration",
+        tags: [:provider, :result, :completion_source],
+        unit: {:native, :millisecond}
+      ),
+      counter("store.checkout.provider_setup_task.count",
+        tags: [:provider, :result, :completion_source]
+      ),
+      counter("store.checkout.pending_provider_setup.resume.count",
+        tags: [:provider]
+      ),
+      last_value("store.checkout.pending_provider_setup.backlog.count",
+        tags: [:source]
+      ),
+      last_value("store.checkout.pending_provider_setup.backlog.oldest_age_seconds",
+        tags: [:source]
+      ),
+      last_value("store.checkout.pending_provider_setup.backlog.reserved_variant_count",
+        tags: [:source]
+      ),
+      summary("store.checkout.pending_provider_setup.sweep.duration",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.pending_provider_setup.sweep.swept_count",
+        tags: [:result]
+      ),
+      summary("store.checkout.pending_provider_setup.sweep.released_count",
+        tags: [:result]
+      ),
+      counter("store.waiting_room.http.count",
+        tags: [:decision, :scope, :mode]
+      ),
+      counter("store.waiting_room.socket.count",
+        tags: [:decision, :scope, :mode]
+      ),
+      summary("store.ops.redis_aggregate_flush.duration",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.ops.redis_aggregate_flush.bucket_count",
+        tags: [:result]
+      ),
+      summary("store.ops.redis_aggregate_flush.row_count",
+        tags: [:result]
+      ),
       summary("store.catalog.product_detail.public.duration",
         tags: [:result],
         unit: {:native, :millisecond}
@@ -175,6 +228,66 @@ defmodule StoreWeb.Telemetry do
       summary("store.shop_live.product_detail.memory_delta",
         tags: [:phase, :connected, :result],
         unit: {:byte, :kilobyte}
+      ),
+      summary("store.shop_live.index.mount.duration",
+        tags: [:phase, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.shop_live.index.mount.query_count",
+        tags: [:phase, :result]
+      ),
+      summary("store.shop_live.index.mount.queue_time",
+        tags: [:phase, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.shop_live.index.mount.jitter_delay_ms",
+        tags: [:phase, :result],
+        unit: {:millisecond, :millisecond}
+      ),
+      summary("store.shop_live.show.mount.duration",
+        tags: [:phase, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.shop_live.show.mount.query_count",
+        tags: [:phase, :result]
+      ),
+      summary("store.shop_live.show.mount.queue_time",
+        tags: [:phase, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.shop_live.show.mount.jitter_delay_ms",
+        tags: [:phase, :result],
+        unit: {:millisecond, :millisecond}
+      ),
+      summary("store.cart_live.mount.duration",
+        tags: [:phase, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.cart_live.mount.query_count",
+        tags: [:phase, :result]
+      ),
+      summary("store.cart_live.mount.queue_time",
+        tags: [:phase, :result],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.cart_live.mount.jitter_delay_ms",
+        tags: [:phase, :result],
+        unit: {:millisecond, :millisecond}
+      ),
+      summary("store.checkout_live.mount.duration",
+        tags: [:phase, :result, :live_action],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout_live.mount.query_count",
+        tags: [:phase, :result, :live_action]
+      ),
+      summary("store.checkout_live.mount.queue_time",
+        tags: [:phase, :result, :live_action],
+        unit: {:native, :millisecond}
+      ),
+      summary("store.checkout_live.mount.jitter_delay_ms",
+        tags: [:phase, :result, :live_action],
+        unit: {:millisecond, :millisecond}
       ),
       summary("store.payments.ingress.verify.duration",
         tags: [:route, :provider, :result, :error_code],

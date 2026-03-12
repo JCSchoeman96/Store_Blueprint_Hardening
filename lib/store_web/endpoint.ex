@@ -16,9 +16,9 @@ defmodule StoreWeb.Endpoint do
     secure: @session_secure
   ]
 
-  socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
-    longpoll: [connect_info: [session: @session_options]]
+  socket "/live", StoreWeb.LiveSocket,
+    websocket: [connect_info: [:peer_data, :uri, session: @session_options]],
+    longpoll: [connect_info: [:peer_data, :uri, session: @session_options]]
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -30,6 +30,8 @@ defmodule StoreWeb.Endpoint do
     from: :store,
     gzip: not code_reloading?,
     only: StoreWeb.static_paths(),
+    cache_control_for_etags: "public, max-age=31536000, immutable",
+    cache_control_for_vsn_requests: "public, max-age=31536000, immutable",
     raise_on_missing_only: code_reloading?
 
   # Code reloading can be explicitly enabled under the
@@ -45,6 +47,7 @@ defmodule StoreWeb.Endpoint do
     param_key: "request_logger",
     cookie_key: "request_logger"
 
+  plug StoreWeb.Plugs.RemoteIp
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
   plug Sentry.PlugContext
@@ -58,5 +61,6 @@ defmodule StoreWeb.Endpoint do
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
+  plug StoreWeb.Plugs.WaitingRoom
   plug StoreWeb.Router
 end

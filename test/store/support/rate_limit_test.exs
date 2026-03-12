@@ -34,6 +34,19 @@ defmodule Store.Support.RateLimitTest do
     assert {:ok, :deny} = RateLimit.allow?(:digital_signed_url, key, 2, 300)
   end
 
+  test "check returns count metadata for thresholded gates" do
+    key = "gate:test:#{System.unique_integer([:positive])}"
+
+    assert {:ok, %{decision: :allow, count: 1, limit: 2, window_seconds: 60}} =
+             RateLimit.check(:waiting_room_http, key, 2, 60)
+
+    assert {:ok, %{decision: :allow, count: 2}} =
+             RateLimit.check(:waiting_room_http, key, 2, 60)
+
+    assert {:ok, %{decision: :deny, count: 3}} =
+             RateLimit.check(:waiting_room_http, key, 2, 60)
+  end
+
   test "ets backend isolates counters by key" do
     assert {:ok, :allow} = RateLimit.allow?(:digital_signed_url, "grant-a", 1, 300)
     assert {:ok, :deny} = RateLimit.allow?(:digital_signed_url, "grant-a", 1, 300)

@@ -11,6 +11,7 @@ defmodule StoreWeb.CartCheckoutLiveTest do
   alias Store.Catalog.InventoryItem
   alias Store.Checkout
   alias Store.Checkout.Inputs.{CheckoutShippingInput, CheckoutStartInput}
+  alias Store.Orders
   alias Store.Orders.Order
   alias Store.Pricing.TaxRate
   alias Store.Repo
@@ -18,6 +19,17 @@ defmodule StoreWeb.CartCheckoutLiveTest do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.TestFixtures
+
+  setup do
+    previous = Application.get_env(:store, :live_warm_load_jitter_ms)
+    Application.put_env(:store, :live_warm_load_jitter_ms, {0, 0})
+
+    on_exit(fn ->
+      Application.put_env(:store, :live_warm_load_jitter_ms, previous)
+    end)
+
+    :ok
+  end
 
   test "guest can view/update/remove cart lines", %{conn: conn} do
     %{title: title, variant_id: variant_id} = published_product_fixture()
@@ -27,7 +39,8 @@ defmodule StoreWeb.CartCheckoutLiveTest do
     assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 2})
     assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
 
-    {:ok, cart_view, html} = live(conn, ~p"/cart")
+    {:ok, cart_view, _html} = live(conn, ~p"/cart")
+    html = render_until(cart_view, title)
     assert html =~ title
 
     cart_view
@@ -54,6 +67,7 @@ defmodule StoreWeb.CartCheckoutLiveTest do
     assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
 
     {:ok, cart_view, _html} = live(conn, ~p"/cart")
+    _ = render_until(cart_view, "Start Checkout")
     cart_view |> element("#start-checkout") |> render_click()
 
     {redirect_path, _flash} = assert_redirect(cart_view)
@@ -64,6 +78,41 @@ defmodule StoreWeb.CartCheckoutLiveTest do
     assert {:error, denied} = Checkout.get_draft_for_user(nil, checkout_key)
     assert denied.code == "NOT_FOUND"
     assert {:ok, _draft} = Checkout.get_draft_for_user(%{cart_token: token}, checkout_key)
+  end
+
+  test "/cart static pass emits zero-query mount telemetry", %{conn: conn} do
+    %{variant_id: variant_id} = published_product_fixture()
+    token = Ash.UUIDv7.generate()
+    conn = with_cart_token(conn, token)
+    parent = self()
+    handler = {__MODULE__, :cart_mount, System.unique_integer([:positive])}
+
+    assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
+
+    :telemetry.attach(
+      handler,
+      [:store, :cart_live, :mount],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:cart_mount, measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      {:ok, view, _html} = live(conn, ~p"/cart")
+      _ = render_until(view, "Start Checkout")
+
+      assert_receive {:cart_mount, measurements, %{phase: :static} = metadata}
+      assert measurements.query_count == 0
+      assert metadata.result == :ok
+
+      assert_receive {:cart_mount, measurements, %{phase: :live} = metadata}
+      assert is_integer(measurements.query_count)
+      assert metadata.result == :ok
+    after
+      :telemetry.detach(handler)
+    end
   end
 
   test "/checkout renders phase 21 flow keyed by checkout_key", %{conn: conn} do
@@ -77,7 +126,8 @@ defmodule StoreWeb.CartCheckoutLiveTest do
     assert {:ok, start_input} = CheckoutStartInput.new(%{})
     assert {:ok, start_result} = Checkout.start_from_cart(nil, token, start_input)
 
-    {:ok, _view, html} = live(conn, "/checkout?checkout_key=#{start_result.checkout_key}")
+    {:ok, view, _html} = live(conn, "/checkout?checkout_key=#{start_result.checkout_key}")
+    html = render_until(view, "Continue To Payment")
 
     assert html =~ "Review shipping, finalize totals, then continue to payment."
     assert html =~ "Save Shipping"
@@ -96,7 +146,8 @@ defmodule StoreWeb.CartCheckoutLiveTest do
     assert {:ok, start_input} = CheckoutStartInput.new(%{})
     assert {:ok, start_result} = Checkout.start_from_cart(nil, token, start_input)
 
-    {:ok, _view, html} = live(conn, "/checkout/return?checkout_key=#{start_result.checkout_key}")
+    {:ok, view, _html} = live(conn, "/checkout/return?checkout_key=#{start_result.checkout_key}")
+    html = render_until(view, "Payment return received.")
 
     assert html =~ "Payment return received. This page is read-only"
 
@@ -124,6 +175,7 @@ defmodule StoreWeb.CartCheckoutLiveTest do
              |> Ash.update(domain: Store.Catalog, authorize?: false, context: %{system?: true})
 
     {:ok, view, _html} = live(conn, "/checkout?checkout_key=#{checkout.checkout_key}")
+    _html = render_until(view, "Finalize Totals")
 
     view
     |> element("#finalize-totals")
@@ -131,6 +183,61 @@ defmodule StoreWeb.CartCheckoutLiveTest do
 
     assert render(view) =~
              "One or more items are no longer available. Review your cart and try again."
+  end
+
+  test "/checkout static pass emits zero-query mount telemetry and expired pending checkout updates live",
+       %{conn: conn} do
+    parent = self()
+    handler = {__MODULE__, :checkout_mount, System.unique_integer([:positive])}
+    checkout = setup_checkout_with_shipping!()
+    conn = with_cart_token(conn, checkout.token)
+
+    order =
+      Repo.get!(Order, checkout.order_id)
+      |> Ash.Changeset.for_update(
+        :begin_provider_setup,
+        %{provider_setup_started_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)},
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    :telemetry.attach(
+      handler,
+      [:store, :checkout_live, :mount],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:checkout_mount, measurements, metadata})
+      end,
+      parent
+    )
+
+    try do
+      {:ok, view, _html} = live(conn, "/checkout?checkout_key=#{checkout.checkout_key}")
+      html = render_until(view, "Payment setup is already in progress for this order.")
+
+      assert html =~ "Payment setup is already in progress for this order."
+
+      assert_receive {:checkout_mount, measurements, %{phase: :static} = metadata}
+      assert measurements.query_count == 0
+      assert metadata.result == :ok
+
+      assert_receive {:checkout_mount, measurements, %{phase: :live} = metadata}
+      assert is_integer(measurements.query_count)
+      assert metadata.result == :ok
+
+      Phoenix.PubSub.broadcast(
+        Store.PubSub,
+        Orders.order_topic(order.id),
+        {:order_state_changed, order.id, :cancelled, :pending_provider_setup_expired,
+         DateTime.utc_now() |> DateTime.truncate(:microsecond)}
+      )
+
+      assert render_until(view, "This checkout expired before payment setup completed.") =~
+               "This checkout expired before payment setup completed."
+
+      assert has_element?(view, "a[href='/cart']", "Restart Checkout")
+    after
+      :telemetry.detach(handler)
+    end
   end
 
   defp with_cart_token(conn, token) do
@@ -204,7 +311,12 @@ defmodule StoreWeb.CartCheckoutLiveTest do
     assert {:ok, _checkout} =
              Checkout.set_shipping(actor, start_result.checkout_key, shipping_input)
 
-    %{token: token, checkout_key: start_result.checkout_key, variant_id: variant_id}
+    %{
+      token: token,
+      checkout_key: start_result.checkout_key,
+      order_id: start_result.order_id,
+      variant_id: variant_id
+    }
   end
 
   defp create_pricing_rules! do
@@ -274,4 +386,19 @@ defmodule StoreWeb.CartCheckoutLiveTest do
       shipping_method_code: option.shipping_method_code
     }
   end
+
+  defp render_until(view, needle, attempts \\ 20)
+
+  defp render_until(view, needle, attempts) when attempts > 0 do
+    html = render(view)
+
+    if html =~ needle do
+      html
+    else
+      Process.sleep(20)
+      render_until(view, needle, attempts - 1)
+    end
+  end
+
+  defp render_until(view, _needle, 0), do: render(view)
 end

@@ -9,6 +9,7 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
   alias Store.Carts.Inputs.CartItemInput
   alias Store.Checkout
   alias Store.Checkout.Inputs.{CheckoutFinalizeInput, CheckoutShippingInput, CheckoutStartInput}
+  alias Store.Orders.Order
   alias Store.Payments
   alias Store.Payments.Inputs.CreateIntentForOrderInput
   alias Store.Payments.PaymentIntent
@@ -90,16 +91,22 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
              Payments.create_intent_for_order(actor, checkout_key, input)
 
     first_intent = fetch_payment_intent_for_order!(order_id)
+    pending_order = fetch_order!(order_id)
     assert first_intent.state == :created
     assert is_nil(first_intent.provider_session_id)
+    assert pending_order.state == :pending_provider_setup
+    assert %DateTime{} = pending_order.provider_setup_started_at
 
     Application.put_env(:store, :payment_provider_fault_injection, [])
 
     assert {:ok, retried} = Payments.create_intent_for_order(actor, checkout_key, input)
+    resumed_order = fetch_order!(order_id)
     assert retried.payment_intent_id == first_intent.id
     assert retried.payment_intent_key == first_intent.payment_intent_key
     assert retried.duplicate? == true
     assert is_binary(retried.provider_session_id)
+    assert resumed_order.state == :pending_payment
+    assert is_nil(resumed_order.provider_setup_started_at)
 
     assert 1 == payment_intent_count_for_order(order_id)
   end
@@ -118,16 +125,56 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
              Payments.create_intent_for_order(actor, checkout_key, input)
 
     first_intent = fetch_payment_intent_for_order!(order_id)
+    pending_order = fetch_order!(order_id)
     assert first_intent.state == :created
     assert is_nil(first_intent.provider_session_id)
+    assert pending_order.state == :pending_provider_setup
+    assert %DateTime{} = pending_order.provider_setup_started_at
 
     Application.put_env(:store, :payment_provider_fault_injection, [])
 
     assert {:ok, retried} = Payments.create_intent_for_order(actor, checkout_key, input)
+    resumed_order = fetch_order!(order_id)
     assert retried.payment_intent_id == first_intent.id
     assert retried.payment_intent_key == first_intent.payment_intent_key
     assert retried.duplicate? == true
     assert is_binary(retried.provider_session_id)
+    assert resumed_order.state == :pending_payment
+    assert is_nil(resumed_order.provider_setup_started_at)
+
+    assert 1 == payment_intent_count_for_order(order_id)
+  end
+
+  test "crash fault returns PAYMENT_PROVIDER_DOWN and does not crash caller or duplicate payment intents on retry" do
+    %{actor: actor, checkout_key: checkout_key, order_id: order_id} = prepare_checkout_context!()
+    assert {:ok, input} = CreateIntentForOrderInput.new(%{"provider" => "stripe"})
+
+    Application.put_env(:store, :payment_provider_fault_injection,
+      provider: "stripe",
+      mode: :crash,
+      delay_ms: 0
+    )
+
+    assert {:error, %Error{code: "PAYMENT_PROVIDER_DOWN"}} =
+             Payments.create_intent_for_order(actor, checkout_key, input)
+
+    first_intent = fetch_payment_intent_for_order!(order_id)
+    pending_order = fetch_order!(order_id)
+    assert first_intent.state == :created
+    assert is_nil(first_intent.provider_session_id)
+    assert pending_order.state == :pending_provider_setup
+    assert %DateTime{} = pending_order.provider_setup_started_at
+
+    Application.put_env(:store, :payment_provider_fault_injection, [])
+
+    assert {:ok, retried} = Payments.create_intent_for_order(actor, checkout_key, input)
+    resumed_order = fetch_order!(order_id)
+    assert retried.payment_intent_id == first_intent.id
+    assert retried.payment_intent_key == first_intent.payment_intent_key
+    assert retried.duplicate? == true
+    assert is_binary(retried.provider_session_id)
+    assert resumed_order.state == :pending_payment
+    assert is_nil(resumed_order.provider_setup_started_at)
 
     assert 1 == payment_intent_count_for_order(order_id)
   end
@@ -190,6 +237,15 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
              |> Ash.read(domain: Store.Payments, authorize?: false)
 
     payment_intent
+  end
+
+  defp fetch_order!(order_id) do
+    assert {:ok, [order]} =
+             Order
+             |> Ash.Query.filter(expr(id == ^order_id))
+             |> Ash.read(domain: Store.Orders, authorize?: false)
+
+    order
   end
 
   defp activity_snapshot! do

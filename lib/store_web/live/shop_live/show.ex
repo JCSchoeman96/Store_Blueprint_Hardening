@@ -10,8 +10,11 @@ defmodule StoreWeb.ShopLive.Show do
   alias Store.Catalog.ProductDetailTelemetry
   alias Store.Support.Telemetry.RepoStats
   alias StoreWeb.Live.EntitlementAware
+  alias StoreWeb.Live.StaticToLive
   alias StoreWeb.Params.Carts.CartItemParams
   alias StoreWeb.Params.Catalog.ProductDetailParams
+
+  @mount_event [:store, :shop_live, :show, :mount]
 
   @impl true
   def mount(_params, session, socket) do
@@ -20,9 +23,15 @@ defmodule StoreWeb.ShopLive.Show do
     {:ok,
      socket
      |> EntitlementAware.maybe_subscribe()
-     |> EntitlementAware.assign_entitlement_set()
+     |> assign(:entitlement_set, nil)
      |> assign(:detail, nil)
+     |> assign(:detail_slug, nil)
+     |> assign(:detail_title, "Loading product...")
+     |> assign(:detail_subtitle, nil)
      |> assign(:cart_token, cart_token)
+     |> assign(:hydrating?, true)
+     |> assign(:hydrated_once?, false)
+     |> assign(:warm_load_ref, nil)
      |> assign(:selector_form, to_form(%{}, as: :selection))
      |> assign(:plan_form, to_form(%{}, as: :subscription_plan))
      |> assign(:quantity_form, to_form(%{"quantity" => "1"}, as: :cart_line))}
@@ -30,7 +39,6 @@ defmodule StoreWeb.ShopLive.Show do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    actor = socket.assigns[:current_user]
     started_at = System.monotonic_time()
     before_snapshot = ProductDetailTelemetry.process_snapshot()
     phase = if connected?(socket), do: :live_join, else: :static_render
@@ -44,19 +52,48 @@ defmodule StoreWeb.ShopLive.Show do
       connected?: connected?(socket)
     }
 
-    {{socket, result}, repo_stats} =
-      RepoStats.capture(fn -> load_detail(socket, actor, params) end)
+    if connected?(socket) do
+      ref = make_ref()
+      jitter? = not socket.assigns[:hydrated_once?]
 
-    ProductDetailTelemetry.emit_shop_live(
-      started_at,
-      attrs,
-      result,
-      repo_stats,
-      before_snapshot,
-      ProductDetailTelemetry.process_snapshot()
-    )
+      {socket, jitter_ms} =
+        StaticToLive.schedule_warm_load(
+          socket
+          |> assign(:warm_load_ref, ref)
+          |> assign(:detail_slug, slug)
+          |> assign(:hydrating?, true),
+          {:load_warm_detail, params, attrs, ref, started_at, before_snapshot},
+          jitter?: jitter?,
+          key: {slug, params}
+        )
 
-    {:noreply, socket}
+      {:noreply, assign(socket, :warm_load_jitter_ms, jitter_ms)}
+    else
+      socket =
+        socket
+        |> assign(:detail_slug, slug)
+        |> assign(:detail_title, "Loading product...")
+        |> assign(:detail_subtitle, nil)
+        |> assign(:hydrating?, true)
+
+      ProductDetailTelemetry.emit_shop_live(
+        started_at,
+        attrs,
+        {:ok, :shell},
+        %{query_count: 0, queue_time: 0, query_time: 0, decode_time: 0},
+        before_snapshot,
+        ProductDetailTelemetry.process_snapshot()
+      )
+
+      StaticToLive.emit_mount_telemetry(
+        @mount_event,
+        started_at,
+        %{jitter_delay_ms: 0},
+        %{phase: :static, result: :ok}
+      )
+
+      {:noreply, socket}
+    end
   end
 
   defp load_detail(socket, actor, params) do
@@ -72,6 +109,9 @@ defmodule StoreWeb.ShopLive.Show do
         {
           socket
           |> assign(:detail, detail)
+          |> assign(:detail_slug, detail.product.slug)
+          |> assign(:detail_title, detail.product.title)
+          |> assign(:detail_subtitle, detail.product.subtitle)
           |> assign(:selector_form, selector_form(detail))
           |> assign(:plan_form, plan_form(detail)),
           {:ok, detail}
@@ -138,8 +178,17 @@ defmodule StoreWeb.ShopLive.Show do
   @impl true
   def handle_info(message, socket) do
     case EntitlementAware.handle_invalidation(socket, message) do
-      {:handled, socket} -> {:noreply, socket}
-      :ignored -> {:noreply, socket}
+      {:handled, socket} ->
+        {:noreply, socket}
+
+      :ignored ->
+        case message do
+          {:load_warm_detail, params, attrs, ref, started_at, before_snapshot} ->
+            handle_warm_detail(socket, params, attrs, ref, started_at, before_snapshot)
+
+          _ ->
+            {:noreply, socket}
+        end
     end
   end
 
@@ -147,16 +196,23 @@ defmodule StoreWeb.ShopLive.Show do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
-      <section :if={@detail} id="shop-show" class="space-y-6">
+      <section id="shop-show" class="space-y-6">
         <header class="space-y-2">
-          <p class="text-xs uppercase tracking-wide text-base-content/60">{@detail.product.slug}</p>
-          <h1 class="text-2xl font-semibold">{@detail.product.title}</h1>
-          <p :if={@detail.product.subtitle} class="text-sm text-base-content/70">
-            {@detail.product.subtitle}
+          <p class="text-xs uppercase tracking-wide text-base-content/60">{@detail_slug}</p>
+          <h1 class="text-2xl font-semibold">{detail_title(@detail, @detail_title)}</h1>
+          <p :if={detail_subtitle(@detail, @detail_subtitle)} class="text-sm text-base-content/70">
+            {detail_subtitle(@detail, @detail_subtitle)}
           </p>
         </header>
 
-        <div class="grid gap-6 lg:grid-cols-2">
+        <div
+          :if={@hydrating? and is_nil(@detail)}
+          class="rounded-xl border border-base-300 bg-base-200/50 p-6 text-sm"
+        >
+          Loading product details...
+        </div>
+
+        <div :if={@detail} class="grid gap-6 lg:grid-cols-2">
           <div class="space-y-3">
             <div
               :for={image <- display_images(@detail)}
@@ -244,6 +300,45 @@ defmodule StoreWeb.ShopLive.Show do
     """
   end
 
+  defp handle_warm_detail(
+         %{assigns: %{warm_load_ref: ref}} = socket,
+         params,
+         attrs,
+         ref,
+         started_at,
+         before_snapshot
+       ) do
+    actor = socket.assigns[:current_user]
+
+    {{socket, result}, repo_stats} =
+      RepoStats.capture(fn ->
+        socket = EntitlementAware.assign_entitlement_set(socket)
+        load_detail(socket, actor, params)
+      end)
+
+    ProductDetailTelemetry.emit_shop_live(
+      started_at,
+      attrs,
+      result,
+      repo_stats,
+      before_snapshot,
+      ProductDetailTelemetry.process_snapshot()
+    )
+
+    StaticToLive.emit_mount_telemetry(
+      @mount_event,
+      started_at,
+      Map.merge(repo_stats, %{jitter_delay_ms: Map.get(socket.assigns, :warm_load_jitter_ms, 0)}),
+      %{phase: :live, result: telemetry_result(result)}
+    )
+
+    {:noreply, socket |> assign(:hydrating?, false) |> assign(:hydrated_once?, true)}
+  end
+
+  defp handle_warm_detail(socket, _params, _attrs, _ref, _started_at, _before_snapshot) do
+    {:noreply, socket}
+  end
+
   defp selector_form(detail) do
     selected_by_option_slug =
       Enum.reduce(detail.options, %{}, fn option, acc ->
@@ -317,6 +412,17 @@ defmodule StoreWeb.ShopLive.Show do
     |> put_flash(:error, "Product not found")
     |> push_navigate(to: ~p"/shop")
   end
+
+  defp detail_title(%{product: %{title: title}}, _fallback) when is_binary(title) and title != "",
+    do: title
+
+  defp detail_title(_detail, fallback), do: fallback
+
+  defp detail_subtitle(%{product: %{subtitle: subtitle}}, _fallback), do: subtitle
+  defp detail_subtitle(_detail, fallback), do: fallback
+
+  defp telemetry_result({:ok, _detail}), do: :ok
+  defp telemetry_result(_result), do: :error
 
   defp selection_count(params) when is_map(params) do
     Enum.count(params, fn {key, _value} ->

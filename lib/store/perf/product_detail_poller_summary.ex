@@ -27,6 +27,9 @@ defmodule Store.Perf.ProductDetailPollerSummary do
     scheduler = aggregate_snapshot_maps(snapshots, "scheduler")
     postgres_activity = aggregate_snapshot_maps(snapshots, "postgres_activity")
 
+    pending_provider_setup_backlog =
+      aggregate_snapshot_maps(snapshots, "pending_provider_setup_backlog")
+
     static = aggregate_rows(static_rows)
     live = aggregate_rows(live_rows)
     catalog = aggregate_rows(catalog_rows)
@@ -39,6 +42,7 @@ defmodule Store.Perf.ProductDetailPollerSummary do
       catalog: catalog,
       scheduler: scheduler,
       postgres_activity: postgres_activity,
+      pending_provider_setup_backlog: pending_provider_setup_backlog,
       shop_show_under_contention: aggregate_rows(static_rows ++ live_rows),
       static_vs_live: compare_phase(static, live)
     }

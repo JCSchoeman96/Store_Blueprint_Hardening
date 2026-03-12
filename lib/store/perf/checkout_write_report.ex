@@ -25,6 +25,9 @@ defmodule Store.Perf.CheckoutWriteReport do
         |> Enum.map(&failure_fingerprint/1)
         |> Enum.reject(&is_nil/1)
         |> Enum.frequencies(),
+      p99_duration_ms: percentile(rows, :duration_ms, 0.99),
+      p99_query_count: percentile(rows, :query_count, 0.99),
+      dominant_cause: dominant_cause(rows),
       sample_errors:
         error_rows
         |> Enum.take(max(sample_cap, 0))
@@ -114,4 +117,52 @@ defmodule Store.Perf.CheckoutWriteReport do
       _ -> Enum.at(values, min(length(values) - 1, floor(length(values) * ratio)))
     end
   end
+
+  defp dominant_cause([]), do: "unknown"
+
+  defp dominant_cause(rows) do
+    mean_duration_ms = average(rows, :duration_ms)
+    mean_queue_time_ms = average(rows, :queue_time_ms)
+    mean_query_time_ms = average(rows, :query_time_ms)
+    mean_query_count = average(rows, :query_count)
+    non_db_ms = max(mean_duration_ms - mean_queue_time_ms - mean_query_time_ms, 0)
+    step = rows |> List.first() |> Map.get(:step)
+
+    cond do
+      db_queue_dominant?(mean_queue_time_ms, mean_query_time_ms) ->
+        "db_queue_dominant"
+
+      provider_wait_dominant?(step, non_db_ms, mean_query_time_ms) ->
+        "provider_wait_dominant"
+
+      n_plus_one_dominant?(mean_query_count, mean_query_time_ms) ->
+        "n_plus_one_dominant"
+
+      db_cpu_dominant?(mean_query_time_ms, mean_duration_ms) ->
+        "db_cpu_dominant"
+
+      allocation_dominant?(mean_duration_ms, mean_query_time_ms, mean_queue_time_ms) ->
+        "allocation_dominant"
+
+      true ->
+        "lock_scope_dominant"
+    end
+  end
+
+  defp db_queue_dominant?(mean_queue_time_ms, mean_query_time_ms),
+    do: mean_queue_time_ms >= max(mean_query_time_ms * 1.5, 25)
+
+  defp provider_wait_dominant?(:create_payment_intent, non_db_ms, mean_query_time_ms),
+    do: non_db_ms >= max(mean_query_time_ms * 2, 150)
+
+  defp provider_wait_dominant?(_step, _non_db_ms, _mean_query_time_ms), do: false
+
+  defp n_plus_one_dominant?(mean_query_count, mean_query_time_ms),
+    do: mean_query_count >= 8 and mean_query_time_ms >= 40
+
+  defp db_cpu_dominant?(mean_query_time_ms, mean_duration_ms),
+    do: mean_query_time_ms >= max(mean_duration_ms * 0.55, 60)
+
+  defp allocation_dominant?(mean_duration_ms, mean_query_time_ms, mean_queue_time_ms),
+    do: mean_duration_ms >= 250 and mean_query_time_ms <= 30 and mean_queue_time_ms <= 10
 end

@@ -13,7 +13,7 @@ defmodule Store.Comms.Facade do
   alias Store.Support.Errors.Normalize
 
   @spec list_email_outboxes_for_admin(map(), AdminEmailOutboxIndexQuery.t()) ::
-          {:ok, [EmailOutbox.t()]} | {:error, term()}
+          {:ok, Ash.Page.Keyset.t()} | {:error, term()}
   def list_email_outboxes_for_admin(actor, %AdminEmailOutboxIndexQuery{} = query)
       when is_map(actor) do
     with :ok <- authorize_admin_actor(actor) do
@@ -22,8 +22,18 @@ defmodule Store.Comms.Facade do
         |> Ash.Query.for_read(:read_for_admin, %{})
         |> maybe_filter_state(query.state)
         |> maybe_filter_template_kind(query.template_kind)
-        |> Ash.Query.limit(query.limit)
-        |> Ash.Query.offset(query.offset)
+        |> Ash.Query.select([
+          :id,
+          :template_kind,
+          :to_email,
+          :provider,
+          :state,
+          :attempt_count,
+          :inserted_at,
+          :sent_at,
+          :last_error
+        ])
+        |> Ash.Query.page(email_outbox_page_opts(query))
 
       case Ash.read(ash_query,
              domain: Store.Comms,
@@ -66,6 +76,15 @@ defmodule Store.Comms.Facade do
 
   defp maybe_filter_template_kind(query, template_kind_value),
     do: Ash.Query.filter(query, expr(template_kind == ^template_kind_value))
+
+  defp email_outbox_page_opts(%AdminEmailOutboxIndexQuery{} = query) do
+    [limit: query.limit]
+    |> maybe_put_page_cursor(:after, query.after)
+    |> maybe_put_page_cursor(:before, query.before)
+  end
+
+  defp maybe_put_page_cursor(opts, _key, nil), do: opts
+  defp maybe_put_page_cursor(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp authorize_admin_actor(actor) do
     if Authorization.has_any_role?(actor, [:super_admin, :admin, :support]) do

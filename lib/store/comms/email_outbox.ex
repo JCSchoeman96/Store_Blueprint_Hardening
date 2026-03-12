@@ -133,7 +133,7 @@ defmodule Store.Comms.EmailOutbox do
     end
 
     read :read_for_admin do
-      pagination(offset?: true, required?: false, default_limit: 20, max_page_size: 100)
+      pagination(keyset?: true, required?: false, default_limit: 20, max_page_size: 100)
       prepare(build(sort: [inserted_at: :desc, id: :desc]))
     end
 
@@ -193,9 +193,14 @@ defmodule Store.Comms.EmailOutbox do
     custom_indexes do
       index([:order_id], name: "email_outboxes_order_id_index")
       index([:state, :inserted_at], name: "email_outboxes_state_inserted_at_index")
+      index([:state, :inserted_at, :id], name: "email_outboxes_state_inserted_at_id_index")
 
       index([:template_kind, :inserted_at],
         name: "email_outboxes_template_kind_inserted_at_index"
+      )
+
+      index([:template_kind, :inserted_at, :id],
+        name: "email_outboxes_template_kind_inserted_at_id_index"
       )
 
       index([:refund_id], name: "email_outboxes_refund_id_index")

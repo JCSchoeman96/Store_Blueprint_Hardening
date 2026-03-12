@@ -6,6 +6,7 @@ defmodule Store.Application do
   use Application
 
   alias Store.Catalog.ProductListCache
+  alias Store.Payments.ProviderConfig
   alias Store.Shipping.QuoteCache
   alias Store.Support.EtsTableOwner
   alias Store.Support.RateLimit.RedixClient
@@ -19,6 +20,8 @@ defmodule Store.Application do
         StoreWeb.Telemetry,
         Store.Repo,
         Store.DirectRepo,
+        {Task.Supervisor, name: Store.Payments.ProviderTaskSupervisor},
+        payment_finch_child_spec(),
         {Oban, Application.fetch_env!(:store, Oban)},
         {AshAuthentication.Supervisor, otp_app: :store},
         {DNSCluster, query: Application.get_env(:store, :dns_cluster_query) || :ignore},
@@ -64,5 +67,12 @@ defmodule Store.Application do
       |> Keyword.put_new(:sync_connect, true)
       |> then(&{Redix, &1})
     end
+  end
+
+  defp payment_finch_child_spec do
+    Supervisor.child_spec(
+      {Finch, name: ProviderConfig.finch_name(), pools: ProviderConfig.finch_pools()},
+      id: ProviderConfig.finch_name()
+    )
   end
 end

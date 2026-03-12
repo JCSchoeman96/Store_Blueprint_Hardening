@@ -10,9 +10,10 @@ defmodule Store.Payments do
 
   alias Store.Checkout
   alias Store.Digital.Facade, as: DigitalFacade
+  alias Store.Orders.Order
   alias Store.Orders.OrderLineItem
   alias Store.Payments.Inputs.CreateIntentForOrderInput
-  alias Store.Payments.{Interlocks, Providers, Refunds}
+  alias Store.Payments.{Interlocks, Providers, ProviderTask, Refunds}
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.Telemetry.RepoStats
 
@@ -88,13 +89,13 @@ defmodule Store.Payments do
              :ok <-
                DigitalFacade.ensure_checkout_actor_allowed_for_system(actor, checkout.order_id),
              :ok <- ensure_totals_finalized(checkout),
-             :ok <- ensure_order_pending_payment(checkout),
+             {:ok, checkout} <- ensure_order_payable(checkout),
              :ok <- ensure_payable_total(checkout),
              :ok <- Providers.ensure_enabled_provider(input.provider),
              {:ok, has_subscription_lines?} <- order_has_subscription_lines(checkout.order_id),
              {:ok, intent_result} <- create_or_reuse_intent_for_checkout(checkout, input),
-             {:ok, payment_intent} <-
-               ensure_provider_reference(
+             {:ok, payment_intent, checkout} <-
+               ensure_provider_setup(
                  intent_result.payment_intent,
                  checkout,
                  intent_result.payment_intent_key,
@@ -102,6 +103,7 @@ defmodule Store.Payments do
                  has_subscription_lines?
                ),
              {:ok, submitted_intent} <- maybe_submit_payment_intent(payment_intent) do
+          maybe_emit_provider_setup_ready(checkout)
           {:ok, build_checkout_intent_result(checkout, intent_result, submitted_intent)}
         end
       end)
@@ -171,24 +173,106 @@ defmodule Store.Payments do
          input,
          has_subscription_lines?
        ) do
-    if provider_reference_present?(payment_intent) do
-      {:ok, payment_intent}
-    else
-      with {:ok, provider_payload} <-
-             Providers.create_intent(
-               input.provider,
-               provider_create_intent_attrs(
+    case provider_reference_present?(payment_intent) do
+      true ->
+        {:ok, payment_intent}
+
+      false ->
+        with {:ok, provider_payload} <-
+               run_provider_setup_request(
+                 payment_intent,
                  checkout,
-                 payment_intent.id,
                  payment_intent_key,
+                 input,
                  has_subscription_lines?
-               ),
-               []
-             ) do
-        update_provider_reference(payment_intent, provider_payload, input.provider)
-      end
+               ) do
+          update_provider_reference(payment_intent, provider_payload, input.provider)
+        end
     end
   end
+
+  defp run_provider_setup_request(
+         payment_intent,
+         checkout,
+         payment_intent_key,
+         input,
+         has_subscription_lines?
+       ) do
+    ProviderTask.execute(
+      fn ->
+        Providers.create_intent(
+          input.provider,
+          provider_create_intent_attrs(
+            checkout,
+            payment_intent.id,
+            payment_intent_key,
+            has_subscription_lines?
+          ),
+          []
+        )
+      end,
+      provider: input.provider,
+      order_id: checkout.order_id,
+      checkout_key: checkout.checkout_key,
+      payment_intent_key: payment_intent_key
+    )
+  end
+
+  defp ensure_provider_setup(
+         payment_intent,
+         checkout,
+         payment_intent_key,
+         input,
+         has_subscription_lines?
+       ) do
+    case provider_reference_present?(payment_intent) do
+      true ->
+        maybe_resume_provider_setup(checkout, payment_intent)
+
+      false ->
+        begin_provider_setup_flow(
+          payment_intent,
+          checkout,
+          payment_intent_key,
+          input,
+          has_subscription_lines?
+        )
+    end
+  end
+
+  defp begin_provider_setup_flow(
+         payment_intent,
+         checkout,
+         payment_intent_key,
+         input,
+         has_subscription_lines?
+       ) do
+    with {:ok, updated_checkout} <- mark_provider_setup_pending(checkout),
+         {:ok, payment_intent} <-
+           time_provider_setup_phase(:provider_request, input.provider, fn ->
+             ensure_provider_reference(
+               payment_intent,
+               updated_checkout,
+               payment_intent_key,
+               input,
+               has_subscription_lines?
+             )
+           end) do
+      {:ok, payment_intent, updated_checkout}
+    end
+  end
+
+  defp maybe_resume_provider_setup(%{state: :pending_provider_setup} = checkout, payment_intent) do
+    :telemetry.execute(
+      [:store, :checkout, :pending_provider_setup, :resume],
+      %{count: 1},
+      %{provider: provider_to_string(payment_intent.provider)}
+    )
+
+    {:ok, payment_intent, checkout}
+  end
+
+  defp maybe_resume_provider_setup(checkout, payment_intent), do: {:ok, payment_intent, checkout}
 
   defp provider_create_intent_attrs(
          checkout,
@@ -325,12 +409,14 @@ defmodule Store.Payments do
      )}
   end
 
-  defp ensure_order_pending_payment(%{state: :pending_payment}), do: :ok
+  defp ensure_order_payable(%{state: state} = checkout)
+       when state in [:pending_payment, :pending_provider_setup],
+       do: {:ok, checkout}
 
-  defp ensure_order_pending_payment(%{state: :paid}),
+  defp ensure_order_payable(%{state: :paid}),
     do: {:error, Error.new("PAYMENT_ALREADY_SUCCEEDED", "order is already paid")}
 
-  defp ensure_order_pending_payment(_checkout) do
+  defp ensure_order_payable(_checkout) do
     {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "order is not payable in the current state")}
   end
 
@@ -357,6 +443,7 @@ defmodule Store.Payments do
       |> Ash.Query.filter(
         expr(order_id == ^order_id and not is_nil(subscription_plan_id_snapshot))
       )
+      |> Ash.Query.select([:id])
       |> Ash.Query.limit(1)
 
     case Ash.read(query, domain: Store.Orders, authorize?: false, context: %{system?: true}) do
@@ -379,6 +466,121 @@ defmodule Store.Payments do
     do: provider |> String.trim() |> String.downcase()
 
   defp provider_to_string(_provider), do: "unknown"
+
+  defp mark_provider_setup_pending(%{order_id: order_id} = checkout) do
+    started_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    with {:ok, order} <- fetch_order(order_id),
+         {:ok, updated_order} <- begin_provider_setup(order, started_at) do
+      {:ok, Map.put(checkout, :state, updated_order.state)}
+    end
+  end
+
+  defp begin_provider_setup(%Order{state: :pending_provider_setup} = order, started_at) do
+    order
+    |> Ash.Changeset.for_update(
+      :refresh_provider_setup,
+      %{provider_setup_started_at: started_at},
+      context: %{system?: true}
+    )
+    |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    |> tap(fn
+      {:ok, updated_order} ->
+        _ =
+          Store.Orders.notify_order_state_change(
+            updated_order.id,
+            updated_order.state,
+            :provider_setup_refreshed
+          )
+
+      _ ->
+        :ok
+    end)
+  end
+
+  defp begin_provider_setup(%Order{} = order, started_at) do
+    order
+    |> Ash.Changeset.for_update(
+      :begin_provider_setup,
+      %{provider_setup_started_at: started_at},
+      context: %{system?: true}
+    )
+    |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    |> tap(fn
+      {:ok, updated_order} ->
+        _ =
+          Store.Orders.notify_order_state_change(
+            updated_order.id,
+            updated_order.state,
+            :provider_setup_started
+          )
+
+      _ ->
+        :ok
+    end)
+  end
+
+  defp maybe_emit_provider_setup_ready(%{order_id: order_id, state: :pending_provider_setup}) do
+    with {:ok, order} <- fetch_order(order_id),
+         {:ok, _updated_order} <- provider_setup_ready(order) do
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  defp maybe_emit_provider_setup_ready(_checkout), do: :ok
+
+  defp provider_setup_ready(%Order{state: :pending_provider_setup} = order) do
+    order
+    |> Ash.Changeset.for_update(:provider_setup_ready, %{}, context: %{system?: true})
+    |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    |> tap(fn
+      {:ok, updated_order} ->
+        _ =
+          Store.Orders.notify_order_state_change(
+            updated_order.id,
+            updated_order.state,
+            :provider_setup_ready
+          )
+
+      _ ->
+        :ok
+    end)
+  end
+
+  defp provider_setup_ready(%Order{} = order), do: {:ok, order}
+
+  defp fetch_order(order_id) when is_binary(order_id) do
+    query =
+      Order
+      |> Ash.Query.filter(expr(id == ^order_id))
+      |> Ash.Query.select([:id, :state, :version, :provider_setup_started_at, :checkout_key])
+
+    case Ash.read(query, domain: Store.Orders, authorize?: false, context: %{system?: true}) do
+      {:ok, [order | _]} -> {:ok, order}
+      {:ok, []} -> {:error, Error.new("ORDER_NOT_FOUND", "order not found")}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp time_provider_setup_phase(phase, provider, fun)
+       when is_atom(phase) and is_function(fun, 0) do
+    started_at = System.monotonic_time()
+    result = fun.()
+
+    :telemetry.execute(
+      [:store, :checkout, :provider_setup],
+      %{duration: System.monotonic_time() - started_at},
+      %{
+        phase: phase,
+        provider: provider_to_string(provider),
+        result: telemetry_result(result)
+      }
+    )
+
+    result
+  end
 
   defp normalize_result({:ok, _} = result), do: result
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}

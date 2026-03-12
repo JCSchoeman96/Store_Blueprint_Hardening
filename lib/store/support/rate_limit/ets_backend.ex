@@ -8,7 +8,7 @@ defmodule Store.Support.RateLimit.EtsBackend do
   @table :store_rate_limit
 
   @impl true
-  def allow?(scope, key, limit, window_seconds, _opts)
+  def check(scope, key, limit, window_seconds, _opts)
       when (is_atom(scope) or is_binary(scope)) and is_binary(key) and is_integer(limit) and
              limit > 0 and is_integer(window_seconds) and window_seconds > 0 do
     table = ensure_table()
@@ -27,11 +27,25 @@ defmodule Store.Support.RateLimit.EtsBackend do
 
     maybe_cleanup(table, now_sec)
 
-    if count <= limit, do: {:ok, :allow}, else: {:ok, :deny}
+    {:ok,
+     %{
+       decision: if(count <= limit, do: :allow, else: :deny),
+       count: count,
+       limit: limit,
+       window_seconds: window_seconds
+     }}
   end
 
-  def allow?(_scope, _key, _limit, _window_seconds, _opts),
+  def check(_scope, _key, _limit, _window_seconds, _opts),
     do: {:error, :invalid_rate_limit_args}
+
+  @impl true
+  def allow?(scope, key, limit, window_seconds, opts) do
+    case check(scope, key, limit, window_seconds, opts) do
+      {:ok, %{decision: decision}} -> {:ok, decision}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp ensure_table do
     case :ets.whereis(@table) do

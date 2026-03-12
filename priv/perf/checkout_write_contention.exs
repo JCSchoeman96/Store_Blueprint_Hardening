@@ -116,7 +116,7 @@ defmodule Store.Perf.CheckoutWriteContention do
     base = %{user_index: user_index, iteration: iteration, variant_id: variant_id}
 
     try do
-      with {:ok, _cart} <- add_item(cart_token, variant_id),
+      with :ok <- run_add_item_step(cart_token, variant_id, base),
            {:ok, start_record, checkout_key} <- run_start_step(cart_token, base),
            {:ok, shipping_record} <- run_shipping_step(actor, checkout_key, data, base),
            {:ok, finalize_record} <- run_finalize_step(actor, checkout_key, base),
@@ -161,6 +161,19 @@ defmodule Store.Perf.CheckoutWriteContention do
   defp add_item(cart_token, variant_id) do
     {:ok, input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
     CartsFacade.add_item_for_user(nil, cart_token, input)
+  end
+
+  defp run_add_item_step(cart_token, variant_id, base) do
+    {result, repo_stats, duration_native} =
+      capture(fn -> add_item(cart_token, variant_id) end)
+
+    case result do
+      {:ok, _cart} ->
+        :ok
+
+      {:error, _error} ->
+        {:error, record(:add_item, base, result, repo_stats, duration_native)}
+    end
   end
 
   defp run_start_step(cart_token, base) do
@@ -367,7 +380,10 @@ defmodule Store.Perf.CheckoutWriteContention do
   defp emit_new_failure_fingerprints(record, fingerprint_agent) do
     record
     |> Map.get(:steps, [])
-    |> Enum.filter(&(&1.status == :error))
+    |> Enum.filter(fn
+      %{status: :error} -> true
+      _ -> false
+    end)
     |> Enum.each(fn step ->
       fingerprint = Map.get(step, :failure_fingerprint)
 

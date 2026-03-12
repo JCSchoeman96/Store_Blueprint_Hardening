@@ -9,18 +9,39 @@ defmodule StoreWeb.CartLive do
   alias Store.Carts.Queries.CartLoadQuery
   alias Store.Checkout
   alias Store.Support.Errors.Normalize
+  alias Store.Support.Telemetry.RepoStats
+  alias StoreWeb.Live.StaticToLive
   alias StoreWeb.Params.Carts.CartItemParams
   alias StoreWeb.Params.Checkout.CheckoutStartParams
 
+  @mount_event [:store, :cart_live, :mount]
+
   @impl true
   def mount(_params, session, socket) do
+    started_at = System.monotonic_time()
     cart_token = Map.get(session, "cart_token")
 
-    {:ok,
-     socket
-     |> assign(:cart_token, cart_token)
-     |> assign(:cart_view, empty_cart_view())
-     |> load_cart_view()}
+    socket =
+      socket
+      |> assign(:cart_token, cart_token)
+      |> assign(:cart_view, empty_cart_view())
+      |> assign(:hydrating?, true)
+
+    if connected?(socket) do
+      {socket, jitter_ms} =
+        StaticToLive.schedule_warm_load(socket, :load_warm_cart, jitter?: true, key: cart_token)
+
+      {:ok, assign(socket, :warm_load_jitter_ms, jitter_ms)}
+    else
+      StaticToLive.emit_mount_telemetry(
+        @mount_event,
+        started_at,
+        %{jitter_delay_ms: 0},
+        %{phase: :static, result: :ok}
+      )
+
+      {:ok, socket}
+    end
   end
 
   @impl true
@@ -30,7 +51,7 @@ defmodule StoreWeb.CartLive do
     with {:ok, input} <- CartItemParams.input(%{"variant_id" => variant_id, "qty" => qty}),
          {:ok, _cart} <-
            CartsFacade.update_item_qty_for_user(actor, socket.assigns.cart_token, input) do
-      {:noreply, socket |> put_flash(:info, "Cart updated") |> load_cart_view()}
+      {:noreply, socket |> put_flash(:info, "Cart updated") |> load_cart_view_now()}
     else
       _ -> {:noreply, put_flash(socket, :error, "Unable to update cart item")}
     end
@@ -42,7 +63,7 @@ defmodule StoreWeb.CartLive do
 
     case CartsFacade.remove_item_for_user(actor, socket.assigns.cart_token, variant_id) do
       {:ok, _cart} ->
-        {:noreply, socket |> put_flash(:info, "Item removed") |> load_cart_view()}
+        {:noreply, socket |> put_flash(:info, "Item removed") |> load_cart_view_now()}
 
       {:error, _error} ->
         {:noreply, put_flash(socket, :error, "Unable to remove cart item")}
@@ -61,15 +82,32 @@ defmodule StoreWeb.CartLive do
         {:noreply,
          socket
          |> put_flash(:error, checkout_start_error_message(error))
-         |> load_cart_view()}
+         |> load_cart_view_now()}
 
       _ ->
         {:noreply,
          socket
          |> put_flash(:error, "Unable to start checkout")
-         |> load_cart_view()}
+         |> load_cart_view_now()}
     end
   end
+
+  @impl true
+  def handle_info(:load_warm_cart, socket) do
+    started_at = System.monotonic_time()
+    {socket, repo_stats, result} = load_cart_view_with_stats(socket)
+
+    StaticToLive.emit_mount_telemetry(
+      @mount_event,
+      started_at,
+      Map.merge(repo_stats, %{jitter_delay_ms: Map.get(socket.assigns, :warm_load_jitter_ms, 0)}),
+      %{phase: :live, result: result}
+    )
+
+    {:noreply, assign(socket, :hydrating?, false)}
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -82,7 +120,14 @@ defmodule StoreWeb.CartLive do
         </header>
 
         <div
-          :if={@cart_view.items == []}
+          :if={@hydrating? and @cart_view.items == []}
+          class="rounded-xl border border-base-300 bg-base-200/50 p-6 text-sm"
+        >
+          Loading your cart...
+        </div>
+
+        <div
+          :if={!@hydrating? and @cart_view.items == []}
           class="rounded-xl border border-base-300 bg-base-200/50 p-6 text-sm"
         >
           Your cart is empty.
@@ -155,18 +200,33 @@ defmodule StoreWeb.CartLive do
     """
   end
 
-  defp load_cart_view(socket) do
+  defp load_cart_view_now(socket) do
+    {socket, _repo_stats, _result} = load_cart_view_with_stats(socket)
+    assign(socket, :hydrating?, false)
+  end
+
+  defp load_cart_view_with_stats(socket) do
     actor = socket.assigns[:current_user]
 
-    with {:ok, query} <- CartLoadQuery.new(%{"include_items" => true}),
-         {:ok, cart_view} <-
-           CartsFacade.get_cart_view_for_user(actor, socket.assigns.cart_token, query) do
-      assign(socket, :cart_view, cart_view)
-    else
+    {result, repo_stats} =
+      RepoStats.capture(fn ->
+        case CartLoadQuery.new(%{"include_items" => true}) do
+          {:ok, query} ->
+            CartsFacade.get_cart_view_for_user(actor, socket.assigns.cart_token, query)
+
+          error ->
+            error
+        end
+      end)
+
+    case result do
+      {:ok, cart_view} ->
+        {assign(socket, :cart_view, cart_view), repo_stats, :ok}
+
       _ ->
-        socket
-        |> put_flash(:error, "Unable to load cart")
-        |> assign(:cart_view, empty_cart_view())
+        {socket
+         |> put_flash(:error, "Unable to load cart")
+         |> assign(:cart_view, empty_cart_view()), repo_stats, :error}
     end
   end
 
