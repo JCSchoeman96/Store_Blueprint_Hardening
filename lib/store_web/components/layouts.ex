@@ -45,10 +45,10 @@ defmodule StoreWeb.Layouts do
       <div class="flex-none">
         <ul class="flex flex-column px-1 space-x-4 items-center">
           <li>
-            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
+            <a href="/shop" class="btn btn-ghost">Shop</a>
           </li>
           <li>
-            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
+            <a href="/tools" class="btn btn-ghost">Tools</a>
           </li>
           <li>
             <.theme_toggle />

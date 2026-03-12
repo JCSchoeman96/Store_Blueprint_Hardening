@@ -77,6 +77,8 @@ defmodule StoreWeb.Router do
       live("/checkout", CheckoutLive.Placeholder, :index)
       live("/checkout/return", CheckoutLive.Placeholder, :return)
       live("/checkout/cancel", CheckoutLive.Placeholder, :cancel)
+      live("/tools", ToolsLive.Index, :index)
+      live("/tools/risk-appetite", ToolsLive.RiskAppetite, :index)
     end
 
     ash_authentication_live_session :admin_authentication_required,

@@ -23,7 +23,8 @@ config :store,
     Store.Entitlements,
     Store.Fulfillment,
     Store.Shipping,
-    Store.Pricing
+    Store.Pricing,
+    Store.Tools
   ],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
