@@ -4,10 +4,10 @@ defmodule Store.Payments.ProviderConfig do
   alias Store.Support.Errors.Error
 
   @default_api_base_url "https://api.stripe.com"
-  @default_task_timeout_ms 3_000
+  @default_task_timeout_ms 4_000
   @default_http_pool_size 400
-  @default_http_receive_timeout_ms 5_000
-  @default_http_pool_timeout_ms 4_000
+  @default_http_receive_timeout_ms 6_000
+  @default_http_pool_timeout_ms 5_000
 
   @spec finch_name() :: module()
   def finch_name, do: Store.Payments.Finch

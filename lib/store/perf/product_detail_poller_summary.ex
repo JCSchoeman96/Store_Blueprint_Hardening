@@ -161,6 +161,15 @@ defmodule Store.Perf.ProductDetailPollerSummary do
     measure_start_at = parse_datetime!(Keyword.fetch!(opts, :measure_start_at))
     measure_end_at = parse_datetime!(Keyword.fetch!(opts, :measure_end_at))
     cooldown_end_at = parse_datetime!(Keyword.fetch!(opts, :cooldown_end_at))
+
+    nominal_cooldown_end_at =
+      Keyword.get(opts, :nominal_cooldown_end_at, cooldown_end_at)
+      |> parse_datetime!()
+
+    writer_finished_at =
+      Keyword.get(opts, :writer_finished_at, cooldown_end_at)
+      |> parse_datetime!()
+
     measure_ms = Keyword.get(opts, :measure_ms)
     cooldown_ms = Keyword.get(opts, :cooldown_ms)
 
@@ -206,6 +215,12 @@ defmodule Store.Perf.ProductDetailPollerSummary do
         end: aggregate_rows(collect_shop_live_window_rows(elem(measure_windows, 2)))
       }
 
+    backlog_trend = %{
+      start: aggregate_snapshot_maps(elem(measure_windows, 0), "pending_provider_setup_backlog"),
+      mid: aggregate_snapshot_maps(elem(measure_windows, 1), "pending_provider_setup_backlog"),
+      end: aggregate_snapshot_maps(elem(measure_windows, 2), "pending_provider_setup_backlog")
+    }
+
     memory_profile = %{
       start: first_number(memory_points),
       mid: middle_number(memory_points),
@@ -217,7 +232,41 @@ defmodule Store.Perf.ProductDetailPollerSummary do
         cooldown_drop(
           last_number(memory_points),
           last_number(Enum.map(cooldown_snapshots, &scheduler_metric(&1, "memory_total")))
-        )
+        ),
+      components: %{
+        processes:
+          component_profile(
+            measure_snapshots,
+            cooldown_snapshots,
+            "memory_processes",
+            measure_start_at,
+            measure_end_at
+          ),
+        processes_used:
+          component_profile(
+            measure_snapshots,
+            cooldown_snapshots,
+            "memory_processes_used",
+            measure_start_at,
+            measure_end_at
+          ),
+        binary:
+          component_profile(
+            measure_snapshots,
+            cooldown_snapshots,
+            "memory_binary",
+            measure_start_at,
+            measure_end_at
+          ),
+        ets:
+          component_profile(
+            measure_snapshots,
+            cooldown_snapshots,
+            "memory_ets",
+            measure_start_at,
+            measure_end_at
+          )
+      }
     }
 
     run_queue_profile = %{
@@ -250,6 +299,8 @@ defmodule Store.Perf.ProductDetailPollerSummary do
       timings: %{
         measure_start_at: DateTime.to_iso8601(measure_start_at),
         measure_end_at: DateTime.to_iso8601(measure_end_at),
+        nominal_cooldown_end_at: DateTime.to_iso8601(nominal_cooldown_end_at),
+        writer_finished_at: DateTime.to_iso8601(writer_finished_at),
         cooldown_end_at: DateTime.to_iso8601(cooldown_end_at)
       },
       memory_profile: memory_profile,
@@ -257,6 +308,14 @@ defmodule Store.Perf.ProductDetailPollerSummary do
       run_queue_profile: run_queue_profile,
       active_backends_profile: active_backend_profile,
       lock_waiters_max: lock_waiters_max,
+      pending_provider_setup_trends: %{
+        count: backlog_metric_trend(backlog_trend, "count"),
+        oldest_age_seconds: backlog_metric_trend(backlog_trend, "oldest_age_seconds"),
+        without_provider_refs_count:
+          backlog_metric_trend(backlog_trend, "without_provider_refs_count"),
+        recoverable_created_intent_count:
+          backlog_metric_trend(backlog_trend, "recoverable_created_intent_count")
+      },
       shop_show_trends: %{
         query_count: metric_trend(shop_show_trend, "query_count"),
         queue_time: metric_trend(shop_show_trend, "queue_time"),
@@ -276,6 +335,8 @@ defmodule Store.Perf.ProductDetailPollerSummary do
       snapshots: length(snapshots),
       scheduler: aggregate_snapshot_maps(snapshots, "scheduler"),
       postgres_activity: aggregate_snapshot_maps(snapshots, "postgres_activity"),
+      pending_provider_setup_backlog:
+        aggregate_snapshot_maps(snapshots, "pending_provider_setup_backlog"),
       shop_show_under_contention:
         snapshots
         |> collect_shop_live_window_rows()
@@ -312,6 +373,14 @@ defmodule Store.Perf.ProductDetailPollerSummary do
   end
 
   defp metric_trend(windows, metric) do
+    %{
+      start: get_in(windows.start, [:averages, metric]) || 0.0,
+      mid: get_in(windows.mid, [:averages, metric]) || 0.0,
+      end: get_in(windows.end, [:averages, metric]) || 0.0
+    }
+  end
+
+  defp backlog_metric_trend(windows, metric) do
     %{
       start: get_in(windows.start, [:averages, metric]) || 0.0,
       mid: get_in(windows.mid, [:averages, metric]) || 0.0,
@@ -378,6 +447,26 @@ defmodule Store.Perf.ProductDetailPollerSummary do
   defp safe_ratio(_numerator, denominator) when denominator <= 0, do: 0.0
   defp safe_ratio(numerator, denominator), do: numerator / denominator
 
+  defp component_profile(
+         measure_snapshots,
+         cooldown_snapshots,
+         metric,
+         measure_start_at,
+         measure_end_at
+       ) do
+    points = Enum.map(measure_snapshots, &(scheduler_metric(&1, metric) || 0))
+    cooldown_points = Enum.map(cooldown_snapshots, &(scheduler_metric(&1, metric) || 0))
+
+    %{
+      start: first_number(points),
+      mid: middle_number(points),
+      end: last_number(points),
+      cooldown_end: last_number(cooldown_points),
+      slope_bytes_per_second: slope(points, measure_start_at, measure_end_at),
+      cooldown_drop_bytes: cooldown_drop(last_number(points), last_number(cooldown_points))
+    }
+  end
+
   defp slope([], _start_at, _end_at), do: 0.0
   defp slope([_single], _start_at, _end_at), do: 0.0
 
@@ -424,29 +513,56 @@ defmodule Store.Perf.ProductDetailPollerSummary do
          measure_ms,
          cooldown_ms
        ) do
-    latest_at =
-      timed_snapshots
-      |> List.last()
-      |> case do
-        nil -> nil
-        snapshot -> snapshot["__captured_at"]
-      end
+    timed_snapshots
+    |> latest_snapshot_at()
+    |> realign_windows_from_latest(
+      measure_start_at,
+      measure_end_at,
+      cooldown_end_at,
+      measure_ms,
+      cooldown_ms
+    )
+  end
 
+  defp latest_snapshot_at(timed_snapshots) do
+    case List.last(timed_snapshots) do
+      nil -> nil
+      snapshot -> snapshot["__captured_at"]
+    end
+  end
+
+  defp realign_windows_from_latest(
+         nil,
+         measure_start_at,
+         measure_end_at,
+         cooldown_end_at,
+         _measure_ms,
+         _cooldown_ms
+       ) do
+    {measure_start_at, measure_end_at, cooldown_end_at}
+  end
+
+  defp realign_windows_from_latest(
+         latest_at,
+         measure_start_at,
+         measure_end_at,
+         cooldown_end_at,
+         measure_ms,
+         cooldown_ms
+       ) do
     cond do
-      is_nil(latest_at) ->
+      DateTime.compare(latest_at, cooldown_end_at) != :lt ->
         {measure_start_at, measure_end_at, cooldown_end_at}
 
-      DateTime.compare(latest_at, measure_end_at) != :lt ->
-        {measure_start_at, measure_end_at, cooldown_end_at}
-
-      is_integer(measure_ms) and is_integer(cooldown_ms) ->
+      DateTime.compare(latest_at, measure_end_at) == :lt and
+        is_integer(measure_ms) and is_integer(cooldown_ms) ->
         effective_cooldown_end = latest_at
         effective_measure_end = DateTime.add(effective_cooldown_end, -cooldown_ms, :millisecond)
         effective_measure_start = DateTime.add(effective_measure_end, -measure_ms, :millisecond)
         {effective_measure_start, effective_measure_end, effective_cooldown_end}
 
       true ->
-        {measure_start_at, measure_end_at, cooldown_end_at}
+        {measure_start_at, measure_end_at, latest_at}
     end
   end
 

@@ -62,10 +62,10 @@ config :store, :payments,
     publishable_key: "pk_test_store_blueprint",
     api_version: "2025-02-24.acacia",
     payment_timeout_ms: 5_000,
-    payment_provider_task_timeout_ms: 3_000,
+    payment_provider_task_timeout_ms: 4_000,
     payment_http_pool_size: 400,
-    payment_http_receive_timeout_ms: 5_000,
-    payment_http_pool_timeout_ms: 4_000,
+    payment_http_receive_timeout_ms: 6_000,
+    payment_http_pool_timeout_ms: 5_000,
     request_options: []
   ]
 

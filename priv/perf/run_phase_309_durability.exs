@@ -87,7 +87,7 @@ defmodule Store.Perf.Phase309Durability do
         measure_end_at =
           DateTime.add(measure_start_at, BenchmarkHarness.phase309_measure_ms(), :millisecond)
 
-        cooldown_end_at =
+        nominal_cooldown_end_at =
           DateTime.add(measure_end_at, BenchmarkHarness.phase309_cooldown_ms(), :millisecond)
 
         storefront = run_storefront_k6(context.storefront_summary_path)
@@ -99,6 +99,7 @@ defmodule Store.Perf.Phase309Durability do
           )
 
         writer_finished_at = DateTime.utc_now()
+        cooldown_end_at = max_datetime(nominal_cooldown_end_at, writer_finished_at)
 
         stop_process(server_port)
 
@@ -110,6 +111,8 @@ defmodule Store.Perf.Phase309Durability do
             measure_start_at: measure_start_at,
             measure_end_at: measure_end_at,
             cooldown_end_at: cooldown_end_at,
+            nominal_cooldown_end_at: nominal_cooldown_end_at,
+            writer_finished_at: writer_finished_at,
             measure_ms: BenchmarkHarness.phase309_measure_ms(),
             cooldown_ms: BenchmarkHarness.phase309_cooldown_ms()
           )
@@ -231,10 +234,10 @@ defmodule Store.Perf.Phase309Durability do
     deployment_readiness_note =
       case durability_status do
         "pass" ->
-          "The 100-writer soak stayed inside the storefront latency and durability envelope; the 180-writer waiting-room trigger remains credible on this workstation profile."
+          "The #{report.writer_users}-writer soak stayed inside the storefront latency and durability envelope; keep the 380-writer waiting-room trigger on this workstation profile."
 
         _ ->
-          "The durability soak crossed the speed or stamina envelope; do not treat the current waiting-room trigger as production-ready without remediation."
+          "The #{report.writer_users}-writer durability soak crossed the speed or stamina envelope; keep the 380-writer waiting-room trigger in place until the provider and memory gates pass."
       end
 
     Map.merge(report, %{
@@ -251,6 +254,8 @@ defmodule Store.Perf.Phase309Durability do
         run_queue_profile: get_in(durability, [:run_queue_profile]) || %{},
         active_backends_profile: get_in(durability, [:active_backends_profile]) || %{},
         lock_waiters_max: lock_waiters,
+        pending_provider_setup_trends:
+          get_in(durability, [:pending_provider_setup_trends]) || %{},
         shop_show_trends: get_in(durability, [:shop_show_trends]) || %{}
       },
       durability_status: durability_status,
@@ -481,6 +486,13 @@ defmodule Store.Perf.Phase309Durability do
   defp native_to_ms(value) when is_number(value) do
     native_per_ms = System.convert_time_unit(1, :millisecond, :native)
     value / native_per_ms
+  end
+
+  defp max_datetime(left, right) do
+    case DateTime.compare(left, right) do
+      :lt -> right
+      _ -> left
+    end
   end
 end
 

@@ -9,6 +9,8 @@ defmodule Store.Workers.ExpirePendingProviderSetupOrdersWorker do
   @spec sweep(DateTime.t(), keyword()) ::
           {:ok,
            %{
+             recovered_count: non_neg_integer(),
+             recovered_order_ids: [String.t()],
              swept_count: non_neg_integer(),
              released_count: non_neg_integer(),
              order_ids: [String.t()]
@@ -17,14 +19,30 @@ defmodule Store.Workers.ExpirePendingProviderSetupOrdersWorker do
   def sweep(now \\ DateTime.utc_now(), opts \\ [])
       when is_struct(now, DateTime) and is_list(opts) do
     started_at = System.monotonic_time()
+    source = Keyword.get(opts, :source, :worker)
 
     result =
-      Store.Orders.sweep_stale_pending_provider_setup(
-        now,
-        Keyword.take(opts, [:ttl_seconds, :batch_size])
-      )
+      with {:ok, recovery} <-
+             Store.Payments.reconcile_pending_provider_setup(
+               limit: Keyword.get(opts, :batch_size, 200),
+               source: source
+             ),
+           {:ok, sweep_result} <-
+             Store.Orders.sweep_stale_pending_provider_setup(
+               now,
+               Keyword.take(opts, [:ttl_seconds, :batch_size])
+             ) do
+        {:ok,
+         %{
+           recovered_count: recovery.recovered_count,
+           recovered_order_ids: recovery.order_ids,
+           swept_count: sweep_result.swept_count,
+           released_count: sweep_result.released_count,
+           order_ids: sweep_result.order_ids
+         }}
+      end
 
-    emit_telemetry(result, started_at, Keyword.get(opts, :source, :worker))
+    emit_telemetry(result, started_at, source)
     result
   end
 
@@ -41,6 +59,7 @@ defmodule Store.Workers.ExpirePendingProviderSetupOrdersWorker do
       [:store, :checkout, :pending_provider_setup, :sweep],
       %{
         duration: System.monotonic_time() - started_at,
+        recovered_count: Map.get(result, :recovered_count, 0),
         swept_count: result.swept_count,
         released_count: result.released_count
       },
@@ -53,6 +72,7 @@ defmodule Store.Workers.ExpirePendingProviderSetupOrdersWorker do
       [:store, :checkout, :pending_provider_setup, :sweep],
       %{
         duration: System.monotonic_time() - started_at,
+        recovered_count: 0,
         swept_count: 0,
         released_count: 0
       },

@@ -179,6 +179,85 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
     assert 1 == payment_intent_count_for_order(order_id)
   end
 
+  test "created intent with provider refs resumes locally without another provider call" do
+    %{actor: actor, checkout_key: checkout_key, order_id: order_id} = prepare_checkout_context!()
+    assert {:ok, input} = CreateIntentForOrderInput.new(%{"provider" => "stripe"})
+
+    assert {:ok, first} = Payments.create_intent_for_order(actor, checkout_key, input)
+
+    stranded = strand_payment_intent!(order_id, first.payment_intent_id, :created)
+    assert stranded.order.state == :pending_provider_setup
+    assert stranded.payment_intent.state == :created
+    assert is_binary(stranded.payment_intent.provider_session_id)
+
+    parent = self()
+    handler_id = {__MODULE__, :pending_provider_recovery, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      handler_id,
+      [:store, :checkout, :pending_provider_setup, :recovery],
+      fn _event, measurements, metadata, pid ->
+        send(pid, {:pending_provider_recovery, measurements, metadata})
+      end,
+      parent
+    )
+
+    StripeAPIStub.stub_unexpected!(
+      "provider should not be called while reconciling local provider state"
+    )
+
+    try do
+      assert {:ok, retried} = Payments.create_intent_for_order(actor, checkout_key, input)
+
+      assert retried.payment_intent_id == first.payment_intent_id
+      assert retried.payment_intent_key == first.payment_intent_key
+      assert retried.duplicate? == true
+      assert retried.state == :submitted
+      assert is_binary(retried.provider_session_id)
+
+      assert_receive {:pending_provider_recovery, %{count: 1}, metadata}
+      assert metadata.provider == "stripe"
+      assert metadata.result == :ok
+      assert metadata.source == :request
+
+      resumed_order = fetch_order!(order_id)
+      resumed_payment_intent = fetch_payment_intent!(first.payment_intent_id)
+
+      assert resumed_order.state == :pending_payment
+      assert is_nil(resumed_order.provider_setup_started_at)
+      assert resumed_payment_intent.state == :submitted
+      assert resumed_payment_intent.provider_session_id == first.provider_session_id
+      assert 1 == payment_intent_count_for_order(order_id)
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  test "surfaces local finalize failure when stranded provider intent cannot be submitted" do
+    %{actor: actor, checkout_key: checkout_key, order_id: order_id} = prepare_checkout_context!()
+    assert {:ok, input} = CreateIntentForOrderInput.new(%{"provider" => "stripe"})
+
+    assert {:ok, first} = Payments.create_intent_for_order(actor, checkout_key, input)
+
+    stranded = strand_payment_intent!(order_id, first.payment_intent_id, :cancelled)
+    assert stranded.order.state == :pending_provider_setup
+    assert stranded.payment_intent.state == :cancelled
+    assert is_binary(stranded.payment_intent.provider_session_id)
+
+    StripeAPIStub.stub_unexpected!("provider should not be called when local finalize fails")
+
+    assert {:error, %Error{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             Payments.create_intent_for_order(actor, checkout_key, input)
+
+    failed_order = fetch_order!(order_id)
+    failed_payment_intent = fetch_payment_intent!(first.payment_intent_id)
+
+    assert failed_order.state == :pending_provider_setup
+    assert %DateTime{} = failed_order.provider_setup_started_at
+    assert failed_payment_intent.state == :cancelled
+    assert 1 == payment_intent_count_for_order(order_id)
+  end
+
   defp prepare_checkout_context! do
     token = Ash.UUIDv7.generate()
     actor = %{cart_token: token}
@@ -239,6 +318,15 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
     payment_intent
   end
 
+  defp fetch_payment_intent!(payment_intent_id) do
+    assert {:ok, [payment_intent]} =
+             PaymentIntent
+             |> Ash.Query.filter(expr(id == ^payment_intent_id))
+             |> Ash.read(domain: Store.Payments, authorize?: false)
+
+    payment_intent
+  end
+
   defp fetch_order!(order_id) do
     assert {:ok, [order]} =
              Order
@@ -259,6 +347,29 @@ defmodule Store.Payments.ProviderFaultIsolationTest do
     PaymentIntent
     |> Ash.Query.filter(expr(order_id == ^order_id))
     |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
+  defp strand_payment_intent!(order_id, payment_intent_id, payment_intent_state) do
+    stranded_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {1, _} =
+             Repo.update_all(
+               from(order in Order, where: order.id == ^order_id),
+               set: [state: :pending_provider_setup, provider_setup_started_at: stranded_at]
+             )
+
+    assert {1, _} =
+             Repo.update_all(
+               from(payment_intent in PaymentIntent,
+                 where: payment_intent.id == ^payment_intent_id
+               ),
+               set: [state: payment_intent_state]
+             )
+
+    %{
+      order: fetch_order!(order_id),
+      payment_intent: fetch_payment_intent!(payment_intent_id)
+    }
   end
 
   defp create_pricing_rules! do

@@ -134,6 +134,12 @@ defmodule StoreWeb.Telemetry do
       counter("store.checkout.pending_provider_setup.resume.count",
         tags: [:provider]
       ),
+      counter("store.checkout.pending_provider_setup.state.count",
+        tags: [:classification, :phase, :provider, :source]
+      ),
+      counter("store.checkout.pending_provider_setup.recovery.count",
+        tags: [:provider, :result, :source]
+      ),
       last_value("store.checkout.pending_provider_setup.backlog.count",
         tags: [:source]
       ),
@@ -143,9 +149,18 @@ defmodule StoreWeb.Telemetry do
       last_value("store.checkout.pending_provider_setup.backlog.reserved_variant_count",
         tags: [:source]
       ),
+      last_value("store.checkout.pending_provider_setup.backlog.without_provider_refs_count",
+        tags: [:source]
+      ),
+      last_value("store.checkout.pending_provider_setup.backlog.recoverable_created_intent_count",
+        tags: [:source]
+      ),
       summary("store.checkout.pending_provider_setup.sweep.duration",
         tags: [:result],
         unit: {:native, :millisecond}
+      ),
+      summary("store.checkout.pending_provider_setup.sweep.recovered_count",
+        tags: [:result]
       ),
       summary("store.checkout.pending_provider_setup.sweep.swept_count",
         tags: [:result]

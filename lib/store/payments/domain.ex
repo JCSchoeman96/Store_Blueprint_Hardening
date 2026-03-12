@@ -6,6 +6,7 @@ defmodule Store.Payments do
   use Ash.Domain, extensions: [AshJsonApi.Domain]
 
   import Ash.Expr
+  import Ecto.Query
   require Ash.Query
 
   alias Store.Checkout
@@ -13,9 +14,12 @@ defmodule Store.Payments do
   alias Store.Orders.Order
   alias Store.Orders.OrderLineItem
   alias Store.Payments.Inputs.CreateIntentForOrderInput
-  alias Store.Payments.{Interlocks, Providers, ProviderTask, Refunds}
+  alias Store.Payments.{Interlocks, PaymentIntent, Providers, ProviderTask, Refunds}
+  alias Store.Repo
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.Telemetry.RepoStats
+
+  @recoverable_pending_provider_intent_states [:created, :submitted, :requires_action, :succeeded]
 
   resources do
     resource(Store.Payments.PaymentIntent)
@@ -101,10 +105,8 @@ defmodule Store.Payments do
                  intent_result.payment_intent_key,
                  input,
                  has_subscription_lines?
-               ),
-             {:ok, submitted_intent} <- maybe_submit_payment_intent(payment_intent) do
-          maybe_emit_provider_setup_ready(checkout)
-          {:ok, build_checkout_intent_result(checkout, intent_result, submitted_intent)}
+               ) do
+          {:ok, build_checkout_intent_result(checkout, intent_result, payment_intent)}
         end
       end)
 
@@ -135,6 +137,28 @@ defmodule Store.Payments do
 
   def create_intent_for_order(_actor, _checkout_key, _input) do
     {:error, Error.new("VALIDATION_ERROR", "checkout_key and create intent input are required")}
+  end
+
+  @spec reconcile_pending_provider_setup(keyword()) ::
+          {:ok,
+           %{
+             recovered_count: non_neg_integer(),
+             order_ids: [String.t()]
+           }}
+          | {:error, term()}
+  def reconcile_pending_provider_setup(opts \\ []) when is_list(opts) do
+    limit = Keyword.get(opts, :limit, 200)
+    source = Keyword.get(opts, :source, :worker)
+
+    recoverable_pending_provider_setup_candidates(limit)
+    |> Enum.reduce_while(
+      {:ok, %{recovered_count: 0, order_ids: []}},
+      &recover_pending_provider_setup_candidate(&1, &2, source)
+    )
+    |> case do
+      {:ok, result} -> {:ok, %{result | order_ids: Enum.reverse(result.order_ids)}}
+      other -> other
+    end
   end
 
   @spec process_payment_webhook_receipt(Store.Payments.WebhookReceipt.t(), keyword()) ::
@@ -225,6 +249,27 @@ defmodule Store.Payments do
          input,
          has_subscription_lines?
        ) do
+    with {:ok, payment_intent, checkout} <-
+           ensure_provider_reference_for_checkout(
+             payment_intent,
+             checkout,
+             payment_intent_key,
+             input,
+             has_subscription_lines?
+           ) do
+      time_provider_setup_phase(:local_finalize, input.provider, fn ->
+        reconcile_local_provider_setup(payment_intent, checkout, source: :request)
+      end)
+    end
+  end
+
+  defp ensure_provider_reference_for_checkout(
+         payment_intent,
+         checkout,
+         payment_intent_key,
+         input,
+         has_subscription_lines?
+       ) do
     case provider_reference_present?(payment_intent) do
       true ->
         maybe_resume_provider_setup(checkout, payment_intent)
@@ -247,18 +292,19 @@ defmodule Store.Payments do
          input,
          has_subscription_lines?
        ) do
-    with {:ok, updated_checkout} <- mark_provider_setup_pending(checkout),
-         {:ok, payment_intent} <-
-           time_provider_setup_phase(:provider_request, input.provider, fn ->
-             ensure_provider_reference(
-               payment_intent,
-               updated_checkout,
-               payment_intent_key,
-               input,
-               has_subscription_lines?
-             )
-           end) do
-      {:ok, payment_intent, updated_checkout}
+    case mark_provider_setup_pending(checkout) do
+      {:ok, updated_checkout} ->
+        payment_intent
+        |> request_provider_reference_phase(
+          updated_checkout,
+          payment_intent_key,
+          input,
+          has_subscription_lines?
+        )
+        |> finalize_provider_request(updated_checkout, payment_intent)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -269,10 +315,41 @@ defmodule Store.Payments do
       %{provider: provider_to_string(payment_intent.provider)}
     )
 
+    emit_pending_provider_setup_state(checkout, payment_intent, :resume, :request)
     {:ok, payment_intent, checkout}
   end
 
   defp maybe_resume_provider_setup(checkout, payment_intent), do: {:ok, payment_intent, checkout}
+
+  defp reconcile_local_provider_setup(payment_intent, checkout, opts) do
+    source = Keyword.get(opts, :source, :request)
+    pending_before? = checkout.state == :pending_provider_setup
+    created_before? = payment_intent.state == :created
+
+    emit_pending_provider_setup_state(checkout, payment_intent, :before_local_finalize, source)
+
+    with {:ok, payment_intent} <- maybe_submit_payment_intent(payment_intent),
+         {:ok, checkout} <- maybe_mark_provider_setup_ready(checkout) do
+      emit_pending_provider_setup_state(checkout, payment_intent, :after_local_finalize, source)
+
+      if pending_before? or created_before? do
+        emit_local_provider_recovery(payment_intent, checkout, source)
+      end
+
+      {:ok, payment_intent, checkout}
+    end
+  end
+
+  defp maybe_mark_provider_setup_ready(
+         %{order_id: order_id, state: :pending_provider_setup} = checkout
+       ) do
+    with {:ok, order} <- fetch_order(order_id),
+         {:ok, updated_order} <- provider_setup_ready(order) do
+      {:ok, Map.put(checkout, :state, updated_order.state)}
+    end
+  end
+
+  defp maybe_mark_provider_setup_ready(checkout), do: {:ok, checkout}
 
   defp provider_create_intent_attrs(
          checkout,
@@ -520,17 +597,6 @@ defmodule Store.Payments do
     end)
   end
 
-  defp maybe_emit_provider_setup_ready(%{order_id: order_id, state: :pending_provider_setup}) do
-    with {:ok, order} <- fetch_order(order_id),
-         {:ok, _updated_order} <- provider_setup_ready(order) do
-      :ok
-    else
-      _ -> :ok
-    end
-  end
-
-  defp maybe_emit_provider_setup_ready(_checkout), do: :ok
-
   defp provider_setup_ready(%Order{state: :pending_provider_setup} = order) do
     order
     |> Ash.Changeset.for_update(:provider_setup_ready, %{}, context: %{system?: true})
@@ -551,6 +617,79 @@ defmodule Store.Payments do
 
   defp provider_setup_ready(%Order{} = order), do: {:ok, order}
 
+  defp recoverable_pending_provider_setup_candidates(limit) do
+    Repo.all(
+      from(payment_intent in PaymentIntent,
+        join: order in Order,
+        on: order.id == payment_intent.order_id,
+        where: ^recoverable_pending_provider_setup_dynamic(),
+        order_by: [asc: order.provider_setup_started_at, asc: order.id],
+        limit: ^limit,
+        select:
+          {payment_intent,
+           %{
+             order_id: order.id,
+             checkout_key: order.checkout_key,
+             state: order.state
+           }}
+      )
+    )
+  end
+
+  defp emit_pending_provider_setup_state(checkout, payment_intent, phase, source)
+       when is_map(checkout) and is_atom(phase) do
+    case pending_provider_setup_state(checkout, payment_intent) do
+      nil ->
+        :ok
+
+      classification ->
+        :telemetry.execute(
+          [:store, :checkout, :pending_provider_setup, :state],
+          %{count: 1},
+          %{
+            classification: classification,
+            phase: phase,
+            provider: provider_to_string(payment_intent.provider),
+            source: source
+          }
+        )
+    end
+  end
+
+  defp emit_pending_provider_setup_state(_checkout, _payment_intent, _phase, _source), do: :ok
+
+  defp pending_provider_setup_state(%{state: :pending_provider_setup}, payment_intent) do
+    cond do
+      not provider_reference_present?(payment_intent) ->
+        :pending_no_refs
+
+      payment_intent.state == :created ->
+        :pending_refs_created_intent
+
+      true ->
+        nil
+    end
+  end
+
+  defp pending_provider_setup_state(%{state: state}, payment_intent)
+       when state != :pending_provider_setup do
+    if provider_reference_present?(payment_intent) and
+         payment_intent.state in [:submitted, :requires_action, :succeeded] do
+      :recovered_finalized_local
+    end
+  end
+
+  defp emit_local_provider_recovery(payment_intent, checkout, source) do
+    if checkout.state != :pending_provider_setup and
+         payment_intent.state in [:submitted, :requires_action, :succeeded] do
+      :telemetry.execute(
+        [:store, :checkout, :pending_provider_setup, :recovery],
+        %{count: 1},
+        %{provider: provider_to_string(payment_intent.provider), result: :ok, source: source}
+      )
+    end
+  end
+
   defp fetch_order(order_id) when is_binary(order_id) do
     query =
       Order
@@ -562,6 +701,85 @@ defmodule Store.Payments do
       {:ok, []} -> {:error, Error.new("ORDER_NOT_FOUND", "order not found")}
       {:error, error} -> {:error, error}
     end
+  end
+
+  defp recover_pending_provider_setup_candidate({payment_intent, checkout}, {:ok, acc}, source) do
+    case time_provider_setup_phase(:local_finalize, payment_intent.provider, fn ->
+           reconcile_local_provider_setup(payment_intent, checkout, source: source)
+         end) do
+      {:ok, _payment_intent, updated_checkout} ->
+        {:cont, {:ok, accumulate_recovered_checkout(acc, checkout, updated_checkout)}}
+
+      {:error, reason} ->
+        {:halt, {:error, reason}}
+    end
+  end
+
+  defp accumulate_recovered_checkout(acc, checkout, updated_checkout) do
+    if recovered_checkout?(checkout, updated_checkout) do
+      %{
+        recovered_count: acc.recovered_count + 1,
+        order_ids: [checkout.order_id | acc.order_ids]
+      }
+    else
+      acc
+    end
+  end
+
+  defp recovered_checkout?(checkout, updated_checkout) do
+    checkout.state == :pending_provider_setup and
+      updated_checkout.state != :pending_provider_setup
+  end
+
+  defp request_provider_reference_phase(
+         payment_intent,
+         updated_checkout,
+         payment_intent_key,
+         input,
+         has_subscription_lines?
+       ) do
+    time_provider_setup_phase(:provider_request, input.provider, fn ->
+      ensure_provider_reference(
+        payment_intent,
+        updated_checkout,
+        payment_intent_key,
+        input,
+        has_subscription_lines?
+      )
+    end)
+  end
+
+  defp finalize_provider_request(
+         {:ok, updated_payment_intent},
+         updated_checkout,
+         _payment_intent
+       ) do
+    {:ok, updated_payment_intent, updated_checkout}
+  end
+
+  defp finalize_provider_request({:error, _reason} = error, updated_checkout, payment_intent) do
+    emit_pending_provider_setup_state(
+      updated_checkout,
+      payment_intent,
+      :provider_request,
+      :request
+    )
+
+    error
+  end
+
+  defp recoverable_pending_provider_setup_dynamic do
+    dynamic(
+      [payment_intent, order],
+      order.state == ^:pending_provider_setup and
+        payment_intent.state in ^@recoverable_pending_provider_intent_states and
+        (not is_nil(payment_intent.provider_session_id) or
+           not is_nil(payment_intent.provider_payment_id) or
+           not is_nil(payment_intent.provider_customer_ref) or
+           not is_nil(payment_intent.provider_payment_method_ref) or
+           not is_nil(payment_intent.provider_checkout_url) or
+           not is_nil(payment_intent.provider_client_secret))
+    )
   end
 
   defp time_provider_setup_phase(phase, provider, fun)
@@ -586,6 +804,7 @@ defmodule Store.Payments do
   defp normalize_result({:error, error}), do: {:error, Normalize.normalize(error)}
 
   defp telemetry_result({:ok, %{duplicate?: true}}), do: :duplicate
+  defp telemetry_result({:ok, _, _}), do: :ok
   defp telemetry_result({:ok, _}), do: :ok
   defp telemetry_result({:error, _}), do: :error
 end

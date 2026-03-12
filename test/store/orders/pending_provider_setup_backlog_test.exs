@@ -6,6 +6,7 @@ defmodule Store.Orders.PendingProviderSetupBacklogTest do
 
   alias Store.Catalog.InventoryItem
   alias Store.Orders.{InventoryReservation, Order}
+  alias Store.Payments.PaymentIntent
   alias Store.Support.ID.UUIDv7
   alias Store.Workers.ExpirePendingProviderSetupOrdersWorker
 
@@ -96,6 +97,29 @@ defmodule Store.Orders.PendingProviderSetupBacklogTest do
     end)
   end
 
+  test "backlog snapshot distinguishes rows without refs from locally recoverable created intents" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    stale_started_at = DateTime.add(now, -600, :second)
+    fresh_started_at = DateTime.add(now, -120, :second)
+
+    no_ref_order = create_pending_provider_setup_order!(stale_started_at, UUIDv7.generate())
+    recoverable_order = create_pending_provider_setup_order!(fresh_started_at, UUIDv7.generate())
+
+    create_recoverable_payment_intent!(recoverable_order.id)
+
+    snapshot =
+      Store.Orders.pending_provider_setup_backlog_snapshot(now,
+        emit_telemetry?: false,
+        source: :test
+      )
+
+    assert snapshot.count == 2
+    assert snapshot.without_provider_refs_count == 1
+    assert snapshot.recoverable_created_intent_count == 1
+    assert fetch_order!(no_ref_order.id).state == :pending_provider_setup
+    assert fetch_order!(recoverable_order.id).state == :pending_provider_setup
+  end
+
   defp fetch_order!(order_id) do
     assert {:ok, [order]} =
              Order
@@ -141,5 +165,24 @@ defmodule Store.Orders.PendingProviderSetupBacklogTest do
       reserved_count: 0
     })
     |> Ash.create!(domain: Store.Catalog, authorize?: false)
+  end
+
+  defp create_recoverable_payment_intent!(order_id) do
+    PaymentIntent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        order_id: order_id,
+        amount_received_minor: 2_500,
+        currency: "USD",
+        provider: :stripe,
+        payment_intent_key: "pi-key-#{System.unique_integer([:positive])}",
+        provider_session_id: "cs_test_#{System.unique_integer([:positive])}",
+        provider_payment_id: "pi_test_#{System.unique_integer([:positive])}",
+        provider_checkout_url: "https://checkout.stripe.test/session/recoverable"
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
   end
 end

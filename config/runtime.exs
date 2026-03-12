@@ -350,18 +350,18 @@ if config_env() == :prod do
   payment_timeout_ms = parse_positive_integer!.("STORE_PAYMENT_TIMEOUT_MS", "5000")
 
   payment_provider_task_timeout_ms =
-    parse_positive_integer!.("STORE_PAYMENT_PROVIDER_TASK_TIMEOUT_MS", "3000")
+    parse_positive_integer!.("STORE_PAYMENT_PROVIDER_TASK_TIMEOUT_MS", "4000")
 
   payment_http_pool_size = parse_positive_integer!.("STORE_PAYMENT_HTTP_POOL_SIZE", "400")
 
   payment_http_receive_timeout_ms =
     parse_positive_integer!.(
       "STORE_PAYMENT_HTTP_RECEIVE_TIMEOUT_MS",
-      System.get_env("STORE_PAYMENT_TIMEOUT_MS", "5000")
+      System.get_env("STORE_PAYMENT_TIMEOUT_MS", "6000")
     )
 
   payment_http_pool_timeout_ms =
-    parse_positive_integer!.("STORE_PAYMENT_HTTP_POOL_TIMEOUT_MS", "4000")
+    parse_positive_integer!.("STORE_PAYMENT_HTTP_POOL_TIMEOUT_MS", "5000")
 
   if payment_http_receive_timeout_ms <= payment_provider_task_timeout_ms do
     raise "STORE_PAYMENT_HTTP_RECEIVE_TIMEOUT_MS must be greater than STORE_PAYMENT_PROVIDER_TASK_TIMEOUT_MS"

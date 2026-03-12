@@ -401,6 +401,32 @@ defmodule Store.Orders.Order do
       ])
     end
 
+    update :set_shipping_details do
+      require_atomic?(false)
+
+      accept([
+        :shipping_country_code,
+        :shipping_region_code,
+        :shipping_postal_code,
+        :shipping_recipient_name,
+        :shipping_address_line1,
+        :shipping_address_line2,
+        :shipping_city,
+        :shipping_phone,
+        :shipping_rate_id,
+        :shipping_rate_code,
+        :shipping_quote_hash,
+        :shipping_quote_currency_code,
+        :shipping_quote_amount_minor,
+        :shipping_weight_grams,
+        :shipping_method_code,
+        :shipping_rule_id,
+        :shipping_zone_id,
+        :shipping_effective_from,
+        :shipping_effective_to
+      ])
+    end
+
     update :begin_provider_setup do
       require_atomic?(false)
       accept([:provider_setup_started_at])
@@ -571,6 +597,12 @@ defmodule Store.Orders.Order do
     end
 
     policy action(:set_shipping_method) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:set_shipping_details) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

@@ -66,6 +66,12 @@ defmodule Store.TestSupport.StripeAPIStub do
     end)
   end
 
+  def stub_unexpected!(message \\ "unexpected stripe provider request") do
+    Req.Test.stub(@stub_name, fn conn ->
+      flunk("#{message}: #{conn.method} #{conn.request_path}")
+    end)
+  end
+
   def form_params(conn) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     assert Plug.Conn.get_req_header(conn, "authorization") != []

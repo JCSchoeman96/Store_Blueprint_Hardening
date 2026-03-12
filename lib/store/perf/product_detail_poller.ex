@@ -198,7 +198,9 @@ defmodule Store.Perf.ProductDetailPoller do
     end)
 
     Logger.info(
-      "[poller][scheduler] run_queue=#{fmt_number(snapshot.scheduler.run_queue)} total_mem=#{fmt_bytes(snapshot.scheduler.memory_total)}"
+      "[poller][scheduler] run_queue=#{fmt_number(snapshot.scheduler.run_queue)} total_mem=#{fmt_bytes(snapshot.scheduler.memory_total)} " <>
+        "proc_mem=#{fmt_bytes(snapshot.scheduler.memory_processes)} binary_mem=#{fmt_bytes(snapshot.scheduler.memory_binary)} " <>
+        "ets_mem=#{fmt_bytes(snapshot.scheduler.memory_ets)}"
     )
 
     Logger.info(
@@ -209,14 +211,20 @@ defmodule Store.Perf.ProductDetailPoller do
     Logger.info(
       "[poller][pending_provider_setup] count=#{fmt_number(snapshot.pending_provider_setup_backlog.count)} " <>
         "oldest_age_s=#{fmt_number(snapshot.pending_provider_setup_backlog.oldest_age_seconds)} " <>
-        "reserved_variants=#{fmt_number(snapshot.pending_provider_setup_backlog.reserved_variant_count)}"
+        "reserved_variants=#{fmt_number(snapshot.pending_provider_setup_backlog.reserved_variant_count)} " <>
+        "without_refs=#{fmt_number(snapshot.pending_provider_setup_backlog.without_provider_refs_count)} " <>
+        "recoverable_created=#{fmt_number(snapshot.pending_provider_setup_backlog.recoverable_created_intent_count)}"
     )
   end
 
   defp scheduler_sample do
     %{
       run_queue: :erlang.statistics(:run_queue),
-      memory_total: :erlang.memory(:total)
+      memory_total: :erlang.memory(:total),
+      memory_processes: :erlang.memory(:processes),
+      memory_processes_used: :erlang.memory(:processes_used),
+      memory_binary: :erlang.memory(:binary),
+      memory_ets: :erlang.memory(:ets)
     }
   end
 

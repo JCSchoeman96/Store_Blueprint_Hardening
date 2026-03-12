@@ -179,6 +179,111 @@ defmodule Store.CheckoutTest do
     assert Ash.count!(Order, domain: Store.Orders, authorize?: false) == baseline_orders + 1
   end
 
+  test "set_shipping uses one traced write, skips empty order line item reads, and preserves summary shape" do
+    previous_trace = Application.get_env(:store, :checkout_trace_enabled, false)
+    Application.put_env(:store, :checkout_trace_enabled, true)
+
+    on_exit(fn ->
+      Application.put_env(:store, :checkout_trace_enabled, previous_trace)
+    end)
+
+    token = Ash.UUIDv7.generate()
+    actor = %{cart_token: token}
+    variant_id = published_variant_id!()
+    create_pricing_rules!()
+    parent = self()
+    trace_handler_id = {__MODULE__, :set_shipping_trace, System.unique_integer([:positive])}
+    query_handler_id = {__MODULE__, :set_shipping_repo_query, System.unique_integer([:positive])}
+
+    assert {:ok, add_input} = CartItemInput.new(%{"variant_id" => variant_id, "qty" => 1})
+    assert {:ok, _cart} = CartsFacade.add_item_for_user(nil, token, add_input)
+
+    assert {:ok, start_input} = CheckoutStartInput.new(%{})
+    assert {:ok, start_result} = Checkout.start_from_cart(nil, token, start_input)
+
+    selection =
+      quote_selection!(%{
+        destination_country_code: "US",
+        destination_region_code: "CA",
+        destination_postal_code: "94105",
+        currency_code: "USD",
+        shipping_weight_grams: 0
+      })
+
+    :telemetry.attach(
+      trace_handler_id,
+      [:store, :checkout, :trace],
+      fn _event, _measurements, metadata, pid ->
+        if metadata.step == :set_shipping do
+          send(pid, {:set_shipping_trace, metadata.substep})
+        end
+      end,
+      parent
+    )
+
+    :telemetry.attach(
+      query_handler_id,
+      [:store, :repo, :query],
+      fn _event, _measurements, metadata, pid ->
+        if is_binary(metadata.query) and String.contains?(metadata.query, "order_line_items") do
+          send(pid, {:order_line_items_query, metadata.query})
+        end
+      end,
+      parent
+    )
+
+    try do
+      assert {:ok, shipping_input} =
+               CheckoutShippingInput.new(%{
+                 "recipient_name" => "Jane Customer",
+                 "address_line1" => "1 Main St",
+                 "city" => "San Francisco",
+                 "country_code" => "US",
+                 "region_code" => "CA",
+                 "postal_code" => "94105",
+                 "phone" => "555-555-1212",
+                 "quote_hash" => selection.quote_hash,
+                 "shipping_method_code" => selection.shipping_method_code
+               })
+
+      assert {:ok, checkout} =
+               Checkout.set_shipping(actor, start_result.checkout_key, shipping_input)
+
+      assert_receive {:set_shipping_trace, :checkout_context}
+      assert_receive {:set_shipping_trace, :quote_options}
+      assert_receive {:set_shipping_trace, :select_quote_option}
+      assert_receive {:set_shipping_trace, :persist_shipping_details}
+      refute_receive {:set_shipping_trace, :set_shipping_address}
+      refute_receive {:set_shipping_trace, :set_shipping_method}
+      refute_receive {:set_shipping_trace, :set_shipping_quote_evidence}
+      refute_receive {:order_line_items_query, _query}
+
+      assert checkout.order_id == start_result.order_id
+      assert checkout.shipping_quote_hash == selection.quote_hash
+      assert checkout.shipping_method_code == selection.shipping_method_code
+      assert checkout.shipping_country_code == "US"
+      assert checkout.shipping_region_code == "CA"
+      assert checkout.shipping_postal_code == "94105"
+      assert checkout.shipping_recipient_name == "Jane Customer"
+      assert checkout.totals_finalized? == false
+      assert length(checkout.items) == 1
+
+      assert 0 ==
+               Ash.count!(OrderLineItem, domain: Store.Orders, authorize?: false)
+
+      order = load_order!(start_result.order_id)
+      assert order.shipping_quote_hash == selection.quote_hash
+      assert order.shipping_method_code == selection.shipping_method_code
+      assert order.shipping_country_code == "US"
+      assert order.shipping_region_code == "CA"
+      assert order.shipping_postal_code == "94105"
+      assert order.shipping_recipient_name == "Jane Customer"
+    after
+      :telemetry.detach(trace_handler_id)
+      :telemetry.detach(query_handler_id)
+    end
+  end
+
   test "finalize_totals writes snapshot + holds exactly once and is idempotent" do
     token = Ash.UUIDv7.generate()
     actor = %{cart_token: token}

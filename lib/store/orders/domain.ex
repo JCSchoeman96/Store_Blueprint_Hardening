@@ -17,6 +17,7 @@ defmodule Store.Orders do
     TaxShippingSnapshotWriter
   }
 
+  alias Store.Payments.PaymentIntent
   alias Store.Pricing.Contract
   alias Store.Repo
   alias Store.Support.AshNotifications
@@ -231,7 +232,9 @@ defmodule Store.Orders do
             oldest_age_seconds: non_neg_integer(),
             newest_age_seconds: non_neg_integer(),
             distinct_order_count: non_neg_integer(),
-            reserved_variant_count: non_neg_integer()
+            reserved_variant_count: non_neg_integer(),
+            without_provider_refs_count: non_neg_integer(),
+            recoverable_created_intent_count: non_neg_integer()
           }
   def pending_provider_setup_backlog_snapshot(now \\ DateTime.utc_now(), opts \\ [])
       when is_struct(now, DateTime) and is_list(opts) do
@@ -257,7 +260,9 @@ defmodule Store.Orders do
       oldest_age_seconds: started_at_age_seconds(Map.get(stats, :oldest_started_at), now),
       newest_age_seconds: started_at_age_seconds(Map.get(stats, :newest_started_at), now),
       distinct_order_count: Map.get(stats, :distinct_order_count, 0),
-      reserved_variant_count: pending_provider_reserved_variant_count()
+      reserved_variant_count: pending_provider_reserved_variant_count(),
+      without_provider_refs_count: pending_provider_without_refs_count(),
+      recoverable_created_intent_count: pending_provider_recoverable_created_intent_count()
     }
 
     if Keyword.get(opts, :emit_telemetry?, true) do
@@ -766,6 +771,57 @@ defmodule Store.Orders do
         select: count(reservation.variant_id, :distinct)
       )
     ) || 0
+  end
+
+  defp pending_provider_without_refs_count do
+    Repo.one(
+      from(order in Order,
+        left_join: payment_intent in PaymentIntent,
+        on: payment_intent.order_id == order.id,
+        where: ^pending_provider_without_refs_dynamic(),
+        select: count(order.id, :distinct)
+      )
+    ) || 0
+  end
+
+  defp pending_provider_recoverable_created_intent_count do
+    Repo.one(
+      from(order in Order,
+        join: payment_intent in PaymentIntent,
+        on: payment_intent.order_id == order.id,
+        where: ^pending_provider_recoverable_created_dynamic(),
+        select: count(order.id, :distinct)
+      )
+    ) || 0
+  end
+
+  defp pending_provider_without_refs_dynamic do
+    dynamic(
+      [order, payment_intent],
+      order.state == ^:pending_provider_setup and
+        not is_nil(order.provider_setup_started_at) and
+        is_nil(payment_intent.provider_session_id) and
+        is_nil(payment_intent.provider_payment_id) and
+        is_nil(payment_intent.provider_customer_ref) and
+        is_nil(payment_intent.provider_payment_method_ref) and
+        is_nil(payment_intent.provider_checkout_url) and
+        is_nil(payment_intent.provider_client_secret)
+    )
+  end
+
+  defp pending_provider_recoverable_created_dynamic do
+    dynamic(
+      [order, payment_intent],
+      order.state == ^:pending_provider_setup and
+        not is_nil(order.provider_setup_started_at) and
+        payment_intent.state == ^:created and
+        (not is_nil(payment_intent.provider_session_id) or
+           not is_nil(payment_intent.provider_payment_id) or
+           not is_nil(payment_intent.provider_customer_ref) or
+           not is_nil(payment_intent.provider_payment_method_ref) or
+           not is_nil(payment_intent.provider_checkout_url) or
+           not is_nil(payment_intent.provider_client_secret))
+    )
   end
 
   defp started_at_age_seconds(nil, _now), do: 0

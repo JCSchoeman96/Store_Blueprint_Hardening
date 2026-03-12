@@ -98,15 +98,14 @@ defmodule Store.Checkout do
                traced_set_shipping_quote_options(checkout, input),
              {:ok, selected_option} <-
                traced_set_shipping_selection(quote_result.options, input),
-             {:ok, updated_order} <- traced_set_shipping_address(checkout.order, input),
-             {:ok, updated_order} <- traced_set_shipping_method(updated_order, selected_option),
-             {:ok, updated_order} <- traced_set_shipping_quote(updated_order, selected_option) do
+             {:ok, updated_order} <-
+               traced_set_shipping_persist_details(checkout.order, input, selected_option) do
           checkout
           |> Map.put(:order, updated_order)
           |> Map.put(:shipping_quote_options, quote_result.options)
           |> Map.put(:shipping_quote_request, quote_result.request_attrs)
           |> Map.put(:shipping_weight_grams, quote_result.shipping_weight_grams)
-          |> checkout_summary_from_context()
+          |> checkout_summary_from_context([])
         end
       end)
 
@@ -912,7 +911,7 @@ defmodule Store.Checkout do
 
   defp checkout_currency(%{order: order, draft: draft}) do
     currency =
-      order.currency_code || line_items_currency(order.id) || cart_currency_by_draft(draft)
+      order.currency_code || checkout_snapshot_currency(order, draft)
 
     case currency do
       value when is_binary(value) and value != "" -> {:ok, String.upcase(value)}
@@ -935,6 +934,12 @@ defmodule Store.Checkout do
 
   defp cart_currency_by_draft(_draft), do: nil
 
+  defp checkout_snapshot_currency(%Order{totals_finalized_at: %DateTime{}, id: order_id}, draft) do
+    line_items_currency(order_id) || cart_currency_by_draft(draft)
+  end
+
+  defp checkout_snapshot_currency(_order, draft), do: cart_currency_by_draft(draft)
+
   defp fetch_tax_rates(country_code) when is_binary(country_code) do
     query = TaxRate |> Ash.Query.filter(expr(country_code == ^country_code and active == true))
 
@@ -946,23 +951,6 @@ defmodule Store.Checkout do
 
   defp fetch_tax_rates(_country_code) do
     {:error, Error.new("INVALID_ADDRESS", "shipping country is required")}
-  end
-
-  defp update_order_shipping_address(order, input) do
-    attrs = %{
-      shipping_country_code: input.country_code,
-      shipping_region_code: input.region_code,
-      shipping_postal_code: input.postal_code,
-      shipping_recipient_name: input.recipient_name,
-      shipping_address_line1: input.address_line1,
-      shipping_address_line2: input.address_line2,
-      shipping_city: input.city,
-      shipping_phone: input.phone
-    }
-
-    order
-    |> Ash.Changeset.for_update(:set_shipping_address, attrs, context: %{system?: true})
-    |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
   end
 
   defp quote_options_for_checkout(checkout, input) do
@@ -1014,19 +1002,18 @@ defmodule Store.Checkout do
     end
   end
 
-  defp update_order_shipping_method(order, selected_option) do
+  defp update_order_shipping_details(order, input, selected_option) do
     attrs = %{
+      shipping_country_code: input.country_code,
+      shipping_region_code: input.region_code,
+      shipping_postal_code: input.postal_code,
+      shipping_recipient_name: input.recipient_name,
+      shipping_address_line1: input.address_line1,
+      shipping_address_line2: input.address_line2,
+      shipping_city: input.city,
+      shipping_phone: input.phone,
       shipping_rate_id: selected_option.shipping_rule_id,
-      shipping_rate_code: selected_option.shipping_method_code
-    }
-
-    order
-    |> Ash.Changeset.for_update(:set_shipping_method, attrs, context: %{system?: true})
-    |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
-  end
-
-  defp update_order_shipping_quote_evidence(order, selected_option) do
-    attrs = %{
+      shipping_rate_code: selected_option.shipping_method_code,
       shipping_quote_hash: selected_option.quote_hash,
       shipping_quote_currency_code: selected_option.currency_code,
       shipping_quote_amount_minor: selected_option.amount_minor,
@@ -1039,7 +1026,7 @@ defmodule Store.Checkout do
     }
 
     order
-    |> Ash.Changeset.for_update(:set_shipping_quote_evidence, attrs, context: %{system?: true})
+    |> Ash.Changeset.for_update(:set_shipping_details, attrs, context: %{system?: true})
     |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
   end
 
@@ -1938,21 +1925,9 @@ defmodule Store.Checkout do
     end)
   end
 
-  defp traced_set_shipping_address(order, input) do
-    traced_checkout_step(:set_shipping, :set_shipping_address, fn ->
-      update_order_shipping_address(order, input)
-    end)
-  end
-
-  defp traced_set_shipping_method(order, selected_option) do
-    traced_checkout_step(:set_shipping, :set_shipping_method, fn ->
-      update_order_shipping_method(order, selected_option)
-    end)
-  end
-
-  defp traced_set_shipping_quote(order, selected_option) do
-    traced_checkout_step(:set_shipping, :set_shipping_quote_evidence, fn ->
-      update_order_shipping_quote_evidence(order, selected_option)
+  defp traced_set_shipping_persist_details(order, input, selected_option) do
+    traced_checkout_step(:set_shipping, :persist_shipping_details, fn ->
+      update_order_shipping_details(order, input, selected_option)
     end)
   end
 
