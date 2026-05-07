@@ -22,8 +22,8 @@ COPY priv priv
 COPY assets assets
 COPY rel rel
 
-RUN mix assets.deploy
 RUN mix compile
+RUN mix assets.deploy
 RUN mix release
 
 FROM debian:bookworm-slim AS app
