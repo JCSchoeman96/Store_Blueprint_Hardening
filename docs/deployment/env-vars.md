@@ -7,7 +7,7 @@ This document is the deployment contract for runtime configuration enforced by `
 - `PHX_SERVER=true` enables the web server in release mode.
 - `STORE_DB_POOL_MODE`:
   - `session` (default): normal prepared statement behavior.
-  - `transaction`: sets `prepare: :unnamed` for both `Store.Repo` and `Store.DirectRepo`, which is the PgBouncer-safe mode for transaction pooling.
+  - `transaction`: sets `prepare: :unnamed` for `Store.Repo` only, which is the PgBouncer-safe mode for transaction pooling.
 - `STORE_RATE_LIMIT_BACKEND`:
   - `ets` (default) or `redis`.
 - `STORE_COMMS_PROVIDER`:
