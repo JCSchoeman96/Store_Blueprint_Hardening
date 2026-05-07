@@ -97,7 +97,7 @@ defmodule StoreWeb.Router do
     pipe_through([:browser, :admin_rate_limit])
 
     ash_authentication_live_session :authentication_required,
-      on_mount: [{StoreWeb.LiveUserAuth, :live_user_required}] do
+      on_mount: [{StoreWeb.LiveUserAuth, :live_admin_required}] do
       live("/", AdminLive, :index)
       live("/subscriptions", Admin.Subscriptions.IndexLive, :index)
       live("/subscriptions/:id", Admin.Subscriptions.ShowLive, :show)

@@ -6,6 +6,7 @@ defmodule StoreWeb.LiveUserAuth do
   import Phoenix.Component
   use StoreWeb, :verified_routes
   alias AshAuthentication.Phoenix.LiveSession
+  alias Store.Admin.Authorization
   alias Store.Carts.Facade, as: CartsFacade
 
   def on_mount(:current_user, _params, session, socket) do
@@ -41,6 +42,24 @@ defmodule StoreWeb.LiveUserAuth do
       {:cont, socket}
     else
       {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/sign-in")}
+    end
+  end
+
+  def on_mount(:live_admin_required, _params, session, socket) do
+    socket =
+      socket
+      |> put_step_up_assign(session)
+      |> maybe_merge_cart_token(session)
+
+    cond do
+      is_nil(socket.assigns[:current_user]) ->
+        {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/sign-in")}
+
+      Authorization.has_any_role?(socket.assigns.current_user, [:super_admin, :admin, :support]) ->
+        {:cont, socket}
+
+      true ->
+        {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/")}
     end
   end
 
