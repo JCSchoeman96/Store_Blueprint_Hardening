@@ -577,7 +577,7 @@ Env docs, `.env.example`, Docker docs, and provider readiness all agree.
 
 ## Goal
 
-Finalize architecture docs.
+Finalize facade split planning artifacts and acceptance criteria without implementation.
 
 ## Run mode
 
@@ -590,13 +590,23 @@ Requires Phase 2A.
 ## Files touched
 
 ```text id="r9k4h4"
-docs/architecture/domain-map.md
-docs/architecture/facade-split-plan.md
+docs/phases/phase_3c_facade_split_plan.md
+docs/governance/facade_split_migration_strategy.md
+docs/agent_notes/phase_3c_facade_split_notes.md
+docs/stabilization-pass.md (Phase 3C subsection only)
 ```
 
 ## Success
 
 Future facade splitting has boundaries and acceptance criteria, but no implementation yet.
+
+### Phase 3C progress update (2026-05-07)
+
+- Created `docs/phases/phase_3c_facade_split_plan.md` with ordered, small, testable extraction slices for `Store.Checkout.*`, `Store.Orders.*`, and `Store.Payments.*`.
+- Created `docs/governance/facade_split_migration_strategy.md` with mandatory invariants, gate checks, rollout/rollback strategy, and stop-the-line triggers.
+- Created `docs/agent_notes/phase_3c_facade_split_notes.md` with assumptions, scope boundaries, risk log, and exact evidence references.
+- Confirmed `NEEDS_CROSS_LANE_CHANGE: no` for this planning-only phase.
+- Preserved rule alignment with `AGENTS.md` domain-entrypoint and web-boundary constraints.
 
 ### TOON prompt
 
