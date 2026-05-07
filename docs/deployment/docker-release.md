@@ -57,8 +57,16 @@ Run release commands inside the container/image, not `mix` on production hosts:
 ## PgBouncer and pool mode
 
 - `pgbouncer/pgbouncer.ini` sets `pool_mode = transaction`.
-- In app runtime, use `STORE_DB_POOL_MODE=transaction` to enable `prepare: :unnamed`.
+- In app runtime, use `STORE_DB_POOL_MODE=transaction` to enable `prepare: :unnamed` on `Store.Repo`.
 - Keep `POOL_SIZE` consistent with PgBouncer pool sizing and Postgres capacity.
+
+### DirectRepo separation in PgBouncer-fronted deployments
+
+`Store.DirectRepo` always runs in session-mode. It is the repo Oban is configured to use (see `config/config.exs`) and is also used for migrations. Oban requires advisory locks and prepared statements, which PgBouncer transaction pooling does not support.
+
+When `DATABASE_URL` points at PgBouncer in transaction mode, set `STORE_DIRECT_DATABASE_URL` to a direct Postgres URL that bypasses PgBouncer. The Oban queues, cron plugins, and `Store.Release.migrate*` commands all use `Store.DirectRepo` and must reach Postgres directly.
+
+If both URLs are the same (single-Postgres deployments without PgBouncer in front), you can leave `STORE_DIRECT_DATABASE_URL` unset; `Store.DirectRepo` will fall back to `DATABASE_URL`.
 
 ## Operational notes
 

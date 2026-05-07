@@ -66,27 +66,36 @@ if config_env() == :prod do
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
   db_pool_mode = System.get_env("STORE_DB_POOL_MODE", "session")
 
+  # Store.DirectRepo MUST run in session-mode (Oban requires advisory locks and
+  # prepared statements). When DATABASE_URL points at PgBouncer in transaction
+  # pooling, set STORE_DIRECT_DATABASE_URL to a direct Postgres URL that
+  # bypasses PgBouncer. If unset, DirectRepo falls back to DATABASE_URL.
+  direct_database_url = System.get_env("STORE_DIRECT_DATABASE_URL") || database_url
+
   repo_common_opts = [
-    url: database_url,
     pool_size: parse_positive_integer!.("POOL_SIZE", "10"),
     socket_options: maybe_ipv6
   ]
 
-  repo_common_opts =
+  primary_repo_opts = Keyword.put(repo_common_opts, :url, database_url)
+
+  primary_repo_opts =
     case db_pool_mode do
       "session" ->
-        repo_common_opts
+        primary_repo_opts
 
       "transaction" ->
-        Keyword.put(repo_common_opts, :prepare, :unnamed)
+        Keyword.put(primary_repo_opts, :prepare, :unnamed)
 
       value ->
         raise "invalid STORE_DB_POOL_MODE value: #{value}"
     end
 
-  config :store, Store.Repo, repo_common_opts
+  direct_repo_opts = Keyword.put(repo_common_opts, :url, direct_database_url)
 
-  config :store, Store.DirectRepo, repo_common_opts
+  config :store, Store.Repo, primary_repo_opts
+
+  config :store, Store.DirectRepo, direct_repo_opts
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you
