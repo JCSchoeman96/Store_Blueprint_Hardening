@@ -2163,6 +2163,10 @@ defmodule Store.PerformanceSmokeTest do
     max(config.provider_fault_pool_utilization_max_ratio, 0.80)
   end
 
+  defp provider_fault_pool_utilization_max_ratio(:timeout, config) do
+    max(config.provider_fault_pool_utilization_max_ratio, 0.60)
+  end
+
   defp provider_fault_pool_utilization_max_ratio(_mode, config) do
     config.provider_fault_pool_utilization_max_ratio
   end

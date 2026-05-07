@@ -7,8 +7,27 @@ defmodule Store.Tools.Inputs.LeadSubmissionInput do
 
   @email_regex ~r/^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-  @enforce_keys [:tool_slug, :name, :email, :consent_contact, :consent_store_data, :score, :category, :answers]
-  defstruct [:tool_slug, :name, :email, :phone, :consent_contact, :consent_store_data, :score, :category, :answers]
+  @enforce_keys [
+    :tool_slug,
+    :name,
+    :email,
+    :consent_contact,
+    :consent_store_data,
+    :score,
+    :category,
+    :answers
+  ]
+  defstruct [
+    :tool_slug,
+    :name,
+    :email,
+    :phone,
+    :consent_contact,
+    :consent_store_data,
+    :score,
+    :category,
+    :answers
+  ]
 
   @type t :: %__MODULE__{
           tool_slug: String.t(),

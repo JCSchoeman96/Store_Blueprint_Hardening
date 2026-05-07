@@ -156,7 +156,9 @@ defmodule StoreWeb.SubscriptionsLiveTest do
       })
 
     assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/admin/subscriptions")
-    assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/admin/subscriptions/#{subscription.id}")
+
+    assert {:error, {:redirect, %{to: "/"}}} =
+             live(conn, ~p"/admin/subscriptions/#{subscription.id}")
   end
 
   test "subscriptions index reacts to entitlement invalidation with a pushed event", %{conn: conn} do
