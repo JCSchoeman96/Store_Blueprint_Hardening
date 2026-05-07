@@ -134,6 +134,31 @@ defmodule StoreWeb.SubscriptionsLiveTest do
     assert html =~ "Update Card"
   end
 
+  test "authenticated non-admin is redirected away from admin subscriptions routes", %{conn: conn} do
+    customer = signed_in_user(TestFixtures.unique_email("customer_admin_subscriptions_live"))
+    conn = authenticated_conn(conn, customer)
+
+    customer_record = SubscriptionsFixtures.create_customer!("non_admin_subscription_customer")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        key: "non-admin-check",
+        name: "Non Admin Check",
+        amount_minor: 1_500
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer_record.id, variant, plan, %{
+        provider: :stripe
+      })
+
+    assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/admin/subscriptions")
+    assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/admin/subscriptions/#{subscription.id}")
+  end
+
   test "subscriptions index reacts to entitlement invalidation with a pushed event", %{conn: conn} do
     customer = signed_in_user(TestFixtures.unique_email("subscription_entitlement_live"))
     conn = authenticated_conn(conn, customer)
