@@ -54,29 +54,31 @@ This phase is not “more features”. It is the **go‑to‑production contract
 ### Required config categories (minimum)
 1. **Database**
    - `DATABASE_URL`
-   - pool sizing (PgBouncer compatibility if used)
+   - optional `ECTO_IPV6`
+   - `POOL_SIZE`
+   - `STORE_DB_POOL_MODE` (`session` or `transaction`)
 2. **Phoenix**
    - `SECRET_KEY_BASE`
+   - `PHX_SERVER`
    - `PHX_HOST`
    - `PORT`
 3. **Ash**
    - test-only: `config :ash, :missed_notifications, :raise`
 4. **Payments**
-   - `PAYMENTS_PROVIDER` (e.g. `:stripe`, `:payfast`, `:yoco`)
-   - `PAYMENTS_WEBHOOK_SECRET`
-   - provider API keys (sandbox/prod separated)
+   - `STORE_PAYMENTS_ENABLED_PROVIDERS` (baseline production truth: keep non-Stripe providers disabled until direct adapter+webhook proof exists)
+   - optional `STORE_PAYMENTS_DEFAULT_PURCHASE_PROVIDER_FOR_UI` (UI hint only)
+   - Stripe-required when enabled: `STORE_STRIPE_WEBHOOK_SECRET`, `STORE_STRIPE_SECRET_KEY`, `STORE_STRIPE_PUBLISHABLE_KEY`
 5. **Email**
-   - `EMAIL_PROVIDER`
-   - provider API key(s)
-   - `DEFAULT_FROM_EMAIL`, `DEFAULT_FROM_NAME`
+   - `STORE_COMMS_PROVIDER` (`swoosh` or `req_postmark`)
+   - provider API key(s) (for `req_postmark`, require Postmark token)
 6. **Digital storage**
-   - `OBJECT_STORE_PROVIDER`
+   - `STORE_DIGITAL_STORAGE_PROVIDER`
    - bucket, region, access keys
    - signed URL TTL defaults
 7. **Observability**
-   - `SENTRY_DSN` (or equivalent)
-   - structured logging level
-   - optional OTEL exporter config
+   - `SENTRY_DSN`
+   - `STORE_LOG_LEVEL`, `STORE_LOG_FORMAT`
+   - `STORE_CSP_MODE`, `STORE_CSP_POLICY`, `STORE_CSP_REPORT_URI`
 
 ---
 
