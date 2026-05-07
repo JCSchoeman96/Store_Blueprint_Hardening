@@ -1,6 +1,7 @@
 # Subscription Payments Capability Evaluation (Current State)
 
-This note answers the concrete capability questions for the current codebase implementation.
+This note answers subscription-flow capability questions for the current codebase implementation.
+It is not a provider production-readiness approval. Provider enablement truth is tracked in `docs/payments/provider-readiness.md`.
 
 ## Capability matrix (short answer)
 
@@ -35,7 +36,10 @@ Short answer: **the integration framework is in place, but only Stripe appears f
 - **Stripe**: implemented adapter with API calls, webhook signature verification, and canonical normalization.
 - **PayFast / Paystack / Yoco / Peach Payments**: capability declarations exist, but current adapter functions return explicit `not implemented yet` errors for intent creation and webhook verification/normalization.
 
-Implication for your question on **ITN tokens / easy gateway integration**:
+Operational readiness constraint:
+- Treat non-Stripe providers as scaffold-only and keep them disabled in production until direct adapter and webhook contract proof exists.
+
+Implication for **ITN tokens / easy gateway integration**:
 - For **PayFast ITN** specifically, the scaffolding exists (provider module + capability model), but ITN verification/normalization is **not yet implemented in code**.
 - So: **easy to add from a structure perspective, not yet turnkey operational for non-Stripe providers**.
 
