@@ -5,12 +5,19 @@ defmodule StoreWeb.Admin.Subscriptions.IndexLive do
 
   use StoreWeb, :live_view
 
+  alias Store.Admin.Authorization
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias StoreWeb.Params.Subscriptions.AdminSubscriptionIndexParams
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, subscriptions: [], query_error: nil)}
+    actor = socket.assigns.current_user
+
+    if Authorization.has_any_role?(actor, [:super_admin, :admin, :support]) do
+      {:ok, assign(socket, subscriptions: [], query_error: nil)}
+    else
+      {:ok, Phoenix.LiveView.redirect(socket, to: ~p"/")}
+    end
   end
 
   @impl true

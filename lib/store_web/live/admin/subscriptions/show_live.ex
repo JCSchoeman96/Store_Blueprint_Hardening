@@ -5,6 +5,7 @@ defmodule StoreWeb.Admin.Subscriptions.ShowLive do
 
   use StoreWeb, :live_view
 
+  alias Store.Admin.Authorization
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias StoreWeb.Params.Subscriptions.{
@@ -15,15 +16,21 @@ defmodule StoreWeb.Admin.Subscriptions.ShowLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok,
-     socket
-     |> assign(:detail, nil)
-     |> assign(:subscription_id, nil)
-     |> assign(:payment_update_modal_open?, false)
-     |> assign(:payment_update_client_secret, nil)
-     |> assign(:payment_update_publishable_key, nil)
-     |> assign(:plan_change_form, to_form(%{}, as: :queue_subscription_plan_change))
-     |> assign(:variant_change_form, to_form(%{}, as: :queue_subscription_variant_change))}
+    actor = socket.assigns.current_user
+
+    if Authorization.has_any_role?(actor, [:super_admin, :admin, :support]) do
+      {:ok,
+       socket
+       |> assign(:detail, nil)
+       |> assign(:subscription_id, nil)
+       |> assign(:payment_update_modal_open?, false)
+       |> assign(:payment_update_client_secret, nil)
+       |> assign(:payment_update_publishable_key, nil)
+       |> assign(:plan_change_form, to_form(%{}, as: :queue_subscription_plan_change))
+       |> assign(:variant_change_form, to_form(%{}, as: :queue_subscription_variant_change))}
+    else
+      {:ok, Phoenix.LiveView.redirect(socket, to: ~p"/")}
+    end
   end
 
   @impl true
