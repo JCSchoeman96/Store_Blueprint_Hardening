@@ -20,6 +20,11 @@ Applies to providers supported by this blueprint, including:
 - Stripe
 - PayPal
 
+Implementation status guard (stabilization baseline):
+- This document defines capability contracts and gating expectations, not current implementation readiness.
+- Current implementation truth is tracked in `docs/stabilization/source-of-truth.md` and `docs/payments/provider-readiness.md`.
+- Treat Stripe as implementation-ready where code is evidenced; treat other providers as scaffold-only until adapter + webhook contract proof exists in code.
+
 > Provider capabilities can change.  
 > Always confirm current upstream docs before enabling a capability in production.
 
@@ -128,6 +133,7 @@ This is a conservative baseline to prevent overpromising. Confirm current provid
 Notes:
 - “Varies” means region/product constraints may apply. Do not assume subscription support without verifying upstream docs.
 - If a provider’s online gateway does not support recurring billing, enforce that via capability gating.
+- Matrix rows describe capability envelopes, not automatic readiness in this repository.
 
 ---
 
