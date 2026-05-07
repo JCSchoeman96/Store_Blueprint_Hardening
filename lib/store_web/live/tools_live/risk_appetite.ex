@@ -55,7 +55,8 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
     if socket.assigns.started? do
       {:noreply, assign(socket, :step, :contact)}
     else
-      {:noreply, put_flash(socket, :error, "Please adjust at least one slider before continuing.")}
+      {:noreply,
+       put_flash(socket, :error, "Please adjust at least one slider before continuing.")}
     end
   end
 
@@ -123,15 +124,15 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
             Discover your investment risk profile in under 5 minutes.
           </p>
         </header>
-
-        <!-- Step indicator -->
+        
+    <!-- Step indicator -->
         <ul class="steps steps-horizontal w-full">
           <li class={["step", step_class(@step, :questionnaire)]}>Questionnaire</li>
           <li class={["step", step_class(@step, :contact)]}>Your Details</li>
           <li class={["step", step_class(@step, :result)]}>Your Result</li>
         </ul>
-
-        <!-- Step 1: Questionnaire -->
+        
+    <!-- Step 1: Questionnaire -->
         <div :if={@step == :questionnaire} class="space-y-6">
           <.live_score_bar score={@live_score} category={@live_category} answers={@answers} />
 
@@ -170,13 +171,12 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
               disabled={not @started?}
               class="btn-primary"
             >
-              Continue
-              <.icon name="hero-arrow-right-mini" class="size-4" />
+              Continue <.icon name="hero-arrow-right-mini" class="size-4" />
             </.button>
           </div>
         </div>
-
-        <!-- Step 2: Contact Details -->
+        
+    <!-- Step 2: Contact Details -->
         <div :if={@step == :contact} class="space-y-6">
           <.live_score_bar score={@live_score} category={@live_category} answers={@answers} />
 
@@ -294,14 +294,14 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
                   disabled={@submitting?}
                   class="btn-primary"
                 >
-                  <%= if @submitting?, do: "Submitting...", else: "Get My Risk Profile" %>
+                  {if @submitting?, do: "Submitting...", else: "Get My Risk Profile"}
                 </.button>
               </div>
             </form>
           </div>
         </div>
-
-        <!-- Step 3: Result -->
+        
+    <!-- Step 3: Result -->
         <div :if={@step == :result} class="space-y-6">
           <div class="rounded-xl border border-base-300 bg-base-200/50 p-8 text-center space-y-6">
             <div>
@@ -318,8 +318,8 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
                 {@live_category}
               </span>
             </div>
-
-            <!-- Score spectrum bar -->
+            
+    <!-- Score spectrum bar -->
             <div class="w-full max-w-md mx-auto">
               <div class="relative h-4 rounded-full bg-gradient-to-r from-info via-warning to-error overflow-hidden">
                 <div
@@ -343,7 +343,7 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
 
             <div class="space-y-2">
               <p class="text-sm text-base-content/60">
-                Thank you, {@submission && @submission.name || ""}! Rossouw may reach out to you
+                Thank you, {(@submission && @submission.name) || ""}! Rossouw may reach out to you
                 for a free, no-obligation consultation to discuss your financial goals.
               </p>
             </div>
@@ -431,9 +431,14 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
 
     errors =
       cond do
-        email == "" -> Map.put(errors, :email, "Email is required")
-        not Regex.match?(~r/^[^\s@]+@[^\s@]+\.[^\s@]+$/, email) -> Map.put(errors, :email, "Please enter a valid email address")
-        true -> errors
+        email == "" ->
+          Map.put(errors, :email, "Email is required")
+
+        not Regex.match?(~r/^[^\s@]+@[^\s@]+\.[^\s@]+$/, email) ->
+          Map.put(errors, :email, "Please enter a valid email address")
+
+        true ->
+          errors
       end
 
     errors =
