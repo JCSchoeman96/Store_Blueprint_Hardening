@@ -660,6 +660,13 @@ Non-admin authenticated users cannot access `/admin/**`; admin users can.
 | Output    | Updated auth/router/policy files and passing admin access tests.                                                                                                                                                                                                                                                                                                         |
 | Note      | Only implement if tests/audit prove a gap. Prefer a clear `:live_admin_required` mount or equivalent policy-backed check. Do not hard-code emails. Do not add tenant logic. Keep web adapter-only. Performance review: avoid repeated DB role lookups per render; cache in assigns/session where safe; preserve audit logging/telemetry if existing patterns support it. |
 
+### Phase 3D progress update (2026-05-07)
+
+- Condition met from Phase 2D evidence: `/admin` live session gate was login-only (`:live_user_required`).
+- Minimal fix implemented: added `StoreWeb.LiveUserAuth.live_admin_required` and wired `/admin` live session to use it.
+- Regression coverage updated in `test/store_web/live/admin_live_test.exs` for anonymous, non-admin, and admin behavior on `/admin` and `/admin/subscriptions`.
+- Residual risk: admin-role lookup currently occurs at mount and is not cached across reconnects; acceptable for this minimal scoped fix.
+
 ---
 
 # Phase 4 — README integration

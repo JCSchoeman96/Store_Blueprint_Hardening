@@ -1,6 +1,6 @@
 # Admin Authorization Audit (Phase 2D)
 
-Last updated: 2026-05-07
+Last updated: 2026-05-07 (Phase 3D follow-up)
 Owner: Phase 2D (Admin Auth Audit)
 Status: Completed with minimal fix
 
@@ -62,9 +62,20 @@ Audit `/admin/**` authorization depth and determine whether protections are admi
 
 ## Resulting protection chain for `/admin/**`
 
-1. Router + `live_user_required`: blocks anonymous users (redirect `/sign-in`).
-2. LiveView `mount` role gate: blocks authenticated non-admin/non-support users (redirect `/`).
+1. Router + `live_admin_required`: blocks anonymous users (redirect `/sign-in`) and authenticated non-admin users (redirect `/`) at session entry.
+2. LiveView `mount` role gate: preserves route-specific role constraints (for example, subscriptions allows support role in addition to admin roles).
 3. Facade/resource policies: enforce domain authorization as backstop.
+
+## Phase 3D follow-up evidence
+
+- `StoreWeb.Router` `/admin` live session now uses `on_mount: [{StoreWeb.LiveUserAuth, :live_admin_required}]`.
+- `StoreWeb.LiveUserAuth.live_admin_required` enforces:
+  - unauthenticated users redirect to `/sign-in`
+  - authenticated users without `:super_admin`/`:admin`/`:support` role redirect to `/`
+  - admin-capable users continue to `/admin/**`, with route-level mount checks still enforcing tighter per-page role rules
+- `test/store_web/live/admin_live_test.exs` now verifies all three outcomes on:
+  - `/admin`
+  - `/admin/subscriptions` (nested route proving session-wide guard effectiveness)
 
 ## Risk and assumptions
 
