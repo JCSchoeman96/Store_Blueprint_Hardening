@@ -30,13 +30,17 @@ Use `docs/deployment/env-vars.md` as the canonical env contract. At minimum in p
 
 - `DATABASE_URL`
 - `SECRET_KEY_BASE`
-- `PHX_HOST`
 - `SENTRY_DSN`
 - `STORE_TOKEN_SIGNING_SECRET`
 - `STORE_GOOGLE_CLIENT_ID`
 - `STORE_GOOGLE_CLIENT_SECRET`
 - `STORE_GOOGLE_REDIRECT_URI_BASE`
 - `STORE_QUOTE_HASH_SECRET`
+
+Additional runtime nuance:
+
+- `PHX_HOST` is optional and defaults to `example.com` unless explicitly set.
+- Provider secrets are conditional by enabled provider (for example, Stripe keys are required only when `STORE_PAYMENTS_ENABLED_PROVIDERS` includes `stripe`).
 
 ## Preflight and migration commands
 

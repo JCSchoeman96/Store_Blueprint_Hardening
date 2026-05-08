@@ -562,6 +562,13 @@ docs/deployment/docker-release.md
 
 Env docs, `.env.example`, Docker docs, and provider readiness all agree.
 
+### Phase 3B progress update (2026-05-07)
+
+- Completed contradiction audit between deployment/operations docs and runtime/release evidence (`config/runtime.exs`, `rel/env.sh.eex`, `Dockerfile`, `railway.toml`, `pgbouncer/pgbouncer.ini`, `lib/store/operations/health.ex`).
+- Corrected `docs/deployment/docker-release.md` to remove `PHX_HOST` from minimum required env vars and classify it as defaulted.
+- Corrected `docs/operations/production_runbook.md` to classify env vars as required/optional/conditional, including Stripe-provider and clustering-only requirements.
+- Clarified Railway DNS fallback nuance: runtime supports both Railway domain env vars; release env script auto-exports only from `RAILWAY_PRIVATE_DOMAIN`.
+
 ### TOON prompt
 
 | Field     | Content                                                                                                                                                                                         |

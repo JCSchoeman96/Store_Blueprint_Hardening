@@ -13,24 +13,29 @@
   - `bin/store eval "Store.Release.migrate_all()"`
 
 ## Go-Live Checklist
-- Verify production env vars are present:
+- Verify required-always production env vars are present:
   - `DATABASE_URL`
   - `SECRET_KEY_BASE`
-  - `PHX_HOST`
-  - `PORT`
-  - `RELEASE_COOKIE`
-  - `DNS_CLUSTER_QUERY` (or `RAILWAY_PRIVATE_DOMAIN` fallback)
-  - `STORE_DB_POOL_MODE`
-  - `STORE_STRIPE_SECRET_KEY`
-  - `STORE_STRIPE_PUBLISHABLE_KEY`
-  - `STORE_STRIPE_WEBHOOK_SECRET`
-  - `STORE_TRUSTED_PROXY_PROXIES` if Cloudflare ranges are overridden
   - `SENTRY_DSN`
-  - `STORE_WEBHOOK_RETENTION_DAYS`
-  - `STORE_WEBHOOK_RATE_LIMIT_LIMIT`
-  - `STORE_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS`
-  - `STORE_ADMIN_RATE_LIMIT_LIMIT`
-  - `STORE_ADMIN_RATE_LIMIT_WINDOW_SECONDS`
+  - `STORE_TOKEN_SIGNING_SECRET`
+  - `STORE_GOOGLE_CLIENT_ID`
+  - `STORE_GOOGLE_CLIENT_SECRET`
+  - `STORE_GOOGLE_REDIRECT_URI_BASE`
+  - `STORE_QUOTE_HASH_SECRET`
+- Verify optional vars (runtime defaults exist unless overridden intentionally):
+  - `PHX_HOST` (default `example.com`)
+  - `PORT` (default `4000`)
+  - `STORE_DB_POOL_MODE` (default `session`; set `transaction` when using PgBouncer transaction pooling)
+  - `STORE_WEBHOOK_RETENTION_DAYS` (default `30`)
+  - `STORE_WEBHOOK_RATE_LIMIT_LIMIT` (default `120`)
+  - `STORE_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS` (default `60`)
+  - `STORE_ADMIN_RATE_LIMIT_LIMIT` (default `300`)
+  - `STORE_ADMIN_RATE_LIMIT_WINDOW_SECONDS` (default `60`)
+  - `STORE_TRUSTED_PROXY_PROXIES` only if overriding compile-time trusted proxy defaults
+- Verify conditional vars based on deployment mode:
+  - `STORE_STRIPE_SECRET_KEY`, `STORE_STRIPE_PUBLISHABLE_KEY`, `STORE_STRIPE_WEBHOOK_SECRET` only when `STORE_PAYMENTS_ENABLED_PROVIDERS` includes `stripe`
+  - `RELEASE_COOKIE` only when clustering/distribution is enabled (`DNS_CLUSTER_QUERY` set and multi-node distribution expected)
+  - `DNS_CLUSTER_QUERY` can be set directly, or resolved from `RAILWAY_PRIVATE_DOMAIN` / `RAILWAY_PRIVATE_NETWORKING_DOMAIN`
 - Run preflight from the release:
   - `bin/store eval "Store.Release.preflight()"`
 - Railway deploys must run migrations through the pre-deploy command in `railway.toml`:
@@ -59,7 +64,9 @@
 - Do not rely on IP allowlisting as the only control; signature verification remains mandatory.
 
 ## Clustering and CDN
-- `DNS_CLUSTER_QUERY` should resolve to the Railway private service domain (`*.railway.internal`).
+- `DNS_CLUSTER_QUERY` should resolve to the Railway private service domain (`*.railway.internal`) when clustering is enabled.
+- Runtime fallback order is: explicit `DNS_CLUSTER_QUERY`, then `RAILWAY_PRIVATE_DOMAIN`, then `RAILWAY_PRIVATE_NETWORKING_DOMAIN`.
+- `rel/env.sh.eex` auto-exports `DNS_CLUSTER_QUERY` from `RAILWAY_PRIVATE_DOMAIN` only when `DNS_CLUSTER_QUERY` is unset; it does not auto-export from `RAILWAY_PRIVATE_NETWORKING_DOMAIN`.
 - `rel/env.sh.eex` sets named distribution and IPv6 transport for Railway-compatible clustering; keep `RELEASE_COOKIE` consistent across replicas.
 - After autoscaling, verify that PubSub-sensitive flows propagate across nodes:
   - checkout/order state changes
