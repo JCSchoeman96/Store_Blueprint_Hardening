@@ -531,6 +531,31 @@ Docker build order and Elixir version contract are no longer ambiguous.
 | Output    | Finalized `Dockerfile`, `mix.exs`, and deployment doc updates.                                                                                                                                                                                                |
 | Note      | Do not change dependencies. Do not change application behavior. Run `mix format` and `mix check` if code/config changed. Performance review: preserve release image size, build cache behavior, PgBouncer compatibility, and production runtime env contract. |
 
+### Phase 3A status (2026-05-07)
+
+Branch: `stabilize/ws3a-runtime-fixes` (off `origin/main` at `24233cf`).
+
+Files changed:
+
+- `config/runtime.exs` — decouple `Store.DirectRepo` URL from `Store.Repo`; force session-mode prepare semantics on `Store.DirectRepo` regardless of `STORE_DB_POOL_MODE`.
+- `mix.exs` — Elixir requirement bumped from `~> 1.15` to `~> 1.19` to align with `.tool-versions` (`1.19.5-otp-28`).
+- `docs/deployment/env-vars.md` — document new `STORE_DIRECT_DATABASE_URL` and DirectRepo session-mode invariant.
+- `docs/deployment/docker-release.md` — operational guidance for PgBouncer + DirectRepo separation.
+
+Files intentionally not changed (no Phase 2 evidence of defect): `Dockerfile` (Phase 2B build-order fix already merged), `docker-compose.yml`, `rel/env.sh.eex`.
+
+Fixes and evidence:
+
+- DirectRepo / Oban / PgBouncer mismatch: `config/config.exs` wires Oban to `Store.DirectRepo`, but the previous `runtime.exs` gave both repos the same URL and the same `prepare: :unnamed` flag in transaction mode. Following the documented PgBouncer recipe (`DATABASE_URL` -> PgBouncer transaction pool) would have broken Oban (advisory locks and prepared statements). Fix is reversible: when `STORE_DIRECT_DATABASE_URL` is unset, `Store.DirectRepo` continues to use `DATABASE_URL` exactly as before.
+- Elixir version drift: `.tool-versions` pinned `1.19.5-otp-28` while `mix.exs` declared `~> 1.15`. Now aligned.
+
+Remaining risks:
+
+- Operators upgrading to a PgBouncer-fronted topology must remember to set `STORE_DIRECT_DATABASE_URL`; the runtime does not invent a default direct URL. Mitigation: documented in `docs/deployment/env-vars.md` and `docs/deployment/docker-release.md`.
+- The Elixir requirement bump is documentation-of-truth for the toolchain; CI/build images already use the pinned version.
+
+Cross-lane changes: none required.
+
 ---
 
 # Phase 3B — Deployment docs polish

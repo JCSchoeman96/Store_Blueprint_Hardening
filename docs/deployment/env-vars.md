@@ -7,7 +7,7 @@ This document is the deployment contract for runtime configuration enforced by `
 - `PHX_SERVER=true` enables the web server in release mode.
 - `STORE_DB_POOL_MODE`:
   - `session` (default): normal prepared statement behavior.
-  - `transaction`: sets `prepare: :unnamed` for both `Store.Repo` and `Store.DirectRepo`, which is the PgBouncer-safe mode for transaction pooling.
+  - `transaction`: sets `prepare: :unnamed` for `Store.Repo` only, which is the PgBouncer-safe mode for transaction pooling.
 - `STORE_RATE_LIMIT_BACKEND`:
   - `ets` (default) or `redis`.
 - `STORE_COMMS_PROVIDER`:
@@ -55,8 +55,13 @@ The app raises at boot if these are missing in `MIX_ENV=prod`:
 
 ### Database pooling
 
-- `STORE_DB_POOL_MODE` (`session` default; `transaction` for PgBouncer transaction pools)
-- `POOL_SIZE` (default `10`)
+- `STORE_DB_POOL_MODE` (`session` default; `transaction` for PgBouncer transaction pools). Applies to `Store.Repo` only; `Store.DirectRepo` always runs in session mode.
+- `POOL_SIZE` (default `10`). Applies to both `Store.Repo` and `Store.DirectRepo`.
+- `STORE_DIRECT_DATABASE_URL` (optional; defaults to `DATABASE_URL`). Connection string for `Store.DirectRepo`. When `DATABASE_URL` points at PgBouncer in transaction pooling, set this to a direct Postgres URL that bypasses PgBouncer; otherwise Oban (which runs on `Store.DirectRepo`) breaks because it requires advisory locks and prepared statements.
+
+#### DirectRepo invariant
+
+`Store.DirectRepo` must always run with session-mode connection semantics. The runtime never applies `prepare: :unnamed` to it, regardless of `STORE_DB_POOL_MODE`. Oban is wired to `Store.DirectRepo` (see `config/config.exs`) and requires session-mode behavior; routing it through PgBouncer transaction pooling will fail. Use `STORE_DIRECT_DATABASE_URL` to give `Store.DirectRepo` a direct connection in PgBouncer-fronted deployments.
 
 ### Logging and security headers
 
@@ -135,7 +140,9 @@ Timeout guardrails enforced at boot:
 For PgBouncer in transaction mode (`pool_mode = transaction`), use:
 
 - `STORE_DB_POOL_MODE=transaction`
+- `DATABASE_URL` pointing at PgBouncer (transaction pool)
+- `STORE_DIRECT_DATABASE_URL` pointing at Postgres directly (bypassing PgBouncer)
 
-This forces Ecto to use unnamed prepared statements (`prepare: :unnamed`) for both repos and avoids transaction-pool prepared-statement failures.
+`STORE_DB_POOL_MODE=transaction` applies `prepare: :unnamed` to `Store.Repo` only, which is the PgBouncer-safe pattern for hot-path web traffic.
 
-Use `DATABASE_URL` to point at PgBouncer when this mode is enabled. Keep migration and release procedures aligned with your deployment policy for `Store.DirectRepo` usage.
+`Store.DirectRepo` is always configured for session-mode behavior. It is the repo Oban runs on and is also used for migrations and other non-hot-path operations that require prepared statements and advisory locks. If `STORE_DIRECT_DATABASE_URL` is unset, `Store.DirectRepo` falls back to `DATABASE_URL`, which is only safe when `DATABASE_URL` is itself a direct Postgres connection (i.e., not PgBouncer in transaction mode).
