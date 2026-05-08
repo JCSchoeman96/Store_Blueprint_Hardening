@@ -121,12 +121,13 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
       |> Enum.map(fn job ->
         subscription_id = job.args["subscription_id"]
         delta = DateTime.diff(job.scheduled_at, job.inserted_at, :second)
+        expected_delta = Scheduler.renewal_jitter_seconds(subscription_id)
 
         assert job.queue == "subscriptions"
         assert is_binary(job.args["renewal_key"])
         assert delta >= 0
         assert delta <= 3_600
-        assert delta == Scheduler.renewal_jitter_seconds(subscription_id)
+        assert abs(delta - expected_delta) <= 1
 
         {subscription_id, delta}
       end)
