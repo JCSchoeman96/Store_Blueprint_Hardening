@@ -1,8 +1,40 @@
 # STORE_BLUEPRINT_EXTRACTION_DECISION_V1
 
-Status: Planning Decision  
+Version: 1.0  
+Decision owner: Planning / Architecture  
+Decision status: Accepted for v0.2 planning — v1.0-draft-approved-with-amendments  
+Last reviewed: 2026-05-25  
+Supersedes: none  
+Applies to: Voelgoed v0.2 planning only  
 Scope: Store_Blueprint extraction decision for Voelgoed digital ecosystem v0.2  
 Mode: No code changes. No blind fork. No implementation authority.
+
+## Not Implementation Authority
+
+This document SHALL NOT authorize copying Store_Blueprint modules.
+
+This document authorizes planning classification only.
+
+Each Store_Blueprint module extraction still requires a focused extraction decision:
+
+```text
+KEEP / RENAME / REWRITE / REJECT
+```
+
+Each focused extraction decision MUST include:
+
+```text
+source assumptions
+target Voelgoed assumptions
+required edits
+forbidden inherited behaviour
+tests required
+slice supported
+```
+
+No implementation agent SHALL treat this document as permission to port code.
+
+---
 
 ## Binding Context
 
@@ -30,8 +62,9 @@ Voelgoed v0.2 MUST NOT include Events, Learning, Competitions, Media, Community,
 - **REUSE AS-IS CONCEPTUALLY**: The rule or pattern SHALL be adopted, but module names and project namespace still require Voelgoed-specific implementation.
 - **REUSE WITH CHANGES**: The Store_Blueprint concept is useful, but assumptions MUST be changed before reuse.
 - **EXTRACT LATER**: The area MAY be reused after v0.2, but MUST NOT block Join Vriendinneklub.
-- **REJECT FOR VOELGOED**: The area does not fit current Voelgoed direction.
+- **DEFER / REJECT FOR v0.2**: The area SHALL NOT be included in Voelgoed v0.2, but MAY be reconsidered after a later workflow and domain grill.
 - **DO NOT INHERIT BLINDLY**: The area contains useful code/patterns, but carries assumptions that could corrupt the Voelgoed domain model.
+- **REWRITE FOR VOELGOED**: Store_Blueprint does not provide the correct source model; Voelgoed MUST define the resource/action from its own workflows.
 
 ---
 
@@ -150,7 +183,7 @@ Store_Blueprint assumes a full e-commerce order lifecycle, order refs, line item
 
 Voelgoed v0.2 needs only a minimal order lifecycle for one membership purchase path.
 
-Required v0.2 states SHALL be limited unless explicitly expanded:
+Required v0.2 order states SHALL be limited unless explicitly expanded:
 
 ```text
 pending_payment
@@ -159,18 +192,26 @@ cancelled
 expired
 ```
 
+Failed payment SHALL be recorded on `Payment` / `PaymentEvent`.
+
+`Order` MAY remain `pending_payment` after failed payment until it is retried, expired, or cancelled.
+
+If Voelgoed later requires an explicit order-level failure state, `payment_failed` MUST be added through a state-transition patch before coding.
+
 ### What MUST change before reuse
 
 - Order resources MUST be reduced to v0.2 scope.
 - Inventory reservation assumptions MUST be removed.
 - Refund-adjustment behaviour MUST be deferred.
 - Order ownership MUST be locked to the Voelgoed platform for v0.2.
+- Failed-payment behaviour MUST be explicit in the state-transition map.
 
 ### What MUST NOT be inherited
 
 - Inventory reservation logic MUST NOT be inherited for membership purchase.
 - Full refund implementation MUST NOT be inherited in v0.2.
 - Shipping/tax-coupled order behaviour MUST NOT be inherited.
+- Failed payment MUST NOT implicitly activate, cancel, or expire an order unless a named action does so.
 
 ### v0.2 slice support
 
@@ -233,17 +274,27 @@ Voelgoed v0.2 needs:
 - payment success applied once
 - membership activation triggered after trusted payment success
 
+PaymentEvent SHALL be the idempotency source.
+
+Payment return/cancel SHALL be read-only.
+
+Membership activation SHALL occur only after a trusted payment event is processed.
+
+Failed payment SHALL be recorded on `Payment` / `PaymentEvent` and MUST NOT directly mutate membership or entitlement grants.
+
 ### What MUST change before reuse
 
 - Provider assumptions MUST be locked for v0.2.
 - PayFast/Yoco/Paystack/Peach readiness MUST be proven before production use.
 - Payment domain MUST be reduced to the Join Vriendinneklub path.
+- PaymentEvent uniqueness MUST be defined from provider event ID or deterministic local idempotency key.
 
 ### What MUST NOT be inherited
 
 - Scaffold-only providers MUST NOT be treated as production-ready.
 - Refund processing MUST NOT be inherited for v0.2.
 - Payment return/cancel handlers MUST NOT mutate payment, order, membership, or grant state.
+- Payment code MUST NOT create entitlement grants directly.
 
 ### v0.2 slice support
 
@@ -324,7 +375,45 @@ Supports VS-002D and VS-002E.
 
 ---
 
-## 9. Catalog / Product / Variant / Inventory
+## 9. BenefitRule
+
+Classification: **REWRITE FOR VOELGOED**
+
+### Why it matters
+
+BenefitRule is the rule source that defines what an active MembershipPlan grants.
+
+### What Store_Blueprint assumes
+
+Store_Blueprint does not provide a Voelgoed-specific BenefitRule source model. Store entitlement behaviour is tied to subscription-derived access patterns.
+
+### What Voelgoed v0.2 needs
+
+Voelgoed v0.2 needs `BenefitRule` to define what a Vriendinneklub MembershipPlan grants.
+
+BenefitRule SHALL be the rule source used to create `EntitlementGrant` records.
+
+BenefitRule MUST be explicit, persisted, and connected to `MembershipPlan`.
+
+### What MUST change before reuse
+
+- BenefitRule MUST be designed from the Voelgoed membership workflow, not inferred from Store subscriptions.
+- BenefitRule MUST define grant kind, scope key, validity rule, and source MembershipPlan.
+- BenefitRule MUST have tests proving grants are created exactly once after membership activation.
+
+### What MUST NOT be inherited
+
+- BenefitRule MUST NOT be inferred from SubscriptionPlan.
+- BenefitRule MUST NOT be hidden inside pricing, checkout, payment, or admin UI code.
+- BenefitRule MUST NOT become a generic marketing-benefit prose field.
+
+### v0.2 slice support
+
+Supports VS-002A, VS-002D, and VS-002E.
+
+---
+
+## 10. Catalog / Product / Variant / Inventory
 
 Classification: **DO NOT INHERIT BLINDLY**
 
@@ -362,7 +451,7 @@ Supports VS-002A only if reduced to Offer + Price. Full Catalog does not support
 
 ---
 
-## 10. Pricing
+## 11. Pricing
 
 Classification: **REUSE WITH CHANGES**
 
@@ -397,7 +486,7 @@ Supports VS-002A and VS-002B.
 
 ---
 
-## 11. Checkout
+## 12. Checkout
 
 Classification: **DO NOT INHERIT BLINDLY**
 
@@ -440,7 +529,7 @@ Supports VS-002B only as a reference pattern, not as a direct extraction.
 
 ---
 
-## 12. Fulfillment
+## 13. Fulfillment
 
 Classification: **EXTRACT LATER**
 
@@ -472,7 +561,7 @@ No direct support. Deferred.
 
 ---
 
-## 13. Digital downloads
+## 14. Digital downloads
 
 Classification: **EXTRACT LATER**
 
@@ -504,7 +593,7 @@ No direct support. Deferred.
 
 ---
 
-## 14. Admin surfaces
+## 15. Admin surfaces
 
 Classification: **DO NOT INHERIT BLINDLY**
 
@@ -538,9 +627,9 @@ Supports VS-002A only after redesign.
 
 ---
 
-## 15. Shipping / Tax
+## 16. Shipping / Tax
 
-Classification: **REJECT FOR VOELGOED v0.2**
+Classification: **DEFER / REJECT FOR v0.2**
 
 ### Why it matters
 
@@ -552,17 +641,19 @@ Store_Blueprint assumes shipping zones, shipping rates, tax rates, tax/shipping 
 
 ### What Voelgoed v0.2 needs
 
-Voelgoed v0.2 does not need shipping. Tax/VAT treatment MUST be captured as an accounting/legal decision, but full tax engine reuse is out of scope.
+Voelgoed v0.2 does not need shipping. Tax/VAT treatment MUST be captured as an accounting/legal decision, but full tax engine reuse is out of scope for v0.2.
 
 ### What MUST change before reuse
 
 - Physical product workflows MUST be planned before shipping reuse.
 - VAT/tax requirements MUST be legally/accounting reviewed before tax engine reuse.
+- Any later tax implementation MUST be introduced through a dedicated tax/accounting planning decision.
 
 ### What MUST NOT be inherited
 
 - Shipping resources MUST NOT enter Join Vriendinneklub.
 - Tax/shipping snapshot complexity MUST NOT be required for v0.2.
+- The v0.2 order model MUST NOT depend on shipping or tax resources.
 
 ### v0.2 slice support
 
