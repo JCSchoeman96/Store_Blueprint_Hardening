@@ -132,3 +132,36 @@
 - Hot paths reviewed: checkout, payment confirmation, entitlement lookup, and subscription renewal.
 - Current evidence includes the standalone performance smoke harness, query/lock/pool telemetry, Cachex/ETS/Redis tests, and bounded subscription/entitlement query tests.
 - Missing evidence includes generic webhook/renewal/entitlement soak, multi-node cache/PubSub behaviour, production-like Oban execution, and live-provider load.
+
+## S0-06 Performance Data Map (2026-08-27)
+
+### Links Consulted
+- [`docs/hardening/06_performance_data_map.md`](../hardening/06_performance_data_map.md)
+- [`docs/governance/performance_scaling.md`](../governance/performance_scaling.md)
+- [`docs/phases/phase_29_performance_architecture_optimizations.md`](../phases/phase_29_performance_architecture_optimizations.md)
+- [`priv/repo/migrations`](../../priv/repo/migrations)
+- [`lib/store/catalog`](../../lib/store/catalog), [`lib/store/carts`](../../lib/store/carts), and [`lib/store/checkout`](../../lib/store/checkout)
+- [`lib/store/orders`](../../lib/store/orders), [`lib/store/payments`](../../lib/store/payments), [`lib/store/subscriptions`](../../lib/store/subscriptions), and [`lib/store/entitlements`](../../lib/store/entitlements)
+- [`lib/store/workers`](../../lib/store/workers) and [`config/config.exs`](../../config/config.exs)
+
+### Decisions and Pins
+- The implementation and migrations are the source of truth; governance guidance is recorded as comparison context only.
+- Postgres remains authoritative for orders, payment application, subscriptions, entitlements, and inventory reservations. Catalog, stock, and entitlement caches are derived projections or hints.
+- Hot/warm/cold classification is based on access pressure and correctness sensitivity, not data retention.
+- Candidate query/index gaps and cache opportunities are observations for measurement, not approved changes.
+- S0-06 makes no code, query, schema, cache, Redis, or infrastructure change.
+
+### Plan
+- Map table ownership, relationships, constraints, indexes, and query-critical columns from migrations.
+- Trace checkout, payment webhook, subscription renewal, entitlement, inventory, and worker paths through the domain facades.
+- Record current cache TTLs/invalidation, concurrency boundaries, queue limits, retry/idempotency anchors, and evidence gaps.
+- Verify the document structure, links, diff scope, and repository gates before updating PR #1.
+
+### Performance & Scaling Review
+- Hot paths: catalog browse/detail, active carts, checkout finalization, payment webhooks, entitlement checks, inventory reservation, and due renewal rows.
+- Warm/cold paths: recent customer/order/subscription views, settled payment evidence, renewal history, outboxes, fulfillment history, provider events, and audit/metric records.
+- Query/N+1 risks: admin catalog filtering in Elixir, per-item cart merge work, per-grant entitlement revocation, branch-dependent payment lookups, and per-subscription renewal work.
+- Index evidence: Phase 29 product/order keyset indexes, inventory active-expiry indexes, payment/provider idempotency constraints, entitlement user/status indexes, and Phase 27 partial renewal tick indexes were recorded; candidate gaps require `EXPLAIN` and cardinality data.
+- Cache review: existing Cachex/ETS/Redis paths were documented with TTL, invalidation, per-node/shared behavior, and stampede risks. No cache tier was added.
+- Oban review: five-minute renewal fan-out, one-minute inventory/provider sweeps, bounded batches, worker uniqueness where present, retry counts, and webhook/refund replay protection were documented.
+- Telemetry gaps: no production p95/p99, lock-wait, cache-hit, multi-node invalidation, queue-lag, or 100k-concurrency result was inferred from static inspection.
