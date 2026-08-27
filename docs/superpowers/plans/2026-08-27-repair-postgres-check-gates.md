@@ -81,7 +81,7 @@ Run `MIX_ENV=test mix ash_postgres.create`, `MIX_ENV=test mix ash_postgres.migra
 
 Run `mix format --check-formatted`, `mix compile --warnings-as-errors`, the focused lifecycle/concurrency/payment test set, and `mix check.types`. Expected result: each command reaches its normal gate and any remaining failure is unrelated to the repaired environment and explicitly recorded.
 
-- [ ] **Step 3: Verify scope and repository synchronization.**
+- [x] **Step 3: Verify scope and repository synchronization.**
 
 Run `git diff --check`, `git diff --name-only`, `git diff -- lib/store priv/repo test`, `git pull --rebase`, `git push`, and `git status -sb`. Confirm that the only application changes are the security-compatible Google identity resource/action wiring and generated migration, alongside dependency/build-gate changes, and that the branch is clean against its remote.
 
