@@ -35,4 +35,4 @@
 - [x] Check links, headings, required sections, wording, and absence of placeholders.
 - [x] Confirm no application or test files changed.
 - [x] Run `mix check`, `git diff --check`, and repository status checks.
-- [ ] Push the documentation commit and close the claimed bead with verification evidence.
+- [x] Push the documentation commit and close the claimed bead with verification evidence.
