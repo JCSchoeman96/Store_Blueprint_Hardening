@@ -53,6 +53,7 @@ defmodule Store.Accounts.User do
       upsert_fields([])
 
       change(AshAuthentication.GenerateTokenChange)
+      change(AshAuthentication.Strategy.OAuth2.IdentityChange)
 
       change(fn changeset, _context ->
         user_info = Ash.Changeset.get_argument(changeset, :user_info)
@@ -91,6 +92,7 @@ defmodule Store.Accounts.User do
         client_id(Store.Accounts.Secrets)
         client_secret(Store.Accounts.Secrets)
         redirect_uri(Store.Accounts.Secrets)
+        identity_resource(Store.Accounts.UserIdentity)
         register_action_name(:register_with_google)
       end
     end

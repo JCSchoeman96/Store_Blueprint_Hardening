@@ -76,7 +76,7 @@ defmodule Store.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:oban, "~> 2.0"},
-      {:req, "~> 0.5"},
+      {:req, "~> 0.6.1"},
       {:sentry, "~> 10.8"},
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.5"},
@@ -119,7 +119,7 @@ defmodule Store.MixProject do
       "check.static": [
         "format --check-formatted",
         "compile --warnings-as-errors",
-        "deps.audit",
+        "cmd mix deps.audit",
         "check.req_usage",
         "check.web_no_http",
         "check.web_no_oban_enqueue",
@@ -139,7 +139,7 @@ defmodule Store.MixProject do
       check: [
         "format --check-formatted",
         "compile --warnings-as-errors",
-        "deps.audit",
+        "cmd mix deps.audit",
         "check.req_usage",
         "check.web_no_http",
         "check.web_no_oban_enqueue",

@@ -7,6 +7,7 @@ defmodule Store.Accounts do
 
   resources do
     resource(Store.Accounts.User)
+    resource(Store.Accounts.UserIdentity)
     resource(Store.Accounts.Token)
   end
 end
