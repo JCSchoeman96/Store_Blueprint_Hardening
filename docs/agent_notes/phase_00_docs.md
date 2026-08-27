@@ -102,3 +102,33 @@
 - CI policy:
   - Dialyzer runs advisory first (`--ignore-exit-status`).
   - Move to required after baseline cleanup by removing `--ignore-exit-status`.
+
+## S0-05 Test Strategy (2026-08-27)
+
+### Links Consulted
+- [`docs/hardening/00_current_state.md`](../hardening/00_current_state.md)
+- [`docs/hardening/01_domain_map.md`](../hardening/01_domain_map.md)
+- [`docs/hardening/02_lifecycle_registry.md`](../hardening/02_lifecycle_registry.md)
+- [`docs/hardening/02_1_lifecycle_registry_gaps.md`](../hardening/02_1_lifecycle_registry_gaps.md)
+- [`docs/hardening/03_invariant_registry.md`](../hardening/03_invariant_registry.md)
+- [`docs/hardening/04_dependency_map.md`](../hardening/04_dependency_map.md)
+- [`mix.exs`](../../mix.exs), [`config/test.exs`](../../config/test.exs), [`test/test_helper.exs`](../../test/test_helper.exs), and [`test/support`](../../test/support)
+- [`test`](../../test), [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), [`.github/workflows/nightly-hardening.yml`](../../.github/workflows/nightly-hardening.yml)
+- [`docs/governance`](../governance), and [`priv/repo/performance_smoke_test.exs`](../../priv/repo/performance_smoke_test.exs)
+
+### Decisions and Pins
+- This phase records current test evidence and gaps only. It does not add tests or alter test/application behaviour.
+- Qualitative confidence is used because no line-coverage or branch-coverage reporting is configured in the inspected Mix aliases or workflows.
+- The application is single-tenant. Ownership and privilege tests are in scope; tenant-isolation coverage is not a current implementation guarantee.
+- Provider calls remain stubbed in the current test harness. Live provider integration is recorded as a gap rather than inferred from adapter tests.
+- Postgres remains the source of truth for financial and lifecycle state. Cache and queue tests are treated as supporting-path evidence.
+
+### Plan
+- Inventory domain, lifecycle, invariant, worker, security, performance, and CI tests.
+- Map current harness configuration and workflow execution, then separate current coverage from future extraction gates.
+- Verify documentation links and wording, run repository checks, and confirm no application or test files changed.
+
+### Performance & Scaling Review
+- Hot paths reviewed: checkout, payment confirmation, entitlement lookup, and subscription renewal.
+- Current evidence includes the standalone performance smoke harness, query/lock/pool telemetry, Cachex/ETS/Redis tests, and bounded subscription/entitlement query tests.
+- Missing evidence includes generic webhook/renewal/entitlement soak, multi-node cache/PubSub behaviour, production-like Oban execution, and live-provider load.
