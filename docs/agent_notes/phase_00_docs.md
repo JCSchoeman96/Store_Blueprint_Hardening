@@ -165,3 +165,35 @@
 - Cache review: existing Cachex/ETS/Redis paths were documented with TTL, invalidation, per-node/shared behavior, and stampede risks. No cache tier was added.
 - Oban review: five-minute renewal fan-out, one-minute inventory/provider sweeps, bounded batches, worker uniqueness where present, retry counts, and webhook/refund replay protection were documented.
 - Telemetry gaps: no production p95/p99, lock-wait, cache-hit, multi-node invalidation, queue-lag, or 100k-concurrency result was inferred from static inspection.
+
+## S0-07 Security Model (2026-08-27)
+
+### Links Consulted
+- [`docs/hardening/07_security_model.md`](../hardening/07_security_model.md)
+- [`docs/hardening/00_current_state.md`](../hardening/00_current_state.md), [`docs/hardening/02_1_lifecycle_registry_gaps.md`](../hardening/02_1_lifecycle_registry_gaps.md), and [`docs/hardening/05_test_strategy.md`](../hardening/05_test_strategy.md)
+- [`docs/phases/phase_02_auth.md`](../phases/phase_02_auth.md), [`docs/phases/phase_03_admin.md`](../phases/phase_03_admin.md), and [`docs/phases/phase_06_policy_matrix.md`](../phases/phase_06_policy_matrix.md)
+- [`docs/governance/policy_matrix.md`](../governance/policy_matrix.md), [`docs/governance/payment_provider_contract.md`](../governance/payment_provider_contract.md), [`docs/governance/payment_provider_capabilities.md`](../governance/payment_provider_capabilities.md), [`docs/governance/idempotency.md`](../governance/idempotency.md), [`docs/governance/refund_semantics.md`](../governance/refund_semantics.md), [`docs/governance/step_up.md`](../governance/step_up.md), and [`docs/governance/audit_and_pii.md`](../governance/audit_and_pii.md)
+- Authentication, policy, facade, provider, webhook, worker, cache, and migration sources under [`lib`](../../lib) and [`priv/repo/migrations`](../../priv/repo/migrations), plus targeted security and performance tests under [`test`](../../test)
+
+### Decisions and Pins
+- This is architecture discovery only. No resource policy, authorization behavior, authentication flow, tenancy model, or application code was changed.
+- Implementation and migrations are current-state evidence. Governance and phase documents are comparison context unless the implementation confirms the behavior.
+- Authentication is AshAuthentication with password and Google identity strategies, stored signed tokens, browser sessions, bearer API actors, and explicit optional/required/admin route boundaries.
+- Authorization is resource-specific. It combines Ash policies, database-backed role assignments, owner filters, parent-resource preparations, facade checks, and trusted system contexts.
+- The application is single-tenant. No tenant identifier, tenant routing, tenant-qualified cache key, or PostgreSQL RLS policy was found.
+- Stripe is the implemented payment provider boundary. Other provider adapters are not evidence of production-ready signature verification, normalization, or recurring operations.
+- Guest cart and checkout tokens are bearer capabilities. Payment proof comes from verified provider evidence and worker reconciliation, not customer return parameters.
+
+### Plan
+- Map authentication/session/token boundaries and the role/policy locations for catalog, orders, payments, subscriptions, entitlements, and inventory.
+- Trace user ownership from cart through order, payment, subscription, entitlement, and digital download grant, including guest checkout paths.
+- Trace payment webhook verification, receipt deduplication, worker replay handling, refund checks, and subscription renewal authority.
+- Inspect database foreign keys, unique/check constraints, cache keys, rate limits, queue uniqueness, and evidence-retention behavior.
+- Record extraction readiness as READY, PARTIAL, or NOT READY without implementing a hardening change.
+
+### Performance & Scaling Review
+- Hot paths reviewed: catalog and availability reads, cart/checkout ownership checks, webhook verify-persist-enqueue, payment/refund reconciliation, entitlement lookup, digital URL issuance, inventory reservation, and subscription renewal.
+- Current cache interactions: public catalog projections use catalog/availability caches; effective entitlement sets use a per-user Cachex key with a 60-second TTL and PubSub invalidation. Missing invalidation can leave stale access state.
+- Query/N+1 risks: role lookups on repeated policy checks, parent-order child reads, cart merge, digital revocation, and per-subscription renewal work. PostgreSQL remains authoritative for security-sensitive state.
+- Queue/security interaction: bounded webhook/refund/subscription queues and retries can delay payment, revocation, or renewal state during bursts. Receipt and renewal identities limit duplicate work but do not eliminate queue lag.
+- Rate-limit interaction: webhook limits are IP-keyed and may use per-node ETS or shared Redis; the current limiter fails open on backend errors. No production load, multi-node cache, queue-lag, or webhook-storm result was inferred.
