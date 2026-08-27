@@ -85,6 +85,6 @@ Run `mix format --check-formatted`, `mix compile --warnings-as-errors`, the focu
 
 Run `git diff --check`, `git diff --name-only`, `git diff -- lib/store priv/repo test`, `git pull --rebase`, `git push`, and `git status -sb`. Confirm that the only application changes are the security-compatible Google identity resource/action wiring and generated migration, alongside dependency/build-gate changes, and that the branch is clean against its remote.
 
-- [ ] **Step 4: Close the bead with evidence.**
+- [x] **Step 4: Close the bead with evidence.**
 
 Run `bd status`, close `store_blueprint-7yf.17` with GOAL / PLAN / DONE / NEXT / BLOCKERS / COMMANDS RUN / GATES, and synchronize the active Beads database using the repository’s configured Dolt mode.
