@@ -197,3 +197,146 @@
 - Query/N+1 risks: role lookups on repeated policy checks, parent-order child reads, cart merge, digital revocation, and per-subscription renewal work. PostgreSQL remains authoritative for security-sensitive state.
 - Queue/security interaction: bounded webhook/refund/subscription queues and retries can delay payment, revocation, or renewal state during bursts. Receipt and renewal identities limit duplicate work but do not eliminate queue lag.
 - Rate-limit interaction: webhook limits are IP-keyed and may use per-node ETS or shared Redis; the current limiter fails open on backend errors. No production load, multi-node cache, queue-lag, or webhook-storm result was inferred.
+
+## S0-08 Subscription Commerce Extraction Gates (2026-08-27)
+
+### GOAL
+
+Convert the S0-01 through S0-07 evidence, verified against the implementation, into
+objective PASS / FAIL / BLOCKED / NOT APPLICABLE gates for future commerce extraction.
+This closes S0 discovery. It does not authorize extraction or change commercial
+behavior.
+
+### PLAN
+
+- Read the S0 hardening documents and authoritative governance records.
+- Verify lifecycle, authority, financial, payment, subscription, entitlement,
+  security, provider, CI, test, migration, and performance claims against source.
+- Record deterministic gate IDs, current statuses, evidence requirements, and
+  extraction-blocking conditions.
+- Summarize provider and capability readiness, the S0 closure decision, and the
+  ordered hardening gate backlog.
+- Run the available repository checks and record unavailable stress/soak evidence as
+  BLOCKED rather than treating it as PASS.
+
+### Links Consulted
+
+- [`docs/hardening/00_current_state.md`](../hardening/00_current_state.md)
+- [`docs/hardening/01_domain_map.md`](../hardening/01_domain_map.md)
+- [`docs/hardening/02_lifecycle_registry.md`](../hardening/02_lifecycle_registry.md)
+- [`docs/hardening/02_1_lifecycle_registry_gaps.md`](../hardening/02_1_lifecycle_registry_gaps.md)
+- [`docs/hardening/03_invariant_registry.md`](../hardening/03_invariant_registry.md)
+- [`docs/hardening/04_dependency_map.md`](../hardening/04_dependency_map.md)
+- [`docs/hardening/05_test_strategy.md`](../hardening/05_test_strategy.md)
+- [`docs/hardening/06_performance_data_map.md`](../hardening/06_performance_data_map.md)
+- [`docs/hardening/07_security_model.md`](../hardening/07_security_model.md)
+- [`docs/governance`](../governance), especially lifecycle, idempotency, inventory,
+  payment-provider, policy, step-up, audit, and performance records
+- [`lib/store`](../../lib/store), [`lib/store_web`](../../lib/store_web),
+  [`priv/repo/migrations`](../../priv/repo/migrations), [`test`](../../test),
+  [`mix.exs`](../../mix.exs), and [`.github/workflows`](../../.github/workflows)
+- [`docs/hardening/08_extraction_gates.md`](../hardening/08_extraction_gates.md)
+
+### Decisions / Pins
+
+- The implementation and migrations remain the source of truth. No prior hardening
+  document was rewritten.
+- No commerce capability is extraction-ready merely because feature tests pass.
+- `PASS` requires evidence that satisfies the gate; `FAIL` records source-proven
+  absence or contradiction; `BLOCKED` records unavailable required evidence or
+  environment; `NOT APPLICABLE` requires an explicit capability decision.
+- Current architecture remains single-tenant. `TEN-001` passes for an explicit
+  single-tenant consumer; `TEN-002` blocks any multi-tenant consumer pending a
+  separate architecture decision. No tenancy model was selected.
+- Postgres remains durable financial, lifecycle, inventory, payment, subscription,
+  and entitlement truth. Cachex, ETS, Redis, PubSub, and Oban are derived or
+  asynchronous mechanisms and cannot become durable commerce authority.
+- Current source-backed strengths include integer minor-unit money, UUIDv7 IDs,
+  selected binary UUID ordering, immutable order line/adjustment resources, selected
+  state machines, unique payment application and renewal identities, database-locked
+  inventory reservation, a Stripe boundary, and policy/worker tests.
+- Blocking findings include governance/code drift, direct InventoryReservation state
+  writes, incomplete payment evidence authority and replay handling, broad payment
+  success fan-out, subscription and checkout coupling, subscription/entitlement
+  coupling, renewal races, guest-token fallback, consumer-only step-up evidence,
+  trusted system paths, public sensitive attributes, cache/revocation windows,
+  provider maturity, incomplete load/soak evidence, and advisory Dialyzer semantics.
+- The current `mix deps.audit` result is PASS. The earlier S0-01 audit failure remains
+  historical evidence and was not silently rewritten because the current run differs.
+- The empty `01_domain_map.md` did not create a material contradiction: the source and
+  other S0 maps supply the domain evidence, so it was not modified.
+
+### DONE
+
+- Completed [`docs/hardening/08_extraction_gates.md`](../hardening/08_extraction_gates.md)
+  with deterministic gate IDs across governance, lifecycle, financial integrity,
+  concurrency, payments, subscriptions, entitlements, security, tenancy,
+  performance, testing, CI, supply chain, and extraction architecture.
+- Added the required global summary, lifecycle candidate snapshot, provider readiness
+  matrix, capability readiness matrix, S0 closure decision, ordered backlog, finding
+  coverage map, performance review, security review, and validation record.
+- Classified the current decision as: S0 discovery PASS, immediate extraction NO,
+  controlled hardening YES, and multi-tenant extraction BLOCKED without a separate
+  architecture decision.
+- Changed only the extraction-gates document and this Phase 00 note. No application,
+  test, migration, policy, cache, Redis, provider, tenancy, or CI behavior changed.
+
+### NEXT
+
+- Use the P0 gate groups in `08_extraction_gates.md` to scope the first implementation-
+  hardening phase. The first focus is authoritative lifecycle/invariant parity and CI
+  truth, followed by financial/payment replay and durable post-commit handoff proof.
+- Do not copy or rename extraction modules until `EXT-001` through `EXT-003` and all
+  applicable blocking gates pass.
+
+### BLOCKERS
+
+- Immediate extraction is blocked by the failed critical/high gates listed in the
+  document; this is an intentional S0 decision, not an implementation failure.
+- Stress, soak, multi-node cache, and 100k-concurrency certification evidence was not
+  available or run in this documentation session, so those gates remain BLOCKED.
+- `mix check.types` emitted 178 Dialyzer findings and exited zero because the alias
+  still uses `--ignore-exit-status`; the CI type-safety gate therefore remains FAIL.
+- `bd dolt test` is unavailable in the current embedded-mode CLI, and
+  `dolt-beads.service` is not installed in this checkout environment. Bead work was
+  still created and claimed through normal `bd` commands with the existing database
+  prefix mismatch explicitly handled by `--force`.
+
+### COMMANDS RUN
+
+- `bd dolt test` (blocked by embedded mode)
+- `bd status`
+- `bd ready`
+- `bd list --all`
+- `bd create ... --parent store_blueprint-7yf --force`
+- `bd update store_blueprint-7yf.27 --claim`
+- `systemctl --user status dolt-beads.service --no-pager` (unit unavailable)
+- `git status -sb`
+- repository search/read with `rg`, `sed`, `nl`, `wc`
+- `mix format --check-formatted` (PASS)
+- `mix compile --warnings-as-errors` (PASS)
+- `mix deps.audit` (PASS)
+- `mix check` (PASS: 453 tests, 3 properties, 0 failures)
+- `mix check.types` (exit zero but 178 findings; extraction gate FAIL)
+- `git diff --check` (PASS after the document write)
+
+### GATES
+
+- Bead: `store_blueprint-7yf.27`, claimed for S0-08 documentation.
+- Documentation scope: only `docs/hardening/08_extraction_gates.md` and this note
+  changed.
+- Repository validation: ordinary `mix check` PASS; Dialyzer truth FAIL; migration
+  alignment, stress, soak, and 100k capacity evidence not claimed.
+- Extraction decision: no current capability is READY; proceed to controlled
+  hardening only.
+
+### Performance & Scaling Review
+
+- Hot paths covered: catalog browse/detail, cart, checkout, payment webhooks,
+  inventory reservation, subscription renewals, and entitlement access.
+- The gate document records current Postgres authority, Cachex/ETS/Redis behavior,
+  TTLs, invalidation triggers, PubSub rules, existing index families, batching,
+  lock/concurrency rules, and expected-but-unmeasured 100k behavior.
+- Required measured evidence remains open for query budgets, N+1/cardinality,
+  cache-stampede and multi-node invalidation, Oban backpressure, webhook/renewal
+  bursts, and 2–4 hour initial / 6–12 hour release soak profiles.
