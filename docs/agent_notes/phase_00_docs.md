@@ -340,3 +340,108 @@ behavior.
 - Required measured evidence remains open for query budgets, N+1/cardinality,
   cache-stampede and multi-node invalidation, Oban backpressure, webhook/renewal
   bursts, and 2–4 hour initial / 6–12 hour release soak profiles.
+
+## S0-CLOSE-01 Chaos Performance CI Triage (2026-08-28)
+
+### GOAL
+
+- Identify the exact failure in the required `performance_smoke_chaos_required` job at
+  `b601bdec6e4d64deb58290a8dede17fda82f70c4` and close S0-CLOSE-01 with diagnosis only.
+
+### PLAN
+
+- Inspect the GitHub run, failed job, logs, artifact, workflow, smoke harness, chaos
+  profile, provider stub, reservation path, and governing performance/inventory notes.
+- Compare normal and chaos profiles, attempt the exact command locally, perform bounded
+  repeats, classify one root cause, assess commerce/performance/security impact, and
+  document one correction task without implementing it.
+
+### Links Consulted
+
+- [`s0_closure_chaos_ci_triage.md`](../hardening/s0_closure_chaos_ci_triage.md)
+- [`ci.yml`](../../.github/workflows/ci.yml), [`performance_smoke_test.exs`](../../priv/repo/performance_smoke_test.exs),
+  [`chaos_profile.ex`](../../lib/store/perf/chaos_profile.ex), [`stripe_api_stub.ex`](../../test/support/stripe_api_stub.ex),
+  and [`inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex)
+- [GitHub run 33111068594](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/33111068594)
+  and [chaos job 98654523076](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/33111068594/job/98654523076)
+- [`inventory_reservations.md`](../governance/inventory_reservations.md), [`06_performance_data_map.md`](../hardening/06_performance_data_map.md),
+  and the current migrated schema
+
+### Decisions / Pins
+
+- Exact failed assertion: `domain_thundering_herd_observer` reported
+  `peak_lock_wait_ratio=0.44`, `peak_lock_waiters=11`, and one sample over the
+  `0.10` lock threshold; the process exited `1` from the observer assertion.
+- Primary classification: `HARNESS / THRESHOLD DEFECT`. The intentional one-unit
+  PostgreSQL row-lock herd passed one-winner, `79` loser, and latency assertions; no
+  protected commerce invariant failed.
+- The target observer assertion reproduced locally, including on a dedicated clean
+  database with CI-shaped loads, but exact CI runner versions/scheduler capacity were
+  not reproduced. Alternating observations are explained by the known one-sample,
+  500 ms observer window, not classified as unexplained flakiness.
+- S0 merge decision remains `BLOCKED`. No threshold, workload, required status, or
+  chaos injection may be weakened. The stale teardown table names were recorded as
+  secondary harness evidence, not folded into the one next task.
+
+### DONE
+
+- Captured run `33111068594`, job `98654523076`, failed step, command, exit code,
+  assertion, exact metrics, service observations, and artifact evidence.
+- Compared normal versus `mobile_realistic` chaos inputs and verified that the chaos
+  profile changes Stripe stub timing, not the direct reservation call.
+- Attempted the exact command locally and performed bounded literal-profile and clean
+  CI-shaped repeats; no soak or stress certification was started.
+- Added the full diagnosis and one correction scope to the triage document. No
+  application, test, migration, configuration, workflow, or threshold behaviour changed.
+
+### NEXT
+
+- One separate task: correct and make deterministic the domain-thundering-herd observer
+  contract while retaining the protected inventory assertions and required gate.
+- Do not begin S1 hardening or extraction from this red baseline.
+
+### BLOCKERS
+
+- Required chaos CI remains red until the separate observer-contract correction is
+  completed and a fresh unchanged required CI run is green.
+- Exact GitHub runner capacity and versions cannot be reproduced locally; local provider
+  timeout timing also prevented some clean repeats from reaching the target test.
+- PostgreSQL teardown still names absent `checkout_sessions` and `shipping_rate_rules`
+  tables, but those errors occurred after the smoke workload and were not the target
+  failure.
+- `bd dolt test` remains unavailable because this checkout uses the embedded-mode CLI;
+  this does not alter the triage evidence.
+
+### COMMANDS RUN
+
+- `bd dolt test`, `bd status`, `bd ready`, `bd create ...`, and `bd update ... --claim`
+- `gh pr view 1`, `gh run view 33111068594`, GitHub job/log/artifact inspection, and
+  `gh api` queries for run/job metadata
+- `rg`, `sed`, `nl`, `tail`, `git status -sb`, and source/documentation reads
+- The exact local `mix run --no-start priv/repo/performance_smoke_test.exs` chaos
+  command with bounded repeats and explicit CI-shaped load overrides
+- `STORE_TEST_DB_SUFFIX=s0close MIX_ENV=test mix ash_postgres.create` and
+  `STORE_TEST_DB_SUFFIX=s0close MIX_ENV=test mix ash_postgres.migrate`
+
+### GATES
+
+- Root cause: `HARNESS / THRESHOLD DEFECT`.
+- Commerce P0 invariant failure: `NO` in the observed scenario; inventory correctness
+  assertions passed.
+- Exact target assertion reproduced locally: `YES`; exact CI environment reproduced:
+  `NO`.
+- S0 merge status: `BLOCKED`.
+- Only the new triage document and this Phase 00 note are in scope; no behaviour changed.
+
+### Performance & Scaling Review
+
+- Affected data is `HOT`: PostgreSQL inventory rows and reservation state are durable
+  truth. ETS `StockFastPath` is a five-second derived cart precheck only; Redis, Oban,
+  and PubSub are not involved in the failing domain path.
+- The relevant lock is PostgreSQL `FOR UPDATE` on the popular variant's inventory row;
+  the single-row hotspot is expected for no-oversell serialization. Existing variant,
+  state/expiry, order/variant, and reservation-identity indexes/constraints showed no
+  missing-index evidence from this failure.
+- No cache stampede, Redis pressure, queue amplification, pool exhaustion, scheduler
+  pressure, mailbox growth, or memory growth was evidenced. No 100k-concurrency claim
+  was made; that behaviour remains unmeasured and requires later workload evidence.
