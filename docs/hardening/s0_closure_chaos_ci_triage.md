@@ -332,10 +332,11 @@ Define exactly one correction task:
 
 The task must make observer capture of the intentionally row-lock-serialized workload
 deterministic and define a documented lock-contention acceptance criterion that is
-consistent with the no-oversell contract. It must retain the one-winner, failed-loser,
-latency, replay-safety, and required-gate assertions; it must not pass by increasing a
-threshold solely to hide contention, reducing the workload, disabling chaos, allowing
-failure, or changing production reservation semantics.
+consistent with the no-oversell contract. It must retain the existing one-winner,
+failed-loser, latency, and required-gate assertions, and must not weaken separate
+replay-safety protections. It must not pass by increasing a threshold solely to hide
+contention, reducing the workload, disabling chaos, allowing failure, or changing
+production reservation semantics.
 
 Acceptance evidence for that one task is:
 
