@@ -422,6 +422,8 @@ behavior.
   command with bounded repeats and explicit CI-shaped load overrides
 - `STORE_TEST_DB_SUFFIX=s0close MIX_ENV=test mix ash_postgres.create` and
   `STORE_TEST_DB_SUFFIX=s0close MIX_ENV=test mix ash_postgres.migrate`
+- `mix check` (PASS: `453` tests, `3` properties, `0` failures, all static checks
+  clean; the final rerun logged one Postgrex client disconnect but still exited zero)
 
 ### GATES
 
@@ -430,6 +432,8 @@ behavior.
   assertions passed.
 - Exact target assertion reproduced locally: `YES`; exact CI environment reproduced:
   `NO`.
+- `git diff --check`: `PASS`; the required chaos performance gate remains red and no
+  fresh green rerun was claimed.
 - S0 merge status: `BLOCKED`.
 - Only the new triage document and this Phase 00 note are in scope; no behaviour changed.
 
