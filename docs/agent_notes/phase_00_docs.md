@@ -637,3 +637,77 @@ behavior.
 - Existing reservation/index assumptions are reused with no migration. PubSub is
   read-side only, Redis Streams are not required, and 100k behavior remains an
   unmeasured certification concern.
+
+## S0-PLAN-01C implementation-plan correction (2026-09-01)
+
+### GOAL
+
+- Correct the three blocking implementation-plan findings without changing the frozen
+  S0-ARCH-01 ADR or authorizing InventoryAdmission implementation.
+
+### Links Consulted
+
+- [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md)
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md)
+- [`inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex)
+- [`inventory_reservation.ex`](../../lib/store/orders/inventory_reservation.ex)
+- [`inventory_item.ex`](../../lib/store/catalog/inventory_item.ex)
+- [`phase_11_inventory_reservations.exs`](../../priv/repo/migrations/20260224201500_phase_11_inventory_reservations.exs)
+- [`ecto/repo.ex`](../../deps/ecto/lib/ecto/repo.ex), [`db_connection.ex`](../../deps/db_connection/lib/db_connection.ex)
+
+### Decisions / Pins
+
+- `reservation_key` remains the durable order/variant row identity. Each authorized
+  mutation now has a server-generated `operation_id`, `operation_epoch`, and
+  `request_fingerprint`; no client value or new PostgreSQL mutation resource is used.
+- The plan now requires one live protected mutation per `reservation_key`. A later
+  quantity adjustment receives a new operation identity only after the prior operation
+  is resolved. Capable consume, release, expiry, maintenance, test, and system
+  bypasses must honor or be excluded from this fence.
+- `InventoryReservations.reserve_inventory_outcome/3` is the planned internal seam
+  before the existing lossy public `RESERVATION_CONFLICT` mapper. It preserves known
+  commit, known rollback/rejection, and ambiguous database outcomes without introducing
+  a generic transaction framework.
+- The existing schema is sufficient for the supported MVP mutations: the unique
+  reservation/inventory identities, reservation/inventory versions, quantities,
+  lifecycle fields, and inventory counters support an operation-specific durable
+  PRE/POST predicate under the serialization invariant. Row existence alone is never
+  adjustment commit proof.
+- `InventoryReservations.recovery_snapshot/1` compares the durable PRE/POST state in
+  PostgreSQL. POST resolves committed, PRE resolves rolled back, and neither or lost
+  ephemeral evidence resolves `UNRESOLVED` and remains fail closed.
+- No PostgreSQL migration is required for this correction. If the serialization or
+  PRE/POST evidence contract cannot be enforced, implementation must stop for a new
+  schema/concurrency review rather than weaken recovery.
+- The bounded Oban recovery worker remains the fixed MVP recovery owner. Redis remains
+  coordination only; Redis metadata loss quarantines admission and never manufactures
+  rollback or availability.
+
+### DONE
+
+- Updated only the implementation plan and this phase note. The plan now contains the
+  operation descriptor, structured outcome seam, insert/adjustment recovery proof,
+  same-reservation fence, Redis evidence-loss behavior, and path-exact TOON outputs.
+- Kept implementation status `NOT AUTHORIZED`. The frozen architecture ADR was not
+  changed.
+
+### BLOCKERS
+
+- S0-PLAN-01 remains ready for independent re-review only after documentation
+  validation. S0 performance certification, the separate checkout-concurrency blocker,
+  S0-CLOSE-02, and merge readiness remain blocked.
+- No migration, production code, tests, Redis/PostgreSQL writes, performance run, or
+  checkout-concurrency triage is authorized by this correction.
+
+### Performance & Scaling Review
+
+- Operation descriptors and leases remain HOT transient coordination in Redis/Elixir;
+  Redis recovery metadata is HOT/WARM and never stock truth. InventoryItem and
+  InventoryReservation remain COLD/DURABLE PostgreSQL truth.
+- `K_v = 1` and global `B_total` still bound DB entry. The preflight descriptor read is
+  performed only after admission under the held budgets; queued requests do not use
+  Store.Repo. PRE/POST recovery does not issue an unrestricted second attempt.
+- Existing unique/index/version fields are reused with no migration. PubSub remains
+  read-side only, Redis Streams remain unnecessary for MVP correctness, and 100k
+  behavior remains unmeasured. The checkout-concurrency performance blocker remains
+  outside this plan.
