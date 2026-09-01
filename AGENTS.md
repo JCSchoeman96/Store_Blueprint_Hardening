@@ -4,6 +4,11 @@ If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
 ---
 
+## Workflow
+- ALWAYS create or update a PR, so that the work and implementation or info can be checked and reviewed
+
+---
+
 ## Project (MUST NOT DRIFT)
 - Stack: Elixir, Phoenix, LiveView, Alpine.js, Tailwind, **Ash 3.x**
 - OTP: `Store` / `:store`
@@ -151,59 +156,11 @@ If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 - Every phase must have: `docs/agent_notes/phase_XX_docs.md`
 - Must include: links consulted, decisions/pins, plan, performance review
 
----
-
-# Beads (MANDATORY — HARD MODE)
-- NO WORK WITHOUT A BEAD (code/docs/config/tests)
-- Use normal bd create (no --sandbox) for parent/children.
-
-## Session start (EVERY SESSION)
-1) `bd dolt test`
-2) `bd status`
-3) `bd ready`
-4) `bd update <id> --claim` (claim exactly one)
-5) If nothing ready: create bead then claim
-
-## Bead requirements
-- Must include: `--description`, `--acceptance`, `--labels` (phase+area), `--priority` (P0–P4), `--parent`
-
-## Dependencies/blockers
-- `bd dep add <blocked_id> <blocker_id>` (blocked DEPENDS ON blocker)
-- If blocked: create blocker bead, link dep, stop/pivot
-
-## Notes format (MUST)
-- GOAL / PLAN / DONE / NEXT / BLOCKERS / COMMANDS RUN / GATES
-
-## Tree
-- Use: `bd show <id>`
-- Do not rely on: `bd list --parent`, `bd children --json`, `bd query` (unless proven)
 
 ---
 
-## Beads Storage + Sync (v0.56.1 Dolt server-mode)
-- DB path: `.beads/dolt/beads_store_blueprint/`
-- Service: `dolt-beads.service` (systemd user)
-- Safe checks:
-  - `systemctl --user status dolt-beads.service --no-pager`
-  - `bd dolt test`
-- Never run two Dolt SQL servers against same repo
-
-### Remotes
-- `origin` (DoltHub `jc_s/store_blueprint`) is authoritative
-- `local_backup` = `file://$HOME/beads_remotes/store_blueprint_beads_remote`
-
-### Push (REQUIRED for phase close)
-1) `systemctl --user stop dolt-beads.service`
-2) `cd .beads/dolt/beads_store_blueprint && dolt push origin main`
-3) `systemctl --user start dolt-beads.service`
-
-### Pull
-1) stop service
-2) `dolt pull origin main`
-3) start service
-
-- If `bd dolt push/pull` fails: use native `dolt push/pull`
-- Do NOT commit `.beads/dolt/**` to Git
+## Workflow
+- ALWAYS create or update a PR, so that the work and implementation or info can be checked and reviewed
 
 ---
 
