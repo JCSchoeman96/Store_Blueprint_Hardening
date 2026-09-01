@@ -152,6 +152,16 @@ If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
 ---
 
+## Memory, GC & Runtime Resource Safety (MUST on runtime-relevant work)
+- Memory, GC, mailbox pressure, and runtime resource lifecycle are permanent hardening categories for planning, implementation, performance review, and relevant TOON prompts.
+- Every runtime-relevant change MUST check bounded process creation and termination, process memory and long-lived heaps, mailboxes, GenServer state, ETS ownership and cleanup, binary and atom retention, Cachex/ETS capacity and TTL, Redis retention, Oban backlog and cleanup, LiveView socket state, PubSub subscribers, timers, monitors, ports, NIFs, GC behavior, and resource leaks.
+- When a load, soak, or other performance test applies, runtime measurements MUST cover baseline before load, peak load, and post-load cooldown or drain. Where feasible record BEAM/process/binary/ETS/atom memory, process/port/ETS counts, and hot-process memory, heap size, total heap size, message queue length, reductions, and GC behavior.
+- Required invariants are `PERF-MEM-001`, `PERF-GC-001`, `PERF-MBOX-001`, and `PERF-RESOURCE-001`, as defined by Phase 29.
+- Reviews MUST distinguish memory leaks, memory bloat, memory churn or allocation churn, GC pressure, mailbox pressure, and resource leaks. Moving contention away from PostgreSQL does not pass the 100k review if the replacement creates unbounded waiting processes, timers, monitors, Redis/ETS/cache state, Oban jobs, or mailboxes.
+- Runtime-relevant TOON Note fields MUST include applicable `MEMORY`, `GC`, `MAILBOX`, `RESOURCE CLEANUP`, and `POST-LOAD` evidence alongside the existing performance fields. Purely documentation-only prompts may omit inapplicable runtime fields.
+
+---
+
 ## Phase Notes (Docs-first) (MUST)
 - Every phase must have: `docs/agent_notes/phase_XX_docs.md`
 - Must include: links consulted, decisions/pins, plan, performance review
