@@ -449,3 +449,191 @@ behavior.
 - No cache stampede, Redis pressure, queue amplification, pool exhaustion, scheduler
   pressure, mailbox growth, or memory growth was evidenced. No 100k-concurrency claim
   was made; that behaviour remains unmeasured and requires later workload evidence.
+
+## S0-ARCH-01C Inventory reservation admission ADR correction (2026-08-30)
+
+### GOAL
+
+- Apply the accepted `PASS WITH CORRECTIONS` architecture-review findings to the
+  inventory reservation admission ADR without implementing admission or changing the
+  certification/merge status.
+
+### PLAN
+
+- Cross-check the ADR against the current reservation identity, locking, Redis, waiting
+  room, configuration, and migration sources.
+- Make only the required architecture-document corrections, record the documentation
+  gate, and run targeted content and diff validation.
+
+### Links Consulted
+
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md)
+- [`inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex),
+  [`inventory_reservation.ex`](../../lib/store/orders/inventory_reservation.ex), and
+  [`inventory_item.ex`](../../lib/store/catalog/inventory_item.ex)
+- [`phase_11_inventory_reservations.exs`](../../priv/repo/migrations/20260224201500_phase_11_inventory_reservations.exs)
+- [`redis.ex`](../../lib/store/support/redis.ex), [`redix_client.ex`](../../lib/store/support/rate_limit/redix_client.ex),
+  [`application.ex`](../../lib/store/application.ex), and [`waiting_room.ex`](../../lib/store_web/waiting_room.ex)
+- [`runtime.exs`](../../config/runtime.exs), [`test.exs`](../../config/test.exs),
+  [`performance_scaling.md`](../governance/performance_scaling.md), and
+  [`phase_29_performance_architecture_optimizations.md`](../phases/phase_29_performance_architecture_optimizations.md)
+
+### Decisions / Pins
+
+- Option A remains selected: distributed Redis-backed admission before the existing
+  PostgreSQL reservation transaction; Option B remains rejected for now.
+- The MVP freezes `K_v = 1` per variant and retains a separate cluster-wide `B_total`
+  reservation DB-entry budget. Both capacities must be granted atomically.
+- The corrected ADR defines the bounded admission-to-commit deadline, known versus
+  ambiguous PostgreSQL outcomes, durable `reservation_key` recovery, and an ephemeral
+  recovery fence. PostgreSQL remains the only inventory authority.
+- Queue bounds, queue/process lifetime separation, separate queue and lease expiry
+  semantics, fail-closed Redis behavior, PubSub/Stream boundaries, and required
+  observability are explicit. `InventoryAdmission` remains internal.
+- The MVP requires no new PostgreSQL migration solely for admission, assuming the
+  existing reservation identity and index guarantees remain present. No implementation
+  is authorized.
+
+### DONE
+
+- Updated only the inventory admission ADR and this existing Phase 00 documentation note.
+- Added the accepted corrections without changing production code, tests, migrations,
+  Redis/PostgreSQL configuration, or performance certification.
+
+### NEXT
+
+- Perform the independent acceptance review of the corrected ADR. Do not implement
+  admission, resume S0 performance certification, start S1, or merge PR #1.
+
+### BLOCKERS
+
+- S0 merge readiness remains blocked pending the required architecture acceptance and
+  existing performance gates.
+- `bd dolt test` is unavailable in this checkout because the CLI is using embedded mode
+  without a Dolt server.
+
+### COMMANDS RUN
+
+- `bd dolt test`, `bd status`, `bd ready`, `bd create ...`, and `bd update ... --claim`
+- `rg`, `sed`, `nl`, `tail`, `git status -sb`, focused source/document reads, and
+  `apply_patch`
+- Targeted required-content, empty-placeholder, document-whitespace, and
+  `git diff --check` validation for this correction
+
+### GATES
+
+- Documentation-only scope: PASS. No `lib/`, `test/`, `priv/repo/migrations/`,
+  `config/`, or `.github/` changes are authorized by this task.
+- Implementation status remains `NOT AUTHORIZED`.
+- S0 performance certification and merge readiness remain `BLOCKED`.
+
+### Performance & Scaling Review
+
+- Inventory rows and `InventoryReservation` remain HOT durable PostgreSQL truth; Redis
+  admission is HOT ephemeral coordination; telemetry/read projections are WARM; durable
+  reservation history is COLD after the write.
+- `K_v = 1` bounds same-row entrants and `B_total` preserves global Store.Repo headroom.
+  Finite `Q_variant_max` and `Q_global_max`, queue/lease TTLs, and bounded recovery keep
+  pressure outside PostgreSQL without requiring a blocked BEAM process per waiter.
+- PubSub and Redis Streams have no correctness role in the MVP. Existing PostgreSQL
+  identity/index support is reused; no admission migration is required. 100k behaviour
+  remains an unmeasured implementation/certification concern, not a claim in this note.
+
+## S0-PLAN-01 Inventory reservation admission implementation plan (2026-09-01)
+
+### GOAL
+
+- Design the smallest implementation tracer bullet for frozen S0-ARCH-01 Option A
+  without implementing admission or authorizing production changes.
+
+### PLAN
+
+- Cross-check the frozen ADR against the current reservation, identity/index,
+  Redis, waiting-room, Oban, configuration, and performance-harness conventions.
+- Produce one implementation plan defining the resource map, lifecycle, Redis atomic
+  contracts, bounded deadlines/queues, recovery owner, tests, rollout, phases, and
+  TOON micro-prompts.
+
+### Links Consulted
+
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md)
+- [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md)
+- [`inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex),
+  [`inventory_reservation.ex`](../../lib/store/orders/inventory_reservation.ex),
+  [`inventory_item.ex`](../../lib/store/catalog/inventory_item.ex), and
+  [`domain.ex`](../../lib/store/orders/domain.ex)
+- [`phase_11_inventory_reservations.exs`](../../priv/repo/migrations/20260224201500_phase_11_inventory_reservations.exs)
+- [`redis.ex`](../../lib/store/support/redis.ex), [`redix_client.ex`](../../lib/store/support/rate_limit/redix_client.ex),
+  [`waiting_room.ex`](../../lib/store_web/waiting_room.ex), and
+  [`application.ex`](../../lib/store/application.ex)
+- [`config.exs`](../../config/config.exs), [`runtime.exs`](../../config/runtime.exs),
+  [`test.exs`](../../config/test.exs), existing Oban workers, and the current
+  performance smoke/observer support
+- [`performance_scaling.md`](../governance/performance_scaling.md),
+  [`05_test_strategy.md`](../hardening/05_test_strategy.md), and
+  [`08_extraction_gates.md`](../hardening/08_extraction_gates.md)
+
+### Decisions / Pins
+
+- The tracer bullet remains single-variant and freezes `K_v = 1`; `B_total` remains a
+  separate cluster-global budget below aggregate Store.Repo capacity/headroom.
+- Redis structures and multi-key transitions are server-side atomic; Redis remains
+  coordination state only, and PostgreSQL remains durable inventory truth.
+- Queue lifetime is independent of Phoenix process lifetime. Finite queue bounds,
+  fail-closed Redis behavior, bounded lease/deadline rules, and recovery fencing are
+  implementation requirements.
+- Ambiguous DB outcomes use a bounded Oban recovery worker and durable
+  `reservation_key` lookup. Recovery does not automatically issue a second durable
+  attempt.
+- Existing quantity-adjustment semantics remain serialized on the same durable
+  order/variant identity. No admission resource, migration, Redis inventory ledger,
+  multi-variant path, or package extraction is planned.
+- The existing generic waiting room and PubSub are not admission correctness
+  authorities; Redis Streams are not required for MVP correctness.
+
+### DONE
+
+- Created [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md)
+  as the single implementation-planning artifact.
+- Kept the work documentation-only. No production code, tests, migrations, Redis or
+  PostgreSQL configuration, writes, or performance runs were performed.
+
+### NEXT
+
+- Obtain the independent implementation-plan review. Do not implement admission,
+  resume S0 performance certification, start S1, or merge PR #1.
+
+### BLOCKERS
+
+- Implementation remains blocked until the plan is independently accepted.
+- S0 performance certification and merge readiness remain blocked.
+- `bd dolt test` is unavailable in this checkout because the CLI is using embedded
+  mode without a Dolt server.
+
+### COMMANDS RUN
+
+- `bd dolt test`, `bd status`, `bd ready`, `bd show`, `bd create`, and
+  `bd update ... --claim`
+- Focused `rg`, `sed`, `nl`, `tail`, `wc`, and `git status` reads
+- `apply_patch` for the planning artifact and this required Phase 00 note
+
+### GATES
+
+- Documentation-only scope: PASS. The only current-task edits are the planning
+  artifact and this phase note; no `lib/`, `test/`, `priv/repo/migrations/`, or
+  `config/` implementation edits were made.
+- `K_v = 1`, global `B_total`, atomic dual-budget admission, PostgreSQL authority,
+  bounded queue/process lifetime, recovery fencing, and `NOT AUTHORIZED` are explicit.
+- No performance certification or 100k claim was made.
+
+### Performance & Scaling Review
+
+- InventoryAdmission request/lease state is HOT transient coordination; Redis is
+  HOT/WARM bounded coordination; InventoryItem and InventoryReservation remain
+  COLD/DURABLE PostgreSQL truth with only derived hot projections.
+- `K_v = 1` removes same-row herd amplification and `B_total` preserves global
+  Store.Repo headroom. Queue bounds, lease/deadline windows, bounded cleanup, and
+  caller-independent status interactions keep pressure outside PostgreSQL.
+- Existing reservation/index assumptions are reused with no migration. PubSub is
+  read-side only, Redis Streams are not required, and 100k behavior remains an
+  unmeasured certification concern.
