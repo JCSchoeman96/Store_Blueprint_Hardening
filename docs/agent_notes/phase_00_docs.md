@@ -654,6 +654,10 @@ behavior.
 - [`inventory_item.ex`](../../lib/store/catalog/inventory_item.ex)
 - [`phase_11_inventory_reservations.exs`](../../priv/repo/migrations/20260224201500_phase_11_inventory_reservations.exs)
 - [`ecto/repo.ex`](../../deps/ecto/lib/ecto/repo.ex), [`db_connection.ex`](../../deps/db_connection/lib/db_connection.ex)
+- [`checkout/domain.ex`](../../lib/store/checkout/domain.ex), [`payments/interlocks.ex`](../../lib/store/payments/interlocks.ex),
+  [`subscriptions/facade.ex`](../../lib/store/subscriptions/facade.ex)
+- [`expire_inventory_reservations_worker.ex`](../../lib/store/workers/expire_inventory_reservations_worker.ex),
+  [`expire_pending_provider_setup_orders_worker.ex`](../../lib/store/workers/expire_pending_provider_setup_orders_worker.ex)
 
 ### Decisions / Pins
 
@@ -662,8 +666,8 @@ behavior.
   `request_fingerprint`; no client value or new PostgreSQL mutation resource is used.
 - The plan now requires one live protected mutation per `reservation_key`. A later
   quantity adjustment receives a new operation identity only after the prior operation
-  is resolved. Capable consume, release, expiry, maintenance, test, and system
-  bypasses must honor or be excluded from this fence.
+  is resolved. The C2 matrix below fixes one policy for every capable writer; it does
+  not leave fencing versus exclusion to the coding agent.
 - `InventoryReservations.reserve_inventory_outcome/3` is the planned internal seam
   before the existing lossy public `RESERVATION_CONFLICT` mapper. It preserves known
   commit, known rollback/rejection, and ambiguous database outcomes without introducing
@@ -711,3 +715,115 @@ behavior.
   read-side only, Redis Streams remain unnecessary for MVP correctness, and 100k
   behavior remains unmeasured. The checkout-concurrency performance blocker remains
   outside this plan.
+
+## S0-PLAN-01C2 same-reservation writer serialization correction (2026-09-01)
+
+### GOAL
+
+- Freeze one deterministic policy for every current writer that can invalidate the
+  operation-specific PRE/POST recovery proof. Keep S0-ARCH-01 frozen and keep
+  implementation unauthorized.
+
+### SOURCE MATRIX
+
+- `Store.Orders.reserve_inventory/3` at [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:169)
+  remains `ADMISSION_REQUIRED` in `ENFORCED` mode. It is the only normal
+  single-variant reserve entry and owns `K_v = 1`, `B_total`, and the reservation
+  fence before the existing transaction.
+- `Store.Orders.reserve_inventory_for_checkout/3` at
+  [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:176), including
+  [`lib/store/checkout/domain.ex`](../../lib/store/checkout/domain.ex:767) and the
+  one-item renewal call at [`lib/store/subscriptions/facade.ex`](../../lib/store/subscriptions/facade.ex:2627),
+  is `ENFORCED_UNAVAILABLE`. It returns `INVENTORY_ADMISSION_UNSUPPORTED` before
+  the CTE for every item count. No multi-variant or single-item CTE bypass is allowed.
+- `consume_reservations_for_order/2` at
+  [`lib/store/orders/inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex:100),
+  reached by [`lib/store/payments/interlocks.ex`](../../lib/store/payments/interlocks.ex:595),
+  is `SHARED_RESERVATION_FENCE` and stays outside the admission queue.
+- `release_reservations_for_order/2` at
+  [`lib/store/orders/inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex:112),
+  reached by payment, subscription, and pending-provider cleanup callers, is
+  `SHARED_RESERVATION_FENCE` and stays outside the admission queue.
+- `expire_reservations/2` and [`ExpireInventoryReservationsWorker`](../../lib/store/workers/expire_inventory_reservations_worker.ex:11)
+  are `SHARED_RESERVATION_FENCE`. A busy candidate is deferred and a Redis failure
+  causes a governed worker retry. Neither path uses a raw system bypass.
+- Pending-provider cleanup through
+  [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:699) and
+  [`lib/store/workers/expire_pending_provider_setup_orders_worker.ex`](../../lib/store/workers/expire_pending_provider_setup_orders_worker.ex:31)
+  inherits `SHARED_RESERVATION_FENCE`. A busy or unavailable release rolls back the
+  cancellation transaction so bounded Oban retry can run it later.
+- Direct `InventoryReservation` Ash mutation actions and direct
+  `InventoryItem.update_counts`, `set_on_hand`, and `adjust_on_hand` actions have no
+  production caller in the focused search. Test fixtures use direct `set_on_hand`
+  in [`test/store_web/live/cart_checkout_live_test.exs`](../../test/store_web/live/cart_checkout_live_test.exs:170),
+  [`test/store/checkout/domain_test.exs`](../../test/store/checkout/domain_test.exs:458),
+  and [`test/store/governance/catalog_phase_25_test.exs`](../../test/store/governance/catalog_phase_25_test.exs:125)
+  (also at lines 212 and 228). They are `ENFORCED_UNAVAILABLE`; fixtures may prepare
+  data before enforcement, but no direct action is a live-operation bypass.
+  `InventoryItem.create` during product creation is the sole
+  `PROVABLY_NON_OVERLAPPING` inventory-only writer because its variant is new and
+  cannot already have a reservation.
+- The recovery worker is `RECOVERY_ONLY`: it reads PostgreSQL truth and resolves
+  fences, but it does not start a second durable mutation. No other raw SQL or direct
+  resource mutation caller was found.
+
+### DECISIONS / PINS
+
+- `INV-PLAN-SER-001` is normative. While an operation for `reservation_key` is
+  `QUEUED`, `ADMITTED`, `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, or
+  `UNRESOLVED`, no second writer can mutate that key. A lifecycle writer must first
+  acquire the same server-owned Redis reservation fence; an `ENFORCED_UNAVAILABLE`
+  path cannot enter PostgreSQL.
+- The shared fence is a coordination record only. The owner and owner token are
+  checked atomically. It is released after known commit or known rollback. An
+  ambiguous lifecycle result retains its descriptor and fence for the bounded Oban
+  recovery path. Fence TTL never proves rollback.
+- Order-scoped lifecycle target keys are materialized by a bounded PostgreSQL read
+  before the complete fence set is acquired. The existing lifecycle transaction uses
+  only that fenced set and does not re-scan for newly appearing rows; an uncertain
+  target read fails closed and a newly appearing row waits for a later pass.
+- `K_v = 1` still serializes all enforced reserve mutations for one variant. A
+  lifecycle mutation for a different reservation key may alter the same inventory
+  counters. The existing version increments are part of PRE/POST comparison; a
+  changed unrelated inventory snapshot resolves `UNRESOLVED`, never a guessed
+  `COMMITTED` or `ROLLED_BACK`. Direct unversioned inventory updates are closed in
+  `ENFORCED` mode.
+- `DISABLED` preserves legacy behavior only while no protected operation is live.
+  Mode changes require a deployment drain. No client, system actor, maintenance
+  caller, or test may select a raw bypass during `ENFORCED`.
+- Redis unavailable or uncertain while acquiring a lifecycle fence returns
+  `INVENTORY_ADMISSION_UNAVAILABLE` and performs no durable lifecycle mutation. The
+  generic fail-open waiting room cannot override this rule.
+- The existing schema remains sufficient only under this exact writer policy. The
+  unique `reservation_key`, `(order_id, variant_id)`, and `inventory_items.variant_id`
+  indexes plus the existing quantity, state, counter, and version fields remain the
+  PRE/POST proof. No migration or durable mutation identity is added.
+- TOON IN-04 is the single focused implementation prompt for this matrix and names
+  every affected future source and test path. The current checkout-concurrency
+  performance blocker remains outside this correction.
+
+### DONE
+
+- Updated only the implementation plan and this phase note. No production code,
+  tests, migrations, configuration, Redis/PostgreSQL writes, or performance runs
+  were performed.
+- Kept `S0-ARCH-01` frozen and `IMPLEMENTATION STATUS: NOT AUTHORIZED`.
+
+### NEXT
+
+- Run the targeted documentation checks, commit only these two documentation files,
+  push `hardening/s0-baseline` for PR #1, and obtain the final independent
+  implementation-plan review. Do not start IA-01, triage checkout performance, or
+  merge PR #1.
+
+### Performance & Scaling Review
+
+- InventoryAdmission and the shared fence are HOT Redis/Elixir coordination. Redis is
+  HOT/WARM coordination only. InventoryItem and InventoryReservation remain
+  COLD/DURABLE PostgreSQL truth.
+- Queued reserve work performs no Store.Repo checkout. `K_v = 1` and `B_total` are
+  unchanged. Lifecycle fencing is a correctness boundary, not a second admission
+  queue.
+- No pool sizes, thresholds, workloads, Redis topology, PgBouncer behavior, or
+  performance claims changed. 100k remains unmeasured, and the checkout-concurrency
+  blocker remains outside this task.

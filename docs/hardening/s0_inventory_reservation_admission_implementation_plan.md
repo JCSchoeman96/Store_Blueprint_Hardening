@@ -78,8 +78,9 @@ This plan does not include:
 
 The existing multi-variant checkout path through
 `Store.Orders.reserve_inventory_for_checkout/3` remains outside this tracer bullet.
-When the protected single-variant facade is enforced, a multi-variant request must
-return an explicit unsupported result rather than silently bypassing admission.
+It is still a capable durable writer. The frozen writer matrix in Section 6 makes it
+unavailable while the admission gate is `ENFORCED`; it must never silently bypass
+admission. A later checkout integration needs its own architecture decision.
 
 ## 3. Current source baseline
 
@@ -281,13 +282,10 @@ captures those facts is performed only after admission, while both `K_v` and `B_
 are held, and is included in `T_db`. Queued requests never perform this read.
 
 The protected path has one live mutation per `reservation_key`. The enforced admission
-facade is the only normal reserve entry point. Consume, release, expiry, inventory
-maintenance, and system/test bypasses that can mutate the same reservation must either
-honor this same-reservation fence or be explicitly excluded from the overlap window.
-An implementation that cannot establish this rule must stop rather than claim that
-existing state proves mutation attribution. PostgreSQL row locks still serialize the
-durable writes, but row locks alone do not identify which operation produced a later
-state.
+facade is the only normal reserve entry point. Section 6 freezes the policy for every
+other capable writer. There is no implementation-time choice between fencing and
+exclusion. PostgreSQL row locks still serialize durable writes, but row locks alone do
+not identify which operation produced a later state.
 
 ### Smallest internal API
 
@@ -334,6 +332,99 @@ The result shape is:
 
 The exact web response mapping is out of scope. Domain callers must be able to make a
 short call, retain or receive a status reference, and retry idempotently.
+
+### Capable-writer matrix and frozen serialization policy
+
+A focused source search found the following durable writers. The matrix is normative
+for `ENFORCED` mode. The policy column is not a menu for implementation selection.
+
+| Writer | Mutates `InventoryReservation`? | Mutates `InventoryItem` counters? | Can target the same `reservation_key`? | Can target the same variant row? | Current entry point | MVP policy |
+|---|---:|---:|---:|---:|---|---|
+| `Store.Orders.reserve_inventory/3` and its `InventoryReservations.reserve_inventory/3` implementation | YES | YES | YES | YES | [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:169) -> [`lib/store/orders/inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex:16) | `ADMISSION_REQUIRED`: one normalized variant enters `InventoryAdmission`, owns `K_v = 1`, `B_total`, and the shared reservation fence. A multi-variant input is rejected. |
+| `Store.Orders.reserve_inventory_for_checkout/3` and its CTE | YES | YES | YES | YES | [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:176), called by [`lib/store/checkout/domain.ex`](../../lib/store/checkout/domain.ex:767) and [`lib/store/subscriptions/facade.ex`](../../lib/store/subscriptions/facade.ex:2627) | `ENFORCED_UNAVAILABLE`: return `INVENTORY_ADMISSION_UNSUPPORTED` before `run_checkout_reservation_transaction/4` for every item count, including one. The CTE never runs while the tracer gate is enforced. It is not partially routed through multi-variant admission. |
+| `Store.Orders.consume_reservations_for_order/2` | YES | YES | YES | YES | [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:184) -> [`lib/store/orders/inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex:100); payment-success caller [`lib/store/payments/interlocks.ex`](../../lib/store/payments/interlocks.ex:595) | `SHARED_RESERVATION_FENCE`: acquire the server-owned fence for every target key before the existing transaction. This is not an admission queue and does not claim `B_total`. Busy or unavailable Redis produces a governed error and no durable mutation. |
+| `Store.Orders.release_reservations_for_order/2` | YES | YES | YES | YES | [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:192) -> [`lib/store/orders/inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex:112); callers [`lib/store/payments/interlocks.ex`](../../lib/store/payments/interlocks.ex:709) and [`lib/store/subscriptions/facade.ex`](../../lib/store/subscriptions/facade.ex:2816) | `SHARED_RESERVATION_FENCE`: acquire the same fence set before the existing transaction. A busy or unavailable fence returns a governed error; the caller's surrounding order/payment transaction does not commit a competing state change. |
+| Pending-provider/order cleanup release | YES | YES | YES | YES | [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:699), reached by [`lib/store/workers/expire_pending_provider_setup_orders_worker.ex`](../../lib/store/workers/expire_pending_provider_setup_orders_worker.ex:31) | `SHARED_RESERVATION_FENCE`: inherit the release policy. A busy or Redis-unavailable result rolls back the cleanup transaction and lets bounded Oban retry; it never cancels the order while release is unguarded. |
+| `Store.Orders.expire_reservations/2` | YES | YES | YES | YES | [`lib/store/orders/domain.ex`](../../lib/store/orders/domain.ex:200) -> [`lib/store/orders/inventory_reservations.ex`](../../lib/store/orders/inventory_reservations.ex:124) | `SHARED_RESERVATION_FENCE`: fence each candidate key before its durable expiry mutation. A busy candidate is skipped for a later bounded pass; Redis uncertainty fails the pass closed. Expiry does not enter the admission queue. |
+| `ExpireInventoryReservationsWorker` | YES | YES | YES | YES | [`lib/store/workers/expire_inventory_reservations_worker.ex`](../../lib/store/workers/expire_inventory_reservations_worker.ex:11) | `SHARED_RESERVATION_FENCE`: it has no separate authority and inherits `expire_reservations/2`. It retries a governed fence/unavailable result and never uses a raw system bypass. |
+| Direct `InventoryReservation` Ash actions (`create`, `set_quantity`, `mark_consumed`, `mark_expired`, `mark_cancelled`) | YES | NO | YES | YES | Action definitions in [`lib/store/orders/inventory_reservation.ex`](../../lib/store/orders/inventory_reservation.ex:95); no direct production caller was found in the focused search. | `ENFORCED_UNAVAILABLE`: direct Ash action invocation is not a protected writer path. Only the guarded `InventoryReservations` operations or the recovery owner may mutate durable reservation state while enforced. Test/setup calls happen before enforcement or use the guarded path. |
+| `InventoryItem.create` during product creation | NO | YES | NO | NO | [`lib/store/catalog/product.ex`](../../lib/store/catalog/product.ex:336) | `PROVABLY_NON_OVERLAPPING`: the source caller creates inventory for a newly created variant before any reservation can reference that variant. The unique `variant_id` identity remains the guard. |
+| Direct `InventoryItem.update_counts/3`, `set_on_hand/3`, or `adjust_on_hand/3` maintenance action | NO | YES | NO | YES | Action definitions in [`lib/store/catalog/inventory_item.ex`](../../lib/store/catalog/inventory_item.ex:83); no direct production update caller was found. Test setup uses `set_on_hand` in [`test/store_web/live/cart_checkout_live_test.exs`](../../test/store_web/live/cart_checkout_live_test.exs:170), [`test/store/checkout/domain_test.exs`](../../test/store/checkout/domain_test.exs:458), and [`test/store/governance/catalog_phase_25_test.exs`](../../test/store/governance/catalog_phase_25_test.exs:125) (also at lines 212 and 228). | `ENFORCED_UNAVAILABLE`: no unversioned inventory-only writer may run during a protected operation. A future maintenance writer needs a separately reviewed variant fence; it cannot use a raw Ash/system bypass. |
+| `InventoryAdmissionRecoveryWorker` (read/reconcile only) | NO | NO | NO (read only) | NO (read only) | Future worker in `lib/store/workers/inventory_admission_recovery_worker.ex` | `RECOVERY_ONLY`: it may read PostgreSQL truth and resolve the existing fence. It cannot start another durable mutation or act as an inventory writer. |
+
+The focused search found no other production caller that directly mutates these two
+resources, no pending-provider cleanup path that bypasses the release wrapper, and no
+raw SQL mutation outside `InventoryReservations`. The action definitions themselves
+remain capabilities that the `ENFORCED_UNAVAILABLE` policy must close. A new caller is
+not permitted to add a third policy.
+
+The fixed policy names mean the following:
+
+- `ADMISSION_REQUIRED` routes through the single-variant admission service. The
+  variant permit, global budget, and reservation fence are acquired before the
+  PostgreSQL transaction.
+- `SHARED_RESERVATION_FENCE` acquires the same server-owned
+  `reservation_key` exclusion before the existing lifecycle transaction. It does not
+  create a queued admission member, does not receive `K_v` or `B_total`, and does not
+  change `active -> consumed`, `active -> expired`, or `active -> cancelled`.
+  Order-scoped lifecycle calls first perform a bounded PostgreSQL read of their exact
+  eligible reservation-key set, record that set in the operation descriptor, and then
+  acquire the complete set atomically. The existing transaction uses only that fenced
+  set; it may revalidate each row but may not rediscover newly appearing active rows.
+  A row that appears after the snapshot is deferred to a later lifecycle pass, so it
+  cannot be mutated without its reservation fence. Expiry uses the same rule for its
+  bounded candidate set. An uncertain target read returns
+  `INVENTORY_ADMISSION_UNAVAILABLE` before durable mutation.
+- `ENFORCED_UNAVAILABLE` returns a governed error before any durable mutation. It is
+  not a caller-controlled bypass and is not conditional on a best-effort Redis read.
+- `PROVABLY_NON_OVERLAPPING` is limited to creating the inventory row for a new
+  variant. It does not authorize updates to an existing variant.
+- `RECOVERY_ONLY` can reconcile durable state and Redis ownership, but cannot create a
+  reservation or alter stock counters.
+
+#### INV-PLAN-SER-001
+
+While an operation `O` for `reservation_key = R` is in `QUEUED`, `ADMITTED`,
+`RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, or `UNRESOLVED`, no second writer may
+mutate `R`. The exact enforcement is:
+
+1. `ADMISSION_REQUIRED` owns the reservation fence as part of its admission lease.
+2. A `SHARED_RESERVATION_FENCE` writer must acquire that same fence with a new
+   server-generated operation identity before entering its existing transaction. The
+   Redis atomic operation acquires the complete target set or none of it. A live fence
+   returns `INVENTORY_ADMISSION_BUSY`; Redis failure or an uncertain command returns
+   `INVENTORY_ADMISSION_UNAVAILABLE`. Neither result enters PostgreSQL.
+3. `ENFORCED_UNAVAILABLE` writers cannot enter PostgreSQL at all while the gate is
+   enforced. This includes the checkout CTE, direct Ash mutation actions, and direct
+   maintenance/test calls.
+4. The owning writer releases its fence only after a known commit or known rollback.
+   An ambiguous result keeps the fence and operation descriptor and enters the same
+   bounded Oban recovery path. A neither-match result is `UNRESOLVED`, retains or
+   quarantines the fence, and cannot promote another mutation.
+5. The recovery worker may read and reconcile `R`, but it is not a second durable
+   writer. It releases capacity only after the operation-specific durable evidence
+   resolves.
+
+The owner is `InventoryAdmission` for an admitted reserve operation and the guarded
+`InventoryReservations` caller for a lifecycle operation. `InventoryAdmission.Redis`
+owns token comparison and atomic fence transitions. The fence is coordination state,
+not PostgreSQL truth. A mode change from `DISABLED` to `ENFORCED`, or the reverse, is a
+deployment operation that requires all live protected operations to reach a terminal
+or quarantined state. It cannot be selected per request to bypass this invariant.
+
+### Same-variant writers and conservative recovery
+
+`K_v = 1` serializes every `ADMISSION_REQUIRED` reserve mutation for a variant across
+the cluster. It does not claim that lifecycle work is an admission entrant. A
+`SHARED_RESERVATION_FENCE` lifecycle writer for a different `reservation_key` may
+change the same `InventoryItem` row while an operation is being recovered. The
+existing lifecycle counter updates increment `InventoryItem.version`; the operation
+descriptor therefore compares the exact counter and version PRE/POST facts. If that
+unrelated writer changes the evidence, recovery must return `UNRESOLVED` rather than
+guess `COMMITTED` or `ROLLED_BACK`. Version changes prevent a later coincidental
+counter value from becoming false proof. Direct inventory updates that do not advance
+the version are unavailable in `ENFORCED` mode. This is the complete same-variant
+policy; it does not promise automatic recovery after unrelated durable changes.
 
 ## 7. Lifecycle and transition contract
 
@@ -409,12 +500,12 @@ at most one live protected mutation for a reservation_key
 ```
 
 No new operation may begin while the prior operation is `QUEUED`, `ADMITTED`,
-`RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, or `UNRESOLVED`. Any consume, release,
-expiry, inventory-maintenance, test, or system bypass that can write the same durable
-reservation must honor this fence or be explicitly excluded from the overlap window.
-PostgreSQL row locks still protect atomic durable writes, but an unguarded writer would
-invalidate PRE/POST attribution. The implementation gate must prove this rule before
-using the no-migration decision.
+`RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, or `UNRESOLVED`. The complete writer
+policy, including the fixed treatment of consume, release, expiry, checkout, direct
+resource actions, maintenance, tests, and system callers, is `INV-PLAN-SER-001` in
+Section 6. A future implementation must satisfy that matrix before using the
+no-migration decision. PostgreSQL row locks still protect atomic durable writes, but a
+writer outside the matrix would invalidate PRE/POST attribution.
 
 ## 8. Configuration, permit budgets, and rollout
 
@@ -498,9 +589,13 @@ shadow Redis decision that does not gate PostgreSQL would add coordination load 
 would not prove pool protection.
 
 - `DISABLED`: preserve the current direct behavior for controlled rollout and legacy
-  paths; this mode does not claim to solve the herd.
+  paths; this mode does not claim to solve the herd. It is valid only when no
+  protected admission operation is live.
 - `ENFORCED`: the protected `Store.Orders.reserve_inventory/3` single-variant path
-  must pass through `InventoryAdmission`; Redis errors fail closed.
+  must pass through `InventoryAdmission`; Redis errors fail closed. The existing
+  `reserve_inventory_for_checkout/3` CTE and direct resource/maintenance mutation
+  actions return governed `INVENTORY_ADMISSION_UNSUPPORTED` before durable mutation.
+  Consume, release, and expiry use the shared reservation fence from Section 6.
 
 The mode is deployment/server controlled. It is not read from a client, order, or
 browser parameter. `ENFORCED` is invalid unless the Redis connection, budget,
@@ -536,6 +631,7 @@ the web boundary.
 | `global:queue_dispatch` | ZSET; same member, score is the server-issued sequence. | Global bounded dispatch candidate index so a freed `B_total` slot can wake another queued variant without scanning keys. It is not a second authority. | Container retention follows the finite queue window. Score is never an expiry. | `ZCARD <= Q_global_max`; maintained atomically with every per-variant membership change. |
 | `global:queue_expiry` | ZSET; member is the opaque admission member, score is the Redis-server deadline for queued expiry. | Queued expiry only. | Score is the semantic queued deadline; container is retained beyond the latest member deadline. | At most the live global queue population; bounded `ZRANGEBYSCORE` cleanup. |
 | `variant:<variant_hex>:active` | HASH with one active holder: member, state, token, owner epoch, sequence, `T_db` deadline, lease deadline, and identity digest. | Current `K_v = 1` ownership record. | Lease/operation metadata is retained through the bounded recovery window; never expires while it may be needed for recovery. | At most one holder per variant. No stock or availability fields. |
+| `reservation:<reservation_digest>:mutation_fence` | HASH with one server-owned mutation owner, operation ID/epoch, owner token, mutation kind, descriptor reference, and deadline. | Shared exclusion for the admission operation and `SHARED_RESERVATION_FENCE` lifecycle writers. It is not a permit counter and contains no inventory state. | Held through the known durable result or the bounded recovery window. Fence expiry never authorizes a replacement by itself. | At most one owner per durable `reservation_key`; a bounded multi-key lifecycle operation acquires its complete target set atomically or none. |
 | `global:active_expiry` | ZSET; member is the active admission member, score is active lease expiry. | Global active lease index and `B_total` occupancy. `ZCARD` is the active global permit count. | Member score is the active lease-expiry semantic. Do not independently expire the key while active members exist. | `ZCARD <= B_total`; bounded due-member pruning. |
 | `request:<member>:meta` | HASH with state, durable-identity digest, variant, queue sequence, `operation_id`, `operation_epoch`, request fingerprint, mutation kind, trusted PRE/expected POST descriptor, deadlines, owner epoch/token, durable reservation ID when known, and terminal reason. | Request/lease status, idempotency, and ephemeral recovery evidence only. | `T_queue` while queued; `L_admission + T_recovery` while active/recovering; descriptor is retained until resolution; finite terminal retention after resolution. | Live metadata is bounded by `Q_global_max + B_total`; terminal retention is finite and memory-budgeted. No stock or availability fields. |
 | `request:<member>:recovery_fence` | HASH/string with `operation_id`, operation epoch, recovery owner token, fence epoch, safety deadline, recovery deadline, descriptor reference/digest, and status. | Duplicate-attempt prevention and recovery ownership. | Finite recovery TTL covering the recovery budget plus cleanup grace. Fence expiry never itself releases capacity. | At most one fence per ambiguous operation; missing evidence causes quarantine, not release. |
@@ -584,6 +680,9 @@ operation; it never falls back to the durable reservation function directly.
 | `enqueue_or_return_existing` | Durable-identity digest, variant, request fingerprint, `Q_variant_max`, `Q_global_max`, `B_total`, namespace epoch, and trusted adjustment authorization. | Prune bounded queued expiry; return an exact live/terminal/recovery operation; reject a mismatched live identity; or, only when terminal policy permits, server-generate a new `operation_id`/epoch under the same `reservation_key`. It forbids a new operation during any live or `UNRESOLVED` state. For a new operation, validate both queue bounds. If both capacities are available and the request is the eligible head, acquire both and create `ADMITTED`; otherwise insert exactly one member in all queue indexes and metadata. | `existing`, `queued`, `admitted`, `busy`, `mismatch`, `frozen`, or `unavailable`. It never partially increments a queue or grants one budget. |
 | `promote_next` | Namespace epoch, optional releasing member, `B_total`, bounded candidate limit. | Prune due queued records, select an eligible global candidate whose per-variant member is the variant head, verify no active/recovery freeze, verify `ZCARD(global:active_expiry) < B_total`, then remove queue indexes and create the one active lease. | A complete lease, no eligible candidate, global-full, variant-frozen, or fail-closed error. Variant and global capacity change together. |
 | `claim_reserving` | Member, variant, lease token, owner epoch, and complete server-owned operation PRE/POST descriptor. | Compare token/epoch/state, verify the operation identity, store the descriptor, and atomically change `ADMITTED` to `RESERVING`. No protected database mutation is allowed before this succeeds. | `claimed`, `already_reserving`, terminal/recovering, stale-owner, descriptor-invalid, or unavailable. Replays cannot claim a second owner. |
+| `acquire_shared_mutation_fence` | One or more server-derived reservation digests, operation ID/epoch, mutation kind, owner token, and bounded deadline. | Used by consume, release, and expiry before their existing durable transaction. Acquire the complete bounded target set atomically or none of it; reject any key already owned by a live admission or lifecycle operation. It does not acquire `K_v` or `B_total` and does not enqueue. | `acquired`, `busy`, stale identity, frozen, or unavailable. A partial target-set acquisition is never returned. |
+| `release_shared_mutation_fence_known_outcome` | Target set, owner token/epoch, and known commit or rollback result. | Verify ownership, record terminal operation metadata, and remove the fence set atomically. A repeated release is idempotent and cannot affect a newer owner. | `released`, `already_resolved`, stale-owner, frozen, or unavailable. A known durable result remains valid if Redis release fails. |
+| `mark_shared_mutation_unknown` | Target set, owner token/epoch, operation descriptor, and recovery deadline. | Verify ownership, retain every target fence, and create one recovery record for the lifecycle operation. No target fence is released. | `fenced`, already fenced, stale-owner, or unavailable. An uncertain Redis result quarantines the target set rather than retrying the mutation. |
 | `renew_lease` | Member, variant, token, owner epoch, server time. | Compare current ownership; renew only while `RESERVING`, before the hard `T_db` deadline, and within the configured lease window. Update active expiry index and metadata together. | `renewed`, `deadline_reached`, `stale_owner`, `frozen`, or unavailable. It cannot extend indefinitely. |
 | `release_known_outcome` | Member, variant, token, owner epoch, `COMPLETED` or `REJECTED`, optional durable reservation ID. | Compare current ownership; mark terminal metadata; remove variant active and global active-expiry membership; promote the next eligible request in the same atomic operation. Repeated release is a no-op for the same terminal result and cannot affect a newer token. | `released` with optional next lease, `already_resolved`, stale-owner, frozen, or unavailable. A Redis error after known commit does not undo PostgreSQL. |
 | `mark_unknown_and_fence` | Member, variant, token, owner epoch, operation identity, retained descriptor, and recovery deadline. | Compare current ownership; change `RESERVING` to `UNKNOWN_DB_OUTCOME`; create/retain one recovery fence and descriptor; retain both variant and global capacity. | `fenced`, already fenced, stale-owner, or unavailable. It never marks rollback or releases for an unrestricted retry. |
@@ -602,6 +701,7 @@ queued_members(variant) <= Q_variant_max
 queued_members(all_variants) <= Q_global_max
 one logical identity => at most one queue member and one active lease
 one reservation_key => at most one non-terminal operation_id/operation_epoch
+one reservation fence => at most one live durable writer for that reservation_key
 new operation => forbidden while prior operation is live or UNRESOLVED
 stale token => no release, renew, promotion, or global decrement
 ```
@@ -675,6 +775,17 @@ correctness is protected by the PostgreSQL transaction, row lock, availability c
 durable identity, and unique indexes. Admission capacity correctness is protected by
 Redis ownership, deadlines, promotion freeze, and recovery fencing. DB-side fencing
 validation would be a separate architecture and migration decision.
+
+The same owner-token rules apply to the `SHARED_RESERVATION_FENCE` policy. A consume,
+release, or expiry writer obtains the reservation fence before its existing durable
+transaction and holds it until a known commit or known rollback. It does not receive
+an admission queue position, `K_v`, or `B_total`. For an order-wide lifecycle
+transaction, the bounded target reservation-key set is acquired in one atomic Redis
+operation, ordered by normalized binary UUID, or the transaction does not start. If a
+lifecycle transaction loses its final database outcome, its server-generated
+operation descriptor remains fenced and the bounded Oban recovery worker performs the
+same PostgreSQL PRE/POST reconciliation. Existing durable lifecycle transitions are
+unchanged. A fence TTL is only a recovery safety bound, never proof of rollback.
 
 ### Redis restart and partition quarantine
 
@@ -761,6 +872,14 @@ owner fails before the atomic claim, no database mutation has started and the le
 can expire normally. If it fails after the claim, the descriptor is available to
 recovery.
 
+The same descriptor shape is used by a `SHARED_RESERVATION_FENCE` lifecycle writer,
+with its mutation kind and complete bounded target set recorded before the existing
+transaction. A lifecycle operation does not acquire admission capacity, but it keeps
+its fence and descriptor through a known result or the same recovery window. A
+multi-reservation consume or release operation is one grouped operation with one
+server owner and one PRE/POST fact set per target key. Expiry uses the same rule for
+each fenced candidate in its bounded pass.
+
 For a reservation row, `pre.reservation` is either `:absent` or the current row's
 `id`, `quantity`, `state`, `expires_at`, lifecycle timestamps relevant to the branch,
 and `version`. For the inventory row, `pre.inventory` contains `variant_id`,
@@ -808,11 +927,12 @@ too.
 This proof is valid because the existing transaction locks the unique inventory row
 and the order/variant reservation row, updates both durable resources atomically, and
 increments the existing `version` fields on each mutation. It also depends on the
-normative same-reservation serialization rule in Sections 6 and 7. No other reserve,
-consume, release, expiry, inventory-maintenance, test, or system bypass may mutate the
-same `reservation_key` during the operation window unless it honors the same fence. An
-unguarded writer would make a matching POST attributable to the wrong mutation and
-invalidates this no-migration proof.
+normative writer matrix and `INV-PLAN-SER-001` in Section 6. The matrix disables the
+checkout CTE and direct unversioned maintenance/resource-action paths while admission
+is enforced. The lifecycle writers use the shared reservation fence, and their
+operation descriptors enter the same recovery path if their database result is
+ambiguous. An unguarded writer would make a matching POST attributable to the wrong
+mutation and invalidate this no-migration proof.
 
 ### Recovery transitions and owner
 
@@ -836,6 +956,12 @@ Recovery behavior is:
    quarantines affected capacity, and requires governed operational resolution. It does
    not start an unrestricted second attempt.
 
+For a grouped consume or release operation, every target reservation and affected
+inventory snapshot must match the same operation's PRE or POST set. If any target
+matches neither, the whole group remains fenced and becomes `UNRESOLVED`; recovery
+never releases some target fences and retries the rest. Expiry applies the same rule to
+the bounded candidate set it actually fenced.
+
 The worker job is unique by the server-owned operation/recovery identity and has a
 bounded retry budget. A later caller retry may use the same `reservation_key` only
 after the fence is resolved and the operation is terminal. It gets a new operation
@@ -845,7 +971,7 @@ durable result.
 ### Schema sufficiency and Redis metadata loss
 
 The existing schema is sufficient for the supported MVP mutations under the stated
-serialization invariant. The proof uses only the existing unique
+serialization policy. The proof uses only the existing unique
 `reservation_key`/`order_id + variant_id` identities, unique `inventory_items.variant_id`,
 `quantity`, lifecycle state/timestamps, `stock_on_hand`, `reserved_count`, and the
 existing reservation/inventory `version` fields. No durable mutation identity, table,
@@ -908,19 +1034,23 @@ When the gate is `ENFORCED`:
 5. The service classifies the result and releases or recovers as Section 12 states.
 
 The existing `reserve_inventory_for_checkout/3` multi-variant CTE remains unchanged
-and out of scope. If the enforced protected facade receives multiple variants, it
-returns `INVENTORY_ADMISSION_UNSUPPORTED`; it does not silently direct the request to
-the unbounded path. Future multi-variant admission must use deterministic binary UUID
-ordering or an atomic multi-key design before it can be enabled.
+and out of the tracer bullet, but it is not an allowed concurrent writer. In
+`ENFORCED` mode, `Store.Orders.reserve_inventory_for_checkout/3` returns
+`INVENTORY_ADMISSION_UNSUPPORTED` before the CTE for every item count, including the
+single-variant subscription-renewal caller. The checkout and subscription callers
+must handle that governed result; they must not invoke the CTE through a separate
+path. `DISABLED` mode preserves the legacy CTE only while no protected operation is
+live, and changing modes requires a deployment drain. Future multi-variant admission
+must use deterministic binary UUID ordering or an atomic multi-key design before it
+can be enabled.
 
 The durable primitive is not a public web API. Because Elixir does not provide a
 caller-based module visibility boundary, the integration phase must add a focused
-call-site/boundary test and an explicit internal/test-only bypass policy if current
-tests need the disabled direct path. A bypass must be server-controlled, named, and
-unavailable to normal web input. It must never be a client-provided flag. Any bypass
-that can mutate an existing `reservation_key` must honor the same-reservation fence or
-be excluded from the admission overlap window; otherwise the PRE/POST recovery proof
-is invalid.
+call-site/boundary test. Direct resource and fixture writes run only before
+`ENFORCED`; there is no runtime bypass flag. The only non-admission callers permitted
+while enforced are the enumerated `SHARED_RESERVATION_FENCE` lifecycle callers. Raw
+Ash actions and maintenance writes are `ENFORCED_UNAVAILABLE`. This is a fixed
+boundary, not a caller choice.
 
 ## 14. Request lifetime and waiting boundary
 
@@ -967,6 +1097,9 @@ not one DB connection or indefinitely blocked BEAM process each.
 | PostgreSQL unavailable before DB entry | Known pre-DB infrastructure rejection if the boundary proves no transaction was sent. | Release both permits idempotently; no durable reservation exists. |
 | PostgreSQL error after transaction may have begun | `UNKNOWN_DB_OUTCOME` then `RECOVERING`. | Do not translate to `OUT_OF_STOCK`, ordinary `RESERVATION_CONFLICT`, or immediately retry. Query `reservation_key` and compare operation PRE/POST facts. |
 | PostgreSQL definitively rolls back/rejects | `REJECTED`, existing governed error. | Release the current fenced lease and permit; no reservation mutation is created. |
+| Lifecycle writer cannot acquire the shared reservation fence | `INVENTORY_ADMISSION_BUSY` with bounded retry for the caller or worker. | Do not enter the existing consume, release, or expiry transaction. A pending-provider cleanup rolls back its order cancellation; an expiry worker retries a later bounded pass. |
+| Redis is unavailable or uncertain for a lifecycle fence | `INVENTORY_ADMISSION_UNAVAILABLE`; no durable lifecycle mutation is claimed. | Fail closed for the lifecycle writer. Do not use the generic waiting-room fail-open behavior and do not bypass the fence with a system actor. |
+| Direct resource or maintenance mutation is requested in `ENFORCED` mode | `INVENTORY_ADMISSION_UNSUPPORTED`. | The direct Ash action does not run. Test/setup writes occur before enforcement; a future maintenance writer needs a separately reviewed variant fence. |
 | PostgreSQL commits, Redis release succeeds | `COMPLETED` with durable row. | Release and promote atomically; replay returns the durable row for the same operation. |
 | PostgreSQL commits, process or Redis release fails | Durable success is returned/retained; release remains pending for reaper. | PostgreSQL truth remains valid. Stale release cannot touch a newer lease or later operation. |
 | Holder crashes before `RESERVING` | `ADMITTED` reaches safe expiry and becomes `EXPIRED`. | No DB call is assumed; capacity is released only by token/epoch-checked pruning. |
@@ -1030,7 +1163,7 @@ admission state.
 
 The existing schema is sufficient for the supported Option A MVP mutations, subject to
 deployment verification of the same migration set and the normative
-same-`reservation_key` serialization rule in Sections 6, 7, and 12. The proof is not
+same-`reservation_key` writer policy in Sections 6, 7, and 12. The proof is not
 based on `reservation_key` being a mutation ID:
 
 - `inventory_items.variant_id` unique index supports the durable inventory lookup;
@@ -1041,6 +1174,11 @@ based on `reservation_key` being a mutation ID:
 - `inventory_reservations.version` and `inventory_items.version` advance on the
   existing update paths, allowing the recovery descriptor to distinguish the trusted
   PRE snapshot from the expected POST snapshot;
+- The direct `InventoryReservation` Ash actions and direct `InventoryItem` update
+  actions are not versioned operation paths and are therefore unavailable in
+  `ENFORCED` mode. The only non-reservation inventory writer admitted by this plan is
+  `InventoryItem.create` for a newly created variant, which cannot overlap a
+  reservation.
 - `quantity`, reservation state/expiry fields, `stock_on_hand`, and `reserved_count`
   provide the remaining operation-specific PRE/POST predicate fields;
 - existing `(order_id, state)`, `(variant_id, state)`, `(state, expires_at)`, and
@@ -1251,6 +1389,36 @@ The same file also proves operation identity rules:
 - operation metadata loss does not guess a result and instead produces the documented
   quarantine/`UNRESOLVED` behavior.
 
+### Capable-writer serialization tests
+
+Target [`test/store/orders/inventory_admission_test.exs`](../../test/store/orders/inventory_admission_test.exs),
+[`test/store/orders/inventory_admission_redis_test.exs`](../../test/store/orders/inventory_admission_redis_test.exs),
+[`test/store/orders/inventory_admission_recovery_test.exs`](../../test/store/orders/inventory_admission_recovery_test.exs),
+and [`test/store/governance/inventory_reservations_test.exs`](../../test/store/governance/inventory_reservations_test.exs):
+
+- a live protected quantity adjustment rejects a second reserve mutation for the same
+  `reservation_key`;
+- a live protected adjustment and release, consume, or expiry for the same key use the
+  shared fence and cannot enter durable mutation concurrently;
+- lifecycle target discovery is materialized before fencing, so a reservation inserted
+  after that snapshot is deferred rather than mutated through an unfenced re-scan;
+- the checkout CTE targeting the same order/variant returns
+  `INVENTORY_ADMISSION_UNSUPPORTED` in `ENFORCED` mode before its transaction;
+- maintenance, direct Ash, system, and test mutation attempts cannot silently bypass
+  the invariant while `ENFORCED`;
+- Redis unavailable during a lifecycle fence returns
+  `INVENTORY_ADMISSION_UNAVAILABLE` and performs no durable lifecycle mutation;
+- a different `reservation_key` lifecycle mutation on the same variant changes the
+  inventory evidence and therefore resolves the protected operation as
+  `UNRESOLVED`, never as a false commit or rollback;
+- after terminal resolution, a later authorized mutation may acquire a new operation
+  identity under the same reservation key;
+- the pending-provider cleanup path rolls back order cancellation when its release
+  fence is busy or unavailable, and the bounded worker can retry it;
+- direct `InventoryItem` maintenance writes are only fixture/setup operations before
+  enforcement. The product-creation `InventoryItem.create` path remains the only
+  non-overlapping inventory-only writer.
+
 ### Multi-node and concurrency tests
 
 Target `test/store/governance/inventory_admission_concurrency_test.exs`:
@@ -1404,11 +1572,25 @@ side effect before PostgreSQL settlement.
 
 - `lib/store/orders/domain.ex`
 - `lib/store/orders/inventory_admission.ex`
+- `lib/store/orders/inventory_admission/redis.ex`
 - `lib/store/orders/inventory_reservations.ex` for the internal outcome-preserving
       seam and read-only recovery snapshot
+- `lib/store/checkout/domain.ex`
+- `lib/store/payments/interlocks.ex`
+- `lib/store/subscriptions/facade.ex`
+- `lib/store/workers/expire_inventory_reservations_worker.ex`
+- `lib/store/workers/expire_pending_provider_setup_orders_worker.ex`
 - `test/store/orders/inventory_admission_test.exs`
+- `test/store/orders/inventory_admission_redis_test.exs`
 - `test/store/orders/inventory_admission_recovery_test.exs`
 - `test/store/governance/inventory_reservations_test.exs`
+
+The reviewed resource definitions [`lib/store/orders/inventory_reservation.ex`](../../lib/store/orders/inventory_reservation.ex:95)
+and [`lib/store/catalog/inventory_item.ex`](../../lib/store/catalog/inventory_item.ex:83)
+remain unchanged by this phase. Their direct mutation actions are not `ENFORCED`
+entry points. The implementation must enforce that boundary at the application
+call-site set, and a direct action call during `ENFORCED` is a test failure, not a
+fallback.
 
 **Tasks:**
 
@@ -1420,18 +1602,39 @@ side effect before PostgreSQL settlement.
       `RESERVATION_CONFLICT` mapper; preserve current public behavior for non-admission
       callers.
 - [ ] Capture and persist the operation PRE/POST descriptor before the transaction and
-      enforce the same-`reservation_key` mutation fence for all capable writers.
-- [ ] Return explicit unsupported behavior for multi-variant input under this gate;
-      do not route it around admission.
+      enforce `INV-PLAN-SER-001` with the exact writer matrix in Section 6.
+- [ ] Make `Store.Orders.reserve_inventory_for_checkout/3` return
+      `INVENTORY_ADMISSION_UNSUPPORTED` before its CTE in `ENFORCED` mode, including
+      the call from `lib/store/checkout/domain.ex` and the single-item call from
+      `lib/store/subscriptions/facade.ex`; never route either caller around admission.
+- [ ] Wrap `consume_reservations_for_order/2`, `release_reservations_for_order/2`, and
+      `expire_reservations/2` with the shared reservation fence before their existing
+      durable mutations. These lifecycle operations do not join the admission queue or
+      claim `B_total`; a busy or unavailable fence prevents the transaction.
+- [ ] Update the exact payment, subscription, pending-provider cleanup, and expiry
+      worker callers to preserve their existing lifecycle semantics when the governed
+      fence-busy/unavailable result is returned. Pending cleanup must roll back order
+      cancellation; the expiry worker must retry a bounded pass.
+- [ ] Close direct `InventoryReservation` and unversioned `InventoryItem` maintenance
+      Ash-action paths during `ENFORCED`; fixture/setup writes are allowed only before
+      enforcement. Keep the product-creation `InventoryItem.create` path unchanged
+      under its new-variant invariant.
 - [ ] Preserve existing durable quantity adjustment, lifecycle, notification, and
       invalidation behavior.
-- [ ] Keep any disabled/test/system bypass explicit and unavailable to untrusted input.
+- [ ] Keep `DISABLED`/test/system behavior explicit: no mode change is allowed while a
+      protected operation is live, and no client-controlled or raw boolean bypass may
+      run while `ENFORCED`.
+- [ ] Do not alter multi-variant admission, checkout/payment design, durable resource
+      fields, or migrations. `InventoryAdmissionRecoveryWorker` is the only recovery
+      owner and may reconcile state but may not become another durable writer.
 
 **Completion gate:** `test/store/orders/inventory_admission_test.exs`,
+`test/store/orders/inventory_admission_redis_test.exs`,
 `test/store/orders/inventory_admission_recovery_test.exs`, and
 `test/store/governance/inventory_reservations_test.exs` prove the final row lock,
 availability guard, durable identity, structured outcome boundary, PRE/POST recovery,
-and zero-oversell behavior remain intact. No schema change is needed.
+all entries in the capable-writer matrix, and zero-oversell behavior remain intact.
+No schema change is needed.
 
 ### PHASE IA-05: ambiguous-outcome recovery
 
@@ -1452,6 +1655,10 @@ and zero-oversell behavior remain intact. No schema change is needed.
       PostgreSQL uniqueness/index/version support.
 - [ ] Compare operation-specific durable PRE/POST facts for inserts and existing-row
       adjustments; never use row existence alone as adjustment commit proof.
+- [ ] Reconcile a fenced consume, release, or expiry operation with the same
+      operation-specific PRE/POST contract. A grouped lifecycle operation resolves all
+      target keys together; one neither-match result keeps the complete target set
+      fenced as `UNRESOLVED`.
 - [ ] Mark unknown/fence before recovery and retain both capacities until resolution.
 - [ ] Use one unique, bounded Oban recovery job per identity; keep the final reservation
       transaction synchronous and outside Oban.
@@ -1486,6 +1693,9 @@ adjustment recovery, and no unsafe permit reuse.
 - [ ] Re-enqueue missing recovery work without full Redis scans or unbounded loops.
 - [ ] Quarantine lost operation descriptors as `UNRESOLVED`; do not treat an empty
       namespace as evidence that an ambiguous adjustment rolled back.
+- [ ] Apply the same bounded cleanup to shared lifecycle fences. A lifecycle fence is
+      released only after known outcome or recovery; Redis TTL alone never promotes a
+      same-reservation writer.
 
 **Completion gate:** Crash, disconnect, lease-loss, Redis timeout, restart, and stale
 token tests prove bounded capacity safety and fail-closed behavior.
@@ -1733,7 +1943,8 @@ Task: Route the enforced single-variant `Store.Orders.reserve_inventory/3` facad
 through `InventoryAdmission`.
 
 Objective: Put the gate before the existing transaction while making multi-variant
-accidental bypass explicit and preserving disabled-mode rollout.
+accidental bypass explicit, preserving disabled-mode rollout, and leaving the
+capable-writer policy to the exact matrix in Section 6.
 
 Output: `lib/store/orders/domain.ex`, `lib/store/orders/inventory_admission.ex`, and
 `test/store/orders/inventory_admission_test.exs`.
@@ -1767,7 +1978,8 @@ operation descriptor remains in request metadata/fence state, not stock. TTL: pr
 the bounded `T_db` and recovery windows. INVALIDATION/CLEANUP: classify before
 post-commit cache invalidation and do not map ambiguity to `RESERVATION_CONFLICT`.
 PUBSUB: none. STORE.REPO EFFECT: the seam covers checkout, transaction, and definitive
-outcome without adding a second reservation transaction. 100K SAFETY: ambiguous
+outcome for the enforced single-variant reservation path without adding a second
+reservation transaction; it does not authorize the checkout CTE. 100K SAFETY: ambiguous
 requests enter one fenced recovery path; no unrestricted retry. STOP CONDITIONS: do
 not collapse raw transaction failures into the legacy error before classification, move
 the transaction into Oban, or create a generic transaction framework.
@@ -1793,6 +2005,48 @@ STORE.REPO EFFECT: one bounded recovery read under the held global budget, never
 unrestricted retry. 100K SAFETY: recovery cannot multiply DB entrants; no certification
 claim. STOP CONDITIONS: do not use row existence alone, add a mutation column/table,
 read cached state, or release on a neither-match result.
+
+#### TOON IN-04
+
+Task: Enforce the exact capable-writer matrix and `INV-PLAN-SER-001` shared reservation
+fence.
+
+Objective: Prevent checkout, lifecycle, maintenance, test, and system paths from
+invalidating operation-specific PRE/POST recovery attribution while keeping lifecycle
+transitions outside the admission queue.
+
+Output: `lib/store/orders/inventory_admission.ex`,
+`lib/store/orders/inventory_admission/redis.ex`,
+`lib/store/orders/inventory_reservations.ex`,
+`lib/store/orders/domain.ex`,
+`lib/store/checkout/domain.ex`,
+`lib/store/payments/interlocks.ex`,
+`lib/store/subscriptions/facade.ex`,
+`lib/store/workers/expire_inventory_reservations_worker.ex`,
+`lib/store/workers/expire_pending_provider_setup_orders_worker.ex`,
+`test/store/orders/inventory_admission_test.exs`,
+`test/store/orders/inventory_admission_redis_test.exs`,
+`test/store/orders/inventory_admission_recovery_test.exs`, and
+`test/store/governance/inventory_reservations_test.exs`.
+
+Note: DATA LAYER: Redis is HOT/WARM exclusion coordination and PostgreSQL remains
+COLD/DURABLE `InventoryReservation`/`InventoryItem` truth. INDEXES: use the existing
+`reservation_key`, `(order_id, variant_id)`, and `inventory_items.variant_id` indexes;
+no migration. CACHE: none in the writer guard or recovery decision. REDIS STRUCTURE:
+use the per-reservation mutation-fence HASH, active lease, request descriptor, and
+namespace quarantine; materialize a bounded lifecycle target set before acquiring it
+atomically or none, then do not re-scan for new targets inside the transaction.
+TTL: hold the fence through known durable outcome or bounded recovery, never release by
+TTL alone. INVALIDATION/CLEANUP: known lifecycle results release idempotently; busy
+or unavailable lifecycle writes perform no DB mutation; ambiguous results retain the
+fence for Oban recovery. PUBSUB: status projection only, never a writer guard.
+STORE.REPO EFFECT: queued reserve requests do not checkout; lifecycle callers do not
+join the admission queue, and checkout CTE/direct unversioned writers are rejected in
+`ENFORCED` mode. 100K SAFETY: this preserves bounded admission and does not certify
+100k. STOP CONDITIONS: do not choose a different writer policy, let
+`reserve_inventory_for_checkout/3` or a raw Ash/system/test action bypass the guard,
+run a lifecycle transaction after Redis failure, allow a same-reservation second
+writer, add a migration, or change the frozen PostgreSQL guard.
 
 ### Recovery
 
@@ -2003,6 +2257,12 @@ Before handing this plan to an implementation-planning reviewer, confirm:
 - [ ] Admission success never implies stock ownership or durable reservation.
 - [ ] `reservation_key`, `operation_id`/epoch, and `request_fingerprint` have separate
       meanings, and only one live operation may use a reservation key.
+- [ ] Every current durable writer is listed in the Section 6 matrix with one fixed
+      policy: admission-required, shared-fence, enforced-unavailable,
+      provably-non-overlapping create, or recovery-only.
+- [ ] The checkout CTE and direct unversioned resource/maintenance actions cannot run
+      in `ENFORCED`; consume, release, expiry, and pending-provider cleanup use the
+      shared fence without joining the admission queue.
 - [ ] Known commit, known rollback/rejection, and ambiguous DB outcomes are distinct
       before the legacy public error mapper.
 - [ ] Recovery queries PostgreSQL by the existing unique `reservation_key` and compares
