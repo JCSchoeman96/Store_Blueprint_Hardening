@@ -3,10 +3,11 @@ defmodule Store.Accounts.OAuthIdentityLinkingTest do
 
   import Swoosh.TestAssertions
 
-  alias AshAuthentication.{Info, Jwt, Strategy}
   alias AshAuthentication.AddOn.Confirmation
   alias AshAuthentication.Errors.{AuthenticationFailed, ConfirmationRequired}
+  alias AshAuthentication.{Info, Jwt, Strategy}
   alias Store.Accounts.User
+  alias Store.Accounts.User.Senders.SendNewUserConfirmationEmail, as: ConfirmationSender
   alias Store.Support.ID.UUIDv7
 
   setup :set_swoosh_global
@@ -157,7 +158,7 @@ defmodule Store.Accounts.OAuthIdentityLinkingTest do
     user = insert_historical_user!(unique_email("sender"))
 
     assert {:ok, _} =
-             Store.Accounts.User.Senders.SendNewUserConfirmationEmail.send(
+             ConfirmationSender.send(
                user,
                "server-confirmation-token",
                confirmation_type: :identity_link,

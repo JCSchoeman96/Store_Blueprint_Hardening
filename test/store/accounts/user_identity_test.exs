@@ -1,8 +1,9 @@
 defmodule Store.Accounts.UserIdentityTest do
   use Store.DataCase, async: false
 
-  alias AshAuthentication.UserIdentity.Info, as: UserIdentityInfo
   alias Ash.Resource.Info
+  alias AshAuthentication.UserIdentity.Actions, as: UserIdentityActions
+  alias AshAuthentication.UserIdentity.Info, as: UserIdentityInfo
   alias Store.Accounts.UserIdentity
   alias Store.Support.ID.UUIDv7
 
@@ -119,7 +120,7 @@ defmodule Store.Accounts.UserIdentityTest do
     second_user_id = insert_user!()
 
     assert {:ok, identity} =
-             AshAuthentication.UserIdentity.Actions.upsert(
+             UserIdentityActions.upsert(
                UserIdentity,
                %{
                  strategy: "google",
@@ -130,7 +131,7 @@ defmodule Store.Accounts.UserIdentityTest do
              )
 
     assert {:ok, same_identity} =
-             AshAuthentication.UserIdentity.Actions.upsert(
+             UserIdentityActions.upsert(
                UserIdentity,
                %{
                  strategy: "google",
