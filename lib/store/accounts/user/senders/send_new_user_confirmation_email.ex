@@ -8,10 +8,19 @@ defmodule Store.Accounts.User.Senders.SendNewUserConfirmationEmail do
   alias Store.Accounts.Emails
 
   @impl AshAuthentication.Sender
-  def send(user, token, _opts) do
-    Emails.deliver_email_confirmation_instructions(
-      user,
-      url(~p"/confirm-new-user/#{token}")
-    )
+  def send(user, token, opts) do
+    confirmation_url = url(~p"/confirm-new-user/#{token}")
+
+    case Keyword.get(opts, :confirmation_type) do
+      :identity_link ->
+        Emails.deliver_identity_link_confirmation_instructions(
+          user,
+          confirmation_url,
+          Keyword.fetch!(opts, :provider)
+        )
+
+      _ ->
+        Emails.deliver_email_confirmation_instructions(user, confirmation_url)
+    end
   end
 end
