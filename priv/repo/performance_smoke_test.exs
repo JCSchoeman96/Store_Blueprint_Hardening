@@ -904,12 +904,11 @@ defmodule Store.PerformanceSmoke.Observer do
   defp notify_sample_sink(nil, _sample), do: :ok
 
   defp notify_sample_sink(sample_sink, sample) when is_function(sample_sink, 1) do
-    _ = sample_sink.(sample)
-    :ok
-  rescue
-    _error -> :ok
-  catch
-    _kind, _reason -> :ok
+    case sample_sink.(sample) do
+      :ok -> :ok
+      {:ok, _value} -> :ok
+      {:error, _error} -> :ok
+    end
   end
 
   defp notify_sample_sink(_sample_sink, _sample), do: :ok
@@ -1820,7 +1819,13 @@ defmodule Store.PerformanceSmokeTest do
               |> Map.update!(:errors, &Enum.reverse/1)
             end,
             sample_sink: fn sample ->
-              CheckoutDiagnostic.record_observer_sample(diagnostic_session, sample)
+              CheckoutDiagnostic.dispatch_observer_sample(
+                diagnostic_session,
+                sample,
+                fn current_sample ->
+                  CheckoutDiagnostic.record_observer_sample(diagnostic_session, current_sample)
+                end
+              )
             end
           )
 

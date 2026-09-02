@@ -353,6 +353,37 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     end
   end
 
+  defp call_observer_sample_sink(sample_sink, sample) do
+    case sample_sink.(sample) do
+      :ok ->
+        {:ok, :ok}
+
+      {:ok, value} ->
+        {:ok, {:ok, value}}
+
+      {:error, %{code: :evidence_buffer_overflow}} ->
+        {:error, %{kind: :instrumentation, code: :evidence_buffer_overflow}}
+
+      {:error, _reason} ->
+        {:error, %{kind: :instrumentation, code: :observer_sample_sink_returned_error}}
+
+      _other ->
+        {:error, %{kind: :instrumentation, code: :observer_sample_sink_invalid_result}}
+    end
+  rescue
+    _error -> {:error, %{kind: :instrumentation, code: :observer_sample_sink_raised}}
+  catch
+    :exit, _reason -> {:error, %{kind: :instrumentation, code: :observer_sample_sink_exited}}
+    _kind, _reason -> {:error, %{kind: :instrumentation, code: :observer_sample_sink_thrown}}
+  end
+
+  defp record_observer_sink_failure(_session, %{code: :evidence_buffer_overflow}), do: :ok
+
+  defp record_observer_sink_failure(session, %{code: code}) do
+    _ = record_instrumentation_error(session, {:observer_sample_sink, code})
+    :ok
+  end
+
   @spec record_repo_query(Session.t(), map(), map()) ::
           {:ok, pos_integer()} | {:error, map()}
   def record_repo_query(%Session{} = session, measurements, metadata)
@@ -410,6 +441,29 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     else
       {:error, %{kind: :instrumentation, code: :session_not_recordable, state: session.state}}
     end
+  end
+
+  @spec dispatch_observer_sample(Session.t(), map(), (map() -> term())) ::
+          {:ok, term()} | {:error, map()}
+  def dispatch_observer_sample(%Session{} = session, sample, sample_sink)
+      when is_map(sample) and is_function(sample_sink, 1) do
+    case call_observer_sample_sink(sample_sink, sample) do
+      {:ok, :ok} ->
+        {:ok, :ok}
+
+      {:ok, {:ok, value}} ->
+        {:ok, value}
+
+      {:error, error} ->
+        record_observer_sink_failure(session, error)
+        {:error, error}
+    end
+  end
+
+  def dispatch_observer_sample(%Session{} = session, _sample, _sample_sink) do
+    error = %{kind: :instrumentation, code: :observer_sample_sink_invalid}
+    record_observer_sink_failure(session, error)
+    {:error, error}
   end
 
   @spec record_observer_summary(Session.t(), map()) ::
@@ -556,36 +610,76 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   defp open_raw_io(input, raw_path, aggregate_path, final_report_path, io) do
     case new_tables() do
       {:ok, events_table, meta_table} ->
-        case write_header(io, input) do
-          :ok ->
-            case start_writer(io, events_table, meta_table, input) do
-              {:ok, writer_pid} ->
-                configured = %Session{
-                  state: :configured,
-                  input: input,
-                  raw_path: raw_path,
-                  aggregate_path: aggregate_path,
-                  final_report_path: final_report_path,
-                  events_table: events_table,
-                  meta_table: meta_table,
-                  writer_pid: writer_pid
-                }
-
-                transition_session(configured, :raw_open)
-
-              {:error, reason} ->
-                delete_tables(events_table, meta_table)
-                safe_close(io)
-                {:error, artifact_open_error(raw_path, reason)}
-            end
-
-          {:error, reason} ->
-            delete_tables(events_table, meta_table)
-            safe_close(io)
-            {:error, artifact_open_error(raw_path, reason)}
-        end
+        open_raw_tables(
+          input,
+          raw_path,
+          aggregate_path,
+          final_report_path,
+          io,
+          events_table,
+          meta_table
+        )
 
       {:error, reason} ->
+        safe_close(io)
+        {:error, artifact_open_error(raw_path, reason)}
+    end
+  end
+
+  defp open_raw_tables(
+         input,
+         raw_path,
+         aggregate_path,
+         final_report_path,
+         io,
+         events_table,
+         meta_table
+       ) do
+    case write_header(io, input) do
+      :ok ->
+        start_raw_writer(
+          input,
+          raw_path,
+          aggregate_path,
+          final_report_path,
+          io,
+          events_table,
+          meta_table
+        )
+
+      {:error, reason} ->
+        delete_tables(events_table, meta_table)
+        safe_close(io)
+        {:error, artifact_open_error(raw_path, reason)}
+    end
+  end
+
+  defp start_raw_writer(
+         input,
+         raw_path,
+         aggregate_path,
+         final_report_path,
+         io,
+         events_table,
+         meta_table
+       ) do
+    case start_writer(io, events_table, meta_table, input) do
+      {:ok, writer_pid} ->
+        configured = %Session{
+          state: :configured,
+          input: input,
+          raw_path: raw_path,
+          aggregate_path: aggregate_path,
+          final_report_path: final_report_path,
+          events_table: events_table,
+          meta_table: meta_table,
+          writer_pid: writer_pid
+        }
+
+        transition_session(configured, :raw_open)
+
+      {:error, reason} ->
+        delete_tables(events_table, meta_table)
         safe_close(io)
         {:error, artifact_open_error(raw_path, reason)}
     end
@@ -600,8 +694,8 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     }
 
   defp execute_run(%Session{} = session, workload_fun, opts) do
-    try do
-      with {:ok, running} <- transition_session(session, :running) do
+    case transition_session(session, :running) do
+      {:ok, running} ->
         running =
           case ensure_telemetry_started() do
             :ok ->
@@ -624,42 +718,40 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
           {:error, error} ->
             {:error, artifact_result_from_session(finished, :artifact, error, nil)}
         end
-      else
-        {:error, error} -> {:error, artifact_result_from_session(session, :artifact, error, nil)}
-      end
-    after
-      cleanup_session(session)
+
+      {:error, error} ->
+        {:error, artifact_result_from_session(session, :artifact, error, nil)}
     end
+  after
+    cleanup_session(session)
   end
 
   defp execute_workload(session, workload_fun) do
-    try do
-      case workload_fun.(session) do
-        {:error, payload} when is_map(payload) ->
-          {:error, payload, %{kind: :workload, code: :workload_returned_error}}
+    case workload_fun.(session) do
+      {:error, payload} when is_map(payload) ->
+        {:error, payload, %{kind: :workload, code: :workload_returned_error}}
 
-        {:error, reason} ->
-          {:error, %{},
-           %{kind: :workload, code: :workload_returned_error, reason: safe_reason(reason)}}
-
-        {:ok, payload} when is_map(payload) ->
-          {:complete, payload, nil}
-
-        payload when is_map(payload) ->
-          {:complete, payload, nil}
-
-        payload ->
-          {:complete, %{return_value: safe_value(payload)}, nil}
-      end
-    rescue
-      error ->
+      {:error, reason} ->
         {:error, %{},
-         %{kind: :workload, code: :workload_exception, exception: exception_summary(error)}}
-    catch
-      kind, reason ->
-        {:error, %{},
-         %{kind: :workload, code: :workload_throw, throw_kind: kind, reason: safe_reason(reason)}}
+         %{kind: :workload, code: :workload_returned_error, reason: safe_reason(reason)}}
+
+      {:ok, payload} when is_map(payload) ->
+        {:complete, payload, nil}
+
+      payload when is_map(payload) ->
+        {:complete, payload, nil}
+
+      payload ->
+        {:complete, %{return_value: safe_value(payload)}, nil}
     end
+  rescue
+    error ->
+      {:error, %{},
+       %{kind: :workload, code: :workload_exception, exception: exception_summary(error)}}
+  catch
+    kind, reason ->
+      {:error, %{},
+       %{kind: :workload, code: :workload_throw, throw_kind: kind, reason: safe_reason(reason)}}
   end
 
   defp persist_workload_outcome(session, outcome, payload, workload_error) do
@@ -819,16 +911,16 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
       report_status == :error ->
         :artifact_error
 
-      Enum.any?(result.errors, &(&1.kind == :artifact)) ->
+      artifact_error?(result) ->
         :artifact_error
 
-      aggregate_status == :error and Enum.any?(result.errors, &(&1.kind == :aggregation)) ->
+      aggregation_error?(result, aggregate_status) ->
         :aggregation_error
 
-      Enum.any?(result.errors, &(&1.kind == :instrumentation)) ->
+      instrumentation_error?(result) ->
         :instrumentation_error
 
-      Enum.any?(result.errors, &(&1.kind == :workload)) ->
+      workload_error?(result) ->
         :workload_error
 
       correctness_gate_failed?(result.correctness) ->
@@ -841,6 +933,16 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
         :ok
     end
   end
+
+  defp artifact_error?(result), do: Enum.any?(result.errors, &(&1.kind == :artifact))
+
+  defp aggregation_error?(result, aggregate_status),
+    do: aggregate_status == :error and Enum.any?(result.errors, &(&1.kind == :aggregation))
+
+  defp instrumentation_error?(result),
+    do: Enum.any?(result.errors, &(&1.kind == :instrumentation))
+
+  defp workload_error?(result), do: Enum.any?(result.errors, &(&1.kind == :workload))
 
   defp build_result(session, aggregate_status, aggregate, report_path) do
     raw_scan = scan_raw_evidence(session.raw_path)
@@ -1047,48 +1149,52 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   defp flush_events(io, events_table, meta_table) do
     events = :ets.tab2list(events_table)
     dropped = take_counter(meta_table, :dropped)
+    drop_event = dropped_event(meta_table, dropped)
+    lines = encode_event_lines(events, drop_event)
 
-    drop_event =
-      if dropped > 0 do
-        sequence = :ets.update_counter(meta_table, :next_sequence, {2, 1}, {:next_sequence, 0})
-
-        [
-          %{
-            sequence: sequence,
-            event_type: "evidence_drop",
-            captured_at_ms: System.system_time(:millisecond),
-            payload: %{dropped_count: dropped}
-          }
-        ]
-      else
-        []
-      end
-
-    lines =
-      (Enum.map(events, fn {_sequence, event} -> event end) ++ drop_event)
-      |> Enum.map_join("", fn event -> Jason.encode!(json_safe(event)) <> "\n" end)
-
-    if lines == "" do
-      :ok
-    else
-      case IO.binwrite(io, lines) do
-        :ok ->
-          Enum.each(events, fn {sequence, _event} -> :ets.delete(events_table, sequence) end)
-          :ets.update_counter(meta_table, :buffered, {2, -length(events)}, {:buffered, 0})
-          :ok
-
-        {:error, reason} ->
-          if dropped > 0,
-            do: :ets.update_counter(meta_table, :dropped, {2, dropped}, {:dropped, 0})
-
-          :ets.insert(meta_table, {:writer_error, reason})
-          {:error, reason}
-      end
-    end
+    write_event_batch(io, events_table, meta_table, events, dropped, lines)
   rescue
     error ->
       :ets.insert(meta_table, {:writer_error, error})
       {:error, error}
+  end
+
+  defp dropped_event(_meta_table, 0), do: []
+
+  defp dropped_event(meta_table, dropped) do
+    sequence = :ets.update_counter(meta_table, :next_sequence, {2, 1}, {:next_sequence, 0})
+
+    [
+      %{
+        sequence: sequence,
+        event_type: "evidence_drop",
+        captured_at_ms: System.system_time(:millisecond),
+        payload: %{dropped_count: dropped}
+      }
+    ]
+  end
+
+  defp encode_event_lines(events, drop_event) do
+    (Enum.map(events, fn {_sequence, event} -> event end) ++ drop_event)
+    |> Enum.map_join("", fn event -> Jason.encode!(json_safe(event)) <> "\n" end)
+  end
+
+  defp write_event_batch(_io, _events_table, _meta_table, _events, _dropped, ""), do: :ok
+
+  defp write_event_batch(io, events_table, meta_table, events, dropped, lines) do
+    case IO.binwrite(io, lines) do
+      :ok ->
+        Enum.each(events, fn {sequence, _event} -> :ets.delete(events_table, sequence) end)
+        :ets.update_counter(meta_table, :buffered, {2, -length(events)}, {:buffered, 0})
+        :ok
+
+      {:error, reason} ->
+        if dropped > 0,
+          do: :ets.update_counter(meta_table, :dropped, {2, dropped}, {:dropped, 0})
+
+        :ets.insert(meta_table, {:writer_error, reason})
+        {:error, reason}
+    end
   end
 
   defp merge_writer_outcomes(:ok, :ok), do: :ok
@@ -1165,6 +1271,9 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
           state: "active",
           interval_ms: input.observer_interval_ms,
           ecto_pool_ownership_high_water_available?: false
+        },
+        telemetry: %{
+          inventory_subphase_available?: false
         },
         runtime: %{
           elixir: System.version(),
@@ -1453,6 +1562,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
       checkout_step_count: 0,
       checkout_steps: %{},
       worker_sync_count: 0,
+      inventory_subphase_available?: false,
       inventory_subphases: %{}
     }
   end
@@ -1464,43 +1574,42 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
         event_counts: Map.update(aggregate.event_counts, event_type, 1, &(&1 + 1))
     }
 
-    case event_type do
-      "correctness" ->
-        %{aggregate | correctness: correctness_from_payload(event["payload"] || %{})}
-
-      "observer_sample" ->
-        aggregate_observer_sample(aggregate, event["payload"] || %{}, sequence)
-
-      "observer_summary" ->
-        aggregate_observer_summary(aggregate, event["payload"] || %{})
-
-      "phase" ->
-        aggregate_phase(aggregate, event["payload"] || %{})
-
-      "worker_sync" ->
-        aggregate_worker_sync(aggregate)
-
-      "inventory_subphase" ->
-        aggregate_inventory_subphase(aggregate, event["payload"] || %{})
-
-      "repo_query" ->
-        aggregate_repo_query(aggregate, event["payload"] || %{})
-
-      "checkout_step" ->
-        aggregate_checkout_step(aggregate, event["payload"] || %{})
-
-      "evidence_drop" ->
-        aggregate_drop(aggregate, event["payload"] || %{})
-
-      "instrumentation_error" ->
-        put_in(aggregate, [:evidence, :incomplete?], true)
-
-      _ ->
-        aggregate
-    end
+    aggregate_event_payload(aggregate, event_type, event["payload"] || %{}, sequence)
   end
 
   defp aggregate_event(aggregate, _event), do: aggregate
+
+  defp aggregate_event_payload(aggregate, "correctness", payload, _sequence),
+    do: %{aggregate | correctness: correctness_from_payload(payload)}
+
+  defp aggregate_event_payload(aggregate, "observer_sample", payload, sequence),
+    do: aggregate_observer_sample(aggregate, payload, sequence)
+
+  defp aggregate_event_payload(aggregate, "observer_summary", payload, _sequence),
+    do: aggregate_observer_summary(aggregate, payload)
+
+  defp aggregate_event_payload(aggregate, "phase", payload, _sequence),
+    do: aggregate_phase(aggregate, payload)
+
+  defp aggregate_event_payload(aggregate, "worker_sync", _payload, _sequence),
+    do: aggregate_worker_sync(aggregate)
+
+  defp aggregate_event_payload(aggregate, "inventory_subphase", payload, _sequence),
+    do: aggregate_inventory_subphase(aggregate, payload)
+
+  defp aggregate_event_payload(aggregate, "repo_query", payload, _sequence),
+    do: aggregate_repo_query(aggregate, payload)
+
+  defp aggregate_event_payload(aggregate, "checkout_step", payload, _sequence),
+    do: aggregate_checkout_step(aggregate, payload)
+
+  defp aggregate_event_payload(aggregate, "evidence_drop", payload, _sequence),
+    do: aggregate_drop(aggregate, payload)
+
+  defp aggregate_event_payload(aggregate, "instrumentation_error", _payload, _sequence),
+    do: put_in(aggregate, [:evidence, :incomplete?], true)
+
+  defp aggregate_event_payload(aggregate, _event_type, _payload, _sequence), do: aggregate
 
   defp aggregate_observer_sample(aggregate, payload, event_sequence) do
     sample_sequence = numeric_or_default(payload["sample_sequence"], event_sequence)
@@ -1596,8 +1705,12 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
 
     update_in(
       aggregate,
-      [:telemetry, :inventory_subphases, subphase],
-      &((&1 || 0) + 1)
+      [:telemetry],
+      fn telemetry ->
+        telemetry
+        |> Map.put(:inventory_subphase_available?, true)
+        |> update_in([:inventory_subphases, subphase], &((&1 || 0) + 1))
+      end
     )
   end
 

@@ -2,6 +2,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnosticTest do
   use ExUnit.Case, async: false
 
   alias Store.PerformanceSmoke.CheckoutDiagnostic, as: Diagnostic
+  alias Store.PerformanceSmoke.ObserverContract
 
   @base_input %{
     run_id: "diagnostic-test",
@@ -102,7 +103,9 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnosticTest do
     assert header["event_type"] == "run_metadata"
     assert get_in(header, ["payload", "observer", "source"]) == "pg_stat_activity"
     refute get_in(header, ["payload", "observer", "ecto_pool_ownership_high_water_available?"])
+    refute get_in(header, ["payload", "telemetry", "inventory_subphase_available?"])
     assert result.observer.metric.source == "pg_stat_activity"
+    refute result.telemetry.inventory_subphase_available?
   end
 
   test "correctness evidence is written before aggregation", %{artifact_directory: dir} do
@@ -162,6 +165,86 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnosticTest do
     assert instrumentation_result.status == :instrumentation_error
     assert Enum.any?(instrumentation_result.errors, &(&1.kind == :instrumentation))
     refute Enum.any?(instrumentation_result.errors, &(&1.kind == :workload))
+  end
+
+  test "a successful observer sink preserves normal diagnostic behavior", %{
+    artifact_directory: dir
+  } do
+    {:ok, result} =
+      run(dir, fn session ->
+        assert {:ok, 1} =
+                 Diagnostic.dispatch_observer_sample(
+                   session,
+                   observer_sample(40, 1.0),
+                   fn sample -> Diagnostic.record_observer_sample(session, sample) end
+                 )
+
+        %{correctness: correctness()}
+      end)
+
+    assert result.status == :ok
+    assert result.observer.sample_count == 1
+
+    assert Enum.any?(
+             Diagnostic.read_raw_events!(result.artifacts.raw),
+             &(&1["event_type"] == "observer_sample")
+           )
+  end
+
+  test "an observer sink error cannot produce diagnostic ok", %{artifact_directory: dir} do
+    {:error, result} =
+      run(dir, fn session ->
+        assert {:error, %{kind: :instrumentation}} =
+                 Diagnostic.dispatch_observer_sample(
+                   session,
+                   observer_sample(40, 1.0),
+                   fn _sample ->
+                     {:error, :sink_failed}
+                   end
+                 )
+
+        %{correctness: correctness()}
+      end)
+
+    assert result.status == :instrumentation_error
+    assert Enum.any?(result.errors, &(&1.kind == :instrumentation))
+    refute result.status == :ok
+  end
+
+  test "an observer sink raise cannot produce diagnostic ok", %{artifact_directory: dir} do
+    {:error, result} =
+      run(dir, fn session ->
+        assert {:error, %{kind: :instrumentation}} =
+                 Diagnostic.dispatch_observer_sample(
+                   session,
+                   observer_sample(40, 1.0),
+                   fn _sample ->
+                     raise "sink raised"
+                   end
+                 )
+
+        %{correctness: correctness()}
+      end)
+
+    assert result.status == :instrumentation_error
+    refute result.status == :ok
+  end
+
+  test "an observer sink throw or exit cannot produce diagnostic ok", %{
+    artifact_directory: dir
+  } do
+    for failure <- [fn _sample -> throw(:sink_threw) end, fn _sample -> exit(:sink_exited) end] do
+      {:error, result} =
+        run(dir, fn session ->
+          assert {:error, %{kind: :instrumentation}} =
+                   Diagnostic.dispatch_observer_sample(session, observer_sample(40, 1.0), failure)
+
+          %{correctness: correctness()}
+        end)
+
+      assert result.status == :instrumentation_error
+      refute result.status == :ok
+    end
   end
 
   test "artifact creation failure returns a typed artifact status", %{artifact_directory: dir} do
@@ -337,7 +420,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnosticTest do
     assert result.input.observer_interval_ms == 500
 
     summary =
-      Store.PerformanceSmoke.ObserverContract.summarize(
+      ObserverContract.summarize(
         "generic_observer",
         %{
           lock_wait_max_ratio: 0.10,
