@@ -1,6 +1,7 @@
 # S0-ARCH-01: Inventory reservation admission architecture
 
-Status: Architecture decision only. No implementation is authorized by this document.
+Status: FROZEN. This document records the accepted architecture decision and does
+not itself authorize implementation. S0-IA-AUTH-01 separately authorizes IA-01 only.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -982,6 +983,9 @@ Only an accepted capacity review may change the derived permit budget.
 ## 18. Explicit implementation gate
 
 No implementation may begin until this design is independently reviewed and accepted.
+The design has now been independently accepted and is frozen. That acceptance does
+not authorize the implementation plan. S0-IA-AUTH-01 is the separate, bounded
+authorization for IA-01 only.
 
 The acceptance review must specifically confirm:
 
@@ -1007,7 +1011,15 @@ The acceptance review must specifically confirm:
 - The implementation scope remains limited to the approved MVP.
 
 IMPLEMENTATION STATUS:
-NOT AUTHORIZED
+AUTHORIZED FOR IA-01 ONLY
+
+AUTHORIZATION BOUNDARY:
+The IA-01 authorization covers only the pure domain, value, and state foundations
+listed in the implementation-plan gate. It does not authorize IA-02 or later,
+Redis/PostgreSQL work, workers, checkout, configuration, or certification.
+Section 16 describes the future MVP and remains a frozen design, not the current
+IA-01 coding boundary.
 
 NEXT:
-Independent acceptance review of the corrected architecture decision
+Implement IA-01 only through a separate coding prompt. Completion of IA-01 does not
+authorize IA-02 or any later slice.

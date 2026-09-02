@@ -827,3 +827,128 @@ behavior.
 - No pool sizes, thresholds, workloads, Redis topology, PgBouncer behavior, or
   performance claims changed. 100k remains unmeasured, and the checkout-concurrency
   blocker remains outside this task.
+
+## S0-IA-AUTH-01 InventoryAdmission IA-01 authorization (2026-09-02)
+
+### GOAL
+
+- Durably authorize only the first InventoryAdmission implementation slice, IA-01,
+  while keeping the frozen architecture and plan unchanged in substance.
+- This is the current authorization record. It supersedes earlier `NOT AUTHORIZED`
+  snapshots only for the bounded IA-01 decision and does not rewrite those historical
+  records.
+
+### LINKS CONSULTED
+
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md),
+  especially its frozen architecture status and Section 18 implementation gate.
+- [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md),
+  especially Section 24 IA-01 and Section 27 authorization state and boundary.
+- [`s0_closure_chaos_ci_triage.md`](../hardening/s0_closure_chaos_ci_triage.md),
+  including the retained S0 boundary and its statement that the closure record has
+  no runtime authority.
+- [`performance_scaling.md`](../governance/performance_scaling.md) and the Phase 29
+  performance architecture reference linked by the implementation plan.
+
+### DECISIONS / PINS
+
+- `S0-ARCH-01` remains `FROZEN`.
+- `S0-PLAN-01` remains `FROZEN`.
+- InventoryAdmission implementation is `AUTHORIZED FOR IA-01 ONLY`.
+- IA-01 is `AUTHORIZED / NOT STARTED`. It is a bounded pure domain, value, and state
+  foundations tracer bullet, not blanket authorization for the frozen plan.
+- IA-02 and later remain `NOT AUTHORIZED`.
+- `S0-CLOSE-02` remains `BLOCKED`, and S0 merge readiness remains `BLOCKED`.
+- The retained S0-CLOSE-08 boundary table in the chaos/CI document is a historical,
+  cold documentation record with no runtime authority. The current authorization is
+  carried by the implementation-plan gate and this Phase 00 decision record.
+
+### IA-01 SCOPE
+
+- `Store.Orders.InventoryAdmission.Request`.
+- `Store.Orders.InventoryAdmission.Operation`.
+- `Store.Orders.InventoryAdmission.Lease`.
+- The exact frozen admission state vocabulary: `REQUESTED`, `QUEUED`, `ADMITTED`,
+  `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, `UNRESOLVED`, `COMPLETED`,
+  `REJECTED`, `EXPIRED`, and `ABANDONED`.
+- Transition validation, terminal-state semantics,
+  request identity/fingerprint semantics, server-generated operation identity,
+  operation epoch semantics, deadline/value validation, and focused pure tests.
+- The exact coding task will be supplied separately after this authorization is
+  independently reviewed.
+
+### IA-01 EXCLUSIONS
+
+- Redis EVAL/Lua, queue state, Redis ZSET/HASH structures, `K_v` or `B_total`
+  acquisition, promotion, Redis lease renewal, and namespace quarantine.
+- `Store.Repo` reservation execution, the `InventoryReservations` outcome seam,
+  PostgreSQL mutation, ambiguous database recovery, recovery/reaper workers, and
+  shared reservation fences.
+- Checkout integration, `reserve_inventory_for_checkout` changes, and multi-variant
+  admission.
+- Feature/config rollout, runtime configuration, PubSub integration, web/LiveView
+  waiting UX, metrics dashboards, performance certification, and 100k testing.
+- Extraction/package work, migrations, and schema changes.
+
+### PLAN
+
+- Implement only IA-01 after a separate coding prompt.
+- Before any later slice is authorized, IA-01 must be implemented, focused-validated,
+  committed and pushed, independently reviewed, and tied to an exact-head CI
+  disposition. A later task must make the next authorization decision.
+- Keep all Redis, PostgreSQL, checkout, recovery, lifecycle-fence, multi-variant,
+  rollout, certification, and extraction work outside this authorization.
+
+### DONE
+
+- Updated the explicit authorization status and bounded gate in the existing
+  architecture and implementation-plan records, and appended this Phase 00 decision
+  record.
+- No production code, tests, Redis, PostgreSQL, configuration, migrations, or
+  performance workloads were changed or run by this authorization task.
+
+### NEXT
+
+- Supply the separate IA-01 coding prompt. Do not implement IA-02 or later, close
+  S0-CLOSE-02, or mark S0 merge-ready.
+
+### BLOCKERS
+
+- `S0-CLOSE-02` remains `BLOCKED` until InventoryAdmission implementation and
+  certification work is complete and separately reviewed.
+- S0 merge readiness remains `BLOCKED`.
+
+### COMMANDS RUN
+
+- Focused `rg`, `sed`, `git status`, `git diff`, `git rev-parse`, `git merge-base`,
+  `git log`, and PR-head checks for authority, baseline, and worktree review.
+- `mix check.docs_notes` (PASS), `mix docs` (PASS), `git diff --check` (PASS), and a
+  focused authorization-marker assertion (PASS).
+
+### GATES
+
+- Documentation-only authorization change: `PASS`. No production, test,
+  configuration, migration, Redis, PostgreSQL, or performance changes are in scope.
+- `S0-ARCH-01`: `FROZEN`.
+- `S0-PLAN-01`: `FROZEN`.
+- InventoryAdmission implementation: `AUTHORIZED FOR IA-01 ONLY`.
+- IA-01: `AUTHORIZED / NOT STARTED`.
+- IA-02+: `NOT AUTHORIZED`.
+- `S0-CLOSE-02`: `BLOCKED`.
+- S0 merge readiness: `BLOCKED`.
+
+### Performance & Scaling Review
+
+- Temperature and authority are unchanged. Future IA-01 values are in-memory HOT
+  domain data only; Redis admission coordination remains HOT/WARM but unauthorized,
+  PostgreSQL inventory and reservation truth remains durable COLD authority, and no
+  WARM projection or COLD history changed.
+- Database query count is zero for this documentation task. No N+1 risk was added,
+  and no database entrant, transaction, or pool behavior changed.
+- Existing reservation and inventory indexes remain frozen. No schema or migration
+  was added.
+- No ETS/Redis cache, TTL, invalidation, or stampede-protection behavior changed.
+- No Oban enqueue, worker, uniqueness, or idempotency behavior changed. Recovery and
+  reaper workers remain unauthorized.
+- No telemetry or logging behavior changed. No performance workload or 100k claim
+  was made.

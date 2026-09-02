@@ -8,7 +8,11 @@
 
 **Tech Stack:** Elixir, Phoenix, Ash 3.x, Ecto/PostgreSQL, Redix/Redis, Oban, Phoenix PubSub, existing `Store.Repo` and `Store.DirectRepo` split.
 
-This is a planning artifact. It authorizes no production implementation, migration, configuration change, Redis write, PostgreSQL write, test run, or performance run.
+This is a frozen planning artifact. It authorizes no implementation by itself. The
+separate S0-IA-AUTH-01 decision authorizes only the bounded IA-01 foundations slice
+described in Section 27. IA-02 and later remain unauthorized. This authorization
+task performs no production implementation, migration, configuration change, Redis
+write, PostgreSQL write, test run, or performance run.
 
 ---
 
@@ -2281,14 +2285,88 @@ Before handing this plan to an implementation-planning reviewer, confirm:
 
 ## 27. Implementation authorization gate
 
-This plan is not implementation authorization. A future coding agent must wait for an
-independent review of this plan and an explicit implementation task. The architecture
-remains frozen, and any discovery that requires changing `K_v`, moving inventory truth
-to Redis, weakening the PostgreSQL guard, adding a migration, or introducing
-multi-variant admission must stop and reopen the appropriate architecture review.
+This plan is frozen and remains subordinate to S0-ARCH-01. It is not blanket
+authorization for the complete implementation plan. S0-IA-AUTH-01 is the separate,
+explicit authorization decision for the first bounded implementation slice only.
+Any discovery that requires changing `K_v`, moving inventory truth to Redis,
+weakening the PostgreSQL guard, adding a migration, or introducing multi-variant
+admission must stop and reopen the appropriate architecture review.
+
+### Authorization state
+
+| Item | Status |
+|---|---|
+| S0-ARCH-01 | `FROZEN` |
+| S0-PLAN-01 | `FROZEN` |
+| InventoryAdmission implementation | `AUTHORIZED FOR IA-01 ONLY` |
+| IA-01 | `AUTHORIZED / NOT STARTED` |
+| IA-02+ | `NOT AUTHORIZED` |
+| S0-CLOSE-02 | `BLOCKED` |
+| S0 merge readiness | `BLOCKED` |
+
+### IA-01 authorized boundary
+
+IA-01 is a bounded implementation tracer bullet for pure domain, value, and state
+foundations. A later coding prompt may implement only:
+
+- `Store.Orders.InventoryAdmission.Request`;
+- `Store.Orders.InventoryAdmission.Operation`;
+- `Store.Orders.InventoryAdmission.Lease`;
+- the frozen admission state vocabulary, exactly `REQUESTED`, `QUEUED`, `ADMITTED`,
+  `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, `UNRESOLVED`, `COMPLETED`,
+  `REJECTED`, `EXPIRED`, and `ABANDONED`;
+- transition validation and terminal-state semantics;
+- request identity and request-fingerprint semantics;
+- server-generated operation identity and operation epoch semantics;
+- deadline and value validation; and
+- focused pure state/value tests, including replay and terminal-state cases.
+
+This slice may represent the frozen admission contract. It may not perform admission,
+acquire capacity, touch Redis or PostgreSQL, or integrate with a caller.
+The broader IA-01 task list in Section 24 remains a frozen plan; its future
+configuration work is not authorized by this decision.
+
+### IA-01 exclusions
+
+The following remain unauthorized in IA-01 and in every later coding prompt until a
+separate decision says otherwise:
+
+- Redis EVAL/Lua scripts, queue state, ZSET/HASH admission structures, `K_v` permit
+  acquisition, `B_total` acquisition, promotion, lease renewal, or namespace
+  quarantine;
+- actual `Store.Repo` reservation execution, the `InventoryReservations` outcome
+  seam, PostgreSQL mutation, or ambiguous database recovery;
+- `InventoryAdmissionRecoveryWorker`, `InventoryAdmissionReaperWorker`, or any
+  recovery, reaper, or lease worker;
+- shared reservation fences for consume, release, or expiry;
+- checkout integration or `reserve_inventory_for_checkout` changes;
+- multi-variant admission;
+- feature/config rollout, runtime configuration, or PubSub integration;
+- web or LiveView waiting UX, metrics dashboards, performance certification, or
+  100k testing;
+- extraction or package work; and
+- migrations or schema changes.
+
+### Authorization guard
+
+Completion of IA-01 does not automatically authorize IA-02 or any later slice. Before
+another slice can be authorized, IA-01 must be implemented, receive focused
+validation, be committed and pushed, receive independent review, and have its
+exact-head CI disposition recorded. A later task must make a separate explicit
+authorization decision.
+
+### Bounded authorization basis
+
+This decision records only these supporting closure facts: S0-ARCH-01 is frozen,
+S0-PLAN-01 is frozen, the checkout pool-saturation blocker is bounded and closed as
+a later-hardening risk, the proven S0 memory/runtime defect is remediated and closed,
+and exact-head CI is green at the accepted closure head. These facts do not claim
+full 100k certification, complete memory-safety certification, checkout capacity
+certification, or InventoryAdmission performance certification.
 
 IMPLEMENTATION STATUS:
-NOT AUTHORIZED
+AUTHORIZED FOR IA-01 ONLY
 
 NEXT:
-Independent implementation-plan review
+Supply a separate IA-01 coding prompt. Do not start IA-02 or later, close
+S0-CLOSE-02, or mark S0 merge-ready as part of IA-01.
