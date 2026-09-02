@@ -350,3 +350,168 @@ Acceptance evidence for that one task is:
 
 This task does not include an application fix, schema/index change, provider change,
 stale-cleanup repair, threshold relaxation, or S1 hardening.
+
+## 12. S0-CLOSE-08 final checkout pool-saturation disposition
+
+Sections 10 and 11 record the earlier S0-CLOSE-01 state and observer-correction task.
+This section is the durable final disposition for S0-CLOSE-08 at the exact head below.
+It records the accepted checkout evidence without reopening diagnosis or changing
+checkout code, the diagnostic harness, `InventoryAdmission`, S0-ARCH-01, or S0-PLAN-01.
+
+### Disposition
+
+| Field | Final status |
+|---|---|
+| S0-CLOSE-08 | `CLOSED` |
+| Disposition | `PERFORMANCE RISK DOCUMENTED FOR LATER HARDENING` |
+| Production checkout defect | `NOT PROVEN` |
+| Historical 40/40 | `REAL BUT TIMING-SENSITIVE TRANSIENT SIGNAL` |
+| Historical measurement | Sampled `pg_stat_activity` active `Store.Repo` backends |
+| Measurement qualification | It was not an Ecto pool ownership high-water measurement |
+| Generic pool threshold | `0.95`, `KEEP` |
+| Observer interval | `500 ms`, `KEEP` |
+| Another checkout performance run | `NOT AUTHORIZED` |
+
+### Exact-head evidence provenance
+
+The accepted evidence is bound to this exact repository head and retained CI and
+diagnostic references:
+
+| Evidence | Value |
+|---|---|
+| SHA | [`f65c78d42305fa519950212133d520f85bdc7771`](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/commit/f65c78d42305fa519950212133d520f85bdc7771) |
+| CI run | [`33623793594`](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/33623793594) |
+| Performance job | [`100227324103`](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/33623793594/job/100227324103) |
+| Artifact | [`9844075073`, `performance-smoke-artifacts`](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/33623793594/artifacts/9844075073) |
+| Diagnostic run | `12802` |
+
+### Correctness and checkout measurements
+
+| Correctness measure | Result |
+|---|---:|
+| Expected | `56` |
+| Completed | `56` |
+| Successful | `56` |
+| Governed failures | `0` |
+| Unexpected failures | `0` |
+| DB errors | `0` |
+| Deadlocks | `0` |
+
+| Checkout or observer measure | Result |
+|---|---:|
+| Checkout mean | `1776.696 ms` |
+| Checkout p99 | `1783.676 ms` |
+| Store.Repo pool | `40` |
+| Observer samples | `5` |
+| Peak Store.Repo active | `18` |
+| Peak utilization | `0.45` |
+| Samples at or above `0.95` | `0` |
+| Lock waiters | `0` |
+
+The diagnostic evidence contains `6586` sequenced events, `0` sequence gaps, `0`
+evidence drops, and `0` instrumentation errors. The buffer maximum was `8192` and the
+buffer peak was `541`.
+
+### Retention signal at the peak sample
+
+The raw PostgreSQL evidence at the exact-head peak sample included:
+
+| Scope | Sessions | State | Wait event |
+|---|---:|---|---|
+| `Store.Repo` | `18` | `active` | `ClientRead` |
+| `Store.Repo` | `12` | `idle` | `ClientRead` |
+| `Store.Repo` | `10` | `idle in transaction` | `ClientRead` |
+| `DirectRepo` | `10` | `idle` | `ClientRead` |
+| Lock waits | `0` | n/a | n/a |
+
+CONNECTION RETENTION DEFECT: `NOT PROVEN`
+
+OPEN-TRANSACTION / CLIENT-WAIT RETENTION SIGNAL: `OBSERVED`
+
+The `10` `idle in transaction` sessions do not prove that provider or CPU work was
+holding connections. They are a future checkout-hardening observation only.
+
+### Bounded query evidence
+
+| Query measure | Result |
+|---|---:|
+| Repo query events | `6350` total |
+| Approximate per completed checkout | `113.393` |
+
+The retained checkout-step counts were:
+
+| Checkout step | Queries per event |
+|---|---:|
+| `start_from_cart` | `15` |
+| `set_shipping` | `20` |
+| `finalize_totals` | `22` |
+| `create_payment_intent` | `26` |
+
+QUERY AMPLIFICATION: `NOT PROVEN`
+
+High query volume exists, but the current evidence lacks sufficient per-worker,
+per-phase, and baseline attribution to classify it as amplification or N+1 behaviour.
+That investigation is deferred.
+
+### Observability limitations
+
+| Limitation | Status |
+|---|---|
+| Worker synchronization | `NOT OBSERVABLE` at per-worker granularity |
+| Inventory runtime subphase | `NOT AVAILABLE` |
+| Connection retention across provider/CPU work | `NOT PROVEN` |
+| Ecto pool ownership high-water | `NOT AVAILABLE` |
+
+These are future instrumentation and hardening concerns, not S0-CLOSE-08 blockers.
+
+### Performance & Scaling Review
+
+Active checkout database work is HOT. Observer and query-event evidence is WARM.
+This retained closure record is COLD documentation and has no runtime authority.
+
+The measured query count is `6350` total, or approximately `113.393` per completed
+checkout. The retained step counts do not establish query amplification or N+1
+behaviour. This record makes no index, cache, or Oban change and makes no new
+idempotency claim. The existing `0.95` generic pool gate and `500 ms` observer interval
+remain unchanged. The diagnostic sequence and buffer metrics are retained, but
+per-worker synchronization, inventory subphase timing, and Ecto connection ownership
+remain unobservable in this evidence.
+
+### 100k disposition
+
+| Question | Status |
+|---|---|
+| 100k certification | `NOT PERFORMED` |
+| Safe at 100k | `NOT PROVEN` |
+| Unsafe at 100k | `NOT PROVEN` |
+
+Store.Repo and PostgreSQL connections are finite. Additional Phoenix nodes can
+increase aggregate database connection demand. Frozen `InventoryAdmission` may address
+only inventory-reservation admission and contention. It does not solve general
+checkout database concurrency.
+
+### Deferred checkout hardening register
+
+These items are recorded for later checkout horizontal hardening. They are deferred
+observations, not implementation tasks opened by S0-CLOSE-08:
+
+1. Query and transaction attribution and reduction.
+2. `idle in transaction` and `ClientRead` investigation.
+3. Ecto checkout and connection ownership observability, if a supported telemetry path
+   exists.
+4. Per-worker and phase synchronization evidence, if future capacity testing requires
+   it.
+5. Inventory reservation subphase attribution.
+6. Independent checkout admission and backpressure, only if later evidence warrants
+   it.
+
+### S0 boundary status
+
+| Boundary | Status |
+|---|---|
+| S0-MEM-01 | `NEXT` |
+| S0-ARCH-01 | `FROZEN` |
+| S0-PLAN-01 | `FROZEN` |
+| Inventory implementation authorized | `NO` |
+| S0-CLOSE-02 | `BLOCKED` |
+| S0 merge readiness | `BLOCKED` |
