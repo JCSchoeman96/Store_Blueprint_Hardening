@@ -23,6 +23,12 @@ unless Code.ensure_loaded?(Store.PerformanceSmoke.ObserverContract) do
   )
 end
 
+unless Code.ensure_loaded?(Store.PerformanceSmoke.CheckoutDiagnostic) do
+  Code.require_file(
+    Path.expand("../../test/support/performance_smoke_checkout_diagnostic.ex", __DIR__)
+  )
+end
+
 schedulers = max(System.schedulers_online(), 1)
 repo_pool_default = min(max(schedulers * 20, 100), 200)
 
@@ -742,7 +748,11 @@ defmodule Store.PerformanceSmoke.Observer do
     drain_timeout_ms = Keyword.get(opts, :drain_timeout_ms, @reservation_drain_timeout_ms)
     parent = self()
     ref = make_ref()
-    {:ok, pid} = Task.start_link(fn -> sample_loop(parent, ref, config, expected_scope, []) end)
+    sample_sink = Keyword.get(opts, :sample_sink)
+
+    {:ok, pid} =
+      Task.start_link(fn -> sample_loop(parent, ref, config, expected_scope, [], sample_sink) end)
+
     result = fun.()
 
     if is_nil(expected_scope) do
@@ -767,30 +777,43 @@ defmodule Store.PerformanceSmoke.Observer do
     {result, summary}
   end
 
-  defp sample_loop(parent, ref, config, expected_scope, acc) do
+  defp sample_loop(parent, ref, config, expected_scope, acc, sample_sink) do
     sample = sample(config, expected_scope)
+    notify_sample_sink(sample_sink, sample)
 
     receive do
       {:stop, ^parent, ^ref} ->
         final_sample = sample(config, expected_scope)
+        notify_sample_sink(sample_sink, final_sample)
         send(parent, {:observer_samples, ref, Enum.reverse([final_sample, sample | acc]), nil})
 
       {:drain, ^parent, ^ref, timeout_ms} ->
-        drain_loop(parent, ref, config, expected_scope, [sample | acc], timeout_ms)
+        drain_loop(parent, ref, config, expected_scope, [sample | acc], timeout_ms, sample_sink)
     after
       config.observer_interval_ms ->
-        sample_loop(parent, ref, config, expected_scope, [sample | acc])
+        sample_loop(parent, ref, config, expected_scope, [sample | acc], sample_sink)
     end
   end
 
-  defp drain_loop(parent, ref, config, expected_scope, acc, timeout_ms) do
+  defp drain_loop(parent, ref, config, expected_scope, acc, timeout_ms, sample_sink) do
     started_at = System.monotonic_time(:millisecond)
     deadline = started_at + timeout_ms
-    drain_loop(parent, ref, config, expected_scope, acc, deadline, started_at, 0)
+    drain_loop(parent, ref, config, expected_scope, acc, deadline, started_at, 0, sample_sink)
   end
 
-  defp drain_loop(parent, ref, config, expected_scope, acc, deadline, started_at, sample_count) do
+  defp drain_loop(
+         parent,
+         ref,
+         config,
+         expected_scope,
+         acc,
+         deadline,
+         started_at,
+         sample_count,
+         sample_sink
+       ) do
     post_workload_sample = sample(config, expected_scope)
+    notify_sample_sink(sample_sink, post_workload_sample)
     classified_sample = ObserverContract.classify_sample(post_workload_sample, expected_scope)
     updated_acc = [post_workload_sample | acc]
     updated_sample_count = sample_count + 1
@@ -836,7 +859,8 @@ defmodule Store.PerformanceSmoke.Observer do
               updated_acc,
               deadline,
               started_at,
-              updated_sample_count
+              updated_sample_count,
+              sample_sink
             )
         end
     end
@@ -844,6 +868,7 @@ defmodule Store.PerformanceSmoke.Observer do
 
   defp sample(config, expected_scope) do
     target_ctid = if expected_scope, do: expected_scope.ctid, else: nil
+    sample_start_timestamp_ms = System.system_time(:millisecond)
 
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(Store.DirectRepo, @sample_query, [target_ctid])
@@ -857,8 +882,12 @@ defmodule Store.PerformanceSmoke.Observer do
         config.direct_repo_pool_size
       )
 
+    sample_end_timestamp_ms = System.system_time(:millisecond)
+
     %{
-      timestamp_ms: System.system_time(:millisecond),
+      timestamp_ms: sample_end_timestamp_ms,
+      sample_start_timestamp_ms: sample_start_timestamp_ms,
+      sample_end_timestamp_ms: sample_end_timestamp_ms,
       phase: ProviderPhase.current(),
       backend_rows: backend_rows,
       total_active_backends: populations.total_active_backends,
@@ -871,6 +900,19 @@ defmodule Store.PerformanceSmoke.Observer do
       active_backend_utilization: populations.repo_utilization
     }
   end
+
+  defp notify_sample_sink(nil, _sample), do: :ok
+
+  defp notify_sample_sink(sample_sink, sample) when is_function(sample_sink, 1) do
+    _ = sample_sink.(sample)
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp notify_sample_sink(_sample_sink, _sample), do: :ok
 
   defp parse_backend_row([
          pid,
@@ -1491,6 +1533,7 @@ defmodule Store.PerformanceSmokeTest do
   alias Store.Payments.Providers.Stripe, as: StripeProvider
 
   alias Store.PerformanceSmoke.{
+    CheckoutDiagnostic,
     Config,
     Gate,
     Observer,
@@ -1700,44 +1743,132 @@ defmodule Store.PerformanceSmokeTest do
   end
 
   test "checkout concurrency meets mean and p99 thresholds", %{config: config} do
-    fixture = Fixtures.checkout_fixture!(variant_pool_size: config.checkout_variant_pool_size)
-    assert length(Enum.uniq(fixture.variant_ids)) == fixture.variant_count
-    assert fixture.variant_count == config.checkout_variant_pool_size
+    {:ok, diagnostic_input} =
+      CheckoutDiagnostic.Input.from_config(config,
+        artifact_directory: Path.join("tmp/perf/checkout_diagnostic", config.run_id)
+      )
 
-    {{{samples, errors}, step_events}, observer_summary} =
-      Observer.capture("checkout_concurrency_observer", config, fn ->
-        with_checkout_step_telemetry(fn ->
-          1..config.concurrency_users
-          |> async_stream_with_stripe_stub(
-            fn idx ->
-              token = Ash.UUIDv7.generate()
+    diagnostic_result =
+      CheckoutDiagnostic.run(diagnostic_input, fn diagnostic_session ->
+        fixture = Fixtures.checkout_fixture!(variant_pool_size: config.checkout_variant_pool_size)
+        assert length(Enum.uniq(fixture.variant_ids)) == fixture.variant_count
+        assert fixture.variant_count == config.checkout_variant_pool_size
+        _ = CheckoutDiagnostic.record_phase(diagnostic_session, :checkout, %{state: "started"})
 
-              {result, elapsed_ms} =
-                timed(fn ->
-                  try do
-                    Fixtures.checkout_flow!(fixture, token, idx)
-                    :ok
-                  rescue
-                    e -> {:error, e}
+        _ =
+          CheckoutDiagnostic.record_worker_sync(diagnostic_session, %{
+            state: "workers_started",
+            expected_workers: config.concurrency_users
+          })
+
+        {workload, observer_summary} =
+          Observer.capture(
+            "checkout_concurrency_observer",
+            config,
+            fn ->
+              1..config.concurrency_users
+              |> async_stream_with_stripe_stub(
+                fn idx ->
+                  token = Ash.UUIDv7.generate()
+
+                  {result, elapsed_ms} =
+                    timed(fn ->
+                      try do
+                        Fixtures.checkout_flow!(fixture, token, idx)
+                        :ok
+                      rescue
+                        e -> {:error, e}
+                      end
+                    end)
+
+                  case result do
+                    :ok -> {:ok, elapsed_ms}
+                    {:error, reason} -> {:error, reason}
                   end
-                end)
+                end,
+                max_concurrency: config.concurrency_users,
+                ordered: false,
+                timeout: :infinity
+              )
+              |> Enum.reduce(
+                %{durations_ms: [], errors: [], completed_workers: 0, successful_workers: 0},
+                fn
+                  {:ok, {:ok, elapsed_ms}}, accumulator ->
+                    %{
+                      accumulator
+                      | durations_ms: [elapsed_ms | accumulator.durations_ms],
+                        completed_workers: accumulator.completed_workers + 1,
+                        successful_workers: accumulator.successful_workers + 1
+                    }
 
-              case result do
-                :ok -> {:ok, elapsed_ms}
-                {:error, reason} -> {:error, reason}
-              end
+                  {:ok, {:error, reason}}, accumulator ->
+                    %{
+                      accumulator
+                      | errors: [reason | accumulator.errors],
+                        completed_workers: accumulator.completed_workers + 1
+                    }
+
+                  {:exit, reason}, accumulator ->
+                    %{
+                      accumulator
+                      | errors: [reason | accumulator.errors],
+                        completed_workers: accumulator.completed_workers + 1
+                    }
+                end
+              )
+              |> Map.update!(:durations_ms, &Enum.reverse/1)
+              |> Map.update!(:errors, &Enum.reverse/1)
             end,
-            max_concurrency: config.concurrency_users,
-            ordered: false,
-            timeout: :infinity
+            sample_sink: fn sample ->
+              CheckoutDiagnostic.record_observer_sample(diagnostic_session, sample)
+            end
           )
-          |> Enum.reduce({[], []}, fn
-            {:ok, {:ok, elapsed_ms}}, {durations, errs} -> {[elapsed_ms | durations], errs}
-            {:ok, {:error, reason}}, {durations, errs} -> {durations, [reason | errs]}
-            {:exit, reason}, {durations, errs} -> {durations, [reason | errs]}
-          end)
-        end)
+
+        _ =
+          CheckoutDiagnostic.record_worker_sync(diagnostic_session, %{
+            state: "workers_complete",
+            completed_workers: workload.completed_workers,
+            successful_workers: workload.successful_workers
+          })
+
+        _ = CheckoutDiagnostic.record_observer_summary(diagnostic_session, observer_summary)
+
+        _ =
+          CheckoutDiagnostic.record_phase(diagnostic_session, :checkout, %{
+            state: if(workload.errors == [], do: "complete", else: "failed")
+          })
+
+        %{
+          workload: workload,
+          correctness: %{
+            expected_workers: config.concurrency_users,
+            completed_workers: workload.completed_workers,
+            successful_workers: workload.successful_workers,
+            governed_failures: 0,
+            unexpected_failures: length(workload.errors),
+            db_errors: 0,
+            deadlocks: 0,
+            gate: if(workload.errors == [], do: :pass, else: :fail)
+          },
+          observer_summary: observer_summary
+        }
       end)
+
+    diagnostic_result =
+      case diagnostic_result do
+        {:ok, result} ->
+          result
+
+        {:error, result} ->
+          flunk(
+            "checkout diagnostic failed: status=#{result.status} errors=#{inspect(result.errors)}"
+          )
+      end
+
+    samples = diagnostic_result.workload.durations_ms
+    errors = diagnostic_result.workload.errors
+    step_events = CheckoutDiagnostic.checkout_step_events(diagnostic_result)
+    observer_summary = diagnostic_result.observer_summary
 
     assert errors == [], "checkout concurrency errors: #{inspect(errors)}"
 
@@ -2432,26 +2563,6 @@ defmodule Store.PerformanceSmokeTest do
     end
   end
 
-  defp with_checkout_step_telemetry(fun) when is_function(fun, 0) do
-    ref = make_ref()
-    parent = self()
-    handler_id = "phase30_perf_checkout_step_#{System.unique_integer([:positive])}"
-
-    :telemetry.attach(
-      handler_id,
-      [:store, :checkout, :step],
-      &__MODULE__.handle_checkout_step_event/4,
-      %{ref: ref, parent: parent}
-    )
-
-    try do
-      result = fun.()
-      {result, drain_checkout_step_events(ref, [])}
-    after
-      :telemetry.detach(handler_id)
-    end
-  end
-
   defp with_repo_query_telemetry(filter_fun, fun)
        when is_function(filter_fun, 3) and is_function(fun, 0) do
     ref = make_ref()
@@ -2500,29 +2611,6 @@ defmodule Store.PerformanceSmokeTest do
     after
       0 -> Enum.reverse(acc)
     end
-  end
-
-  defp drain_checkout_step_events(ref, acc) do
-    receive do
-      {^ref, %{measurements: measurements, metadata: metadata}} ->
-        event = %{
-          step: metadata[:step] |> to_string(),
-          result: metadata[:result],
-          duration_ms: Stats.native_to_ms(measurements[:duration] || 0),
-          query_count: measurements[:query_count] || 0,
-          queue_time_ms: Stats.native_to_ms(measurements[:queue_time] || 0),
-          query_time_ms: Stats.native_to_ms(measurements[:query_time] || 0),
-          decode_time_ms: Stats.native_to_ms(measurements[:decode_time] || 0)
-        }
-
-        drain_checkout_step_events(ref, [event | acc])
-    after
-      0 -> Enum.reverse(acc)
-    end
-  end
-
-  def handle_checkout_step_event(_event, measurements, metadata, %{ref: ref, parent: parent}) do
-    send(parent, {ref, %{measurements: measurements, metadata: metadata}})
   end
 
   def handle_repo_query_event(event, measurements, metadata, %{
