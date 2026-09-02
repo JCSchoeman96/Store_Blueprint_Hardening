@@ -20,23 +20,6 @@ defmodule Store.Accounts.Emails do
     |> Store.Mailer.deliver()
   end
 
-  @spec deliver_identity_link_confirmation_instructions(map(), String.t(), atom() | String.t()) ::
-          {:ok, term()} | {:error, term()}
-  def deliver_identity_link_confirmation_instructions(user, url, provider) do
-    provider_name = provider |> to_string() |> String.capitalize()
-
-    user
-    |> email(
-      "Confirm linking your #{String.downcase(provider_name)} login",
-      """
-      <p>Someone signed in with #{provider_name} using your email address and wants to link it to your account.</p>
-      <p>If this was you, confirm here to grant #{provider_name} sign-in access to your account: <a href="#{url}">Confirm identity link</a></p>
-      <p>If it wasn't you, ignore this email - nothing has changed.</p>
-      """
-    )
-    |> Store.Mailer.deliver()
-  end
-
   @spec deliver_reset_password_instructions(map(), String.t()) :: {:ok, term()} | {:error, term()}
   def deliver_reset_password_instructions(user, url) do
     user

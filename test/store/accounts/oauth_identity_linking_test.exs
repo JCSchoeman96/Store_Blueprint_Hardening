@@ -1,14 +1,19 @@
 defmodule Store.Accounts.OAuthIdentityLinkingTest do
   use Store.DataCase, async: false
+  use Oban.Testing, repo: Store.DirectRepo
 
+  import Ash.Expr
   import Swoosh.TestAssertions
+  require Ash.Query
 
   alias AshAuthentication.AddOn.Confirmation
   alias AshAuthentication.Errors.{AuthenticationFailed, ConfirmationRequired}
   alias AshAuthentication.{Info, Jwt, Strategy}
   alias Store.Accounts.User
   alias Store.Accounts.User.Senders.SendNewUserConfirmationEmail, as: ConfirmationSender
+  alias Store.Comms.EmailOutbox
   alias Store.Support.ID.UUIDv7
+  alias Store.Workers.DeliverEmailOutboxWorker
 
   setup :set_swoosh_global
 
@@ -71,7 +76,8 @@ defmodule Store.Accounts.OAuthIdentityLinkingTest do
 
     assert identity_count(uid) == 0
     assert user_count(email) == 1
-    assert identity_email_was_sent?(email, oauth_token)
+    assert identity_email_was_enqueued?(email, oauth_token)
+    refute_email_sent()
     assert user.id == load_user!(email).id
   end
 
@@ -154,24 +160,163 @@ defmodule Store.Accounts.OAuthIdentityLinkingTest do
     assert identity_owner(uid) == second_user.id
   end
 
-  test "identity-link sender identifies the provider and access consequence" do
+  test "identity-link sender enqueues durable delivery without synchronous mail" do
     user = insert_historical_user!(unique_email("sender"))
+    token = identity_link_token(user, unique_uid("sender"))
+    email = to_string(user.email)
+    assert {:ok, %{"jti" => jti}, _resource} = AshAuthentication.Jwt.verify(token, User)
 
-    assert {:ok, _} =
+    assert :ok =
              ConfirmationSender.send(
                user,
-               "server-confirmation-token",
+               token,
                confirmation_type: :identity_link,
                provider: :google
              )
+
+    refute_email_sent()
+
+    assert {:ok, [outbox]} =
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(to_email == ^email and template_kind == :identity_link_confirmation)
+             )
+             |> Ash.read(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert outbox.order_id == nil
+    assert outbox.refund_id == nil
+    assert outbox.subscription_id == nil
+    assert outbox.provider == :swoosh
+    assert outbox.template_kind == :identity_link_confirmation
+    assert outbox.body_text == ""
+    assert outbox.body_html == nil
+    assert outbox.template_assigns["identity_provider"] == "Google"
+    assert outbox.template_assigns["confirmation_url"] =~ token
+    assert outbox.idempotency_key == "identity_link_confirmation:google:#{jti}"
+
+    assert Map.keys(outbox.template_assigns) |> Enum.sort() == [
+             "confirmation_url",
+             "identity_provider"
+           ]
+
+    refute outbox.idempotency_key =~ token
+    refute inspect(outbox.template_assigns) =~ "oauth-secret"
+
+    assert [%{args: args} = job] =
+             all_enqueued(worker: DeliverEmailOutboxWorker)
+
+    assert job.args == %{"email_outbox_id" => outbox.id}
+    assert Map.keys(args) == ["email_outbox_id"]
+    refute inspect(args) =~ token
+    refute inspect(args) =~ "oauth-secret"
+  end
+
+  test "repeated identity-link sender calls share one outbox and delivery job by JTI" do
+    user = insert_historical_user!(unique_email("duplicate-sender"))
+    token = identity_link_token(user, unique_uid("duplicate-sender"))
+    email = to_string(user.email)
+
+    assert :ok =
+             ConfirmationSender.send(
+               user,
+               token,
+               confirmation_type: :identity_link,
+               provider: :google
+             )
+
+    assert :ok =
+             ConfirmationSender.send(
+               user,
+               token,
+               confirmation_type: :identity_link,
+               provider: :google
+             )
+
+    assert {:ok, outboxes} =
+             EmailOutbox
+             |> Ash.Query.filter(expr(to_email == ^email))
+             |> Ash.read(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    identity_outboxes = Enum.filter(outboxes, &(&1.template_kind == :identity_link_confirmation))
+    assert [%{idempotency_key: key}] = identity_outboxes
+    assert key =~ "identity_link_confirmation:google:"
+    assert length(all_enqueued(worker: DeliverEmailOutboxWorker)) == 1
+  end
+
+  test "different identity-link confirmation JTIs create different outbox identities" do
+    user = insert_historical_user!(unique_email("distinct-sender"))
+    first_token = identity_link_token(user, unique_uid("distinct-first"))
+    second_token = identity_link_token(user, unique_uid("distinct-second"))
+    email = to_string(user.email)
+
+    assert :ok =
+             ConfirmationSender.send(
+               user,
+               first_token,
+               confirmation_type: :identity_link,
+               provider: :google
+             )
+
+    assert :ok =
+             ConfirmationSender.send(
+               user,
+               second_token,
+               confirmation_type: :identity_link,
+               provider: :google
+             )
+
+    assert {:ok, outboxes} =
+             EmailOutbox
+             |> Ash.Query.filter(expr(to_email == ^email))
+             |> Ash.read(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    identity_outboxes = Enum.filter(outboxes, &(&1.template_kind == :identity_link_confirmation))
+    assert length(identity_outboxes) == 2
+    assert identity_outboxes |> Enum.map(& &1.idempotency_key) |> Enum.uniq() |> length() == 2
+    refute Enum.any?(identity_outboxes, &(&1.idempotency_key =~ first_token))
+    refute Enum.any?(identity_outboxes, &(&1.idempotency_key =~ second_token))
+    assert length(all_enqueued(worker: DeliverEmailOutboxWorker)) == 2
+  end
+
+  test "identity-link worker delivers provider-specific copy without OAuth payloads" do
+    user = insert_historical_user!(unique_email("delivery"))
+    token = identity_link_token(user, unique_uid("delivery"))
+
+    assert :ok =
+             ConfirmationSender.send(
+               user,
+               token,
+               confirmation_type: :identity_link,
+               provider: :google
+             )
+
+    refute_email_sent()
+    outbox = fetch_identity_outbox!(to_string(user.email))
+
+    assert :ok = perform_job(DeliverEmailOutboxWorker, %{"email_outbox_id" => outbox.id})
 
     assert_email_sent(fn email ->
       email.subject == "Confirm linking your google login" and
         email.html_body =~ "Google" and
         email.html_body =~ "access to your account" and
-        email.html_body =~ "server-confirmation-token" and
-        not (email.html_body =~ "oauth-secret")
+        email.html_body =~ token and
+        not (email.html_body =~ "oauth-secret") and
+        not (email.text_body =~ "oauth-secret")
     end)
+  end
+
+  test "identity-link sender returns enqueue validation errors without sending mail" do
+    user = insert_historical_user!(unique_email("sender-error"))
+
+    assert {:error, :invalid_confirmation_token} =
+             ConfirmationSender.send(
+               user,
+               "not-a-confirmation-token",
+               confirmation_type: :identity_link,
+               provider: :google
+             )
+
+    refute_email_sent()
   end
 
   defp register_with_google(email, uid, access_token \\ "test-access-token") do
@@ -265,15 +410,24 @@ defmodule Store.Accounts.OAuthIdentityLinkingTest do
 
   defp scalar(sql, params), do: Repo.query!(sql, params).rows |> List.first() |> List.first()
 
-  defp identity_email_was_sent?(email, oauth_token) do
-    assert_email_sent(fn sent_email ->
-      sent_email.to == [{"", email}] and
-        sent_email.subject == "Confirm linking your google login" and
-        sent_email.html_body =~ "Google" and
-        sent_email.html_body =~ "access to your account" and
-        sent_email.html_body =~ "/confirm-new-user/" and
-        not (sent_email.html_body =~ oauth_token)
-    end)
+  defp identity_email_was_enqueued?(email, oauth_token) do
+    outbox = fetch_identity_outbox!(email)
+
+    outbox.subject == "Confirm linking your google login" and
+      outbox.template_assigns["confirmation_url"] =~ "/confirm-new-user/" and
+      not (outbox.template_assigns["confirmation_url"] =~ oauth_token) and
+      not (Map.values(outbox.template_assigns) |> Enum.any?(&(&1 == "oauth-secret")))
+  end
+
+  defp fetch_identity_outbox!(email) do
+    assert {:ok, [outbox]} =
+             EmailOutbox
+             |> Ash.Query.filter(
+               expr(to_email == ^email and template_kind == :identity_link_confirmation)
+             )
+             |> Ash.read(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    outbox
   end
 
   defp unique_email(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}@example.com"

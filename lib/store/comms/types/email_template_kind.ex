@@ -10,6 +10,7 @@ defmodule Store.Comms.Types.EmailTemplateKind do
       :refund_processed,
       :payment_authentication_required,
       :renewal_reminder,
-      :access_ended
+      :access_ended,
+      :identity_link_confirmation
     ]
 end
