@@ -1,4 +1,12 @@
 defmodule Store.Repo.Migrations.DepSec03cIdentityLinkEmailOutbox do
+  @moduledoc """
+  Adds the identity-link email outbox shape to the coherence constraint.
+
+  Rollback is intentionally blocked once identity-link rows exist. The enum
+  label remains physically present after a successful rollback because removing
+  a PostgreSQL enum label would require destructive type reconstruction.
+  """
+
   use Ecto.Migration
 
   @disable_ddl_transaction true
@@ -47,6 +55,11 @@ defmodule Store.Repo.Migrations.DepSec03cIdentityLinkEmailOutbox do
   end
 
   def down do
+    # Rollback state machine: eligible -> reverting -> reverted. If the
+    # identity-link rows make the migration in_use, it transitions to blocked
+    # here and performs no schema mutation.
+    ensure_no_identity_link_outbox_rows!()
+
     drop constraint(:email_outboxes, "email_outboxes_template_kind_refund_coherence_check")
 
     create(
@@ -80,5 +93,23 @@ defmodule Store.Repo.Migrations.DepSec03cIdentityLinkEmailOutbox do
         """
       )
     )
+  end
+
+  defp ensure_no_identity_link_outbox_rows! do
+    %{rows: [[identity_link_rows?]]} =
+      repo().query!("""
+      SELECT EXISTS (
+        SELECT 1
+        FROM email_outboxes
+        WHERE template_kind::text = 'identity_link_confirmation'
+      )
+      """)
+
+    if identity_link_rows? do
+      raise Ecto.MigrationError,
+        message:
+          "cannot roll back DEP-SEC-03C while durable identity-link EmailOutbox rows exist; " <>
+            "rollback is blocked before schema mutation"
+    end
   end
 end
