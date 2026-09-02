@@ -509,9 +509,106 @@ observations, not implementation tasks opened by S0-CLOSE-08:
 
 | Boundary | Status |
 |---|---|
-| S0-MEM-01 | `NEXT` |
+| S0-MEM-01 | `CLOSED / DEFECT PROVEN` |
+| S0-MEM-02 | `PASS / ACCEPTED` |
+| S0-MEM-03 | `CLOSED` |
 | S0-ARCH-01 | `FROZEN` |
 | S0-PLAN-01 | `FROZEN` |
 | Inventory implementation authorized | `NO` |
 | S0-CLOSE-02 | `BLOCKED` |
 | S0 merge readiness | `BLOCKED` |
+
+## 13. S0-MEM-03 memory and runtime baseline closure
+
+This section closes S0-MEM-03 at the exact head below. It records the proven dynamic
+atom defect and the bounded remediation for the three affected status query parsers.
+It does not certify repository-wide memory safety, 100k concurrency, or the remaining
+runtime observations. It does not change subscription or entitlement lifecycle
+states, filtering semantics, LiveView behaviour, checkout, or InventoryAdmission.
+
+### Exact-head evidence
+
+| Evidence | Result |
+|---|---|
+| Repository head | `b730a1e1d3e159cab95e24fbb4786fd7abee830d` |
+| Branch | `hardening/s0-baseline` |
+| PR #1 | `OPEN / UNMERGED` |
+| CI run | [`33651910720`](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/33651910720) |
+| CI conclusion | `SUCCESS` |
+| `check_static` | `PASS` |
+| `test_pr_strict` | `PASS` |
+| `performance_smoke_required` | `PASS` |
+| `performance_smoke_chaos_required` | `PASS` |
+| `dialyzer_required` | `NOMINAL PASS` |
+
+The Dialyzer job is green because the configured gate retains
+`--ignore-exit-status`. That job result does not erase the separately documented
+semantic Dialyzer caveat.
+
+### Proven defect and remediation
+
+| Finding | Status | Evidence |
+|---|---|---|
+| Pre-validation dynamic atom creation in subscription and entitlement status parsing | `FIXED` | The three parsers normalize binary input, then use finite compile-time binary-to-status maps. |
+| `INV-MEM-ATOM-001` on the three affected query paths | `ENFORCED` | Invalid runtime binaries are rejected before any status atom is returned. |
+| Subscription lifecycle status set | `UNCHANGED` | `pending`, `active`, `past_due`, `canceled`, `expired` remain the allowed values. |
+| Entitlement lifecycle status set | `UNCHANGED` | `active`, `revoked`, `expired` remain the allowed values. |
+| Invalid status result | `UNCHANGED` | Invalid binaries, atoms, and other values retain `VALIDATION_ERROR` with `status is invalid`. |
+
+The affected paths are [`UserSubscriptionIndexQuery`](../../lib/store/subscriptions/queries/user_subscription_index_query.ex),
+[`AdminSubscriptionIndexQuery`](../../lib/store/subscriptions/queries/admin_subscription_index_query.ex),
+and [`UserEntitlementIndexQuery`](../../lib/store/entitlements/queries/user_entitlement_index_query.ex).
+Their focused public `new/1` regressions prove that a runtime-unique invalid binary
+raises `ArgumentError` under `String.to_existing_atom/1` before and after parsing.
+
+This enforcement statement is scoped to these three S0-MEM-02 paths. It is not a
+repository-wide audit of every possible runtime atom conversion.
+
+### Deferred observations
+
+The following observations remain unproven. They are deferred and are not relabelled
+as defects by this closure:
+
+| Observation | Status | Disposition |
+|---|---|---|
+| Redix retained heap high-water | `NOT PROVEN` | Deferred; no memory workload rerun. |
+| Cachex/ETS/Redis cardinality | `NOT PROVEN` | Deferred; no cardinality audit or tuning. |
+| RedisAggregates mailbox risk | `NOT PROVEN` | Deferred; no mailbox workload or tuning. |
+| Oban/PubSub behaviour at 100k | `NOT PROVEN` | Deferred; no 100k workload or certification. |
+| Overall platform memory safety | `NOT PROVEN` | No platform-wide memory-safety claim is made. |
+| Overall 100k concurrency certification | `NOT PROVEN` | No capacity claim is made. |
+
+### Validation record
+
+| Gate | Result |
+|---|---|
+| Focused public query-contract tests | `15 tests, 0 failures` |
+| Focused forbidden-conversion search in the three parsers | `PASS` |
+| `mix compile --warnings-as-errors` | `PASS` in the implementation commit; exact-head CI also passed `check_static` and strict tests |
+| Formatter check | `PASS` |
+| Strict Credo | `PASS` |
+| `git diff --check` | `PASS` |
+| S0-MEM-01 workload rerun | `NOT RUN` |
+| New memory/performance workload | `NOT RUN` |
+
+### Performance & Scaling Review
+
+| Concern | Closure assessment |
+|---|---|
+| Data layer | `HOT` request parsing. |
+| State | Finite compile-time binary-to-status maps local to each query module. |
+| Memory | `O(1)` bounded status vocabulary; invalid input does not add an atom. |
+| GC | No new concern introduced. |
+| Mailbox | None introduced. |
+| Resource cleanup | None required. |
+| Post-load | These paths have fixed status cardinality and do not intern arbitrary invalid binaries. |
+| Cache | No change. |
+| Redis | No change. |
+| Store.Repo | No change. |
+| PubSub | No change. |
+| Oban | No change. |
+| 100k behavior | Overall behavior remains unmeasured and uncertified. Only the atom-creation cardinality of these status parsers is bounded. |
+
+S0-MEM-03 is documentation-only. No production code, tests, migration, schema,
+configuration, checkout path, InventoryAdmission path, Redix setting, cache setting,
+Redis structure, Oban behavior, or PubSub behavior changed in this closure.
