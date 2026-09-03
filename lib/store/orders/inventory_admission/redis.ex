@@ -154,7 +154,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "lease_deadline_ms",
       "lease_token",
       "owner_epoch",
-      "metadata_ttl_seconds"
+      "metadata_ttl_seconds",
+      "terminal_retention_ms"
     )
 
     if failed(values) then
@@ -305,12 +306,20 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   end
 
   local function expire_queued(meta)
+    local terminal_retention_ms = tonumber(meta[19])
+    if terminal_retention_ms == nil or terminal_retention_ms < 1 then
+      return false
+    end
+
     redis.call("ZREM", KEYS[2], meta[5])
     redis.call("ZREM", KEYS[3], meta[5])
     redis.call("ZREM", KEYS[4], meta[5])
     redis.call("HSET", KEYS[7], "state", "EXPIRED")
     redis.call("HSET", KEYS[8], "state", "EXPIRED")
+    redis.call("PEXPIRE", KEYS[7], terminal_retention_ms)
+    redis.call("PEXPIRE", KEYS[8], terminal_retention_ms)
     meta[2] = "EXPIRED"
+    return true
   end
 
   local function preflight()
@@ -384,6 +393,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local lease_window_ms = tonumber(ARGV[13])
   local safety_margin_ms = tonumber(ARGV[14])
   local metadata_ttl_seconds = tonumber(ARGV[15])
+  local terminal_retention_ms = tonumber(ARGV[16])
 
   if schema == nil
     or identity == nil
@@ -400,13 +410,15 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or lease_window_ms == nil
     or safety_margin_ms == nil
     or metadata_ttl_seconds == nil
+    or terminal_retention_ms == nil
     or b_total < 1
     or q_variant_max < 0
     or q_global_max < 0
     or queue_window_ms < 1
     or db_window_ms < 1
     or lease_window_ms < db_window_ms + safety_margin_ms
-    or metadata_ttl_seconds < 1 then
+    or metadata_ttl_seconds < 1
+    or terminal_retention_ms < 1 then
     return unavailable()
   end
 
@@ -459,9 +471,10 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   else
     if metadata_state == "QUEUED" then
       local queue_deadline_ms = tonumber(metadata[10])
+      local terminal_retention_ms = tonumber(metadata[19])
       now_ms = server_now_ms()
 
-      if queue_deadline_ms == nil or now_ms == nil then
+      if queue_deadline_ms == nil or terminal_retention_ms == nil or now_ms == nil then
         return unavailable()
       end
 
@@ -470,9 +483,17 @@ defmodule Store.Orders.InventoryAdmission.Redis do
           return unavailable()
         end
 
-        expire_queued(metadata)
+        if not expire_queued(metadata) then
+          return unavailable()
+        end
+
         metadata_state = "EXPIRED"
       end
+    end
+
+    if metadata_state == "EXPIRED"
+      and (tonumber(metadata[19]) == nil or tonumber(metadata[19]) < 1) then
+      return unavailable()
     end
 
     if metadata_state == "UNRESOLVED" then
@@ -581,7 +602,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "lease_deadline_ms", lease_deadline_ms,
       "lease_token", lease_token,
       "owner_epoch", operation_epoch,
-      "metadata_ttl_seconds", metadata_ttl_seconds
+      "metadata_ttl_seconds", metadata_ttl_seconds,
+      "terminal_retention_ms", terminal_retention_ms
     )
 
     redis.call(
@@ -673,7 +695,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "lease_deadline_ms", "",
     "lease_token", "",
     "owner_epoch", "",
-    "metadata_ttl_seconds", metadata_ttl_seconds
+    "metadata_ttl_seconds", metadata_ttl_seconds,
+    "terminal_retention_ms", terminal_retention_ms
   )
 
   redis.call("ZADD", KEYS[2], sequence_reply, member)
@@ -747,7 +770,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "operation_id",
     "operation_epoch",
     "sequence",
-    "queue_deadline_ms"
+    "queue_deadline_ms",
+    "terminal_retention_ms"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -815,10 +839,13 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   local sequence = tonumber(metadata[9])
   local queue_deadline_ms = tonumber(metadata[10])
+  local terminal_retention_ms = tonumber(metadata[11])
 
   if sequence == nil
     or sequence < 1
     or queue_deadline_ms == nil
+    or terminal_retention_ms == nil
+    or terminal_retention_ms < 1
     or variant_score == false
     or global_dispatch_score == false
     or global_queue_expiry_score == false
@@ -849,6 +876,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   redis.call("ZREM", KEYS[3], member)
   redis.call("HSET", KEYS[6], "state", "EXPIRED")
   redis.call("HSET", KEYS[7], "state", "EXPIRED")
+  redis.call("PEXPIRE", KEYS[6], terminal_retention_ms)
+  redis.call("PEXPIRE", KEYS[7], terminal_retention_ms)
 
   return {"IA02_EXPIRED"}
   """
@@ -983,7 +1012,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "lease_deadline_ms",
     "lease_token",
     "owner_epoch",
-    "metadata_ttl_seconds"
+    "metadata_ttl_seconds",
+    "terminal_retention_ms"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -1040,6 +1070,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or metadata[4] == false
     or metadata[7] == false
     or metadata[8] == false
+    or metadata[19] == false
+    or tonumber(metadata[19]) == nil
+    or tonumber(metadata[19]) < 1
     or not known_state(metadata[2]) then
     return unavailable()
   end
@@ -1088,7 +1121,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   local now_ms = server_now_ms()
   local queue_deadline_ms = tonumber(metadata[10])
-  if now_ms == nil or queue_deadline_ms == nil then
+  local terminal_retention_ms = tonumber(metadata[19])
+  if now_ms == nil or queue_deadline_ms == nil or terminal_retention_ms == nil then
+    return unavailable()
+  end
+
+  if terminal_retention_ms < 1 then
     return unavailable()
   end
 
@@ -1098,6 +1136,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     redis.call("ZREM", KEYS[4], member)
     redis.call("HSET", KEYS[7], "state", "EXPIRED")
     redis.call("HSET", KEYS[8], "state", "EXPIRED")
+    redis.call("PEXPIRE", KEYS[7], terminal_retention_ms)
+    redis.call("PEXPIRE", KEYS[8], terminal_retention_ms)
     metadata[2] = "EXPIRED"
     return reply("IA02_EXISTING", metadata)
   end
@@ -1132,9 +1172,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local safety_margin_ms = tonumber(metadata[13])
   local metadata_ttl_seconds = tonumber(metadata[18])
 
-  if now_ms == nil
-    or queue_deadline_ms == nil
-    or db_window_ms == nil
+  if db_window_ms == nil
     or lease_window_ms == nil
     or safety_margin_ms == nil
     or metadata_ttl_seconds == nil
@@ -1588,13 +1626,16 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          {:ok, lease_window_ms} <- fetch_positive_option(opts, :lease_window_ms),
          {:ok, safety_margin_ms} <- fetch_non_negative_option(opts, :safety_margin_ms),
          {:ok, cleanup_limit} <- fetch_positive_option(opts, :cleanup_limit) do
-      metadata_default = max(queue_window_ms, lease_window_ms + safety_margin_ms)
+      # Retention is additive: evidence outlives the longest semantic window.
+      evidence_window_ms = max(queue_window_ms, lease_window_ms + safety_margin_ms)
 
       with {:ok, metadata_retention_ms} <-
-             fetch_option_or_default(opts, :metadata_retention_ms, metadata_default),
+             fetch_option_or_default(opts, :metadata_retention_ms, evidence_window_ms),
            :ok <- validate_deadline_options(lease_window_ms, db_window_ms, safety_margin_ms),
-           :ok <-
-             validate_metadata_retention(metadata_retention_ms, lease_window_ms, safety_margin_ms) do
+           :ok <- validate_metadata_retention(metadata_retention_ms) do
+        # metadata_retention_ms is also the finite terminal replay window.
+        initial_evidence_ttl_ms = evidence_window_ms + metadata_retention_ms
+
         {:ok,
          %{
            hmac_key: hmac_key,
@@ -1607,7 +1648,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
            lease_window_ms: lease_window_ms,
            safety_margin_ms: safety_margin_ms,
            cleanup_limit: cleanup_limit,
-           metadata_ttl_seconds: ceil_seconds(metadata_retention_ms)
+           metadata_ttl_seconds: ceil_seconds(initial_evidence_ttl_ms),
+           terminal_retention_ms: metadata_retention_ms
          }}
       end
     else
@@ -1643,7 +1685,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       Integer.to_string(options.db_window_ms),
       Integer.to_string(options.lease_window_ms),
       Integer.to_string(options.safety_margin_ms),
-      Integer.to_string(options.metadata_ttl_seconds)
+      Integer.to_string(options.metadata_ttl_seconds),
+      Integer.to_string(options.terminal_retention_ms)
     ]
   end
 
@@ -1909,8 +1952,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   end
 
-  defp validate_metadata_retention(metadata_retention_ms, lease_window_ms, safety_margin_ms) do
-    if metadata_retention_ms >= lease_window_ms + safety_margin_ms do
+  defp validate_metadata_retention(metadata_retention_ms) do
+    if is_integer(metadata_retention_ms) and metadata_retention_ms > 0 do
       :ok
     else
       {:error, :invalid_input}

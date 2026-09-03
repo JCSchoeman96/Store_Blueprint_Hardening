@@ -386,6 +386,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
 
     assert {:ok, {:queued, _}} = Redis.enqueue_or_return_existing(tail_request, options)
 
+    shorten_evidence_ttl(head_request, scope, 50)
     force_expired_queued(head_request, scope)
 
     assert {:ok, {:existing, expired}} =
@@ -395,6 +396,15 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert expired.member == queued_head.member
     assert expired.operation_id == queued_head.operation_id
     assert expired.operation_epoch == queued_head.operation_epoch
+
+    assert {:ok, refreshed_meta_ttl} =
+             redis(["PTTL", keys_for(head_request, scope).request_meta])
+
+    assert {:ok, refreshed_fence_ttl} =
+             redis(["PTTL", keys_for(head_request, scope).reservation_fence])
+
+    assert refreshed_meta_ttl > 1_000
+    assert refreshed_fence_ttl > 1_000
 
     assert redis(["HGET", keys_for(head_request, scope).request_meta, "state"]) ==
              {:ok, "EXPIRED"}
@@ -457,6 +467,118 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert redis(["ZCARD", keys_for(tail_request, scope).global_queue_dispatch]) == {:ok, 1}
     assert redis(["ZCARD", keys_for(tail_request, scope).global_queue_expiry]) == {:ok, 1}
     assert redis(["ZCARD", keys_for(tail_request, scope).global_active_expiry]) == {:ok, 1}
+  end
+
+  test "queued evidence outlives its deadline and refreshes terminal retention", %{scope: scope} do
+    first = request()
+    queued_request = request(@second_order_id, @variant_id)
+
+    options =
+      opts(
+        scope,
+        b_total: 1,
+        queue_window_ms: 250,
+        metadata_retention_ms: 5_000
+      )
+
+    assert {:ok, {:admitted, _}} = Redis.enqueue_or_return_existing(first, options)
+
+    assert {:ok, {:queued, _queued}} =
+             Redis.enqueue_or_return_existing(queued_request, options)
+
+    keys = keys_for(queued_request, scope)
+    assert {:ok, queue_deadline_ms} = redis(["HGET", keys.request_meta, "queue_deadline_ms"])
+    {:ok, [seconds, microseconds]} = redis(["TIME"])
+
+    now_ms =
+      String.to_integer(seconds) * 1_000 +
+        div(String.to_integer(microseconds), 1_000)
+
+    queue_deadline_ms = String.to_integer(queue_deadline_ms)
+    assert queue_deadline_ms > now_ms
+    assert queue_deadline_ms - now_ms <= options[:queue_window_ms]
+
+    assert {:ok, initial_meta_ttl} = redis(["PTTL", keys.request_meta])
+    assert {:ok, initial_fence_ttl} = redis(["PTTL", keys.reservation_fence])
+    assert initial_meta_ttl > options[:queue_window_ms]
+    assert initial_fence_ttl > options[:queue_window_ms]
+
+    shorten_evidence_ttl(queued_request, scope, 50)
+    force_expired_queued(queued_request, scope)
+
+    assert {:ok, {:existing, expired}} =
+             Redis.enqueue_or_return_existing(queued_request, options)
+
+    assert expired.state == :expired
+    assert {:ok, refreshed_meta_ttl} = redis(["PTTL", keys.request_meta])
+    assert {:ok, refreshed_fence_ttl} = redis(["PTTL", keys.reservation_fence])
+    assert refreshed_meta_ttl > 0
+    assert refreshed_fence_ttl > 0
+    assert refreshed_meta_ttl > 1_000
+    assert refreshed_fence_ttl > 1_000
+    assert refreshed_meta_ttl <= options[:metadata_retention_ms]
+    assert refreshed_fence_ttl <= options[:metadata_retention_ms]
+    assert refreshed_meta_ttl > 50
+    assert refreshed_fence_ttl > 50
+    assert redis(["HGET", keys.request_meta, "state"]) == {:ok, "EXPIRED"}
+    assert redis(["HGET", keys.reservation_fence, "state"]) == {:ok, "EXPIRED"}
+
+    assert {:ok, {:existing, replayed}} =
+             Redis.enqueue_or_return_existing(queued_request, options)
+
+    assert replayed.operation_id == expired.operation_id
+    assert replayed.operation_epoch == expired.operation_epoch
+    assert redis(["ZCARD", keys.variant_queue_order]) == {:ok, 0}
+    assert redis(["ZCARD", keys.global_queue_dispatch]) == {:ok, 0}
+    assert redis(["ZCARD", keys.global_queue_expiry]) == {:ok, 0}
+    assert redis(["ZCARD", keys.global_active_expiry]) == {:ok, 1}
+  end
+
+  test "admitted evidence outlives its lease and DB safety window", %{scope: scope} do
+    admitted_request = request()
+
+    options =
+      opts(
+        scope,
+        b_total: 1,
+        queue_window_ms: 100,
+        db_window_ms: 2_000,
+        lease_window_ms: 3_000,
+        safety_margin_ms: 500,
+        metadata_retention_ms: 100
+      )
+
+    assert {:ok, {:admitted, _}} =
+             Redis.enqueue_or_return_existing(admitted_request, options)
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, meta_ttl} = redis(["PTTL", keys.request_meta])
+    assert {:ok, fence_ttl} = redis(["PTTL", keys.reservation_fence])
+    assert meta_ttl > options[:lease_window_ms] + options[:safety_margin_ms]
+    assert fence_ttl > options[:lease_window_ms] + options[:safety_margin_ms]
+  end
+
+  test "expired queue entries with missing evidence fail closed", %{scope: scope} do
+    first = request()
+    orphaned = request(@second_order_id, @variant_id)
+    options = opts(scope, b_total: 1, q_variant_max: 1, q_global_max: 1)
+
+    assert {:ok, {:admitted, _}} = Redis.enqueue_or_return_existing(first, options)
+    assert {:ok, {:queued, _}} = Redis.enqueue_or_return_existing(orphaned, options)
+    keys = keys_for(orphaned, scope)
+    force_expired_queued(orphaned, scope)
+    assert {:ok, 2} = redis(["DEL", keys.request_meta, keys.reservation_fence])
+
+    assert {:error, :unavailable} =
+             Redis.enqueue_or_return_existing(
+               request(UUIDv7.generate(), @second_variant_id),
+               options
+             )
+
+    assert redis(["ZCARD", keys.variant_queue_order]) == {:ok, 1}
+    assert redis(["ZCARD", keys.global_queue_dispatch]) == {:ok, 1}
+    assert redis(["ZCARD", keys.global_queue_expiry]) == {:ok, 1}
+    assert redis(["ZCARD", keys.global_active_expiry]) == {:ok, 1}
   end
 
   test "expired cleanup is bounded per admission attempt", %{scope: scope} do
@@ -755,6 +877,12 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
              ])
 
     assert {:ok, 0} = redis(["ZADD", keys.global_queue_expiry, expired_at, member])
+  end
+
+  defp shorten_evidence_ttl(request, scope, ttl_ms) do
+    keys = keys_for(request, scope)
+    assert {:ok, 1} = redis(["PEXPIRE", keys.request_meta, Integer.to_string(ttl_ms)])
+    assert {:ok, 1} = redis(["PEXPIRE", keys.reservation_fence, Integer.to_string(ttl_ms)])
   end
 
   defp scores_for(flattened) do
