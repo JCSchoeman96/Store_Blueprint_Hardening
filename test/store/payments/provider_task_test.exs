@@ -94,6 +94,10 @@ defmodule Store.Payments.ProviderTaskTest do
     assert Process.whereis(Store.Payments.Finch)
     assert ProviderConfig.task_timeout_ms() < ProviderConfig.http_receive_timeout_ms()
     assert ProviderConfig.task_timeout_ms() < ProviderConfig.http_pool_timeout_ms()
-    assert Keyword.get(ProviderConfig.request_options(), :finch) == Store.Payments.Finch
+
+    finch_opts = Keyword.fetch!(ProviderConfig.request_options(), :finch)
+    assert Keyword.fetch!(finch_opts, :name) == Store.Payments.Finch
+    assert Keyword.fetch!(finch_opts, :pool_timeout) == ProviderConfig.http_pool_timeout_ms()
+    refute Keyword.has_key?(ProviderConfig.request_options(), :pool_timeout)
   end
 end

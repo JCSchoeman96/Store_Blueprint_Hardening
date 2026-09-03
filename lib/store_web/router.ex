@@ -6,6 +6,8 @@ defmodule StoreWeb.Router do
 
   import AshAuthentication.Plug.Helpers
 
+  # CSP is applied by StoreWeb.Plugs.PutSecurityHeaders (runtime-configurable).
+  # sobelow_skip ["Config.CSP"]
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
