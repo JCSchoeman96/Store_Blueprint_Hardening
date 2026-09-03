@@ -1,0 +1,6 @@
+<p>Someone attempted to link <%= @identity_provider %> login to your account using your email address.</p>
+
+<p>If this was you, confirm here to grant <%= @identity_provider %> sign-in access to your account:</p>
+<p><a href="<%= @confirmation_url %>">Confirm identity link</a></p>
+
+<p>If you did not initiate this, ignore this email. Nothing has changed.</p>

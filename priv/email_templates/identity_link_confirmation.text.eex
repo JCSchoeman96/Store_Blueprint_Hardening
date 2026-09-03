@@ -1,0 +1,6 @@
+Someone attempted to link <%= @identity_provider %> login to your account using your email address.
+
+If this was you, confirm here to grant <%= @identity_provider %> sign-in access to your account:
+<%= @confirmation_url %>
+
+If you did not initiate this, ignore this email. Nothing has changed.
