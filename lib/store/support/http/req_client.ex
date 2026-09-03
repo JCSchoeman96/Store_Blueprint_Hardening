@@ -45,8 +45,15 @@ defmodule Store.Support.HTTP.ReqClient do
 
   defp put_connect_options(opts, timeout) do
     case Keyword.get(opts, :finch) do
-      nil -> Keyword.put_new(opts, :connect_options, timeout: timeout)
-      _finch -> opts
+      nil ->
+        Keyword.put_new(opts, :connect_options, timeout: timeout)
+
+      _finch ->
+        if Keyword.has_key?(opts, :connect_options) do
+          raise ArgumentError, "cannot set both :finch and :connect_options"
+        end
+
+        opts
     end
   end
 

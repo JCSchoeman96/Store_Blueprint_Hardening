@@ -15,7 +15,7 @@ defmodule Store.TestFixtures do
     "#{prefix}_#{System.unique_integer([:positive])}@example.com"
   end
 
-  @spec register_user!(keyword()) :: map()
+  @spec register_user!(keyword()) :: User.t()
   def register_user!(opts \\ []) do
     email = Keyword.get(opts, :email, unique_email())
     password = Keyword.get(opts, :password, "Password123!")

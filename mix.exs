@@ -172,7 +172,7 @@ defmodule Store.MixProject do
         "docs"
       ],
       "check.ci": ["check"],
-      "check.types": ["dialyzer --format short --ignore-exit-status"],
+      "check.types": ["dialyzer --format short"],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end

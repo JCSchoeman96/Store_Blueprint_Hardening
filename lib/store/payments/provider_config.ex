@@ -59,6 +59,7 @@ defmodule Store.Payments.ProviderConfig do
     opts
     |> Keyword.delete(:pool_timeout)
     |> put_finch_request_options()
+    |> reject_conflicting_transport_options!()
   end
 
   defp put_finch_request_options(opts) do
@@ -74,6 +75,14 @@ defmodule Store.Payments.ProviderConfig do
       finch_opts when is_list(finch_opts) ->
         Keyword.put(opts, :finch, Keyword.put_new(finch_opts, :pool_timeout, pool_timeout))
     end
+  end
+
+  defp reject_conflicting_transport_options!(opts) do
+    if Keyword.has_key?(opts, :connect_options) do
+      raise ArgumentError, "cannot set both :finch and :connect_options"
+    end
+
+    opts
   end
 
   @spec validate_timeout_hierarchy() :: :ok | {:error, Error.t()}

@@ -1,11 +1,25 @@
 defmodule Store.Payments.ProviderTaskTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   require Logger
 
   alias Store.Payments.ProviderConfig
   alias Store.Payments.ProviderTask
   alias Store.Support.Errors.Error
+
+  setup do
+    previous_payments_config = Application.get_env(:store, :payments)
+
+    on_exit(fn ->
+      if previous_payments_config do
+        Application.put_env(:store, :payments, previous_payments_config)
+      else
+        Application.delete_env(:store, :payments)
+      end
+    end)
+
+    :ok
+  end
 
   test "returns provider payload on success and preserves logger metadata inside task" do
     previous = Logger.metadata()
@@ -99,5 +113,34 @@ defmodule Store.Payments.ProviderTaskTest do
     assert Keyword.fetch!(finch_opts, :name) == Store.Payments.Finch
     assert Keyword.fetch!(finch_opts, :pool_timeout) == ProviderConfig.http_pool_timeout_ms()
     refute Keyword.has_key?(ProviderConfig.request_options(), :pool_timeout)
+  end
+
+  test "provider config preserves custom Finch options and timeout" do
+    set_stripe_request_options!(finch: [name: :custom_finch, pool_timeout: 1_234])
+
+    finch_opts = Keyword.fetch!(ProviderConfig.request_options(), :finch)
+
+    assert Keyword.fetch!(finch_opts, :name) == :custom_finch
+    assert Keyword.fetch!(finch_opts, :pool_timeout) == 1_234
+    refute Keyword.has_key?(ProviderConfig.request_options(), :connect_options)
+  end
+
+  test "provider config rejects Finch and connect options together" do
+    set_stripe_request_options!(connect_options: [timeout: 100])
+
+    assert_raise ArgumentError, ~r/cannot set both :finch and :connect_options/, fn ->
+      ProviderConfig.request_options()
+    end
+  end
+
+  defp set_stripe_request_options!(request_options) do
+    payments = Application.get_env(:store, :payments, [])
+    stripe = Keyword.get(payments, :stripe, [])
+
+    Application.put_env(
+      :store,
+      :payments,
+      Keyword.put(payments, :stripe, Keyword.put(stripe, :request_options, request_options))
+    )
   end
 end

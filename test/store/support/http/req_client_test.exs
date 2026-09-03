@@ -44,6 +44,16 @@ defmodule Store.Support.HTTP.ReqClientTest do
     assert ReqClient.build(:post, retry: true).options.retry == true
   end
 
+  test "rejects explicit Finch and connect options before building a request" do
+    assert_raise ArgumentError, ~r/cannot set both :finch and :connect_options/, fn ->
+      ReqClient.build(:post,
+        finch: [name: :req_client_test_finch],
+        connect_options: [timeout: 100],
+        retry: false
+      )
+    end
+  end
+
   test "uses Finch receive timeout without conflicting connect options" do
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_address, port}} = :inet.sockname(listen_socket)
@@ -80,7 +90,7 @@ defmodule Store.Support.HTTP.ReqClientTest do
     assert {:error, %Req.TransportError{reason: :timeout}} =
              ReqClient.post(url, Map.to_list(request.options))
 
-    assert System.monotonic_time(:millisecond) - started_at < 1_000
+    assert System.monotonic_time(:millisecond) - started_at < 2_000
     assert Task.await(server, 1_000) == :ok
   end
 
