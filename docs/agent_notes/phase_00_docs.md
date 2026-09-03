@@ -952,3 +952,137 @@ behavior.
   reaper workers remain unauthorized.
 - No telemetry or logging behavior changed. No performance workload or 100k claim
   was made.
+
+## S0-IA-AUTH-02 InventoryAdmission IA-02 authorization (2026-09-03)
+
+### GOAL
+
+- Durably record IA-01 as independently accepted and frozen.
+- Authorize only the IA-02 atomic Redis admission primitive while keeping the frozen
+  architecture and plan unchanged in substance.
+- This is the current authorization record. It supersedes S0-IA-AUTH-01 only for the
+  bounded IA-02 transition and does not rewrite historical IA-01 authorization records.
+
+### LINKS CONSULTED
+
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md),
+  especially its frozen architecture status and Section 18 implementation gate.
+- [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md),
+  especially Section 24 IA-02 and Section 27 authorization state and boundary.
+- IA-01 independent review record: IA-01R1 PASS at
+  `f252fcf1d27d22be92a0bffdc88e7306e3c84e4c`, exact-head CI `33754973403` SUCCESS.
+
+### DECISIONS / PINS
+
+- `S0-ARCH-01` remains `FROZEN`.
+- `S0-PLAN-01` remains `FROZEN`.
+- IA-01 is `COMPLETE / FROZEN`.
+- InventoryAdmission implementation is `AUTHORIZED FOR IA-02 ONLY`.
+- IA-02 is `AUTHORIZED / NOT STARTED`. It is a bounded atomic Redis admission
+  primitive tracer bullet, not blanket authorization for the frozen plan.
+- IA-03 and later remain `NOT AUTHORIZED`.
+- `S0-CLOSE-02` remains `BLOCKED`, and S0 merge readiness remains `BLOCKED`.
+
+### IA-01 COMPLETION RECORD
+
+- Initial implementation: `7fd2e88fec286d9e216c865d26ef28b1a8c69438`
+- IA-01R1 accepted head: `f252fcf1d27d22be92a0bffdc88e7306e3c84e4c`
+- Exact-head CI: `33754973403` — SUCCESS
+- IA-01 established: pure admission lifecycle/state vocabulary; exact legal transition
+  matrix; terminal and `UNRESOLVED` fail-closed semantics; server-derived reservation
+  identity; stable logical identity digest; deterministic mutation request fingerprint;
+  server-generated operation identity; operation epoch semantics; internally coherent
+  PRE/POST operation descriptor; pure Lease/deadline values; distinct DB and lease
+  deadline semantics; immutable `K_v = 1`; no Redis/PostgreSQL/config/migration/runtime
+  orchestration.
+
+### IA-02 SCOPE
+
+- `lib/store/orders/inventory_admission/redis.ex`
+- `test/store/orders/inventory_admission_redis_test.exs`
+- Versioned InventoryAdmission Redis namespace/key derivation.
+- Opaque admission-member handling and enqueue-or-deduplicate semantics.
+- Finite per-variant and global queue bounds.
+- Atomic `K_v = 1` plus `B_total` admission condition.
+- Queue sequence allocation and active lease record creation.
+- Operation/request metadata representation and same-reservation live-operation
+  exclusion.
+- Fail-closed Redis error handling and decoding Redis results into closed internal
+  results with focused Redis integration tests.
+- The exact coding task will be supplied separately after this authorization is
+  independently reviewed.
+
+### IA-02 EXCLUSIONS
+
+- `Store.Repo` reservation execution and
+  `InventoryReservations.reserve_inventory_outcome/3`.
+- PostgreSQL PRE lookup, PostgreSQL POST lookup, and ambiguous outcome reconciliation.
+- `InventoryAdmission.Recovery`, Oban recovery worker, and reaper worker.
+- Shared reservation lifecycle fences for consume, release, or expire.
+- `Store.Orders` domain integration, checkout integration, and multi-variant admission.
+- Payment integration, PubSub/UI, analytics dashboards, and performance certification.
+- Extraction/package work, schema changes, migrations, and IA-03 or later tasks.
+
+### PLAN
+
+- Implement only IA-02 after a separate coding prompt.
+- Before any later slice is authorized, IA-02 must be implemented, focused-validated,
+  committed and pushed, independently reviewed, and tied to an exact-head CI
+  disposition. A later task must make the next authorization decision.
+- Keep all PostgreSQL mutation, recovery, lifecycle-fence, checkout, multi-variant,
+  rollout, certification, and extraction work outside this authorization.
+
+### DONE
+
+- Updated the explicit authorization status and bounded gate in the existing
+  architecture and implementation-plan records, and appended this Phase 00 decision
+  record.
+- No production code, tests, Redis, PostgreSQL, configuration, migrations, or
+  performance workloads were changed or run by this authorization task.
+
+### NEXT
+
+- Supply the separate IA-02 coding prompt. Do not implement IA-03 or later, close
+  S0-CLOSE-02, or mark S0 merge-ready.
+
+### BLOCKERS
+
+- `S0-CLOSE-02` remains `BLOCKED` until InventoryAdmission implementation and
+  certification work is complete and separately reviewed.
+- S0 merge readiness remains `BLOCKED`.
+
+### COMMANDS RUN
+
+- Focused `rg`, `git status`, `git diff`, `git rev-parse`, and PR-head checks for
+  authority, baseline, and worktree review.
+- `mix check.docs_notes` (PASS), `mix docs` (PASS), `git diff --check` (PASS), and a
+  focused authorization-marker assertion (PASS).
+
+### GATES
+
+- Documentation-only authorization change: `PASS`. No production, test,
+  configuration, migration, Redis, PostgreSQL, or performance changes are in scope.
+- `S0-ARCH-01`: `FROZEN`.
+- `S0-PLAN-01`: `FROZEN`.
+- IA-01: `COMPLETE / FROZEN`.
+- InventoryAdmission implementation: `AUTHORIZED FOR IA-02 ONLY`.
+- IA-02: `AUTHORIZED / NOT STARTED`.
+- IA-03+: `NOT AUTHORIZED`.
+- `S0-CLOSE-02`: `BLOCKED`.
+- S0 merge readiness: `BLOCKED`.
+
+### Performance & Scaling Review
+
+- Temperature and authority are unchanged. IA-02 introduces HOT Redis coordination
+  only within the bounded primitive; PostgreSQL inventory and reservation truth
+  remains durable COLD authority, and no WARM projection or COLD history changed.
+- Database query count is zero for this documentation task. No N+1 risk was added,
+  and no database entrant, transaction, or pool behavior changed.
+- Existing reservation and inventory indexes remain frozen. No schema or migration
+  was added.
+- Redis structures for IA-02 must remain bounded with finite queue and lease
+  retention. No process-per-waiter or timer-per-waiter design is authorized.
+- No Oban enqueue, worker, uniqueness, or idempotency behavior changed. Recovery and
+  reaper workers remain unauthorized.
+- No telemetry or logging behavior changed. No performance workload or 100k claim
+  was made.

@@ -1,7 +1,8 @@
 # S0-ARCH-01: Inventory reservation admission architecture
 
 Status: FROZEN. This document records the accepted architecture decision and does
-not itself authorize implementation. S0-IA-AUTH-01 separately authorizes IA-01 only.
+not itself authorize implementation. IA-01 is complete and frozen. S0-IA-AUTH-02
+separately authorizes IA-02 only.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -984,8 +985,8 @@ Only an accepted capacity review may change the derived permit budget.
 
 No implementation may begin until this design is independently reviewed and accepted.
 The design has now been independently accepted and is frozen. That acceptance does
-not authorize the implementation plan. S0-IA-AUTH-01 is the separate, bounded
-authorization for IA-01 only.
+not authorize the implementation plan. S0-IA-AUTH-02 is the separate, bounded
+authorization for IA-02 only. IA-01 is complete and frozen.
 
 The acceptance review must specifically confirm:
 
@@ -1011,15 +1012,28 @@ The acceptance review must specifically confirm:
 - The implementation scope remains limited to the approved MVP.
 
 IMPLEMENTATION STATUS:
-AUTHORIZED FOR IA-01 ONLY
+IA-01 COMPLETE / FROZEN
+AUTHORIZED FOR IA-02 ONLY
+
+IA-01 COMPLETION RECORD:
+- Initial implementation: `7fd2e88fec286d9e216c865d26ef28b1a8c69438`
+- IA-01R1 accepted head: `f252fcf1d27d22be92a0bffdc88e7306e3c84e4c`
+- Exact-head CI: `33754973403` — SUCCESS
+- IA-01 established: pure admission lifecycle/state vocabulary; exact legal transition
+  matrix; terminal and `UNRESOLVED` fail-closed semantics; server-derived reservation
+  identity; stable logical identity digest; deterministic mutation request fingerprint;
+  server-generated operation identity; operation epoch semantics; internally coherent
+  PRE/POST operation descriptor; pure Lease/deadline values; distinct DB and lease
+  deadline semantics; immutable `K_v = 1`; no Redis/PostgreSQL/config/migration/runtime
+  orchestration.
 
 AUTHORIZATION BOUNDARY:
-The IA-01 authorization covers only the pure domain, value, and state foundations
-listed in the implementation-plan gate. It does not authorize IA-02 or later,
-Redis/PostgreSQL work, workers, checkout, configuration, or certification.
-Section 16 describes the future MVP and remains a frozen design, not the current
-IA-01 coding boundary.
+The IA-02 authorization covers only the atomic Redis admission primitive listed in
+the implementation-plan gate. It does not authorize IA-03 or later, PostgreSQL
+mutation, recovery, workers, checkout, shared lifecycle fences, configuration beyond
+IA-02 needs, or certification. Section 16 describes the future MVP and remains a
+frozen design, not the current IA-02 coding boundary.
 
 NEXT:
-Implement IA-01 only through a separate coding prompt. Completion of IA-01 does not
-authorize IA-02 or any later slice.
+Supply a separate IA-02 coding prompt. Completion of IA-02 does not authorize IA-03
+or any later slice.
