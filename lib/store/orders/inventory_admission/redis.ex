@@ -51,10 +51,11 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     :db_window_ms,
     :lease_window_ms,
     :safety_margin_ms,
+    :cleanup_limit,
     :metadata_retention_ms
   ]
 
-  @allowed_promotion_options [:hmac_key, :scope, :b_total]
+  @allowed_promotion_options [:hmac_key, :scope, :b_total, :cleanup_limit]
   @reply_field_count 14
 
   # KEYS[1..8] are always the same explicit ownership set:
@@ -113,6 +114,23 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       meta[17] or "",
       meta[16] or ""
     }
+  end
+
+  local function server_now_ms()
+    local now_reply = redis.pcall("TIME")
+
+    if failed(now_reply) or now_reply[1] == false or now_reply[2] == false then
+      return nil
+    end
+
+    local now_seconds = tonumber(now_reply[1])
+    local now_microseconds = tonumber(now_reply[2])
+
+    if now_seconds == nil or now_microseconds == nil then
+      return nil
+    end
+
+    return now_seconds * 1000 + math.floor(now_microseconds / 1000)
   end
 
   local function metadata_values()
@@ -221,14 +239,22 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       local variant_score = redis.pcall("ZSCORE", KEYS[2], meta[5])
       local dispatch_score = redis.pcall("ZSCORE", KEYS[3], meta[5])
       local expiry_score = redis.pcall("ZSCORE", KEYS[4], meta[5])
+      local active_score = redis.pcall("ZSCORE", KEYS[6], meta[5])
+      local active_member = redis.pcall("HGET", KEYS[5], "member")
 
-      if failed(variant_score) or failed(dispatch_score) or failed(expiry_score) then
+      if failed(variant_score)
+        or failed(dispatch_score)
+        or failed(expiry_score)
+        or failed(active_score)
+        or failed(active_member) then
         return false
       end
 
       return variant_score ~= false
         and dispatch_score ~= false
         and expiry_score ~= false
+        and active_score == false
+        and active_member ~= meta[5]
         and tonumber(variant_score) == tonumber(meta[9])
         and tonumber(dispatch_score) == tonumber(meta[9])
         and tonumber(expiry_score) == tonumber(meta[10])
@@ -276,6 +302,15 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
 
     return true
+  end
+
+  local function expire_queued(meta)
+    redis.call("ZREM", KEYS[2], meta[5])
+    redis.call("ZREM", KEYS[3], meta[5])
+    redis.call("ZREM", KEYS[4], meta[5])
+    redis.call("HSET", KEYS[7], "state", "EXPIRED")
+    redis.call("HSET", KEYS[8], "state", "EXPIRED")
+    meta[2] = "EXPIRED"
   end
 
   local function preflight()
@@ -406,6 +441,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   local metadata_state = metadata[2]
   local fence_state = fence[2]
+  local now_ms = nil
 
   if metadata_state == false and fence_state == false then
     if metadata_length ~= 0 or fence_length ~= 0 then
@@ -421,6 +457,24 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   elseif not validate_existing(metadata, fence, schema, identity, variant_hex, member) then
     return unavailable()
   else
+    if metadata_state == "QUEUED" then
+      local queue_deadline_ms = tonumber(metadata[10])
+      now_ms = server_now_ms()
+
+      if queue_deadline_ms == nil or now_ms == nil then
+        return unavailable()
+      end
+
+      if now_ms >= queue_deadline_ms then
+        if not existing_indexes_valid(metadata) then
+          return unavailable()
+        end
+
+        expire_queued(metadata)
+        metadata_state = "EXPIRED"
+      end
+    end
+
     if metadata_state == "UNRESOLVED" then
       return frozen()
     end
@@ -445,18 +499,13 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     return frozen()
   end
 
-  local now_reply = redis.pcall("TIME")
-  if failed(now_reply) or now_reply[1] == nil or now_reply[2] == nil then
-    return unavailable()
+  if now_ms == nil then
+    now_ms = server_now_ms()
   end
 
-  local now_seconds = tonumber(now_reply[1])
-  local now_microseconds = tonumber(now_reply[2])
-  if now_seconds == nil or now_microseconds == nil then
+  if now_ms == nil then
     return unavailable()
   end
-
-  local now_ms = now_seconds * 1000 + math.floor(now_microseconds / 1000)
   local active_state = active_values[2]
   local active_member = active_values[3]
   local variant_available = active_state == false
@@ -486,7 +535,16 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local global_available = global_active_count < b_total
 
   if variant_available and global_available and variant_queue_count == 0 then
-    local operation_epoch = redis.call("HINCRBY", KEYS[8], "operation_epoch", 1)
+    local generation_reply = redis.pcall("INCR", KEYS[1])
+    if failed(generation_reply) or generation_reply == false then
+      return unavailable()
+    end
+
+    local operation_epoch = tonumber(generation_reply)
+    if operation_epoch == nil or operation_epoch < 1 then
+      return unavailable()
+    end
+
     local db_deadline_ms = now_ms + db_window_ms
     local lease_deadline_ms = now_ms + lease_window_ms
 
@@ -577,7 +635,10 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   end
 
   local queue_deadline_ms = now_ms + queue_window_ms
-  local operation_epoch = redis.call("HINCRBY", KEYS[8], "operation_epoch", 1)
+  local operation_epoch = tonumber(sequence_reply)
+  if operation_epoch == nil or operation_epoch < 1 then
+    return unavailable()
+  end
 
   redis.call(
     "HSET",
@@ -640,6 +701,158 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   }
   """
 
+  @expire_script ~S"""
+  local function failed(reply)
+    return type(reply) == "table" and reply.err ~= nil
+  end
+
+  local function unavailable()
+    return {"IA02_UNAVAILABLE"}
+  end
+
+  local function already_handled()
+    return {"IA02_ALREADY_HANDLED"}
+  end
+
+  local function known_state(state)
+    return state == "REQUESTED"
+      or state == "QUEUED"
+      or state == "ADMITTED"
+      or state == "RESERVING"
+      or state == "UNKNOWN_DB_OUTCOME"
+      or state == "RECOVERING"
+      or state == "UNRESOLVED"
+      or state == "COMPLETED"
+      or state == "REJECTED"
+      or state == "EXPIRED"
+      or state == "ABANDONED"
+  end
+
+  local schema = ARGV[1]
+  local member = ARGV[2]
+
+  if schema == nil or member == nil then
+    return unavailable()
+  end
+
+  local metadata = redis.pcall(
+    "HMGET",
+    KEYS[6],
+    "schema_version",
+    "state",
+    "identity_digest",
+    "variant_hex",
+    "member",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch",
+    "sequence",
+    "queue_deadline_ms"
+  )
+  local fence = redis.pcall(
+    "HMGET",
+    KEYS[7],
+    "schema_version",
+    "state",
+    "identity_digest",
+    "variant_hex",
+    "member",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch"
+  )
+  local variant_score = redis.pcall("ZSCORE", KEYS[1], member)
+  local global_dispatch_score = redis.pcall("ZSCORE", KEYS[2], member)
+  local global_queue_expiry_score = redis.pcall("ZSCORE", KEYS[3], member)
+  local active_member = redis.pcall("HGET", KEYS[4], "member")
+  local global_active_score = redis.pcall("ZSCORE", KEYS[5], member)
+
+  if failed(metadata)
+    or failed(fence)
+    or failed(variant_score)
+    or failed(global_dispatch_score)
+    or failed(global_queue_expiry_score)
+    or failed(active_member)
+    or failed(global_active_score) then
+    return unavailable()
+  end
+
+  if metadata[1] == false
+    or fence[1] == false
+    or metadata[1] ~= schema
+    or fence[1] ~= schema
+    or metadata[2] == false
+    or metadata[2] ~= fence[2]
+    or metadata[3] == false
+    or metadata[3] ~= fence[3]
+    or metadata[4] == false
+    or metadata[4] ~= fence[4]
+    or metadata[5] ~= member
+    or fence[5] ~= member
+    or metadata[6] == false
+    or metadata[6] ~= fence[6]
+    or metadata[7] == false
+    or metadata[7] ~= fence[7]
+    or metadata[8] == false
+    or metadata[8] ~= fence[8]
+    or not known_state(metadata[2]) then
+    return unavailable()
+  end
+
+  if metadata[2] ~= "QUEUED" then
+    if variant_score ~= false
+      or global_dispatch_score ~= false
+      or global_queue_expiry_score ~= false then
+      return unavailable()
+    end
+
+    return already_handled()
+  end
+
+  if active_member == member or global_active_score ~= false then
+    return unavailable()
+  end
+
+  local sequence = tonumber(metadata[9])
+  local queue_deadline_ms = tonumber(metadata[10])
+
+  if sequence == nil
+    or sequence < 1
+    or queue_deadline_ms == nil
+    or variant_score == false
+    or global_dispatch_score == false
+    or global_queue_expiry_score == false
+    or tonumber(variant_score) ~= sequence
+    or tonumber(global_dispatch_score) ~= sequence
+    or tonumber(global_queue_expiry_score) ~= queue_deadline_ms then
+    return unavailable()
+  end
+
+  local now_reply = redis.pcall("TIME")
+  if failed(now_reply) or now_reply[1] == false or now_reply[2] == false then
+    return unavailable()
+  end
+
+  local now_seconds = tonumber(now_reply[1])
+  local now_microseconds = tonumber(now_reply[2])
+  if now_seconds == nil or now_microseconds == nil then
+    return unavailable()
+  end
+
+  local now_ms = now_seconds * 1000 + math.floor(now_microseconds / 1000)
+  if now_ms < queue_deadline_ms then
+    return {"IA02_NOT_EXPIRED"}
+  end
+
+  redis.call("ZREM", KEYS[1], member)
+  redis.call("ZREM", KEYS[2], member)
+  redis.call("ZREM", KEYS[3], member)
+  redis.call("HSET", KEYS[6], "state", "EXPIRED")
+  redis.call("HSET", KEYS[7], "state", "EXPIRED")
+
+  return {"IA02_EXPIRED"}
+  """
+
   @promotion_script ~S"""
   local function failed(reply)
     return type(reply) == "table" and reply.err ~= nil
@@ -651,6 +864,47 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   local function busy()
     return {"IA02_BUSY"}
+  end
+
+  local function frozen()
+    return {"IA02_FROZEN"}
+  end
+
+  local function reply(tag, meta)
+    return {
+      tag,
+      meta[2],
+      meta[5],
+      meta[4],
+      meta[3],
+      meta[6],
+      meta[7],
+      tostring(meta[8]),
+      meta[9] or "0",
+      meta[10] or "",
+      meta[14] or "",
+      meta[15] or "",
+      meta[13] or "",
+      meta[17] or "",
+      meta[16] or ""
+    }
+  end
+
+  local function server_now_ms()
+    local now_reply = redis.pcall("TIME")
+
+    if failed(now_reply) or now_reply[1] == false or now_reply[2] == false then
+      return nil
+    end
+
+    local now_seconds = tonumber(now_reply[1])
+    local now_microseconds = tonumber(now_reply[2])
+
+    if now_seconds == nil or now_microseconds == nil then
+      return nil
+    end
+
+    return now_seconds * 1000 + math.floor(now_microseconds / 1000)
   end
 
   local function known_state(state)
@@ -774,8 +1028,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or fence_length == 0
     or metadata[1] ~= schema
     or fence[1] ~= schema
-    or metadata[2] ~= "QUEUED"
-    or fence[2] ~= "QUEUED"
+    or metadata[2] ~= fence[2]
     or metadata[3] ~= identity
     or fence[3] ~= identity
     or metadata[5] ~= member
@@ -787,13 +1040,21 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or metadata[4] == false
     or metadata[7] == false
     or metadata[8] == false
+    or not known_state(metadata[2]) then
+    return unavailable()
+  end
+
+  if metadata[2] == "EXPIRED" then
+    return reply("IA02_EXISTING", metadata)
+  end
+
+  if metadata[2] ~= "QUEUED"
     or metadata[9] == false
     or metadata[10] == false
     or metadata[11] == false
     or metadata[12] == false
     or metadata[13] == false
-    or metadata[18] == false
-    or not known_state(metadata[2]) then
+    or metadata[18] == false then
     return unavailable()
   end
 
@@ -825,6 +1086,22 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     return unavailable()
   end
 
+  local now_ms = server_now_ms()
+  local queue_deadline_ms = tonumber(metadata[10])
+  if now_ms == nil or queue_deadline_ms == nil then
+    return unavailable()
+  end
+
+  if now_ms >= queue_deadline_ms then
+    redis.call("ZREM", KEYS[2], member)
+    redis.call("ZREM", KEYS[3], member)
+    redis.call("ZREM", KEYS[4], member)
+    redis.call("HSET", KEYS[7], "state", "EXPIRED")
+    redis.call("HSET", KEYS[8], "state", "EXPIRED")
+    metadata[2] = "EXPIRED"
+    return reply("IA02_EXISTING", metadata)
+  end
+
   if active_values[1] ~= false then
     if active_values[2] == false
       or active_values[3] == false
@@ -850,21 +1127,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     return busy()
   end
 
-  local now_reply = redis.pcall("TIME")
-  if failed(now_reply) or now_reply[1] == nil or now_reply[2] == nil then
-    return unavailable()
-  end
-
-  local now_seconds = tonumber(now_reply[1])
-  local now_microseconds = tonumber(now_reply[2])
-  local queue_deadline_ms = tonumber(metadata[10])
   local db_window_ms = tonumber(metadata[11])
   local lease_window_ms = tonumber(metadata[12])
   local safety_margin_ms = tonumber(metadata[13])
   local metadata_ttl_seconds = tonumber(metadata[18])
 
-  if now_seconds == nil
-    or now_microseconds == nil
+  if now_ms == nil
     or queue_deadline_ms == nil
     or db_window_ms == nil
     or lease_window_ms == nil
@@ -872,11 +1140,6 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or metadata_ttl_seconds == nil
     or lease_window_ms < db_window_ms + safety_margin_ms then
     return unavailable()
-  end
-
-  local now_ms = now_seconds * 1000 + math.floor(now_microseconds / 1000)
-  if now_ms >= queue_deadline_ms then
-    return busy()
   end
 
   local db_deadline_ms = now_ms + db_window_ms
@@ -1095,6 +1358,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          {:ok, member} <- derive_admission_member(request.identity_digest, options.hmac_key),
          {:ok, keys} <-
            key_set(request.variant_id, member, request.identity_digest, scope: options.scope),
+         :ok <- cleanup_expired(keys, options.scope, options.cleanup_limit),
          operation_id <- UUIDv7.generate(),
          lease_token <- generate_lease_token(),
          {:ok, reply} <-
@@ -1123,6 +1387,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          {:ok, member} <- derive_admission_member(request.identity_digest, options.hmac_key),
          {:ok, keys} <-
            key_set(request.variant_id, member, request.identity_digest, scope: options.scope),
+         :ok <- cleanup_expired(keys, options.scope, options.cleanup_limit),
          lease_token <- generate_lease_token(),
          {:ok, reply} <-
            eval(
@@ -1321,7 +1586,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          {:ok, queue_window_ms} <- fetch_positive_option(opts, :queue_window_ms),
          {:ok, db_window_ms} <- fetch_positive_option(opts, :db_window_ms),
          {:ok, lease_window_ms} <- fetch_positive_option(opts, :lease_window_ms),
-         {:ok, safety_margin_ms} <- fetch_non_negative_option(opts, :safety_margin_ms) do
+         {:ok, safety_margin_ms} <- fetch_non_negative_option(opts, :safety_margin_ms),
+         {:ok, cleanup_limit} <- fetch_positive_option(opts, :cleanup_limit) do
       metadata_default = max(queue_window_ms, lease_window_ms + safety_margin_ms)
 
       with {:ok, metadata_retention_ms} <-
@@ -1340,6 +1606,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
            db_window_ms: db_window_ms,
            lease_window_ms: lease_window_ms,
            safety_margin_ms: safety_margin_ms,
+           cleanup_limit: cleanup_limit,
            metadata_ttl_seconds: ceil_seconds(metadata_retention_ms)
          }}
       end
@@ -1352,8 +1619,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     with :ok <- validate_keyword_options(opts, @allowed_promotion_options),
          {:ok, hmac_key} <- fetch_hmac_key(opts),
          {:ok, scope} <- fetch_scope(opts),
-         {:ok, b_total} <- fetch_positive_option(opts, :b_total) do
-      {:ok, %{hmac_key: hmac_key, scope: scope, b_total: b_total}}
+         {:ok, b_total} <- fetch_positive_option(opts, :b_total),
+         {:ok, cleanup_limit} <- fetch_positive_option(opts, :cleanup_limit) do
+      {:ok, %{hmac_key: hmac_key, scope: scope, b_total: b_total, cleanup_limit: cleanup_limit}}
     else
       {:error, :invalid_input} -> {:error, :invalid_input}
     end
@@ -1386,8 +1654,139 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       request.request_fingerprint,
       member,
       lease_token,
-      Integer.to_string(options.b_total),
-      "1"
+      Integer.to_string(options.b_total)
+    ]
+  end
+
+  # Discovery is bounded and read-only; @expire_script revalidates every
+  # candidate's state, membership, indexes, and deadline before mutating it.
+  defp cleanup_expired(keys, scope, cleanup_limit) do
+    with {:ok, now_ms} <- redis_server_time(),
+         {:ok, members} <-
+           expired_members(keys.global_queue_expiry, now_ms, cleanup_limit) do
+      cleanup_members(keys, scope, members)
+    end
+  end
+
+  defp cleanup_members(keys, scope, members) do
+    Enum.reduce_while(members, :ok, fn member, :ok ->
+      case cleanup_member(keys, scope, member) do
+        :ok -> {:cont, :ok}
+        {:error, :unavailable} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp redis_server_time do
+    case redis_command(["TIME"]) do
+      {:ok, [seconds, microseconds]} when is_binary(seconds) and is_binary(microseconds) ->
+        with {seconds, ""} <- Integer.parse(seconds),
+             {microseconds, ""} <- Integer.parse(microseconds),
+             true <- seconds >= 0 and microseconds >= 0 and microseconds < 1_000_000 do
+          {:ok, seconds * 1_000 + div(microseconds, 1_000)}
+        else
+          _ -> {:error, :unavailable}
+        end
+
+      _ ->
+        {:error, :unavailable}
+    end
+  rescue
+    _error -> {:error, :unavailable}
+  end
+
+  defp expired_members(key, now_ms, cleanup_limit) do
+    command = [
+      "ZRANGEBYSCORE",
+      key,
+      "-inf",
+      Integer.to_string(now_ms),
+      "LIMIT",
+      "0",
+      Integer.to_string(cleanup_limit)
+    ]
+
+    case redis_command(command) do
+      {:ok, members} when is_list(members) ->
+        if length(members) <= cleanup_limit and Enum.all?(members, &valid_member?/1) do
+          {:ok, members}
+        else
+          {:error, :unavailable}
+        end
+
+      _ ->
+        {:error, :unavailable}
+    end
+  end
+
+  defp cleanup_member(keys, scope, member) do
+    with :ok <- validate_member(member),
+         {:ok, metadata} <- cleanup_metadata(request_meta_key(keys, member)),
+         {:ok, variant_id} <- decode_variant_hex(metadata.variant_hex),
+         {:ok, candidate_keys} <-
+           key_set(variant_id, member, metadata.identity_digest, scope: scope),
+         {:ok, reply} <-
+           eval(
+             @expire_script,
+             expiry_script_keys(candidate_keys),
+             [@record_version, member]
+           ) do
+      decode_expiry_reply(reply)
+    end
+  end
+
+  defp cleanup_metadata(key) do
+    case redis_command([
+           "HMGET",
+           key,
+           "state",
+           "identity_digest",
+           "variant_hex",
+           "member"
+         ]) do
+      {:ok, [state, identity_digest, variant_hex, member]}
+      when is_binary(state) and is_binary(identity_digest) and is_binary(variant_hex) and
+             is_binary(member) ->
+        with :ok <- validate_member(member),
+             :ok <- validate_digest(identity_digest),
+             :ok <- validate_variant_hex(variant_hex),
+             true <- Map.has_key?(@wire_states, state) do
+          {:ok, %{state: state, identity_digest: identity_digest, variant_hex: variant_hex}}
+        else
+          _ -> {:error, :unavailable}
+        end
+
+      _ ->
+        {:error, :unavailable}
+    end
+  end
+
+  defp validate_variant_hex(value) when is_binary(value) do
+    if Regex.match?(@variant_hex_regex, value), do: :ok, else: {:error, :unavailable}
+  end
+
+  defp validate_variant_hex(_value), do: {:error, :unavailable}
+
+  defp valid_member?(value), do: validate_member(value) == :ok
+
+  defp decode_expiry_reply(["IA02_EXPIRED"]), do: :ok
+  defp decode_expiry_reply(["IA02_ALREADY_HANDLED"]), do: :ok
+  defp decode_expiry_reply(["IA02_NOT_EXPIRED"]), do: :ok
+  defp decode_expiry_reply(_reply), do: {:error, :unavailable}
+
+  defp request_meta_key(keys, member) do
+    "#{keys.namespace}:#{keys.hash_tag}:request:#{member}:meta"
+  end
+
+  defp expiry_script_keys(keys) do
+    [
+      keys.variant_queue_order,
+      keys.global_queue_dispatch,
+      keys.global_queue_expiry,
+      keys.variant_active,
+      keys.global_active_expiry,
+      keys.request_meta,
+      keys.reservation_fence
     ]
   end
 
@@ -1399,7 +1798,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   defp eval(script, keys, args) do
     command = ["EVAL", script, Integer.to_string(length(keys))] ++ keys ++ args
 
-    case Redix.command(RedixClient.connection_name(), command) do
+    case redis_command(command) do
       {:ok, reply} ->
         {:ok, reply}
 
@@ -1408,6 +1807,16 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
       _unexpected ->
         {:error, :unavailable}
+    end
+  rescue
+    _error -> {:error, :unavailable}
+  end
+
+  defp redis_command(command) do
+    case Redix.command(RedixClient.connection_name(), command) do
+      {:ok, reply} -> {:ok, reply}
+      {:error, _reason} -> {:error, :unavailable}
+      _unexpected -> {:error, :unavailable}
     end
   rescue
     _error -> {:error, :unavailable}

@@ -13,9 +13,13 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   @second_variant_id "018ecb40-c457-73e6-a400-000398dadda0"
   @third_variant_id "018ecb40-c457-73e6-a400-000398dadda1"
   @operation_id "018ecb40-c457-73e6-a400-000398daddaa"
+  @max_test_cleanup_records 128
 
   setup do
     scope = "ia02_test_#{System.system_time(:nanosecond)}_#{System.unique_integer([:positive])}"
+    Process.put(:ia02_scope, scope)
+    Process.put(:ia02_cleanup_keys, %{})
+    on_exit(&cleanup_test_redis/0)
     {:ok, scope: scope}
   end
 
@@ -286,10 +290,15 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     options = opts(scope, b_total: 1, q_variant_max: 5, q_global_max: 5, queue_window_ms: 5_000)
     assert {:ok, {:admitted, _}} = Redis.enqueue_or_return_existing(first, options)
 
-    assert Enum.all?(
-             waiters,
-             &match?({:ok, {:queued, _}}, Redis.enqueue_or_return_existing(&1, options))
-           )
+    queued_admissions =
+      Enum.map(waiters, fn waiter ->
+        assert {:ok, {:queued, queued}} =
+                 Redis.enqueue_or_return_existing(waiter, options)
+
+        queued
+      end)
+
+    assert Enum.all?(queued_admissions, &(&1.operation_epoch == &1.sequence))
 
     keys = keys_for(hd(waiters), scope)
     assert {:ok, ordered} = redis(["ZRANGE", keys.variant_queue_order, "0", "-1", "WITHSCORES"])
@@ -362,6 +371,173 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert redis(["HGET", keys_for(global_waiter, scope).variant_active, "state"]) == {:ok, nil}
     assert redis(["ZCARD", keys_for(global_waiter, scope).global_queue_dispatch]) == {:ok, 2}
     assert redis(["ZCARD", keys_for(global_waiter, scope).global_queue_expiry]) == {:ok, 2}
+  end
+
+  test "expired queued heads become terminal and unblock the valid tail", %{scope: scope} do
+    first = request()
+    head_request = request(@second_order_id, @variant_id)
+    tail_request = request(@third_variant_id, @variant_id)
+    options = opts(scope, b_total: 2, q_variant_max: 5, q_global_max: 5)
+
+    assert {:ok, {:admitted, _}} = Redis.enqueue_or_return_existing(first, options)
+
+    assert {:ok, {:queued, queued_head}} =
+             Redis.enqueue_or_return_existing(head_request, options)
+
+    assert {:ok, {:queued, _}} = Redis.enqueue_or_return_existing(tail_request, options)
+
+    force_expired_queued(head_request, scope)
+
+    assert {:ok, {:existing, expired}} =
+             Redis.promote_queued(head_request, promotion_opts(scope, 2))
+
+    assert expired.state == :expired
+    assert expired.member == queued_head.member
+    assert expired.operation_id == queued_head.operation_id
+    assert expired.operation_epoch == queued_head.operation_epoch
+
+    assert redis(["HGET", keys_for(head_request, scope).request_meta, "state"]) ==
+             {:ok, "EXPIRED"}
+
+    assert redis(["HGET", keys_for(head_request, scope).reservation_fence, "state"]) ==
+             {:ok, "EXPIRED"}
+
+    assert redis(["ZSCORE", keys_for(head_request, scope).variant_queue_order, expired.member]) ==
+             {:ok, nil}
+
+    assert redis(["ZSCORE", keys_for(head_request, scope).global_queue_dispatch, expired.member]) ==
+             {:ok, nil}
+
+    assert redis(["ZSCORE", keys_for(head_request, scope).global_queue_expiry, expired.member]) ==
+             {:ok, nil}
+
+    assert redis(["ZCARD", keys_for(head_request, scope).global_active_expiry]) == {:ok, 1}
+
+    delete_active(first, scope)
+
+    assert {:ok, {:admitted, promoted}} =
+             Redis.promote_queued(tail_request, promotion_opts(scope, 2))
+
+    assert promoted.state == :admitted
+    assert redis(["ZCARD", keys_for(tail_request, scope).variant_queue_order]) == {:ok, 0}
+    assert redis(["ZCARD", keys_for(tail_request, scope).global_queue_dispatch]) == {:ok, 0}
+    assert redis(["ZCARD", keys_for(tail_request, scope).global_queue_expiry]) == {:ok, 0}
+    assert redis(["ZCARD", keys_for(tail_request, scope).global_active_expiry]) == {:ok, 1}
+  end
+
+  test "expired queued entries free both queue bounds and replay as terminal", %{scope: scope} do
+    first = request()
+    expired_request = request(@second_order_id, @variant_id)
+    tail_request = request(@third_variant_id, @variant_id)
+    options = opts(scope, b_total: 1, q_variant_max: 1, q_global_max: 1)
+
+    assert {:ok, {:admitted, _}} = Redis.enqueue_or_return_existing(first, options)
+
+    assert {:ok, {:queued, queued_expired}} =
+             Redis.enqueue_or_return_existing(expired_request, options)
+
+    force_expired_queued(expired_request, scope)
+
+    assert {:ok, {:existing, expired}} =
+             Redis.enqueue_or_return_existing(expired_request, options)
+
+    assert expired.state == :expired
+    assert expired.member == queued_expired.member
+    assert expired.operation_id == queued_expired.operation_id
+    assert expired.operation_epoch == queued_expired.operation_epoch
+
+    assert {:ok, :frozen} =
+             Redis.enqueue_or_return_existing(request(@second_order_id, @variant_id, 2), options)
+
+    assert {:ok, {:queued, queued_tail}} =
+             Redis.enqueue_or_return_existing(tail_request, options)
+
+    assert queued_tail.state == :queued
+    assert redis(["ZCARD", keys_for(tail_request, scope).variant_queue_order]) == {:ok, 1}
+    assert redis(["ZCARD", keys_for(tail_request, scope).global_queue_dispatch]) == {:ok, 1}
+    assert redis(["ZCARD", keys_for(tail_request, scope).global_queue_expiry]) == {:ok, 1}
+    assert redis(["ZCARD", keys_for(tail_request, scope).global_active_expiry]) == {:ok, 1}
+  end
+
+  test "expired cleanup is bounded per admission attempt", %{scope: scope} do
+    first = request()
+    expired_requests = Enum.map(1..3, &request(UUIDv7.generate(), @variant_id, &1))
+    replacement = request(UUIDv7.generate(), @variant_id)
+    options = opts(scope, b_total: 1, q_variant_max: 3, q_global_max: 3)
+
+    assert {:ok, {:admitted, _}} = Redis.enqueue_or_return_existing(first, options)
+
+    for expired_request <- expired_requests do
+      assert {:ok, {:queued, _}} =
+               Redis.enqueue_or_return_existing(expired_request, options)
+    end
+
+    for expired_request <- expired_requests do
+      force_expired_queued(expired_request, scope)
+    end
+
+    assert {:ok, {:queued, _}} =
+             Redis.enqueue_or_return_existing(
+               replacement,
+               Keyword.put(options, :cleanup_limit, 1)
+             )
+
+    states =
+      Enum.map(expired_requests, fn expired_request ->
+        keys = keys_for(expired_request, scope)
+        redis(["HGET", keys.request_meta, "state"])
+      end)
+
+    assert Enum.count(states, &(&1 == {:ok, "EXPIRED"})) == 1
+    assert Enum.count(states, &(&1 == {:ok, "QUEUED"})) == 2
+  end
+
+  test "operation epochs use the persistent namespace sequence", %{scope: scope} do
+    first = request()
+    changed = request(@order_id, @variant_id, 2)
+    options = opts(scope, b_total: 2)
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(first, options)
+
+    keys = keys_for(first, scope)
+    assert {:ok, sequence_before} = redis(["GET", keys.global_sequence])
+    assert is_binary(sequence_before)
+    sequence_before = String.to_integer(sequence_before)
+    assert admitted.operation_epoch > 0
+    assert admitted.operation_epoch == sequence_before
+
+    assert {:ok, {:existing, replay}} =
+             Redis.enqueue_or_return_existing(first, options)
+
+    assert replay.operation_epoch == admitted.operation_epoch
+
+    assert {:ok, :mismatch} =
+             Redis.enqueue_or_return_existing(changed, options)
+
+    assert {:ok, sequence_after_replay} = redis(["GET", keys.global_sequence])
+    assert String.to_integer(sequence_after_replay) == sequence_before
+
+    busy_options = opts(scope, b_total: 2, q_variant_max: 0, q_global_max: 0)
+
+    assert {:ok, :busy} =
+             Redis.enqueue_or_return_existing(
+               request(@second_order_id, @variant_id),
+               busy_options
+             )
+
+    assert {:ok, sequence_after_busy} = redis(["GET", keys.global_sequence])
+    assert String.to_integer(sequence_after_busy) == sequence_before
+
+    delete_active(first, scope)
+    assert {:ok, 2} = redis(["DEL", keys.request_meta, keys.reservation_fence])
+
+    assert {:ok, {:admitted, later}} =
+             Redis.enqueue_or_return_existing(changed, options)
+
+    assert later.operation_epoch > admitted.operation_epoch
+    assert {:ok, later_sequence} = redis(["GET", keys.global_sequence])
+    assert String.to_integer(later_sequence) == later.operation_epoch
   end
 
   test "concurrent same-variant contenders have one active holder and bounded queue", %{
@@ -491,6 +667,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, request} =
              Request.new(%{order_id: order_id, variant_id: variant_id, quantity: quantity})
 
+    track_request(request, Process.get(:ia02_scope))
     request
   end
 
@@ -505,14 +682,15 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
         queue_window_ms: 10_000,
         db_window_ms: 2_000,
         lease_window_ms: 3_000,
-        safety_margin_ms: 500
+        safety_margin_ms: 500,
+        cleanup_limit: 2
       ],
       overrides
     )
   end
 
   defp promotion_opts(scope, b_total) do
-    [hmac_key: @hmac_key, scope: scope, b_total: b_total]
+    [hmac_key: @hmac_key, scope: scope, b_total: b_total, cleanup_limit: 2]
   end
 
   defp keys_for(request, scope) do
@@ -521,7 +699,22 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, keys} =
              Redis.key_set(request.variant_id, member, request.identity_digest, scope: scope)
 
+    track_keys(keys)
     keys
+  end
+
+  defp track_request(request, scope) when is_binary(scope) do
+    member = Redis.admission_member(request.identity_digest, @hmac_key)
+
+    assert {:ok, keys} =
+             Redis.key_set(request.variant_id, member, request.identity_digest, scope: scope)
+
+    track_keys(keys)
+  end
+
+  defp track_keys(keys) do
+    cleanup_keys = Process.get(:ia02_cleanup_keys, %{})
+    Process.put(:ia02_cleanup_keys, Map.put(cleanup_keys, keys.request_meta, keys))
   end
 
   defp redis(command), do: Redix.command(RedixClient.connection_name(), command)
@@ -543,6 +736,27 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert redis(["ZCARD", keys.global_queue_expiry]) == {:ok, 1}
   end
 
+  defp force_expired_queued(request, scope) do
+    keys = keys_for(request, scope)
+    member = Redis.admission_member(request.identity_digest, @hmac_key)
+    {:ok, [seconds, microseconds]} = redis(["TIME"])
+
+    expired_at =
+      String.to_integer(seconds) * 1_000 +
+        div(String.to_integer(microseconds), 1_000) -
+        1
+
+    assert {:ok, 0} =
+             redis([
+               "HSET",
+               keys.request_meta,
+               "queue_deadline_ms",
+               Integer.to_string(expired_at)
+             ])
+
+    assert {:ok, 0} = redis(["ZADD", keys.global_queue_expiry, expired_at, member])
+  end
+
   defp scores_for(flattened) do
     flattened
     |> Enum.chunk_every(2)
@@ -554,6 +768,47 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     member = Redis.admission_member(request.identity_digest, @hmac_key)
     assert {:ok, 1} = redis(["DEL", keys.variant_active])
     assert {:ok, 1} = redis(["ZREM", keys.global_active_expiry, member])
+  end
+
+  defp cleanup_test_redis do
+    cleanup_keys =
+      Process.get(:ia02_cleanup_keys, %{})
+      |> Map.values()
+
+    assert length(cleanup_keys) <= @max_test_cleanup_records
+
+    case cleanup_keys do
+      [] ->
+        :ok
+
+      _ ->
+        cleanup_keys
+        |> Enum.group_by(& &1.global_sequence)
+        |> Enum.each(fn {_global_sequence, group} ->
+          per_record_keys =
+            Enum.flat_map(group, fn keys ->
+              [
+                keys.variant_queue_order,
+                keys.variant_active,
+                keys.request_meta,
+                keys.reservation_fence
+              ]
+            end)
+
+          [first_keys | _] = group
+
+          global_keys = [
+            first_keys.global_sequence,
+            first_keys.global_queue_dispatch,
+            first_keys.global_queue_expiry,
+            first_keys.global_active_expiry
+          ]
+
+          keys = Enum.uniq(per_record_keys ++ global_keys)
+          assert {:ok, deleted_count} = redis(["DEL" | keys])
+          assert deleted_count <= length(keys)
+        end)
+    end
   end
 
   defp seed_unresolved(request, scope, schema \\ Redis.record_version()) do
