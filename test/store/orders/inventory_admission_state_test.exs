@@ -242,6 +242,9 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
     assert {:error, :operation_epoch_is_server_generated} =
              Request.new(Map.put(base, :operation_epoch, 99))
 
+    assert {:error, :identity_digest_is_server_derived} =
+             Request.new(Map.put(base, :identity_digest, "caller-selected"))
+
     assert {:error, :unknown_request_key} =
              Request.new(Map.put(base, :client_clock, 100))
 
@@ -263,14 +266,22 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
 
     assert first.request_fingerprint == same.request_fingerprint
     refute first.request_fingerprint == changed_quantity.request_fingerprint
+    assert first.identity_digest == same.identity_digest
+    assert first.identity_digest == changed_quantity.identity_digest
+    refute first.identity_digest == first.request_fingerprint
 
     assert {:ok, changed_policy} =
              Request.new(Map.put(base, :expiry_policy, {:ttl_seconds, 60}))
 
+    assert changed_policy.identity_digest == first.identity_digest
     refute first.request_fingerprint == changed_policy.request_fingerprint
 
     assert {:ok, changed_kind} = Request.new(Map.put(base, :mutation_kind, :adjust))
+    assert changed_kind.identity_digest == first.identity_digest
     refute first.request_fingerprint == changed_kind.request_fingerprint
+
+    different_identity = request(%{variant_id: @other_variant_id})
+    refute first.identity_digest == different_identity.identity_digest
 
     first_operation = operation(first, now: ~U[2026-01-01 00:00:00Z])
 
@@ -302,6 +313,8 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
     assert first.operation_id != second.operation_id
     assert first.operation_epoch == 1
     assert second.operation_epoch > first.operation_epoch
+    assert first.identity_digest == request.identity_digest
+    assert second.identity_digest == request.identity_digest
     assert Operation.valid_epoch?(first.operation_epoch)
 
     assert :ok =
@@ -358,7 +371,53 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
     assert operation.post == post
     assert operation.deadline == deadline
     assert operation.request_fingerprint == request.request_fingerprint
+    assert operation.identity_digest == request.identity_digest
     assert :ok = Operation.validate(operation)
+  end
+
+  test "operation rejects individually valid facts for another variant" do
+    request = request()
+    inputs = operation_inputs()
+
+    assert {:ok, wrong_pre} =
+             Operation.Pre.new(%{
+               reservation: :absent,
+               inventory: inventory_facts(%{variant_id: @other_variant_id})
+             })
+
+    assert {:error, _reason} = Operation.new(request, Keyword.put(inputs, :pre, wrong_pre))
+
+    assert {:ok, wrong_post} =
+             Operation.Post.new(%{
+               reservation: reservation_facts(%{id: nil}),
+               inventory: inventory_facts(%{variant_id: @other_variant_id})
+             })
+
+    assert {:error, _reason} = Operation.new(request, Keyword.put(inputs, :post, wrong_post))
+  end
+
+  test "operation validation rejects mismatched durable identity" do
+    operation = operation(request())
+    other_request = request(%{variant_id: @other_variant_id})
+
+    inconsistent = %{operation | identity_digest: other_request.identity_digest}
+    inconsistent_key = %{operation | reservation_key: other_request.reservation_key}
+
+    assert {:error, _reason} = Operation.validate(inconsistent)
+    assert {:error, _reason} = Operation.validate(inconsistent_key)
+  end
+
+  test "operation validation rejects fingerprint and mutation mismatch" do
+    operation = operation(request())
+    changed_request = request(%{quantity: 2})
+    inconsistent = %{operation | request_fingerprint: changed_request.request_fingerprint}
+
+    assert {:error, _reason} = Operation.validate(inconsistent)
+  end
+
+  test "mutation rejects options it cannot use" do
+    assert {:error, :invalid_mutation_options} =
+             Operation.Mutation.new(request(), desired_quantity: 2)
   end
 
   test "replay classification joins live exact replays and rejects mismatches" do
@@ -429,7 +488,7 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
     assert {:ok, lease} = Lease.new(lease_params(operation))
 
     assert lease.variant_id == operation.mutation.variant_id
-    assert lease.identity_digest == operation.request_fingerprint
+    assert lease.identity_digest == operation.identity_digest
     refute Map.has_key?(lease, :state)
     refute Map.has_key?(lease, :reservation_id)
 
@@ -442,6 +501,16 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
              Lease.new(
                Map.merge(lease_params(operation), %{lease_deadline: 109, safety_margin: 10})
              )
+
+    wrong_logical_identity =
+      lease_for(operation, %{identity_digest: operation.request_fingerprint})
+
+    assert {:error, :invalid_operation_or_lease_guard} =
+             InventoryAdmission.validate_transition(
+               :admitted,
+               :reserving,
+               {:operation_and_lease, operation, wrong_logical_identity}
+             )
   end
 
   test "deadline budgets use monotonic integers, decrease, and clamp at zero" do
@@ -449,13 +518,31 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
     assert Operation.Deadline.remaining_db_budget(deadline, 100) == 100
     assert Operation.Deadline.remaining_db_budget(deadline, 150) == 50
     assert Operation.Deadline.remaining_db_budget(deadline, 200) == 0
-    assert Operation.Deadline.expired?(deadline, 200)
-    refute Operation.Deadline.expired?(deadline, 199)
+    assert Operation.Deadline.db_deadline_expired?(deadline, 200)
+    refute Operation.Deadline.db_deadline_expired?(deadline, 199)
 
     operation = operation(request())
     lease = lease_for(operation)
     assert Lease.remaining_db_budget(lease, 100) == 100
     assert Lease.remaining_db_budget(lease, 250) == 0
+
+    assert Lease.remaining_lease_budget(lease, 210) == 10
+    assert Lease.remaining_lease_budget(lease, 220) == 0
+    assert Lease.db_deadline_expired?(lease, 210)
+    refute Lease.lease_expired?(lease, 210)
+    assert Lease.lease_expired?(lease, 220)
+
+    assert {:ok, separated_deadlines} =
+             Operation.Deadline.new(%{
+               db_deadline: 200,
+               lease_deadline: 250,
+               recovery_deadline: 260,
+               safety_margin: 10
+             })
+
+    assert Operation.Deadline.db_deadline_expired?(separated_deadlines, 210)
+    refute Operation.Deadline.lease_expired?(separated_deadlines, 210)
+    assert Operation.Deadline.lease_expired?(separated_deadlines, 250)
 
     assert {:error, _reason} =
              Operation.Deadline.new(%{
@@ -562,7 +649,7 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
         variant_id: operation.mutation.variant_id,
         lease_token: "lease-token-1",
         owner_epoch: 1,
-        identity_digest: operation.request_fingerprint,
+        identity_digest: operation.identity_digest,
         db_deadline: operation.deadline.db_deadline,
         lease_deadline: operation.deadline.lease_deadline,
         safety_margin: operation.deadline.safety_margin

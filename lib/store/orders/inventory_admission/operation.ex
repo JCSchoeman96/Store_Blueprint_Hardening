@@ -71,10 +71,22 @@ defmodule Store.Orders.InventoryAdmission.Operation.Deadline do
     max(db_deadline - monotonic_now, 0)
   end
 
-  @spec expired?(t(), non_neg_integer()) :: boolean()
-  def expired?(%__MODULE__{} = deadline, monotonic_now)
+  @spec db_deadline_expired?(t(), non_neg_integer()) :: boolean()
+  def db_deadline_expired?(%__MODULE__{} = deadline, monotonic_now)
       when is_integer(monotonic_now) and monotonic_now >= 0 do
     remaining_db_budget(deadline, monotonic_now) == 0
+  end
+
+  @spec remaining_lease_budget(t(), non_neg_integer()) :: non_neg_integer()
+  def remaining_lease_budget(%__MODULE__{lease_deadline: lease_deadline}, monotonic_now)
+      when is_integer(monotonic_now) and monotonic_now >= 0 do
+    max(lease_deadline - monotonic_now, 0)
+  end
+
+  @spec lease_expired?(t(), non_neg_integer()) :: boolean()
+  def lease_expired?(%__MODULE__{} = deadline, monotonic_now)
+      when is_integer(monotonic_now) and monotonic_now >= 0 do
+    remaining_lease_budget(deadline, monotonic_now) == 0
   end
 
   defp validate_keys(params) do
@@ -126,14 +138,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.Mutation do
   alias Store.Orders.InventoryAdmission.Request
   alias Store.Support.ID.UUIDv7
 
-  @allowed_keys MapSet.new([
-                  :variant_id,
-                  :kind,
-                  :desired_quantity,
-                  :expiry_policy,
-                  :expires_at,
-                  :now
-                ])
+  @allowed_keys MapSet.new([:expires_at, :now])
 
   @enforce_keys [:variant_id, :kind, :desired_quantity, :expiry_policy]
   defstruct [:variant_id, :kind, :desired_quantity, :expiry_policy, :expires_at, :now]
@@ -792,6 +797,7 @@ defmodule Store.Orders.InventoryAdmission.Operation do
 
   @enforce_keys [
     :reservation_key,
+    :identity_digest,
     :operation_id,
     :operation_epoch,
     :request_fingerprint,
@@ -802,6 +808,7 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   ]
   defstruct [
     :reservation_key,
+    :identity_digest,
     :operation_id,
     :operation_epoch,
     :request_fingerprint,
@@ -813,6 +820,7 @@ defmodule Store.Orders.InventoryAdmission.Operation do
 
   @type t :: %__MODULE__{
           reservation_key: String.t(),
+          identity_digest: String.t(),
           operation_id: Ecto.UUID.t(),
           operation_epoch: pos_integer(),
           request_fingerprint: String.t(),
@@ -875,7 +883,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
          :ok <- validate_fingerprint(operation.request_fingerprint),
          :ok <- Mutation.validate(operation.mutation),
          :ok <- Pre.validate(operation.pre),
-         :ok <- Post.validate(operation.post) do
+         :ok <- Post.validate(operation.post),
+         :ok <- validate_cross_field_coherence(operation) do
       Deadline.validate(operation.deadline)
     end
   end
@@ -890,9 +899,19 @@ defmodule Store.Orders.InventoryAdmission.Operation do
     Deadline.remaining_db_budget(deadline, monotonic_now)
   end
 
-  @spec expired?(t(), non_neg_integer()) :: boolean()
-  def expired?(%__MODULE__{deadline: deadline}, monotonic_now) do
-    Deadline.expired?(deadline, monotonic_now)
+  @spec db_deadline_expired?(t(), non_neg_integer()) :: boolean()
+  def db_deadline_expired?(%__MODULE__{deadline: deadline}, monotonic_now) do
+    Deadline.db_deadline_expired?(deadline, monotonic_now)
+  end
+
+  @spec remaining_lease_budget(t(), non_neg_integer()) :: non_neg_integer()
+  def remaining_lease_budget(%__MODULE__{deadline: deadline}, monotonic_now) do
+    Deadline.remaining_lease_budget(deadline, monotonic_now)
+  end
+
+  @spec lease_expired?(t(), non_neg_integer()) :: boolean()
+  def lease_expired?(%__MODULE__{deadline: deadline}, monotonic_now) do
+    Deadline.lease_expired?(deadline, monotonic_now)
   end
 
   defp valid_options?(opts), do: Enum.all?(Keyword.keys(opts), &(&1 in @allowed_options))
@@ -903,29 +922,31 @@ defmodule Store.Orders.InventoryAdmission.Operation do
          {:ok, post} <- Post.new(Keyword.get(opts, :post)),
          {:ok, deadline} <- Deadline.new(Keyword.get(opts, :deadline)),
          {:ok, mutation} <- Mutation.new(request, Keyword.take(opts, [:expires_at, :now])) do
-      {:ok,
-       %__MODULE__{
-         reservation_key: request.reservation_key,
-         operation_id: UUIDv7.generate(),
-         operation_epoch: operation_epoch,
-         request_fingerprint: request.request_fingerprint,
-         mutation: mutation,
-         pre: pre,
-         post: post,
-         deadline: deadline
-       }}
+      operation = %__MODULE__{
+        reservation_key: request.reservation_key,
+        identity_digest: request.identity_digest,
+        operation_id: UUIDv7.generate(),
+        operation_epoch: operation_epoch,
+        request_fingerprint: request.request_fingerprint,
+        mutation: mutation,
+        pre: pre,
+        post: post,
+        deadline: deadline
+      }
+
+      case validate(operation) do
+        :ok -> {:ok, operation}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
-  defp validate_reservation_key(value) when is_binary(value) do
-    if String.starts_with?(value, "order:") and String.contains?(value, ":sku:") do
-      :ok
-    else
-      {:error, :invalid_reservation_key}
+  defp validate_reservation_key(value) do
+    case Request.identity_digest_for_reservation_key(value) do
+      {:ok, _identity_digest} -> :ok
+      {:error, _reason} -> {:error, :invalid_reservation_key}
     end
   end
-
-  defp validate_reservation_key(_value), do: {:error, :invalid_reservation_key}
 
   defp validate_operation_id(operation_id, reservation_key) do
     cond do
@@ -949,4 +970,62 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   end
 
   defp validate_fingerprint(_value), do: {:error, :invalid_request_fingerprint}
+
+  defp validate_cross_field_coherence(operation) do
+    with {:ok, expected_identity_digest} <-
+           Request.identity_digest_for_reservation_key(operation.reservation_key),
+         :ok <- validate_identity_digest(operation.identity_digest, expected_identity_digest),
+         {:ok, reservation_variant_id} <- reservation_key_variant_id(operation.reservation_key),
+         :ok <-
+           validate_variant(:operation, reservation_variant_id, operation.mutation.variant_id),
+         :ok <-
+           validate_variant(
+             :pre_inventory,
+             operation.mutation.variant_id,
+             operation.pre.inventory.variant_id
+           ),
+         :ok <-
+           validate_variant(
+             :post_inventory,
+             operation.mutation.variant_id,
+             operation.post.inventory.variant_id
+           ),
+         {:ok, expected_fingerprint} <-
+           Request.fingerprint_for(
+             operation.reservation_key,
+             operation.mutation.desired_quantity,
+             operation.mutation.kind,
+             operation.mutation.expiry_policy
+           ) do
+      validate_request_fingerprint(operation.request_fingerprint, expected_fingerprint)
+    end
+  end
+
+  defp validate_identity_digest(identity_digest, identity_digest), do: :ok
+
+  defp validate_identity_digest(_identity_digest, _expected_identity_digest),
+    do: {:error, :operation_identity_digest_mismatch}
+
+  defp reservation_key_variant_id(reservation_key) do
+    case String.split(reservation_key, ":") do
+      ["order", _order_id, "sku", variant_id] -> {:ok, variant_id}
+      _parts -> {:error, :invalid_reservation_key}
+    end
+  end
+
+  defp validate_variant(_field, expected_variant_id, expected_variant_id), do: :ok
+
+  defp validate_variant(:operation, _expected_variant_id, _actual_variant_id),
+    do: {:error, :operation_variant_mismatch}
+
+  defp validate_variant(:pre_inventory, _expected_variant_id, _actual_variant_id),
+    do: {:error, :pre_inventory_variant_mismatch}
+
+  defp validate_variant(:post_inventory, _expected_variant_id, _actual_variant_id),
+    do: {:error, :post_inventory_variant_mismatch}
+
+  defp validate_request_fingerprint(request_fingerprint, request_fingerprint), do: :ok
+
+  defp validate_request_fingerprint(_request_fingerprint, _expected_fingerprint),
+    do: {:error, :operation_fingerprint_mismatch}
 end

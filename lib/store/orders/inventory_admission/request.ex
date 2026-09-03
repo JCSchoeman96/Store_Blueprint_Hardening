@@ -3,8 +3,8 @@ defmodule Store.Orders.InventoryAdmission.Request do
   Trusted, single-variant mutation intent for inventory admission.
 
   The constructor normalizes the two UUID identities and derives the durable
-  reservation key. Operation and coordination identities deliberately do not belong
-  to this value.
+  reservation key. Operation and lease-coordination identities deliberately do not
+  belong to this value.
   """
 
   alias Store.Support.ID.UUIDv7
@@ -22,13 +22,28 @@ defmodule Store.Orders.InventoryAdmission.Request do
                   "expiry_policy"
                 ])
 
+  @server_owned_keys [
+    {:reservation_key, "reservation_key", :reservation_key_is_server_derived},
+    {:operation_id, "operation_id", :operation_id_is_server_generated},
+    {:operation_epoch, "operation_epoch", :operation_epoch_is_server_generated},
+    {:identity_digest, "identity_digest", :identity_digest_is_server_derived}
+  ]
+
   @mutation_kinds [:reserve, :adjust]
-  @enforce_keys [:order_id, :variant_id, :quantity, :reservation_key, :request_fingerprint]
+  @enforce_keys [
+    :order_id,
+    :variant_id,
+    :quantity,
+    :reservation_key,
+    :identity_digest,
+    :request_fingerprint
+  ]
   defstruct [
     :order_id,
     :variant_id,
     :quantity,
     :reservation_key,
+    :identity_digest,
     :request_fingerprint,
     mutation_kind: :reserve,
     expiry_policy: :default
@@ -42,6 +57,7 @@ defmodule Store.Orders.InventoryAdmission.Request do
           variant_id: Ecto.UUID.t(),
           quantity: non_neg_integer(),
           reservation_key: String.t(),
+          identity_digest: String.t(),
           request_fingerprint: String.t(),
           mutation_kind: mutation_kind(),
           expiry_policy: expiry_policy()
@@ -70,6 +86,7 @@ defmodule Store.Orders.InventoryAdmission.Request do
          variant_id: variant_id,
          quantity: quantity,
          reservation_key: reservation_key,
+         identity_digest: build_identity_digest(reservation_key),
          request_fingerprint:
            build_fingerprint(reservation_key, quantity, mutation_kind, expiry_policy),
          mutation_kind: mutation_kind,
@@ -108,6 +125,29 @@ defmodule Store.Orders.InventoryAdmission.Request do
     end
   end
 
+  @spec identity_digest(t()) :: String.t() | nil
+  def identity_digest(%__MODULE__{identity_digest: identity_digest}), do: identity_digest
+  def identity_digest(_request), do: nil
+
+  @spec identity_digest_for_reservation_key(term()) ::
+          {:ok, String.t()} | {:error, atom()}
+  def identity_digest_for_reservation_key(reservation_key) do
+    with {:ok, canonical_key} <- canonicalize_reservation_key(reservation_key) do
+      {:ok, build_identity_digest(canonical_key)}
+    end
+  end
+
+  @spec fingerprint_for(term(), term(), term(), term()) ::
+          {:ok, String.t()} | {:error, atom()}
+  def fingerprint_for(reservation_key, quantity, mutation_kind, expiry_policy) do
+    with {:ok, canonical_key} <- canonicalize_reservation_key(reservation_key),
+         :ok <- validate_quantity(quantity),
+         :ok <- validate_mutation_kind(mutation_kind),
+         :ok <- validate_expiry_policy(expiry_policy) do
+      {:ok, build_fingerprint(canonical_key, quantity, mutation_kind, expiry_policy)}
+    end
+  end
+
   @spec fingerprint(t()) :: String.t() | nil
   def fingerprint(%__MODULE__{request_fingerprint: fingerprint}), do: fingerprint
   def fingerprint(_request), do: nil
@@ -122,7 +162,8 @@ defmodule Store.Orders.InventoryAdmission.Request do
          :ok <- validate_quantity(request.quantity),
          :ok <- validate_mutation_kind(request.mutation_kind),
          :ok <- validate_expiry_policy(request.expiry_policy),
-         :ok <- validate_reservation_key(request, order_id, variant_id) do
+         :ok <- validate_reservation_key(request, order_id, variant_id),
+         :ok <- validate_identity_digest(request, order_id, variant_id) do
       validate_fingerprint(request, order_id, variant_id)
     end
   end
@@ -138,21 +179,27 @@ defmodule Store.Orders.InventoryAdmission.Request do
   end
 
   defp validate_keys(params) do
-    cond do
-      Map.has_key?(params, :reservation_key) or Map.has_key?(params, "reservation_key") ->
-        {:error, :reservation_key_is_server_derived}
+    with :ok <- validate_server_owned_keys(params) do
+      validate_allowed_keys(params)
+    end
+  end
 
-      Map.has_key?(params, :operation_id) or Map.has_key?(params, "operation_id") ->
-        {:error, :operation_id_is_server_generated}
+  defp validate_server_owned_keys(params) do
+    case Enum.find(@server_owned_keys, &server_owned_key_present?(params, &1)) do
+      {_atom_key, _string_key, reason} -> {:error, reason}
+      nil -> :ok
+    end
+  end
 
-      Map.has_key?(params, :operation_epoch) or Map.has_key?(params, "operation_epoch") ->
-        {:error, :operation_epoch_is_server_generated}
+  defp server_owned_key_present?(params, {atom_key, string_key, _reason}) do
+    Map.has_key?(params, atom_key) or Map.has_key?(params, string_key)
+  end
 
-      Enum.all?(Map.keys(params), &MapSet.member?(@allowed_keys, &1)) ->
-        :ok
-
-      true ->
-        {:error, :unknown_request_key}
+  defp validate_allowed_keys(params) do
+    if Enum.all?(Map.keys(params), &MapSet.member?(@allowed_keys, &1)) do
+      :ok
+    else
+      {:error, :unknown_request_key}
     end
   end
 
@@ -250,6 +297,16 @@ defmodule Store.Orders.InventoryAdmission.Request do
     end
   end
 
+  defp validate_identity_digest(request, order_id, variant_id) do
+    expected_digest = build_identity_digest(build_reservation_key(order_id, variant_id))
+
+    if request.identity_digest == expected_digest do
+      :ok
+    else
+      {:error, :identity_digest_mismatch}
+    end
+  end
+
   defp validate_fingerprint(request, order_id, variant_id) do
     expected_key = build_reservation_key(order_id, variant_id)
 
@@ -274,6 +331,29 @@ defmodule Store.Orders.InventoryAdmission.Request do
 
   defp build_reservation_key(order_id, variant_id),
     do: "order:#{order_id}:sku:#{variant_id}"
+
+  defp canonicalize_reservation_key(reservation_key) when is_binary(reservation_key) do
+    case String.split(reservation_key, ":") do
+      ["order", order_id, "sku", variant_id] ->
+        case canonical_reservation_key(order_id, variant_id) do
+          {:ok, ^reservation_key} -> {:ok, reservation_key}
+          {:ok, _canonical_key} -> {:error, :reservation_key_not_normalized}
+          {:error, _reason} -> {:error, :invalid_reservation_key}
+        end
+
+      _parts ->
+        {:error, :invalid_reservation_key}
+    end
+  end
+
+  defp canonicalize_reservation_key(_reservation_key), do: {:error, :invalid_reservation_key}
+
+  defp build_identity_digest(reservation_key) do
+    {:inventory_admission_identity_v1, reservation_key}
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
 
   defp build_fingerprint(reservation_key, quantity, mutation_kind, expiry_policy) do
     canonical_expiry_policy = canonical_expiry_policy(expiry_policy)

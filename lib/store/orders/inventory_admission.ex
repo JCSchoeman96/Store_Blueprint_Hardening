@@ -184,7 +184,7 @@ defmodule Store.Orders.InventoryAdmission do
     deadline = operation.deadline
 
     mutation.variant_id == lease.variant_id and
-      operation.request_fingerprint == lease.identity_digest and
+      operation.identity_digest == lease.identity_digest and
       deadline.db_deadline == lease.db_deadline and
       deadline.lease_deadline == lease.lease_deadline and
       deadline.safety_margin == lease.safety_margin

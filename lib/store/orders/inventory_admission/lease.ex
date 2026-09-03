@@ -118,10 +118,22 @@ defmodule Store.Orders.InventoryAdmission.Lease do
     max(db_deadline - monotonic_now, 0)
   end
 
-  @spec expired?(t(), non_neg_integer()) :: boolean()
-  def expired?(%__MODULE__{} = lease, monotonic_now)
+  @spec db_deadline_expired?(t(), non_neg_integer()) :: boolean()
+  def db_deadline_expired?(%__MODULE__{} = lease, monotonic_now)
       when is_integer(monotonic_now) and monotonic_now >= 0 do
     remaining_db_budget(lease, monotonic_now) == 0
+  end
+
+  @spec remaining_lease_budget(t(), non_neg_integer()) :: non_neg_integer()
+  def remaining_lease_budget(%__MODULE__{lease_deadline: lease_deadline}, monotonic_now)
+      when is_integer(monotonic_now) and monotonic_now >= 0 do
+    max(lease_deadline - monotonic_now, 0)
+  end
+
+  @spec lease_expired?(t(), non_neg_integer()) :: boolean()
+  def lease_expired?(%__MODULE__{} = lease, monotonic_now)
+      when is_integer(monotonic_now) and monotonic_now >= 0 do
+    remaining_lease_budget(lease, monotonic_now) == 0
   end
 
   defp validate_keys(params) do
