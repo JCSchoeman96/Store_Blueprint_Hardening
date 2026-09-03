@@ -96,7 +96,7 @@ defmodule Store.MixProject do
       {:bandit, ">= 1.12.5 and < 2.0.0-0"},
       # Security floors for transitive HTTP/authentication runtime packages.
       {:mint, ">= 1.9.3 and < 2.0.0-0"},
-      {:plug, "~> 1.19.5"},
+      {:plug, ">= 1.19.5 and < 2.0.0-0"},
       {:hpax, ">= 1.0.4 and < 2.0.0-0"},
       {:thousand_island, ">= 1.5.0 and < 2.0.0-0"},
       {:ymlr, ">= 5.1.6 and < 6.0.0-0"},
@@ -179,7 +179,7 @@ defmodule Store.MixProject do
 
   defp dialyzer do
     [
-      plt_add_apps: [:mix, :ex_unit],
+      plt_add_apps: [:mix, :ex_unit, :inets],
       flags: [:error_handling, :unmatched_returns, :underspecs],
       ignore_warnings: ".dialyzer_ignore.exs"
     ]
