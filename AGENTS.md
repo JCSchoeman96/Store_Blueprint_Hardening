@@ -2,6 +2,10 @@
 
 If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
+## WORKTREES
+Worktrees isolate execution; ownership rules prevent semantic duplication.
+One active authority per schema/resource lineage across all concurrent workstreams.
+
 ---
 
 ## Workflow
