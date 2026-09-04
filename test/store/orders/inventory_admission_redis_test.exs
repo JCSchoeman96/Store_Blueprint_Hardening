@@ -18,8 +18,6 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   setup do
     scope = "ia02_test_#{System.system_time(:nanosecond)}_#{System.unique_integer([:positive])}"
     Process.put(:ia02_scope, scope)
-    Process.put(:ia02_cleanup_keys, %{})
-    on_exit(&cleanup_test_redis/0)
     {:ok, scope: scope}
   end
 
@@ -81,6 +79,34 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     refute keys.namespace == v2_keys.namespace
     refute keys.hash_tag == v2_keys.hash_tag
     assert String.contains?(v2_keys.variant_queue_order, v2_keys.variant_hex)
+  end
+
+  test "on_exit cleanup removes every exact scoped key", %{scope: scope} do
+    request = request()
+    keys = keys_for(request, scope)
+    member = Redis.admission_member(request.identity_digest, @hmac_key)
+
+    owned_keys = [
+      keys.global_sequence,
+      keys.variant_queue_order,
+      keys.variant_active,
+      keys.global_queue_dispatch,
+      keys.global_queue_expiry,
+      keys.global_active_expiry,
+      keys.request_meta,
+      keys.reservation_fence
+    ]
+
+    assert {:ok, "OK"} = redis(["SET", keys.global_sequence, "1"])
+    assert {:ok, 1} = redis(["ZADD", keys.variant_queue_order, "1", member])
+    assert {:ok, 1} = redis(["HSET", keys.variant_active, "state", "ADMITTED"])
+    assert {:ok, 1} = redis(["ZADD", keys.global_queue_dispatch, "1", member])
+    assert {:ok, 1} = redis(["ZADD", keys.global_queue_expiry, "1", member])
+    assert {:ok, 1} = redis(["ZADD", keys.global_active_expiry, "1", member])
+    assert {:ok, 1} = redis(["HSET", keys.request_meta, "state", "REQUESTED"])
+    assert {:ok, 1} = redis(["HSET", keys.reservation_fence, "state", "REQUESTED"])
+    assert {:ok, existing_key_count} = redis(["EXISTS" | owned_keys])
+    assert existing_key_count == length(owned_keys)
   end
 
   test "opaque member derivation is stable per identity and key version" do
@@ -835,8 +861,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   end
 
   defp track_keys(keys) do
-    cleanup_keys = Process.get(:ia02_cleanup_keys, %{})
-    Process.put(:ia02_cleanup_keys, Map.put(cleanup_keys, keys.request_meta, keys))
+    on_exit(fn -> cleanup_test_redis([keys]) end)
   end
 
   defp redis(command), do: Redix.command(RedixClient.connection_name(), command)
@@ -898,11 +923,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, 1} = redis(["ZREM", keys.global_active_expiry, member])
   end
 
-  defp cleanup_test_redis do
-    cleanup_keys =
-      Process.get(:ia02_cleanup_keys, %{})
-      |> Map.values()
-
+  defp cleanup_test_redis(cleanup_keys) do
     assert length(cleanup_keys) <= @max_test_cleanup_records
 
     case cleanup_keys do
@@ -935,6 +956,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
           keys = Enum.uniq(per_record_keys ++ global_keys)
           assert {:ok, deleted_count} = redis(["DEL" | keys])
           assert deleted_count <= length(keys)
+          assert {:ok, 0} = redis(["EXISTS" | keys])
         end)
     end
   end
