@@ -1086,3 +1086,209 @@ behavior.
   reaper workers remain unauthorized.
 - No telemetry or logging behavior changed. No performance workload or 100k claim
   was made.
+
+## S0-IA-AUTH-03 InventoryAdmission IA-03 authorization (2026-09-04)
+
+### GOAL
+
+- Durably record IA-02 as independently post-integration certified and frozen.
+- Authorize only the IA-03 internal caller-independent admission orchestration
+  while keeping the frozen architecture and plan unchanged in substance.
+- This is the current authorization record. It supersedes S0-IA-AUTH-02 only for the
+  bounded IA-03 transition and does not rewrite historical IA-01 or IA-02
+  authorization records.
+
+### LINKS CONSULTED
+
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md),
+  especially its frozen architecture status and Section 18 implementation gate.
+- [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md),
+  especially Section 24 IA-03, frozen-plan DL-01, and Section 27 authorization state
+  and boundary.
+- IA-02 independent post-integration review: PASS at
+  `b860b355d3a94f7d27a9895f229bb91e74428109`, exact-head CI `33873401924` SUCCESS.
+
+### DECISIONS / PINS
+
+- `S0-ARCH-01` remains `FROZEN`.
+- `S0-PLAN-01` remains `FROZEN`.
+- IA-01 remains `COMPLETE / FROZEN`.
+- IA-02 is `COMPLETE / FROZEN`.
+- InventoryAdmission implementation is `AUTHORIZED FOR IA-03 ONLY`.
+- IA-03 is `AUTHORIZED / NOT STARTED`. It is a bounded DL-01 internal
+  `reserve`/`status`/`abandon` orchestration tracer bullet, not blanket authorization
+  for the frozen plan.
+- IA-04 and later remain `NOT AUTHORIZED`.
+- `S0-CLOSE-02` remains `BLOCKED`, and S0 merge readiness remains `BLOCKED`.
+- This authorization does not itself authorize implementation. A separate coding
+  prompt must follow independent review of this governance change.
+
+### IA-02 COMPLETION RECORD
+
+- Final certified branch head: `b860b355d3a94f7d27a9895f229bb91e74428109`
+- IA-02 lineage: `47e124a925439165a83d9544ec122862fe6e022a`,
+  `d798fb9d964eff82c70439f5b61af097c2e84280`,
+  `c0b27208347accb94f21f830d228d9539ced447c`,
+  `f78f04e98cb483cc512c70dae3c2e4317f25d5a0`
+- Security-leg integration ancestor: `d5d8dd93026026c245c612369b034f8d3d62d1c4`
+- Final governance head: `b860b355d3a94f7d27a9895f229bb91e74428109`
+- Post-integration review: IA-02 POST-INTEGRATION REVIEW = PASS
+- Exact-head CI: `33873401924` — SUCCESS
+- IA-02 established and proved: versioned Redis coordination namespace; common atomic
+  Redis hash tag; opaque admission member; enqueue/deduplicate behavior; finite
+  per-variant and global queue bounds; immutable `K_v = 1`; bounded `B_total` global
+  admission; atomic dual-budget decision; monotonic `operation_epoch` allocation;
+  replay/mismatch/busy epoch discipline; bounded queued expiry cleanup; expiry evidence
+  retention; process-independent exact-key test cleanup; O(1) namespace-global sequence;
+  fail-closed Redis behavior; no Redis stock authority; no `Store.Repo`/PostgreSQL
+  mutation; no IA-03+ behavior.
+
+### IA-03 SCOPE
+
+- `lib/store/orders/inventory_admission.ex`
+- `test/store/orders/inventory_admission_test.exs`
+- Internal `InventoryAdmission.reserve` orchestration.
+- Internal `InventoryAdmission.status` orchestration.
+- Internal `InventoryAdmission.abandon` orchestration.
+- Building and validating the trusted Request using the already-frozen IA-01 value
+  contracts.
+- Calling only typed IA-02 Redis primitive functions.
+- Returning immediately for queued work rather than retaining the caller process.
+- Preserving queue lifetime independently from Phoenix request lifetime, LiveView
+  lifetime, browser connection, and caller BEAM process.
+- Typed decoding of immediate admission, queued, rejection, expiry, replay, and
+  unavailable results.
+- Finite queue, lease, and deadline propagation.
+- Server-owned operation identity handling using the frozen IA-01/IA-02 semantics.
+- Governed abandon behavior using the frozen lifecycle.
+- Caller-independent status/retry contract.
+- Fail-closed Redis uncertainty handling.
+- The exact coding task will be supplied separately after this authorization is
+  independently reviewed.
+
+### IA-03 LIFECYCLE PRESERVATION
+
+- Frozen states remain `REQUESTED`, `QUEUED`, `ADMITTED`, `RESERVING`,
+  `UNKNOWN_DB_OUTCOME`, `RECOVERING`, `UNRESOLVED`, `COMPLETED`, `REJECTED`,
+  `EXPIRED`, and `ABANDONED`.
+- Legal transitions and terminal semantics remain exactly as frozen. No new states
+  were invented.
+- IA-03 may orchestrate only the portion already possible without PostgreSQL
+  reservation execution or later recovery work: `REQUESTED -> QUEUED`,
+  `REQUESTED -> ADMITTED`, `QUEUED -> ADMITTED`, `QUEUED -> EXPIRED`,
+  `QUEUED -> ABANDONED`, and `ADMITTED -> EXPIRED`, plus Redis-side
+  rejection/replay/unavailable results.
+- IA-03 must not manufacture `ADMITTED -> RESERVING` as a prelude to `Store.Repo`
+  execution, and must not implement `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`,
+  `UNRESOLVED`, or durable `COMPLETED` behavior merely to complete the diagram.
+
+### IA-03 TRANSITION GUARDS
+
+- One live operation per `reservation_key`.
+- `operation_id` is server generated.
+- `operation_epoch` is server controlled.
+- `request_fingerprint` mismatch must fail closed.
+- Terminal operations cannot silently become live again.
+- Stale or invalid Redis ownership cannot grant admission.
+- Redis uncertainty cannot bypass admission.
+- Queued work performs no PostgreSQL preflight.
+- `K_v` remains exactly 1.
+- `B_total` remains globally bounded.
+
+### IA-03 EXCLUSIONS
+
+- DL-02 telemetry/rate-limit expansion unless separately authorized later.
+- `Store.Orders` facade integration.
+- Durable reservation transaction, `Store.Repo` reservation execution, and
+  `InventoryItem` / `InventoryReservation` mutation.
+- Interpreting `ADMITTED` as durable stock ownership.
+- PostgreSQL PRE lookup, PostgreSQL POST lookup, and ambiguous outcome reconciliation.
+- `InventoryAdmission.Recovery`, Oban recovery worker, reaper worker, and
+  lease-recovery machinery requiring IA-05/IA-06.
+- Shared reservation lifecycle fences for consume, release, or expire.
+- Checkout CTE changes and `Store.Orders.reserve_inventory/3` integration.
+- Multi-variant admission, payment integration, and subscription integration.
+- Analytics/dashboard work, performance certification, and 100k-concurrency
+  certification.
+- Extraction/package work, schema changes, migrations, and IA-04 or later.
+
+### PLAN
+
+- Implement only IA-03 after a separate coding prompt.
+- Before any later slice is authorized, IA-03 must be implemented, focused-validated,
+  committed and pushed, independently reviewed, and tied to an exact-head CI
+  disposition. A later task must make the next authorization decision.
+- Keep all PostgreSQL mutation, recovery, lifecycle-fence, checkout, multi-variant,
+  DL-02, rollout, certification, and extraction work outside this authorization.
+
+### DONE
+
+- Updated the explicit authorization status and bounded gate in the existing
+  architecture and implementation-plan records, and appended this Phase 00 decision
+  record.
+- No production code, tests, Redis, PostgreSQL, configuration, migrations, or
+  performance workloads were changed or run by this authorization task.
+
+### NEXT
+
+- Supply the separate IA-03 coding prompt after independent review of this
+  governance change. Do not implement IA-04 or later, close S0-CLOSE-02, or mark S0
+  merge-ready.
+
+### BLOCKERS
+
+- `S0-CLOSE-02` remains `BLOCKED` until InventoryAdmission implementation and
+  certification work is complete and separately reviewed.
+- S0 merge readiness remains `BLOCKED`.
+- `bd dolt test` remains unavailable because this checkout uses the embedded-mode CLI;
+  `dolt-beads.service` is not installed. Bead work was still claimed through normal
+  `bd` commands.
+
+### COMMANDS RUN
+
+- Focused `rg`, `git status`, `git diff`, `git rev-parse`, and PR-head checks for
+  authority, baseline, and worktree review.
+- `mix check.docs_notes`, `mix docs`, `git diff --check`, and a focused
+  authorization-marker assertion.
+
+### GATES
+
+- Documentation-only authorization change: `PASS`. No production, test,
+  configuration, migration, Redis, PostgreSQL, or performance changes are in scope.
+- `S0-ARCH-01`: `FROZEN`.
+- `S0-PLAN-01`: `FROZEN`.
+- IA-01: `COMPLETE / FROZEN`.
+- IA-02: `COMPLETE / FROZEN`.
+- InventoryAdmission implementation: `AUTHORIZED FOR IA-03 ONLY`.
+- IA-03: `AUTHORIZED / NOT STARTED`.
+- IA-04+: `NOT AUTHORIZED`.
+- `S0-CLOSE-02`: `BLOCKED`.
+- S0 merge readiness: `BLOCKED`.
+
+### Performance & Scaling Review
+
+- DATA LAYER. HOT: InventoryAdmission orchestration and Redis queue/admission/status
+  state. WARM: none required for IA-03 correctness. COLD: PostgreSQL remains durable
+  inventory and reservation authority but is not entered by queued IA-03 callers.
+- REDIS STRUCTURES. Continue using only the already-authorized IA-02 HASH, ZSET, and
+  O(1) namespace-global sequence. Do not add Redis inventory counts or stock truth.
+- TTL. Finite queue deadline, finite lease deadline, bounded evidence retention,
+  bounded terminal retention, and no immortal per-request historical state.
+- INVALIDATION / CLEANUP. Abandon and expiry cleanup stay bounded. Terminal and live
+  membership remain coherent. Do not add `KEYS`, unbounded `SCAN`, or `FLUSHDB`.
+- PUBSUB. Optional derived status only. Never correctness authority. Loss of PubSub
+  must not alter admission outcome.
+- STORE.REPO EFFECT. IA-03 queued, status, and abandon paths must require zero
+  reservation DB entrants. The durable reservation call remains IA-04+. Database
+  query count is zero for this documentation task. No N+1 risk was added.
+- BEAM RESOURCE SAFETY. No process per queued waiter. No timer per queued waiter. No
+  GenServer state proportional to total waiting callers. Caller death must not
+  silently destroy queue state. Status must be retrievable through bounded
+  coordination state.
+- INDEXES. Existing reservation and inventory indexes remain frozen. No schema or
+  migration was added.
+- OBAN. No Oban enqueue, worker, uniqueness, or idempotency behavior changed.
+  Recovery and reaper workers remain unauthorized.
+- 100K REVIEW. Architecture must remain compatible with high concurrency through
+  bounded queueing and caller-independent state. This authorization does not claim
+  100k certification. That remains an evidence phase.

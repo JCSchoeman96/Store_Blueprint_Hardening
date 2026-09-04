@@ -1,8 +1,8 @@
 # S0-ARCH-01: Inventory reservation admission architecture
 
 Status: FROZEN. This document records the accepted architecture decision and does
-not itself authorize implementation. IA-01 is complete and frozen. S0-IA-AUTH-02
-separately authorizes IA-02 only.
+not itself authorize implementation. IA-01 and IA-02 are complete and frozen.
+S0-IA-AUTH-03 separately authorizes IA-03 only.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -985,8 +985,8 @@ Only an accepted capacity review may change the derived permit budget.
 
 No implementation may begin until this design is independently reviewed and accepted.
 The design has now been independently accepted and is frozen. That acceptance does
-not authorize the implementation plan. S0-IA-AUTH-02 is the separate, bounded
-authorization for IA-02 only. IA-01 is complete and frozen.
+not authorize the implementation plan. S0-IA-AUTH-03 is the separate, bounded
+authorization for IA-03 only. IA-01 and IA-02 are complete and frozen.
 
 The acceptance review must specifically confirm:
 
@@ -1013,7 +1013,8 @@ The acceptance review must specifically confirm:
 
 IMPLEMENTATION STATUS:
 IA-01 COMPLETE / FROZEN
-AUTHORIZED FOR IA-02 ONLY
+IA-02 COMPLETE / FROZEN
+AUTHORIZED FOR IA-03 ONLY
 
 IA-01 COMPLETION RECORD:
 - Initial implementation: `7fd2e88fec286d9e216c865d26ef28b1a8c69438`
@@ -1027,13 +1028,33 @@ IA-01 COMPLETION RECORD:
   deadline semantics; immutable `K_v = 1`; no Redis/PostgreSQL/config/migration/runtime
   orchestration.
 
+IA-02 COMPLETION RECORD:
+- Final certified branch head: `b860b355d3a94f7d27a9895f229bb91e74428109`
+- IA-02 lineage: `47e124a925439165a83d9544ec122862fe6e022a`,
+  `d798fb9d964eff82c70439f5b61af097c2e84280`,
+  `c0b27208347accb94f21f830d228d9539ced447c`,
+  `f78f04e98cb483cc512c70dae3c2e4317f25d5a0`
+- Security-leg integration ancestor: `d5d8dd93026026c245c612369b034f8d3d62d1c4`
+- Final governance head: `b860b355d3a94f7d27a9895f229bb91e74428109`
+- Post-integration review: IA-02 POST-INTEGRATION REVIEW = PASS
+- Exact-head CI: `33873401924` — SUCCESS
+- IA-02 established: versioned Redis coordination namespace; common atomic Redis hash
+  tag; opaque admission member; enqueue/deduplicate behavior; finite per-variant and
+  global queue bounds; immutable `K_v = 1`; bounded `B_total` global admission; atomic
+  dual-budget decision; monotonic `operation_epoch` allocation; replay/mismatch/busy
+  epoch discipline; bounded queued expiry cleanup; expiry evidence retention;
+  process-independent exact-key test cleanup; O(1) namespace-global sequence;
+  fail-closed Redis behavior; no Redis stock authority; no `Store.Repo`/PostgreSQL
+  mutation; no IA-03+ behavior.
+
 AUTHORIZATION BOUNDARY:
-The IA-02 authorization covers only the atomic Redis admission primitive listed in
-the implementation-plan gate. It does not authorize IA-03 or later, PostgreSQL
-mutation, recovery, workers, checkout, shared lifecycle fences, configuration beyond
-IA-02 needs, or certification. Section 16 describes the future MVP and remains a
-frozen design, not the current IA-02 coding boundary.
+The IA-03 authorization covers only the internal caller-independent admission
+orchestration listed in the implementation-plan gate (frozen plan DL-01). It does
+not authorize IA-04 or later, PostgreSQL reservation execution, recovery, workers,
+checkout, shared lifecycle fences, DL-02 telemetry/rate-limit expansion,
+configuration beyond IA-03 needs, or certification. Section 16 describes the future
+MVP and remains a frozen design, not the current IA-03 coding boundary.
 
 NEXT:
-Supply a separate IA-02 coding prompt. Completion of IA-02 does not authorize IA-03
-or any later slice.
+Supply a separate IA-03 coding prompt after independent review of this governance
+change. Completion of IA-03 does not authorize IA-04 or any later slice.

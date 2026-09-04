@@ -9,8 +9,8 @@
 **Tech Stack:** Elixir, Phoenix, Ash 3.x, Ecto/PostgreSQL, Redix/Redis, Oban, Phoenix PubSub, existing `Store.Repo` and `Store.DirectRepo` split.
 
 This is a frozen planning artifact. It authorizes no implementation by itself. IA-01
-is complete and frozen. The separate S0-IA-AUTH-02 decision authorizes only the
-bounded IA-02 atomic Redis admission primitive described in Section 27. IA-03 and
+and IA-02 are complete and frozen. The separate S0-IA-AUTH-03 decision authorizes only
+the bounded IA-03 internal admission orchestration described in Section 27. IA-04 and
 later remain unauthorized.
 
 ---
@@ -2285,12 +2285,12 @@ Before handing this plan to an implementation-planning reviewer, confirm:
 ## 27. Implementation authorization gate
 
 This plan is frozen and remains subordinate to S0-ARCH-01. It is not blanket
-authorization for the complete implementation plan. S0-IA-AUTH-02 is the separate,
-explicit authorization decision for the IA-02 atomic Redis admission primitive only.
-IA-01 is complete and frozen. Any discovery that requires changing `K_v`, moving
-inventory truth to Redis, weakening the PostgreSQL guard, adding a migration, or
-introducing multi-variant admission must stop and reopen the appropriate architecture
-review.
+authorization for the complete implementation plan. S0-IA-AUTH-03 is the separate,
+explicit authorization decision for the IA-03 internal caller-independent admission
+orchestration only. IA-01 and IA-02 are complete and frozen. Any discovery that
+requires changing `K_v`, moving inventory truth to Redis, weakening the PostgreSQL
+guard, adding a migration, or introducing multi-variant admission must stop and reopen
+the appropriate architecture review.
 
 ### Authorization state
 
@@ -2299,9 +2299,10 @@ review.
 | S0-ARCH-01 | `FROZEN` |
 | S0-PLAN-01 | `FROZEN` |
 | IA-01 | `COMPLETE / FROZEN` |
-| InventoryAdmission implementation | `AUTHORIZED FOR IA-02 ONLY` |
-| IA-02 | `AUTHORIZED / NOT STARTED` |
-| IA-03+ | `NOT AUTHORIZED` |
+| IA-02 | `COMPLETE / FROZEN` |
+| InventoryAdmission implementation | `AUTHORIZED FOR IA-03 ONLY` |
+| IA-03 | `AUTHORIZED / NOT STARTED` |
+| IA-04+ | `NOT AUTHORIZED` |
 | S0-CLOSE-02 | `BLOCKED` |
 | S0 merge readiness | `BLOCKED` |
 
@@ -2318,67 +2319,197 @@ review.
   deadline semantics; immutable `K_v = 1`; no Redis/PostgreSQL/config/migration/runtime
   orchestration.
 
-### IA-02 authorized boundary
+### IA-02 completion record
 
-IA-02 is a bounded implementation tracer bullet for the atomic Redis admission
-primitive. A later coding prompt may implement only:
+- Final certified branch head: `b860b355d3a94f7d27a9895f229bb91e74428109`
+- IA-02 lineage: `47e124a925439165a83d9544ec122862fe6e022a`,
+  `d798fb9d964eff82c70439f5b61af097c2e84280`,
+  `c0b27208347accb94f21f830d228d9539ced447c`,
+  `f78f04e98cb483cc512c70dae3c2e4317f25d5a0`
+- Security-leg integration ancestor: `d5d8dd93026026c245c612369b034f8d3d62d1c4`
+- Final governance head: `b860b355d3a94f7d27a9895f229bb91e74428109`
+- Post-integration review: IA-02 POST-INTEGRATION REVIEW = PASS
+- Exact-head CI: `33873401924` — SUCCESS
+- IA-02 established and proved: versioned Redis coordination namespace; common atomic
+  Redis hash tag; opaque admission member; enqueue/deduplicate behavior; finite
+  per-variant and global queue bounds; immutable `K_v = 1`; bounded `B_total` global
+  admission; atomic dual-budget decision; monotonic `operation_epoch` allocation;
+  replay/mismatch/busy epoch discipline; bounded queued expiry cleanup; expiry evidence
+  retention; process-independent exact-key test cleanup; O(1) namespace-global sequence;
+  fail-closed Redis behavior; no Redis stock authority; no `Store.Repo`/PostgreSQL
+  mutation; no IA-03+ behavior.
 
-- `lib/store/orders/inventory_admission/redis.ex`;
-- `test/store/orders/inventory_admission_redis_test.exs`;
-- versioned InventoryAdmission Redis namespace/key derivation;
-- opaque admission-member handling;
-- enqueue-or-deduplicate semantics;
-- finite per-variant and global queue bounds;
-- atomic `K_v = 1` plus `B_total` admission condition;
-- queue sequence allocation;
-- active lease record creation;
-- operation/request metadata representation;
-- same-reservation live-operation exclusion;
-- fail-closed Redis error handling; and
-- decoding Redis results into closed internal results with focused Redis integration
-  tests.
+### IA-03 authorized boundary
 
-IA-02 remains subordinate to the frozen admission state machine. It may implement
-Redis-side representations and transitions necessary for its bounded primitive, but
-must not change the accepted states or transition graph. Accepted states remain
+IA-03 is a bounded implementation tracer bullet for the internal
+caller-independent admission orchestration corresponding to frozen-plan DL-01.
+This authorization does not itself authorize implementation. A later coding prompt
+may implement only:
+
+- `lib/store/orders/inventory_admission.ex`;
+- `test/store/orders/inventory_admission_test.exs`;
+- internal `InventoryAdmission.reserve` orchestration;
+- internal `InventoryAdmission.status` orchestration;
+- internal `InventoryAdmission.abandon` orchestration;
+- building and validating the trusted Request from the already-frozen IA-01 value
+  contracts, without modifying those contracts;
+- calling only typed IA-02 Redis primitive functions;
+- returning immediately for queued work rather than retaining the caller process;
+- preserving queue lifetime independently from Phoenix request lifetime, LiveView
+  lifetime, browser connection, and caller BEAM process;
+- typed decoding of immediate admission, queued, rejection, expiry, replay, and
+  unavailable results;
+- finite queue, lease, and deadline propagation;
+- server-owned operation identity handling using the frozen IA-01/IA-02 semantics;
+- governed abandon behavior using the frozen lifecycle;
+- caller-independent status/retry contract; and
+- fail-closed Redis uncertainty handling.
+
+IA-01 Request, Operation, and Lease modules remain frozen contracts. IA-03 may use
+them. It may not reopen them. Frozen plan PHASE IA-03 still lists those modules as
+phase files; this authorization does not permit editing them.
+
+### IA-03 lifecycle preservation
+
+Do not invent new lifecycle states. The frozen state vocabulary remains
 `REQUESTED`, `QUEUED`, `ADMITTED`, `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`,
-`UNRESOLVED`, `COMPLETED`, `REJECTED`, `EXPIRED`, and `ABANDONED`. Terminal
-semantics remain unchanged.
+`UNRESOLVED`, `COMPLETED`, `REJECTED`, `EXPIRED`, and `ABANDONED`.
 
-### IA-02 implementation constraints
+Legal lifecycle shape remains:
 
-- Redis structures must be bounded. No unbounded lists, maps, or queues.
-- Queue metadata has finite retention.
-- Lease metadata has bounded retention consistent with recovery safety.
-- No process-per-waiter, timer-per-waiter, or dynamic atom creation.
-- No raw commercial identity exposed in Redis key names where the frozen plan
-  specifies opaque/digested identity.
-- `K_v = 1`, `B_total` cluster-global below reviewed `Store.Repo` capacity, finite
-  `Q_variant_max`, finite `Q_global_max`, waiting without one BEAM process per waiter,
-  Redis coordinates admission only, PostgreSQL remains durable inventory authority,
-  and fail closed on uncertain Redis admission. No stock/availability ledger in Redis.
-  No 100k certification.
+```text
+REQUESTED -> QUEUED
+REQUESTED -> ADMITTED
 
-### IA-02 exclusions
+QUEUED -> ADMITTED
+QUEUED -> EXPIRED
+QUEUED -> ABANDONED
 
-The following remain unauthorized in IA-02 and in every later coding prompt until a
+ADMITTED -> RESERVING
+ADMITTED -> EXPIRED
+
+RESERVING -> COMPLETED
+RESERVING -> REJECTED
+RESERVING -> UNKNOWN_DB_OUTCOME
+
+UNKNOWN_DB_OUTCOME -> RECOVERING
+
+RECOVERING -> COMPLETED
+RECOVERING -> REJECTED
+RECOVERING -> UNRESOLVED
+```
+
+Terminal states remain `COMPLETED`, `REJECTED`, `EXPIRED`, `ABANDONED`, and
+`UNRESOLVED`. `UNKNOWN_DB_OUTCOME` and `RECOVERING` remain non-terminal.
+
+IA-03 may orchestrate only the portion of this lifecycle that is already possible
+without PostgreSQL reservation execution or later recovery work. It may drive
+`REQUESTED -> QUEUED`, `REQUESTED -> ADMITTED`, `QUEUED -> ADMITTED`,
+`QUEUED -> EXPIRED`, `QUEUED -> ABANDONED`, and `ADMITTED -> EXPIRED`, plus
+Redis-side rejection/replay/unavailable results that do not require a durable
+reservation attempt. It must not manufacture `ADMITTED -> RESERVING` as a prelude
+to `Store.Repo` execution, and must not implement `RESERVING`,
+`UNKNOWN_DB_OUTCOME`, `RECOVERING`, `UNRESOLVED`, or durable `COMPLETED` behavior
+merely to complete the diagram.
+
+### IA-03 transition guards
+
+- One live operation per `reservation_key`.
+- `operation_id` is server generated.
+- `operation_epoch` is server controlled.
+- `request_fingerprint` mismatch must fail closed.
+- Terminal operations cannot silently become live again.
+- Stale or invalid Redis ownership cannot grant admission.
+- Redis uncertainty cannot bypass admission.
+- Queued work performs no PostgreSQL preflight.
+- `K_v` remains exactly 1.
+- `B_total` remains globally bounded.
+
+### IA-03 side-effect boundary
+
+IA-03 may coordinate HOT Redis admission state only. It may not execute durable
+inventory reservation, call `Store.Repo` for reservation execution, mutate
+`InventoryItem`, mutate `InventoryReservation`, interpret `ADMITTED` as durable
+stock ownership, perform unknown-outcome recovery, introduce Oban, introduce
+reaper workers, implement checkout integration, implement
+`Store.Orders.reserve_inventory/3` integration, introduce shared lifecycle fences,
+add payment or subscription integration, or add migration or schema changes.
+
+Any transition or status events remain projection and observability only. PubSub
+must not become correctness authority.
+
+### IA-03 implementation constraints
+
+- Continue using only the already-authorized IA-02 Redis structures: HASH for
+  metadata/active coordination, ZSET for queue ordering/dispatch/expiry and active
+  expiry, and the O(1) namespace-global sequence. Do not add Redis inventory counts
+  or stock truth.
+- Queue, lease, evidence, and terminal retention remain finite. No immortal
+  per-request historical state.
+- Abandon and expiry cleanup stay bounded. Terminal and live membership remain
+  coherent. Do not add `KEYS`, unbounded `SCAN`, or `FLUSHDB`.
+- No process-per-waiter, timer-per-waiter, or GenServer state proportional to total
+  waiting callers. Caller death must not silently destroy queue state. Status must
+  remain retrievable through bounded coordination state.
+- `K_v = 1`, `B_total` cluster-global below reviewed `Store.Repo` capacity, waiting
+  without one BEAM process per waiter, Redis coordinates admission only, PostgreSQL
+  remains durable inventory authority, and fail closed on uncertain Redis admission.
+  No stock/availability ledger in Redis. No 100k certification.
+
+### IA-03 exclusions
+
+The following remain unauthorized in IA-03 and in every later coding prompt until a
 separate decision says otherwise:
 
-- `Store.Repo` reservation execution and
-  `InventoryReservations.reserve_inventory_outcome/3`;
+- DL-02 telemetry/rate-limit expansion unless separately authorized later;
+- `Store.Orders` facade integration;
+- durable reservation transaction;
 - PostgreSQL PRE lookup, PostgreSQL POST lookup, and ambiguous outcome reconciliation;
 - `InventoryAdmission.Recovery`, Oban recovery worker, and reaper worker;
+- lease-recovery machinery requiring IA-05/IA-06;
 - shared reservation lifecycle fences for consume, release, or expire;
-- `Store.Orders` domain integration and checkout integration;
-- multi-variant admission and payment integration;
-- PubSub/UI, analytics dashboards, and performance certification;
+- checkout CTE changes;
+- multi-variant admission;
+- payment integration and subscription integration;
+- analytics/dashboard work;
+- performance certification and 100k-concurrency certification;
 - extraction/package work, schema changes, and migrations; and
-- IA-03 or later tasks.
+- IA-04 or later tasks.
+
+### Performance and scaling review
+
+DATA LAYER. HOT: InventoryAdmission orchestration and Redis queue/admission/status
+state. WARM: none required for IA-03 correctness. COLD: PostgreSQL remains durable
+inventory and reservation authority but is not entered by queued IA-03 callers.
+
+REDIS STRUCTURES. Continue using only the already-authorized IA-02 HASH, ZSET, and
+O(1) namespace-global sequence. Do not add Redis inventory counts or stock truth.
+
+TTL. Finite queue deadline, finite lease deadline, bounded evidence retention,
+bounded terminal retention, and no immortal per-request historical state.
+
+INVALIDATION / CLEANUP. Abandon and expiry cleanup stay bounded. Terminal and live
+membership remain coherent. Do not add `KEYS`, unbounded `SCAN`, or `FLUSHDB`.
+
+PUBSUB. Optional derived status only. Never correctness authority. Loss of PubSub
+must not alter admission outcome.
+
+STORE.REPO EFFECT. IA-03 queued, status, and abandon paths must require zero
+reservation DB entrants. The durable reservation call remains IA-04+.
+
+BEAM RESOURCE SAFETY. No process per queued waiter. No timer per queued waiter. No
+GenServer state proportional to total waiting callers. Caller death must not
+silently destroy queue state. Status must be retrievable through bounded
+coordination state.
+
+100K REVIEW. Architecture must remain compatible with high concurrency through
+bounded queueing and caller-independent state. This authorization does not claim
+100k certification. That remains an evidence phase.
 
 ### Authorization guard
 
-Completion of IA-02 does not automatically authorize IA-03 or any later slice. Before
-another slice can be authorized, IA-02 must be implemented, receive focused Redis
+Completion of IA-03 does not automatically authorize IA-04 or any later slice.
+Before another slice can be authorized, IA-03 must be implemented, receive focused
 validation, be committed and pushed, receive independent review, and have its
 exact-head CI disposition recorded. A later task must make a separate explicit
 authorization decision.
@@ -2388,15 +2519,20 @@ authorization decision.
 This decision records only these supporting closure facts: S0-ARCH-01 is frozen,
 S0-PLAN-01 is frozen, IA-01 is independently reviewed and accepted at
 `f252fcf1d27d22be92a0bffdc88e7306e3c84e4c` with exact-head CI `33754973403`
-SUCCESS, the checkout pool-saturation blocker is bounded and closed as a later-hardening
-risk, and the proven S0 memory/runtime defect is remediated and closed. These facts
-do not claim full 100k certification, complete memory-safety certification, checkout
-capacity certification, or InventoryAdmission performance certification.
+SUCCESS, IA-02 is independently post-integration certified at
+`b860b355d3a94f7d27a9895f229bb91e74428109` with exact-head CI `33873401924`
+SUCCESS and review verdict PASS, the checkout pool-saturation blocker is bounded
+and closed as a later-hardening risk, and the proven S0 memory/runtime defect is
+remediated and closed. These facts do not claim full 100k certification, complete
+memory-safety certification, checkout capacity certification, or
+InventoryAdmission performance certification.
 
 IMPLEMENTATION STATUS:
 IA-01 COMPLETE / FROZEN
-AUTHORIZED FOR IA-02 ONLY
+IA-02 COMPLETE / FROZEN
+AUTHORIZED FOR IA-03 ONLY
 
 NEXT:
-Supply a separate IA-02 coding prompt. Do not start IA-03 or later, close
-S0-CLOSE-02, or mark S0 merge-ready as part of IA-02.
+Supply a separate IA-03 coding prompt after independent review of this governance
+change. Do not start IA-04 or later, close S0-CLOSE-02, or mark S0 merge-ready as
+part of IA-03.
