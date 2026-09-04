@@ -4,6 +4,11 @@ If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
 ---
 
+## Workflow
+- ALWAYS create or update a PR, so that the work and implementation or info can be checked and reviewed
+
+---
+
 ## Project (MUST NOT DRIFT)
 - Stack: Elixir, Phoenix, LiveView, Alpine.js, Tailwind, **Ash 3.x**
 - OTP: `Store` / `:store`

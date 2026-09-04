@@ -87,6 +87,17 @@ defmodule Store.Comms.Templates do
     end
   end
 
+  defp template_assigns(%EmailOutbox{template_kind: :identity_link_confirmation} = outbox) do
+    with {:ok, confirmation_url} <- required_assign(outbox, "confirmation_url"),
+         {:ok, identity_provider} <- required_assign(outbox, "identity_provider") do
+      {:ok,
+       %{
+         confirmation_url: confirmation_url,
+         identity_provider: identity_provider
+       }}
+    end
+  end
+
   defp template_assigns(%EmailOutbox{template_kind: :renewal_reminder} = outbox) do
     with {:ok, subscription} <- fetch_subscription(outbox.subscription_id),
          {:ok, plan} <- fetch_subscription_plan(subscription.subscription_plan_id),
@@ -213,6 +224,13 @@ defmodule Store.Comms.Templates do
       {:ok, EEx.eval_file(path, assigns: assigns)}
     rescue
       error -> {:error, error}
+    end
+  end
+
+  defp required_assign(%EmailOutbox{template_assigns: assigns}, key) do
+    case Map.get(assigns, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, {:missing_template_assign, key}}
     end
   end
 

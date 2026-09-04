@@ -1,4 +1,4 @@
-defmodule Store.Repo.Migrations.Phase32AuthIdentityExtensions1 do
+defmodule Store.Repo.Migrations.DepSec03eAshFunctionsUpgradeExtensions1 do
   @moduledoc """
   Installs any extensions that are mentioned in the repo's `installed_extensions/0` callback
 

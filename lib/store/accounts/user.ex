@@ -52,8 +52,8 @@ defmodule Store.Accounts.User do
       upsert_identity(:unique_email)
       upsert_fields([])
 
-      change(AshAuthentication.GenerateTokenChange)
       change(AshAuthentication.Strategy.OAuth2.IdentityChange)
+      change(AshAuthentication.GenerateTokenChange)
 
       change(fn changeset, _context ->
         user_info = Ash.Changeset.get_argument(changeset, :user_info)
@@ -92,8 +92,10 @@ defmodule Store.Accounts.User do
         client_id(Store.Accounts.Secrets)
         client_secret(Store.Accounts.Secrets)
         redirect_uri(Store.Accounts.Secrets)
-        identity_resource(Store.Accounts.UserIdentity)
         register_action_name(:register_with_google)
+        identity_resource(Store.Accounts.UserIdentity)
+        trust_email_verified?(false)
+        on_untrusted_email_match(:confirm)
       end
     end
 

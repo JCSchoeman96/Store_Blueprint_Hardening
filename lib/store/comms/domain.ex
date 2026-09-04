@@ -20,9 +20,51 @@ defmodule Store.Comms do
   use Ash.Domain
 
   @stale_processing_timeout_seconds 15 * 60
+  @identity_recipient_email_regex ~r/^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
   resources do
     resource(Store.Comms.EmailOutbox)
+  end
+
+  @spec enqueue_identity_link_confirmation_for_system(
+          User.t(),
+          term(),
+          term(),
+          atom() | String.t(),
+          keyword()
+        ) :: {:ok, EmailOutbox.t()} | {:error, term()}
+  def enqueue_identity_link_confirmation_for_system(
+        %User{} = user,
+        confirmation_url,
+        confirmation_token,
+        identity_provider,
+        opts \\ []
+      )
+      when is_list(opts) do
+    with {:ok, to_email} <- normalize_identity_recipient_email(user.email),
+         {:ok, provider_key, provider_name} <- normalize_identity_provider(identity_provider),
+         {:ok, url} <- normalize_confirmation_url(confirmation_url),
+         {:ok, jti} <- identity_confirmation_jti(user, confirmation_token),
+         {:ok, email_provider} <- resolve_provider(opts, :email_provider),
+         {:ok, outbox} <-
+           upsert_outbox(%{
+             order_id: nil,
+             refund_id: nil,
+             subscription_id: nil,
+             template_kind: :identity_link_confirmation,
+             to_email: to_email,
+             subject: "Confirm linking your #{provider_key} login",
+             idempotency_key: "identity_link_confirmation:#{provider_key}:#{jti}",
+             provider: email_provider,
+             template_assigns: %{
+               "confirmation_url" => url,
+               "identity_provider" => provider_name
+             }
+           }),
+         {:ok, _job} <- enqueue_delivery_job(outbox.id) do
+      emit_outbox_insert_telemetry(outbox)
+      {:ok, outbox}
+    end
   end
 
   @spec enqueue_order_receipt_for_system(String.t(), keyword()) ::
@@ -309,10 +351,62 @@ defmodule Store.Comms do
     end
   end
 
-  defp resolve_provider(opts) do
-    provider_opt = Keyword.get(opts, :provider)
+  defp resolve_provider(opts, option \\ :provider) do
+    provider_opt = Keyword.get(opts, option)
     Providers.normalize_provider(provider_opt || Providers.default_provider())
   end
+
+  defp normalize_identity_recipient_email(email) do
+    email = if is_nil(email), do: "", else: email |> to_string() |> String.trim()
+
+    if Regex.match?(@identity_recipient_email_regex, email) do
+      {:ok, email}
+    else
+      {:error, :invalid_recipient_email}
+    end
+  end
+
+  defp normalize_identity_provider(provider) when is_atom(provider) or is_binary(provider) do
+    provider_key = provider |> to_string() |> String.trim() |> String.downcase()
+
+    case provider_key do
+      "google" -> {:ok, "google", "Google"}
+      _ -> {:error, :invalid_identity_provider}
+    end
+  end
+
+  defp normalize_identity_provider(_provider), do: {:error, :invalid_identity_provider}
+
+  defp normalize_confirmation_url(url) when is_binary(url) do
+    url = String.trim(url)
+    parsed = URI.parse(url)
+
+    if url != "" and parsed.scheme in ["http", "https"] and is_binary(parsed.host) and
+         parsed.host != "" and is_binary(parsed.path) and parsed.path != "" do
+      {:ok, url}
+    else
+      {:error, :invalid_confirmation_url}
+    end
+  end
+
+  defp normalize_confirmation_url(_url), do: {:error, :invalid_confirmation_url}
+
+  defp identity_confirmation_jti(%User{} = user, token) when is_binary(token) do
+    with {:ok, claims, _resource} <- AshAuthentication.Jwt.verify(token, User),
+         %{"act" => action, "jti" => jti, "sub" => subject} <- claims,
+         true <-
+           action ==
+             AshAuthentication.Info.strategy!(User, :confirm_new_user).confirm_action_name
+             |> to_string(),
+         true <- subject == AshAuthentication.user_to_subject(user),
+         true <- is_binary(jti) and jti != "" do
+      {:ok, jti}
+    else
+      _ -> {:error, :invalid_confirmation_token}
+    end
+  end
+
+  defp identity_confirmation_jti(_user, _token), do: {:error, :invalid_confirmation_token}
 
   defp upsert_outbox(attrs) when is_map(attrs) do
     attrs =

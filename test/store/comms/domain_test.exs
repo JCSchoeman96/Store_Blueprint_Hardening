@@ -62,6 +62,133 @@ defmodule Store.Comms.DomainTest do
              "template_kind/order_id/refund_id/subscription_id combination is invalid"
   end
 
+  test "identity-link template accepts only reference-less outbox rows" do
+    user = TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_identity_user"))
+    order = create_finalized_order!(user.id)
+
+    base_attrs = %{
+      order_id: nil,
+      refund_id: nil,
+      subscription_id: nil,
+      template_kind: :identity_link_confirmation,
+      to_email: user.email,
+      subject: "Confirm linking your google login",
+      body_text: "",
+      body_html: nil,
+      template_assigns: %{
+        "confirmation_url" => "http://localhost:4000/confirm-new-user/token",
+        "identity_provider" => "Google"
+      },
+      provider: :swoosh
+    }
+
+    for field <- [:order_id, :refund_id, :subscription_id] do
+      attrs = Map.put(base_attrs, field, order.id)
+
+      assert {:error, error} =
+               EmailOutbox
+               |> Ash.Changeset.for_create(
+                 :enqueue,
+                 Map.put(attrs, :idempotency_key, "identity-invalid-ref:#{field}")
+               )
+               |> Ash.create(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+      assert Exception.message(error) =~
+               "template_kind/order_id/refund_id/subscription_id combination is invalid"
+    end
+
+    secret_attrs =
+      Map.put(base_attrs, :template_assigns, %{
+        "confirmation_url" => "http://localhost:4000/confirm-new-user/token",
+        "identity_provider" => "Google",
+        "oauth_tokens" => %{"access_token" => "must-not-persist"}
+      })
+
+    assert {:error, error} =
+             EmailOutbox
+             |> Ash.Changeset.for_create(
+               :enqueue,
+               Map.put(secret_attrs, :idempotency_key, "identity-invalid-assigns")
+             )
+             |> Ash.create(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert Exception.message(error) =~ "identity_link_confirmation assigns are invalid"
+  end
+
+  test "identity-link enqueue validates recipient provider URL and token" do
+    user = TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_identity_valid"))
+    confirmation_url = "http://localhost:4000/confirm-new-user/token"
+
+    invalid_user = %{user | email: "not-an-email"}
+
+    assert {:error, :invalid_recipient_email} =
+             Store.Comms.enqueue_identity_link_confirmation_for_system(
+               invalid_user,
+               confirmation_url,
+               "not-a-token",
+               :google
+             )
+
+    assert {:error, :invalid_identity_provider} =
+             Store.Comms.enqueue_identity_link_confirmation_for_system(
+               user,
+               confirmation_url,
+               "not-a-token",
+               :github
+             )
+
+    assert {:error, :invalid_confirmation_url} =
+             Store.Comms.enqueue_identity_link_confirmation_for_system(
+               user,
+               "not-a-url",
+               "not-a-token",
+               :google
+             )
+
+    assert {:error, :invalid_confirmation_token} =
+             Store.Comms.enqueue_identity_link_confirmation_for_system(
+               user,
+               confirmation_url,
+               "not-a-token",
+               :google
+             )
+  end
+
+  test "identity-link delivery uses existing permanent failure bookkeeping" do
+    user =
+      TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_identity_failure"))
+
+    attrs = %{
+      order_id: nil,
+      refund_id: nil,
+      subscription_id: nil,
+      template_kind: :identity_link_confirmation,
+      to_email: user.email,
+      subject: "Confirm linking your google login",
+      body_text: "",
+      body_html: nil,
+      template_assigns: %{
+        "confirmation_url" => "http://localhost:4000/confirm-new-user/token",
+        "identity_provider" => "Google"
+      },
+      idempotency_key: "identity-failure:#{System.unique_integer([:positive])}",
+      provider: :req_postmark
+    }
+
+    assert {:ok, outbox} =
+             EmailOutbox
+             |> Ash.Changeset.for_create(:enqueue, attrs, context: %{system?: true})
+             |> Ash.create(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert {:discard, _reason} =
+             perform_job(DeliverEmailOutboxWorker, %{"email_outbox_id" => outbox.id})
+
+    updated = fetch_outbox!(outbox.id)
+    assert updated.state == :failed
+    assert updated.attempt_count == 1
+    assert updated.last_error =~ "missing_postmark_config"
+  end
+
   test "provider enum rejects unknown values" do
     user = TestFixtures.register_user!(email: TestFixtures.unique_email("phase23_provider_user"))
     order = create_finalized_order!(user.id)

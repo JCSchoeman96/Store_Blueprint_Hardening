@@ -235,7 +235,27 @@ defmodule Store.Comms.EmailOutbox do
       {:order, :order} -> changeset
       {:refund, :refund} -> changeset
       {:subscription, :subscription} -> changeset
+      {:none, :identity_link} -> validate_identity_link_assigns(changeset)
       _ -> add_invalid_template_ref_error(changeset)
+    end
+  end
+
+  defp validate_identity_link_assigns(changeset) do
+    case Ash.Changeset.get_attribute(changeset, :template_assigns) do
+      %{
+        "confirmation_url" => confirmation_url,
+        "identity_provider" => identity_provider
+      } = assigns
+      when map_size(assigns) == 2 and is_binary(confirmation_url) and confirmation_url != "" and
+             is_binary(identity_provider) and identity_provider != "" ->
+        changeset
+
+      _ ->
+        Ash.Changeset.add_error(
+          changeset,
+          field: :template_assigns,
+          message: "identity_link_confirmation assigns are invalid"
+        )
     end
   end
 
@@ -248,6 +268,8 @@ defmodule Store.Comms.EmailOutbox do
 
   defp reference_shape(nil, nil, subscription_id) when is_binary(subscription_id),
     do: :subscription
+
+  defp reference_shape(nil, nil, nil), do: :none
 
   defp reference_shape(_order_id, _refund_id, _subscription_id), do: :invalid
 
@@ -262,6 +284,8 @@ defmodule Store.Comms.EmailOutbox do
 
   defp template_group(template_kind) when template_kind in [:renewal_reminder, :access_ended],
     do: :subscription
+
+  defp template_group(:identity_link_confirmation), do: :identity_link
 
   defp template_group(_template_kind), do: :invalid
 

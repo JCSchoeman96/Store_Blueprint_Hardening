@@ -1,4 +1,4 @@
-defmodule Store.Repo.Migrations.Phase32AuthIdentity do
+defmodule Store.Repo.Migrations.DepSec03UserIdentities do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 
@@ -9,20 +9,22 @@ defmodule Store.Repo.Migrations.Phase32AuthIdentity do
 
   def up do
     create table(:user_identities, primary_key: false) do
-      add :refresh_token, :text
-      add :access_token_expires_at, :utc_datetime_usec
-      add :access_token, :text
-      add :uid, :text, null: false
       add :strategy, :text, null: false
       add :id, :uuid, null: false, default: fragment("uuid_generate_v7()"), primary_key: true
+      add :uid, :text, null: false
+      add :access_token, :text
+      add :access_token_expires_at, :utc_datetime_usec
+      add :refresh_token, :text
 
       add :user_id,
           references(:users,
             column: :id,
             name: "user_identities_user_id_fkey",
             type: :uuid,
-            prefix: "public"
-          )
+            prefix: "public",
+            on_delete: :delete_all
+          ),
+          null: false
     end
 
     create unique_index(:user_identities, [:strategy, :uid],
@@ -31,11 +33,11 @@ defmodule Store.Repo.Migrations.Phase32AuthIdentity do
   end
 
   def down do
-    drop constraint(:user_identities, "user_identities_user_id_fkey")
-
     drop_if_exists unique_index(:user_identities, [:strategy, :uid],
                      name: "user_identities_unique_on_strategy_and_uid_index"
                    )
+
+    drop constraint(:user_identities, "user_identities_user_id_fkey")
 
     drop table(:user_identities)
   end
