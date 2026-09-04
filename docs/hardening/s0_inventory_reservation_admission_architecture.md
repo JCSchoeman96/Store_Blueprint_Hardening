@@ -2,7 +2,8 @@
 
 Status: FROZEN. This document records the accepted architecture decision and does
 not itself authorize implementation. IA-01 and IA-02 are complete and frozen.
-S0-IA-AUTH-03 separately authorizes IA-03 only.
+S0-IA-AUTH-03 separately authorizes IA-03 only. S0-IA-AUTH-03R1 corrects only the
+IA-03 Redis support file boundary for typed `status` and `abandon` primitives.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -986,7 +987,8 @@ Only an accepted capacity review may change the derived permit budget.
 No implementation may begin until this design is independently reviewed and accepted.
 The design has now been independently accepted and is frozen. That acceptance does
 not authorize the implementation plan. S0-IA-AUTH-03 is the separate, bounded
-authorization for IA-03 only. IA-01 and IA-02 are complete and frozen.
+authorization for IA-03 only, corrected by S0-IA-AUTH-03R1 for the minimum typed
+Redis `status`/`abandon` support boundary. IA-01 and IA-02 are complete and frozen.
 
 The acceptance review must specifically confirm:
 
@@ -1049,12 +1051,30 @@ IA-02 COMPLETION RECORD:
 
 AUTHORIZATION BOUNDARY:
 The IA-03 authorization covers only the internal caller-independent admission
-orchestration listed in the implementation-plan gate (frozen plan DL-01). It does
-not authorize IA-04 or later, PostgreSQL reservation execution, recovery, workers,
-checkout, shared lifecycle fences, DL-02 telemetry/rate-limit expansion,
-configuration beyond IA-03 needs, or certification. Section 16 describes the future
-MVP and remains a frozen design, not the current IA-03 coding boundary.
+orchestration listed in the implementation-plan gate (frozen plan DL-01), plus the
+S0-IA-AUTH-03R1 minimum typed Redis support required by that orchestration. Future
+IA-03 coding may touch only:
+
+```text
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_test.exs
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+The Redis-file allowance is strictly limited to typed Redis primitives for
+`status` and `abandon` (`QUEUED -> ABANDONED` under
+`trusted_pre_reservation_abandonment`). Status must not create, enqueue, or admit.
+Abandon must not invent atomic next-head promotion; frozen `abandon_queued` removes
+only queued membership and marks `ABANDONED`, and next-head promotion remains the
+already-authorized `promote_next`/`promote_queued` path.
+
+It does not authorize IA-04 or later, PostgreSQL reservation execution, recovery,
+workers, checkout, shared lifecycle fences, lease renewal/release machinery, DL-02
+telemetry/rate-limit expansion, configuration beyond IA-03 needs, or certification.
+Section 16 describes the future MVP and remains a frozen design, not the current
+IA-03 coding boundary.
 
 NEXT:
-Supply a separate IA-03 coding prompt after independent review of this governance
-change. Completion of IA-03 does not authorize IA-04 or any later slice.
+Independently review/merge S0-IA-AUTH-03R1, then supply a separate IA-03 coding
+prompt. Completion of IA-03 does not authorize IA-04 or any later slice.
