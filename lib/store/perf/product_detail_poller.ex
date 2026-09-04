@@ -169,8 +169,6 @@ defmodule Store.Perf.ProductDetailPoller do
   end
 
   defp normalize_metadata_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_metadata_value(value) when is_boolean(value), do: to_string(value)
-  defp normalize_metadata_value(nil), do: "nil"
   defp normalize_metadata_value(value), do: value
 
   defp print_snapshot(snapshot) do
