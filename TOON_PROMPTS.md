@@ -3,6 +3,38 @@ One task per prompt. No mixed responsibilities.
 
 ---
 
+## Performance/runtime Note contract
+
+For any TOON prompt that changes runtime behavior, designs a hot path, or
+requires performance or load evidence, the `Note` field must include the
+following fields when they apply:
+
+- `DATA LAYER`
+- `INDEXES`
+- `CACHE`
+- `REDIS STRUCTURE`
+- `TTL`
+- `INVALIDATION/CLEANUP`
+- `PUBSUB`
+- `STORE.REPO EFFECT`
+- `100K STATUS`
+- `MEMORY`: bounded process, ETS, cache, and transient resource state
+- `GC`: allocation, heap, and major or full-sweep considerations
+- `MAILBOX`: bounded long-lived process queues
+- `RESOURCE CLEANUP`: owner plus expiry or termination behavior
+- `POST-LOAD`: expected convergence after workload cooldown
+
+The memory/runtime fields are conditional. Do not force them onto a prompt that
+is purely documentation-only and has no runtime or performance relevance.
+
+The 100k review must reject designs that move contention away from PostgreSQL
+by creating one BEAM process per waiter, one timer or monitor per unbounded
+request, unbounded Redis state, unbounded ETS or cache state, unbounded Oban
+jobs, or unbounded mailboxes. The Note must answer where waiting state lives,
+whether it is bounded, who cleans it up, and what remains after cooldown.
+
+---
+
 ## Scaffolding Prompt (Whole project)
 
 | Field     | Content |
@@ -10,7 +42,7 @@ One task per prompt. No mixed responsibilities.
 | Task      | Scaffold the Store single-tenant blueprint kernel + packs skeleton with constitutional laws and CI enforcement gates. |
 | Objective | Create a reusable baseline repo where identity/governance is P0 and feature packs are added without drift. |
 | Output    | Project compiles; `mix check` passes; docs under `docs/governance`, `docs/agent_notes`, `docs/phases`; directory structure matches blueprint. |
-| Note      | MUST be single-tenant: NO tenant_id columns, NO tenant routing, NO marketplace semantics. MUST document: UUIDv7 PKs, deterministic binary UUID sort law (BAN UUID string sorting), lock ordering law, polyglot ID surface policy, order_ref policy, global uniqueness constraints (slugs/SKUs/coupons/order_ref). MUST add `mix check` gates: (1) no Repo in web, (2) moduledoc required, (3) docs-first notes required. |
+| Note      | MUST be single-tenant: NO tenant_id columns, NO tenant routing, NO marketplace semantics. MUST document: UUIDv7 PKs, deterministic binary UUID sort law (BAN UUID string sorting), lock ordering law, polyglot ID surface policy, order_ref policy, global uniqueness constraints (slugs/SKUs/coupons/order_ref). MUST add `mix check` gates: (1) no Repo in web, (2) moduledoc required, (3) docs-first notes required. For runtime-relevant work, apply the Performance/runtime Note contract above. |
 
 ---
 
@@ -21,7 +53,7 @@ One task per prompt. No mixed responsibilities.
 | Task      | Create governance docs under `docs/governance/` exactly as specified by the blueprint. |
 | Objective | Make lifecycle/idempotency/audit/retention/step-up/enforcement rules authoritative and stable across projects. |
 | Output    | Files created: state_machines.md, idempotency.md, audit_and_pii.md, retention.md, step_up.md, enforcement_gates.md, performance_scaling.md. |
-| Note      | MUST ensure docs contain no multi-tenant assumptions. MUST include global uniqueness constraints and single-tenant actor model (scope by user_id only). |
+| Note      | MUST ensure docs contain no multi-tenant assumptions. MUST include global uniqueness constraints and single-tenant actor model (scope by user_id only). For runtime-relevant governance, include the Performance/runtime Note contract fields and the `PERF-MEM-001`, `PERF-GC-001`, `PERF-MBOX-001`, and `PERF-RESOURCE-001` invariants. |
 
 ---
 
