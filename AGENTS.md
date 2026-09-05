@@ -10,6 +10,24 @@ Branches isolate Git history. Worktrees isolate execution. Ownership rules preve
 
 All three controls are mandatory for parallel work.
 
+### Active workstream registry (MANDATORY)
+
+Before beginning any work, agents MUST read `docs/agent_rules/active_workstreams.md`.
+
+That registry defines the current active workstreams, branches, worktrees, parent authority, owned domains/resources, shared boundaries, exclusions, pending ownership-relevant PRs, and lifecycle state.
+
+If the registry conflicts with the actual Git state (path, branch, upstream, or declared ownership), STOP.
+
+Do not hardcode transient SHAs or changing workstream statuses into this file; record those in the registry only.
+
+### Persistent vs temporary worktrees
+
+Persistent programme worktrees host long-lived hardening programmes (for example main, S0, Subscriptions, Platform). They remain until the programme itself is formally closed.
+
+Temporary task/integration/review/governance worktrees are disposable. Create them only when needed and remove them after merge/verification according to Completion and cleanup.
+
+Do not create a permanent integration worktree.
+
 ### Permanent `main` worktree
 
 The repository maintains one permanent local `main` worktree.
@@ -260,7 +278,7 @@ Parallel work requires all three.
 
 ## Rule Sources (Authoritative)
 1) `AGENTS.md`
-2) `docs/agent_rules/`
+2) `docs/agent_rules/` (including `docs/agent_rules/active_workstreams.md` for current workstream topology/ownership)
 3) `docs/governance/`
 4) `docs/phases/`
 5) `docs/agent_notes/phase_XX_docs.md`
@@ -405,15 +423,52 @@ Parallel work requires all three.
 ---
 
 ## Git Sync Authority (Code Repo) (MANDATORY)
-- `git pull --rebase`
-- `git push`
-- `git status -sb` must show `main...origin/main`
+
+Synchronization is branch-aware. Do not assume every worktree is on `main`.
+
+### Permanent `main` worktree
+
+1. `git fetch origin`
+2. Fast-forward only: `git merge --ff-only origin/main` when behind and a strict ancestor
+3. Prove clean and equal: `HEAD == origin/main`, branch `main`, `git status -sb` clean
+
+Never use `git pull --rebase`, `git rebase`, `git reset --hard`, or force push on the permanent main worktree.
+
+### Non-main workstream worktrees
+
+1. `git fetch origin`
+2. Verify the current branch, upstream, and parent authority against `docs/agent_rules/active_workstreams.md`
+3. Do **not** automatically `git pull`, `git pull --rebase`, or rebase
+4. Synchronize only with an explicitly authorized fast-forward or integration operation
+5. Never rewrite a published long-lived branch without explicit authorization
+6. No force push without explicit authorization
+
+End-of-session status MUST reference the **current** branch and its upstream (for example `hardening/subscriptions...origin/hardening/subscriptions`), not require `main...origin/main` in every worktree.
+
+### Agent start contract
+
+Every agent opened in a persistent worktree MUST begin by checking:
+
+```bash
+pwd
+git branch --show-current
+git status -sb
+git rev-parse HEAD
+git rev-parse @{upstream}   # when an upstream exists
+git fetch origin
+```
+
+Then read the matching entry in `docs/agent_rules/active_workstreams.md` and explicitly state:
+
+`WORKSTREAM` / `PATH` / `BRANCH` / `HEAD` / `UPSTREAM` / `OWNED AREA` / `EXCLUDED AREA`
+
+before modifying anything. On any conflict with the registry: STOP.
 
 ---
 
 ## Closure Protocol (MUST)
 - `mix check` passes
-- Git: `git pull --rebase` OK, `git push` OK, `git status -sb` clean vs origin
+- Git: branch-aware sync complete per Git Sync Authority; `git push` OK when publishing; `git status -sb` clean vs the **current** upstream
 - Beads: `bd dolt test` OK
 - Phase close: Beads DB push to `origin`
 - Close bead:
@@ -423,8 +478,8 @@ Parallel work requires all three.
 
 ## End of session (MANDATORY)
 1) `mix check` (if anything changed)
-2) `git pull --rebase`
-3) `git push`
-4) `git status -sb`
+2) Branch-aware sync per Git Sync Authority (no blanket `git pull --rebase`)
+3) `git push` (only when publishing commits from the current workstream branch)
+4) `git status -sb` (must be clean vs the **current** branch upstream)
 5) `bd status`
 6) Optional daily: stop service → `dolt push origin main` → start service
