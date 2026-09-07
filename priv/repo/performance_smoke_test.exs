@@ -95,6 +95,7 @@ defmodule Store.PerformanceSmoke.Config do
             hll_max_rel_error: 0.02,
             concurrency_users: 20,
             provider_fault_users: 10,
+            provider_fault_max_concurrency: 1,
             provider_fault_delay_ms: 2_000,
             provider_fault_modes: [:slow, :timeout, :error],
             provider_fault_db_share_max_ratio: 0.25,
@@ -219,6 +220,27 @@ defmodule Store.PerformanceSmoke.Config do
       run_id: run_id,
       redis_prefix: "store:perf:#{run_id}",
       report_path: Store.Perf.ChaosProfile.report_path(Store.Perf.ChaosProfile.current_profile())
+    }
+    |> assign_provider_fault_max_concurrency()
+  end
+
+  @doc """
+  Bound simultaneous provider-fault workers to quarter of the Store.Repo pool.
+
+  This keeps geometric peak utilization at most 0.25 of pool size, below the
+  strictest provider-fault pool-utilization gate (0.35 for :slow).
+  """
+  @spec provider_fault_max_concurrency(pos_integer(), pos_integer()) :: pos_integer()
+  def provider_fault_max_concurrency(users, repo_pool_size)
+      when is_integer(users) and users >= 1 and is_integer(repo_pool_size) and repo_pool_size >= 1 do
+    min(users, max(1, div(repo_pool_size, 4)))
+  end
+
+  defp assign_provider_fault_max_concurrency(%__MODULE__{} = config) do
+    %{
+      config
+      | provider_fault_max_concurrency:
+          provider_fault_max_concurrency(config.provider_fault_users, config.repo_pool_size)
     }
   end
 
@@ -1243,6 +1265,15 @@ defmodule Store.PerformanceSmokeTest do
   alias Store.Repo
   alias Store.TestSupport.StripeAPIStub
 
+  @tag :plat_perf_02
+  test "provider_fault_max_concurrency derives quarter-pool headroom" do
+    assert Config.provider_fault_max_concurrency(50, 40) == 10
+    assert Config.provider_fault_max_concurrency(10, 40) == 10
+    assert Config.provider_fault_max_concurrency(100, 40) == 10
+    assert Config.provider_fault_max_concurrency(100, 200) == 50
+    assert Config.provider_fault_max_concurrency(1, 40) == 1
+  end
+
   setup_all do
     # Defensive cleanup: detach any stale telemetry handlers from prior crashed runs.
     # If the script was killed mid-test, handlers matching our prefix may linger.
@@ -1499,6 +1530,7 @@ defmodule Store.PerformanceSmokeTest do
     Gate.assert_observer_summary!(observer_summary)
   end
 
+  @tag :plat_perf_02
   test "payment provider fault scenarios isolate DB pressure from provider latency", %{
     config: config
   } do
@@ -1511,6 +1543,22 @@ defmodule Store.PerformanceSmokeTest do
         end)
 
       summary = run_provider_fault_scenario(config, fixture, prepared_checkouts, mode)
+
+      assert length(prepared_checkouts) == config.provider_fault_users
+      assert summary.sample_count == config.provider_fault_users
+      assert summary.provider_fault_users == config.provider_fault_users
+      assert summary.provider_fault_max_concurrency == config.provider_fault_max_concurrency
+      assert summary.repo_pool_size == config.repo_pool_size
+
+      assert summary.peak_in_flight <= config.provider_fault_max_concurrency,
+             "provider-fault in-flight #{summary.peak_in_flight} exceeded bound #{config.provider_fault_max_concurrency}"
+
+      assert summary.repo_query_event_count >= summary.sample_count
+
+      if mode in [:error, :timeout] do
+        assert_in_delta summary.mean_query_count_per_request, 16.0, 0.01
+      end
+
       Gate.assert_provider_fault_summary!(summary)
     end)
   end
@@ -1893,6 +1941,7 @@ defmodule Store.PerformanceSmokeTest do
 
   defp run_provider_fault_scenario(config, fixture, prepared_checkouts, mode) do
     scenario_name = "provider_fault_#{mode}"
+    in_flight = :atomics.new(2, [])
 
     repo_filter = fn _event, _measurements, metadata ->
       Map.get(metadata, :repo) == Store.Repo
@@ -1909,13 +1958,15 @@ defmodule Store.PerformanceSmokeTest do
                 prepared_checkouts
                 |> async_stream_with_stripe_stub(
                   fn prepared ->
-                    Store.Payments.create_intent_for_order(
-                      prepared.actor,
-                      prepared.checkout_key,
-                      fixture.payment_input
-                    )
+                    track_provider_fault_in_flight(in_flight, fn ->
+                      Store.Payments.create_intent_for_order(
+                        prepared.actor,
+                        prepared.checkout_key,
+                        fixture.payment_input
+                      )
+                    end)
                   end,
-                  max_concurrency: config.provider_fault_users,
+                  max_concurrency: config.provider_fault_max_concurrency,
                   ordered: false,
                   timeout: :infinity
                 )
@@ -1938,11 +1989,36 @@ defmodule Store.PerformanceSmokeTest do
         duration_events,
         repo_events,
         observer_summary,
-        config
+        config,
+        peak_in_flight: :atomics.get(in_flight, 2)
       )
 
     Reporter.record_provider_fault(summary)
     summary
+  end
+
+  defp track_provider_fault_in_flight(in_flight, fun) when is_function(fun, 0) do
+    current = :atomics.add_get(in_flight, 1, 1)
+    update_provider_fault_peak_in_flight(in_flight, current)
+
+    try do
+      fun.()
+    after
+      :atomics.sub(in_flight, 1, 1)
+    end
+  end
+
+  defp update_provider_fault_peak_in_flight(in_flight, current) do
+    peak = :atomics.get(in_flight, 2)
+
+    if current > peak do
+      case :atomics.compare_exchange(in_flight, 2, peak, current) do
+        :ok -> :ok
+        _ -> update_provider_fault_peak_in_flight(in_flight, current)
+      end
+    else
+      :ok
+    end
   end
 
   defp with_provider_fault_stub(config, mode, fun) when is_function(fun, 0) do
@@ -1986,10 +2062,12 @@ defmodule Store.PerformanceSmokeTest do
          duration_events,
          repo_events,
          observer_summary,
-         config
+         config,
+         opts \\ []
        ) do
     request_count = length(prepared_checkouts)
     success_count = Enum.count(results, &match?({:ok, _}, &1))
+    peak_in_flight = Keyword.get(opts, :peak_in_flight, 0)
 
     error_counts =
       results
@@ -2003,6 +2081,14 @@ defmodule Store.PerformanceSmokeTest do
     total_repo_query_ms = Enum.sum(Enum.map(repo_events, & &1.query_time_ms))
     mean_repo_queue_ms = total_repo_queue_ms / max(request_count, 1)
     mean_repo_query_ms = total_repo_query_ms / max(request_count, 1)
+    repo_query_event_count = length(repo_events)
+
+    mean_query_count_per_request =
+      if request_count > 0 do
+        repo_query_event_count / request_count
+      else
+        0.0
+      end
 
     mean_db_share_ratio =
       if duration_stats.mean_ms > 0.0 do
@@ -2053,6 +2139,12 @@ defmodule Store.PerformanceSmokeTest do
       provider_fault_db_share_max_ratio: config.provider_fault_db_share_max_ratio,
       provider_fault_pool_utilization_max_ratio: pool_utilization_max_ratio,
       provider_fault_lock_wait_max_ratio: config.provider_fault_lock_wait_max_ratio,
+      provider_fault_users: config.provider_fault_users,
+      provider_fault_max_concurrency: config.provider_fault_max_concurrency,
+      repo_pool_size: config.repo_pool_size,
+      repo_query_event_count: repo_query_event_count,
+      mean_query_count_per_request: mean_query_count_per_request,
+      peak_in_flight: peak_in_flight,
       telemetry_sample_count_expected: request_count,
       pass: if(enforced, do: expectation_pass and pressure_pass and telemetry_pass, else: true)
     }
@@ -2286,6 +2378,10 @@ end
 
 :ok = Store.PerformanceSmoke.Reporter.reset()
 
+if System.get_env("STORE_PERF_FOCUS") == "plat_perf_02" do
+  ExUnit.configure(exclude: [:test], include: [:plat_perf_02])
+end
+
 test_results = ExUnit.run()
 
 failure_count =
@@ -2331,6 +2427,7 @@ summary = %{
     concurrency_users: run_config.concurrency_users,
     checkout_variant_pool_size: run_config.checkout_variant_pool_size,
     provider_fault_users: run_config.provider_fault_users,
+    provider_fault_max_concurrency: run_config.provider_fault_max_concurrency,
     provider_fault_delay_ms: run_config.provider_fault_delay_ms,
     provider_fault_modes: run_config.provider_fault_modes,
     thundering_herd_users: run_config.thundering_herd_users,
