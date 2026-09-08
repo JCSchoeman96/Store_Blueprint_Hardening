@@ -29,6 +29,15 @@ defmodule Store.TestSupport.ProviderWaitOwnershipProbe do
           diagnostic: String.t()
         }
 
+  @type barrier_snapshot :: %{
+          expected_cohort: pos_integer(),
+          admitted_count: non_neg_integer(),
+          barrier_reached_count: non_neg_integer(),
+          waiter_count: non_neg_integer(),
+          released?: boolean(),
+          release_timeout?: boolean()
+        }
+
   @spec configure!(keyword()) :: :ok
   def configure!(opts) when is_list(opts) do
     expected_cohort = Keyword.fetch!(opts, :expected_cohort)
@@ -132,6 +141,19 @@ defmodule Store.TestSupport.ProviderWaitOwnershipProbe do
     end
   end
 
+  @doc false
+  @spec signal_release!() :: :ok
+  def signal_release! do
+    case Application.get_env(:store, @env_key) do
+      %{} = state ->
+        broadcast_release(state)
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
   @spec reset!() :: :ok
   def reset! do
     safe_ets_delete(@waiters_table)
@@ -148,7 +170,7 @@ defmodule Store.TestSupport.ProviderWaitOwnershipProbe do
   end
 
   @doc false
-  @spec barrier_snapshot() :: map() | nil
+  @spec barrier_snapshot() :: barrier_snapshot() | nil
   def barrier_snapshot do
     case Application.get_env(:store, @env_key) do
       %{enabled: true} = state ->
@@ -157,12 +179,25 @@ defmodule Store.TestSupport.ProviderWaitOwnershipProbe do
           admitted_count: admitted_count(state),
           barrier_reached_count: barrier_reached_count(state),
           waiter_count: waiter_count(state),
-          released?: released?(state)
+          released?: released?(state),
+          release_timeout?: release_timeout?(state)
         }
 
       _ ->
         nil
     end
+  end
+
+  @doc false
+  @spec evaluate_ownership_proof_for_test!() :: proof()
+  def evaluate_ownership_proof_for_test! do
+    evaluate_ownership_proof(fetch_state!())
+  end
+
+  @doc false
+  @spec finalize_proof_for_test(proof()) :: proof()
+  def finalize_proof_for_test(proof) when is_map(proof) do
+    finalize_proof(proof)
   end
 
   @spec expected_probe_cohort(pos_integer(), pos_integer()) :: pos_integer()
@@ -533,6 +568,9 @@ defmodule Store.TestSupport.ProviderWaitOwnershipProbe do
   end
 
   defp released?(%{released: released}), do: :atomics.get(released, 1) == 1
+
+  defp release_timeout?(%{release_timeout: release_timeout}),
+    do: :atomics.get(release_timeout, 1) == 1
 
   defp release_waiters(state), do: broadcast_release(state)
 

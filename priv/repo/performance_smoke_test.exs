@@ -1382,6 +1382,139 @@ defmodule Store.PerformanceSmokeTest do
     ProviderWaitOwnershipProbe.reset!()
   end
 
+  @tag :plat_perf_02
+  test "provider-wait durable release completes waiters registered before RELEASED" do
+    parent = self()
+    expected = 1
+
+    sampler =
+      spawn_link(fn ->
+        receive do
+          {:provider_wait_cohort_ready, ^expected} -> :ok
+        after
+          5_000 -> flunk("cohort never became ready for durable-release test")
+        end
+      end)
+
+    :ok =
+      ProviderWaitOwnershipProbe.configure!(
+        expected_cohort: expected,
+        hold_checkout?: false,
+        sampler: sampler,
+        after_barrier_reached: fn _reached ->
+          send(parent, {:registered_before_wait, self()})
+
+          receive do
+            :enter_wait_path -> :ok
+          after
+            5_000 ->
+              flunk("waiter never received enter_wait_path")
+          end
+        end
+      )
+
+    _ = ProviderWaitOwnershipProbe.capture_baseline!()
+
+    waiter = Task.async(fn -> ProviderWaitOwnershipProbe.maybe_enter_barrier() end)
+    assert_receive {:registered_before_wait, _waiter_pid}, 1_000
+
+    snapshot_before_release = ProviderWaitOwnershipProbe.barrier_snapshot()
+    assert snapshot_before_release.waiter_count == 1
+    assert snapshot_before_release.released? == false
+
+    # Coordinator transitions to RELEASED while the waiter is registered but has
+    # not yet entered wait_for_release/1 — the durable flag must unblock it.
+    ProviderWaitOwnershipProbe.signal_release!()
+    assert ProviderWaitOwnershipProbe.barrier_snapshot().released? == true
+
+    send(waiter.pid, :enter_wait_path)
+    assert Task.await(waiter, 1_000) == :ok
+
+    snapshot = ProviderWaitOwnershipProbe.barrier_snapshot()
+    assert snapshot.released? == true
+    assert snapshot.release_timeout? == false
+
+    proof = ProviderWaitOwnershipProbe.evaluate_ownership_proof_for_test!()
+    finalized = ProviderWaitOwnershipProbe.finalize_proof_for_test(proof)
+    assert finalized.status != :proof_incomplete
+    refute finalized.diagnostic =~ "PROVIDER_WAIT_BARRIER_RELEASE_TIMEOUT"
+
+    ProviderWaitOwnershipProbe.release_all!()
+    ProviderWaitOwnershipProbe.reset!()
+  end
+
+  @tag :plat_perf_02
+  test "provider-wait release timeout cannot preserve proof_passed" do
+    parent = self()
+    expected = 1
+
+    sampler =
+      spawn_link(fn ->
+        receive do
+          {:provider_wait_cohort_ready, ^expected} -> :ok
+        after
+          5_000 -> :ok
+        end
+      end)
+
+    :ok =
+      ProviderWaitOwnershipProbe.configure!(
+        expected_cohort: expected,
+        hold_checkout?: false,
+        sampler: sampler,
+        release_wait_ms: 50,
+        after_barrier_reached: fn _reached ->
+          send(parent, {:at_barrier_before_timeout_wait, self()})
+
+          receive do
+            :begin_timeout_wait -> :ok
+          after
+            5_000 ->
+              flunk("waiter never received begin_timeout_wait")
+          end
+        end
+      )
+
+    _ = ProviderWaitOwnershipProbe.capture_baseline!()
+
+    {waiter_pid, waiter_ref} =
+      spawn_monitor(fn ->
+        ProviderWaitOwnershipProbe.maybe_enter_barrier()
+      end)
+
+    assert_receive {:at_barrier_before_timeout_wait, ^waiter_pid}, 1_000
+
+    # barrier_reached is already exact here; ownership may be sampled before the
+    # waiter proceeds into wait_for_release/1 and times out.
+    passed = ProviderWaitOwnershipProbe.evaluate_ownership_proof_for_test!()
+    assert passed.status == :proof_passed, inspect(passed)
+
+    send(waiter_pid, :begin_timeout_wait)
+
+    assert_receive {:DOWN, ^waiter_ref, :process, ^waiter_pid, reason}, 1_000
+
+    assert match?({%RuntimeError{}, _stack}, reason) or match?(%RuntimeError{}, reason)
+
+    message =
+      case reason do
+        {%RuntimeError{message: message}, _stack} -> message
+        %RuntimeError{message: message} -> message
+      end
+
+    assert message =~ "PROVIDER_WAIT_BARRIER_RELEASE_TIMEOUT"
+
+    snapshot = ProviderWaitOwnershipProbe.barrier_snapshot()
+    assert snapshot.release_timeout? == true
+    assert snapshot.released? == false
+
+    finalized = ProviderWaitOwnershipProbe.finalize_proof_for_test(passed)
+    assert finalized.status == :proof_incomplete
+    assert finalized.diagnostic =~ "PROVIDER_WAIT_BARRIER_RELEASE_TIMEOUT"
+
+    ProviderWaitOwnershipProbe.release_all!()
+    ProviderWaitOwnershipProbe.reset!()
+  end
+
   setup_all do
     # Defensive cleanup: detach any stale telemetry handlers from prior crashed runs.
     # If the script was killed mid-test, handlers matching our prefix may linger.
