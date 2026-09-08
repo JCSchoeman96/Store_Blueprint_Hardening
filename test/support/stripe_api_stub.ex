@@ -239,16 +239,32 @@ defmodule Store.TestSupport.StripeAPIStub do
   defp respond_for_action(conn, endpoint, params, success_fun) do
     case resolve_action(endpoint, params) do
       {:ok, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         Req.Test.json(conn, success_fun.(params))
 
       {:timeout, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         timeout_response(conn, endpoint)
 
       {:error, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         provider_error_response(conn, endpoint)
+    end
+  end
+
+  defp provider_wait_barrier_enter do
+    if Code.ensure_loaded?(Store.TestSupport.ProviderWaitOwnershipProbe) and
+         function_exported?(
+           Store.TestSupport.ProviderWaitOwnershipProbe,
+           :maybe_enter_barrier,
+           0
+         ) do
+      Store.TestSupport.ProviderWaitOwnershipProbe.maybe_enter_barrier()
+    else
+      :ok
     end
   end
 
