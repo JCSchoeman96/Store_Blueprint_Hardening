@@ -4,6 +4,7 @@ defmodule Store.TestSupport.StripeAPIStub do
   import ExUnit.Assertions
 
   alias Store.Perf.ChaosProfile
+  alias Store.TestSupport.ProviderWaitOwnershipProbe
 
   @stub_name Store.Payments.Providers.Stripe
   @chaos_override_key :stripe_perf_chaos_override
@@ -256,13 +257,9 @@ defmodule Store.TestSupport.StripeAPIStub do
   end
 
   defp provider_wait_barrier_enter do
-    if Code.ensure_loaded?(Store.TestSupport.ProviderWaitOwnershipProbe) and
-         function_exported?(
-           Store.TestSupport.ProviderWaitOwnershipProbe,
-           :maybe_enter_barrier,
-           0
-         ) do
-      Store.TestSupport.ProviderWaitOwnershipProbe.maybe_enter_barrier()
+    if Code.ensure_loaded?(ProviderWaitOwnershipProbe) and
+         function_exported?(ProviderWaitOwnershipProbe, :maybe_enter_barrier, 0) do
+      ProviderWaitOwnershipProbe.maybe_enter_barrier()
     else
       :ok
     end

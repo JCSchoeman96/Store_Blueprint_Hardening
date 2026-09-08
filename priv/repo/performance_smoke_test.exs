@@ -1312,6 +1312,76 @@ defmodule Store.PerformanceSmokeTest do
     assert proof.diagnostic =~ "STORE_REPO_OWNERSHIP_RELEASED_DURING_PROVIDER_WAIT"
   end
 
+  @tag :plat_perf_02
+  test "provider-wait cohort ready requires every admitted waiter to reach the barrier" do
+    expected = 2
+    parent = self()
+
+    sampler =
+      spawn_link(fn ->
+        receive do
+          {:provider_wait_cohort_ready, ^expected} ->
+            snapshot = ProviderWaitOwnershipProbe.barrier_snapshot()
+            send(parent, {:cohort_ready, snapshot})
+        after
+          5_000 ->
+            send(parent, {:cohort_ready_timeout, ProviderWaitOwnershipProbe.barrier_snapshot()})
+        end
+      end)
+
+    :ok =
+      ProviderWaitOwnershipProbe.configure!(
+        expected_cohort: expected,
+        hold_checkout?: false,
+        sampler: sampler,
+        after_admit: fn
+          1 ->
+            send(parent, {:first_gated, self()})
+
+            receive do
+              :continue_first_waiter -> :ok
+            after
+              5_000 ->
+                flunk("first waiter never received continue_first_waiter")
+            end
+
+          _slot ->
+            send(parent, {:later_admitted, self()})
+            :ok
+        end,
+        after_barrier_reached: fn reached ->
+          send(parent, {:barrier_reached, reached, ProviderWaitOwnershipProbe.barrier_snapshot()})
+        end
+      )
+
+    _ = ProviderWaitOwnershipProbe.capture_baseline!()
+
+    first = Task.async(fn -> ProviderWaitOwnershipProbe.maybe_enter_barrier() end)
+    assert_receive {:first_gated, first_pid}, 1_000
+
+    second = Task.async(fn -> ProviderWaitOwnershipProbe.maybe_enter_barrier() end)
+    assert_receive {:later_admitted, _second_pid}, 1_000
+    assert_receive {:barrier_reached, 1, mid_snapshot}, 1_000
+
+    assert mid_snapshot.admitted_count == expected
+    assert mid_snapshot.barrier_reached_count == 1
+    assert mid_snapshot.waiter_count == 1
+    refute_received {:cohort_ready, _}
+
+    send(first_pid, :continue_first_waiter)
+
+    assert_receive {:barrier_reached, 2, _final_reach_snapshot}, 1_000
+    assert_receive {:cohort_ready, snapshot}, 1_000
+    assert snapshot.admitted_count == expected
+    assert snapshot.barrier_reached_count == expected
+    assert snapshot.waiter_count == expected
+
+    ProviderWaitOwnershipProbe.release_all!()
+    assert Task.await(first, 1_000) == :ok
+    assert Task.await(second, 1_000) == :ok
+    ProviderWaitOwnershipProbe.reset!()
+  end
+
   setup_all do
     # Defensive cleanup: detach any stale telemetry handlers from prior crashed runs.
     # If the script was killed mid-test, handlers matching our prefix may linger.
