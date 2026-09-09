@@ -12,29 +12,201 @@ Do not treat transient SHAs below as permanent law; they are commissioning/statu
 
 ## Purpose
 
-- Name the persistent programme worktrees and their branches
-- Declare parent authority, owned domains, exclusions, and shared boundaries
+- Name the four persistent programme worktrees and their branches
+- Define **governance authority**, **development base**, and **integration base** as distinct concepts
+- Declare owned domains, exclusions, and shared boundaries
 - Record lifecycle state so agents do not start unauthorized implementation
-- Point to pending PRs that affect ownership or baseline sync
+- Point to pending PRs that affect ownership
+- Make independent parallel activation of S0, PLATFORM, and SUBS legally possible after this governance is accepted
+
+This registry grants **no** implementation authority by itself. Each hardening lane requires a separate post-merge activation gate.
+
+---
+
+## Topology (parallel hardening)
+
+```text
+                         MAIN
+              governance + integration authority
+                          │
+             ┌────────────┼────────────┐
+             │            │            │
+             ▼            ▼            ▼
+            S0         PLATFORM       SUBS
+          parallel      parallel     parallel
+          hardening     hardening    hardening
+             │            │            │
+             └────────────┼────────────┘
+                          │
+                 integration-time
+                    convergence
+                          │
+                          ▼
+                         MAIN
+```
+
+S0 is **not** the mandatory development parent of PLATFORM or SUBS.
+PLATFORM and SUBS do **not** wait for S0 merely because S0 moved.
+Cross-workstream dependencies are evaluated at the **task** level.
+Convergence with canonical `main` remains mandatory before integration.
+
+---
+
+## Three authority concepts (MANDATORY)
+
+### A. Governance authority
+
+```text
+GOVERNANCE AUTHORITY
+=
+latest accepted canonical governance on origin/main
+```
+
+All persistent workstreams MUST:
+
+```bash
+git fetch origin
+```
+
+and read canonical governance from `origin/main`.
+
+A lane does **not** need to merge `main` merely to read current governance.
+
+Approved read-only pattern:
+
+```bash
+git show origin/main:AGENTS.md
+git show origin/main:docs/agent_rules/active_workstreams.md
+```
+
+This covers the case where an older development branch does not physically contain the newest registry.
+
+### B. Development base
+
+```text
+DEVELOPMENT BASE
+=
+exact accepted code SHA against which one hardening lane independently works
+```
+
+Each of S0, PLATFORM, and SUBS owns its own development base.
+
+Another lane moving does **not** automatically invalidate it.
+
+A development base must be:
+
+- explicit
+- provenanced
+- verified
+- frozen for the relevant activation/batch
+
+Do not describe transient SHAs as permanent law.
+Candidate tip SHAs in this file are status evidence only until an activation gate accepts them.
+
+### C. Integration base
+
+```text
+INTEGRATION BASE
+=
+latest accepted canonical main authority against which a validated
+hardening stream must reconcile before integration
+```
+
+The integration base is intentionally allowed to differ from the development base.
+Ordinary independent hardening does **not** require continuous main synchronization.
+
+---
+
+## Development-base validity law
+
+A development base remains valid until specific evidence invalidates it.
+
+Valid reasons for `BASELINE_INVALIDATED`:
+
+- task requires an external capability absent from the base
+- critical shared architecture change makes that base unsafe
+- canonical governance explicitly revokes the base
+- the workstream's own branch authority moved unexpectedly
+- correctness cannot be proven against that base
+
+**Not** sufficient by itself:
+
+- another workstream has newer commits
+- main is ahead
+- S0 is ahead of SUBS (or any other independent-lane tip comparison)
+
+---
+
+## Task-level dependency law
+
+Replace global workstream serialization with task-level dependency admission.
+
+```text
+SELECT READY TASK
+       ↓
+Does this exact task require an external change
+not present in the lane's development base?
+       │
+       ├── YES
+       │     ↓
+       │ BLOCKED_EXTERNAL_DEPENDENCY
+       │     ↓
+       │ do not execute this task
+       │     ↓
+       │ consider another independent READY task
+       │
+       └── NO
+             ↓
+       continue admission
+```
+
+Then evaluate shared authority:
+
+```text
+Does this exact task modify a shared boundary?
+       │
+       ├── YES + authority not assigned
+       │       ↓
+       │ BLOCKED_SHARED_AUTHORITY
+       │
+       └── NO / authority assigned
+               ↓
+            executable
+```
+
+A blocked task must **not** globally block unrelated tasks.
+
+Only when no executable READY work exists may the lane report:
+
+```text
+NO_EXECUTABLE_READY_WORK
+→ STOP
+```
 
 ---
 
 ## Persistent workstreams
 
-| ID | Path | Branch | Parent authority | Lifecycle state | Writable by long-lived agent? |
-| --- | --- | --- | --- | --- | --- |
-| `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | `origin/main` | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | Existing S0 authority (`origin/hardening/s0-baseline`) | `BASELINE_STALE` / `SYNC_REQUIRED` | Yes (topology / sync only until re-verified; **no IA-03**) |
-| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | S0 authority (`origin/hardening/s0-baseline` at branch creation) | `BOOTSTRAPPED` / `WAITING_FOR_BASELINE_SYNC` | Yes (topology only until activated) |
-| `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `origin/main` | `BOOTSTRAPPED` / `WAITING_FOR_BASELINE_SYNC` | Yes (topology only until activated) |
+| ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
+| --- | --- | --- | --- | --- | --- | --- |
+| `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
+| `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
+| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
 
-Temporary worktrees (governance / integration / review / task) may exist under names such as `Store_Blueprint_Hardening-governance-*`, `Store_Blueprint_Hardening-integration-*`, or `Store_Blueprint_Hardening-review-*`. They are disposable. Do **not** create a permanent integration worktree.
+Temporary worktrees (governance / integration / review / task / remediation) may exist under names such as `Store_Blueprint_Hardening-governance-*`, `Store_Blueprint_Hardening-integration-*`, `Store_Blueprint_Hardening-review-*`, `Store_Blueprint_Hardening-task-*`, or `Store_Blueprint_Hardening-remediation-*`. They are disposable. Do **not** create a permanent integration worktree. Do **not** create a fifth programme lane.
 
 ---
 
 ## Ownership
 
 ### MAIN
+
+Role:
+
+- canonical governance authority
+- canonical integration / convergence authority
+- release authority
 
 Owns:
 
@@ -45,7 +217,11 @@ Owns:
 
 Implementation in the permanent main worktree: **NONE**.
 
+Bounded governance/integration work should use temporary dedicated worktrees/branches.
+
 ### S0
+
+Role: independent general/core hardening and InventoryAdmission programme.
 
 Primary authority:
 
@@ -53,16 +229,50 @@ Primary authority:
 - inventory reservation / admission architecture
 - inventory contention / concurrency
 - IA lifecycle / recovery
-- S0 closure
+- S0-specific closure
 
 Explicit exclusion:
 
 - subscription commercial lifecycle
 - dependency / platform modernization except explicit shared task
 
-**Synchronization gate:** S0 advanced by merging PR #6 (S0-IA-AUTH-03R1) into `hardening/s0-baseline`. Latest canonical `main` has **not** yet been integrated into that S0 authority. Lifecycle is therefore `BASELINE_STALE` / `SYNC_REQUIRED`. This registry correction does **not** authorize IA-03 implementation.
+S0 is **not** the mandatory development parent of PLATFORM or SUBS.
+
+**Activation:** this registry does **not** authorize IA-03 or other S0 implementation. State remains `BOOTSTRAPPED` until an independent S0 activation gate accepts a development base and transitions the lane.
+
+### PLATFORM
+
+Role: independent security / platform / runtime hardening programme.
+
+Primary authority:
+
+- `mix.exs` / `mix.lock`
+- npm dependency graph
+- Hex / npm advisories
+- authentication framework / platform
+- OAuth / security infrastructure
+- HTTP / Req / Finch infrastructure
+- generic Redis infrastructure
+- CI / static analysis methodology
+- Dialyzer / Sobelow methodology
+- memory / GC / runtime methodology
+- cross-cutting runtime tooling
+
+Explicit exclusion:
+
+- `InventoryAdmission.Redis` business semantics (requires S0 authority)
+- S0 architecture
+- subscription commercial rules
+
+Exception note: generic Redis infrastructure ≠ InventoryAdmission Redis business semantics.
+
+PLATFORM may progress without S0 finishing, unless an exact task declares a validated external dependency.
+
+**Activation:** do not begin Platform implementation from this registry alone. State remains `BOOTSTRAPPED` until an independent PLATFORM activation gate runs. Do **not** fast-forward the platform branch from registry updates alone.
 
 ### SUBS (Subscription Backbone)
+
+Role: independent Subscription hardening programme.
 
 Primary authority:
 
@@ -87,39 +297,10 @@ Explicit exclusion until separately authorized:
 - Orders core
 - generic Entitlements infrastructure
 
-**Activation gate:** do not begin Subscription Backbone Hardening (SBH) implementation merely because the worktree exists. Current state is `BOOTSTRAPPED` / `WAITING_FOR_BASELINE_SYNC` because:
+SUBS may progress without S0 finishing, unless an exact task declares a validated external dependency.
+SUBS does **not** continuously consume S0 as parent authority.
 
-- S0 has advanced to the PR #6 merge authority;
-- latest canonical `main` has not yet been integrated into latest S0;
-- the subscription branch must later be synchronized from the **accepted converged S0 authority** before SBH work starts.
-
-Do **not** start or authorize SBH-00 from this registry alone.
-
-### PLATFORM
-
-Primary authority:
-
-- `mix.exs` / `mix.lock`
-- npm dependency graph
-- Hex / npm advisories
-- authentication framework / platform
-- OAuth / security infrastructure
-- HTTP / Req / Finch infrastructure
-- generic Redis infrastructure
-- CI / static analysis
-- Dialyzer / Sobelow methodology
-- memory / GC / runtime methodology
-- cross-cutting runtime tooling
-
-Explicit exclusion:
-
-- `InventoryAdmission.Redis` business semantics (requires S0 authority)
-- S0 architecture
-- subscription commercial rules
-
-Exception note: generic Redis infrastructure ≠ InventoryAdmission Redis business semantics.
-
-**Activation gate:** `hardening/platform-security` currently has no independent commits ahead of `origin/main` and is behind latest canonical `main`. State is `BOOTSTRAPPED` / `WAITING_FOR_BASELINE_SYNC`. Platform activation must occur only after the control-plane convergence checkpoint. Do **not** fast-forward the platform branch from registry updates alone.
+**Activation:** do not begin Subscription Backbone Hardening (SBH) implementation merely because the worktree exists. State remains `BOOTSTRAPPED` until an independent SUBS activation gate runs. Do **not** start or authorize SBH-00 from this registry alone.
 
 ---
 
@@ -143,37 +324,137 @@ For each task touching one of these:
 
 No authority decision = no modification.
 
+Do not weaken this protection to gain parallelism.
+
 ---
 
 ## Workstream state machine
 
-Persistent programme workstreams use:
+Persistent hardening programmes use:
 
 ```text
 BOOTSTRAPPED
-    → BASELINE_VERIFIED
-    → READY
-    → ACTIVE
-    → VALIDATED
-    → READY_FOR_INTEGRATION
-    → INTEGRATING
-    → POST_INTEGRATION_REVIEW
-    → COMPLETE
+    ↓
+BASELINE_PINNED
+    ↓
+READY
+    ↓
+ACTIVE_PARALLEL
+    ↓
+VALIDATED
+    ↓
+INTEGRATION_SYNC_REQUIRED
+    ↓
+INTEGRATION_VERIFIED
+    ↓
+READY_FOR_INTEGRATION
+    ↓
+INTEGRATED
 ```
 
 `MAIN` uses `CANONICAL` instead of the implementation ladder.
 
-Exceptional:
+Exceptional states:
 
 ```text
-ACTIVE → BLOCKED_SHARED_AUTHORITY → STOP
-ACTIVE → BASELINE_STALE → SYNC_REQUIRED → STOP / SYNC DECISION
-BASELINE_STALE → BASELINE_VERIFIED → READY / ACTIVE
-  (only after an accepted controlled integration)
+BLOCKED_EXTERNAL_DEPENDENCY
+BLOCKED_SHARED_AUTHORITY
+BASELINE_INVALIDATED
+AUTHORITY_MOVED
 ```
 
-Do not silently continue implementation through either exceptional state.
-Do not transition S0 from `BASELINE_STALE` / `SYNC_REQUIRED` to `READY` / `ACTIVE` without that accepted integration.
+Task-level blockers are normally **task** states.
+Do not demote an entire workstream merely because one task is blocked.
+
+This governance PR does **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`.
+After merge, each lane must independently run its activation gate.
+
+---
+
+## Integration law (strict)
+
+Parallel development must not weaken integration safety.
+
+Before any hardening lane reaches `READY_FOR_INTEGRATION`:
+
+```text
+identify latest accepted canonical main
+    ↓
+enter INTEGRATION_SYNC_REQUIRED
+    ↓
+controlled reconciliation
+    ↓
+resolve conflicts
+    ↓
+complete relevant regression
+    ↓
+verify shared boundaries
+    ↓
+migration/snapshot verification if applicable
+    ↓
+exact-head CI
+    ↓
+independent review
+    ↓
+INTEGRATION_VERIFIED
+    ↓
+READY_FOR_INTEGRATION
+```
+
+Do **not** require continuous main synchronization during ordinary independent hardening.
+
+---
+
+## Independent activation after governance acceptance
+
+There is **no** global serial activation sequence of the form:
+
+```text
+main → S0 convergence → PLATFORM activation → SUBS activation
+```
+
+and **no** global:
+
+```text
+S0 → PLATFORM → SUBS
+```
+
+activation order.
+
+After this parallel-topology governance is accepted:
+
+```text
+                  GOVERNANCE ACCEPTED
+                         │
+              ┌──────────┼──────────┐
+              │          │          │
+              ▼          ▼          ▼
+          S0 GATE   PLATFORM GATE  SUBS GATE
+```
+
+- S0 may run its independent activation gate.
+- PLATFORM may run its independent activation gate.
+- SUBS may run its independent activation gate.
+
+No lane requires another lane to finish first unless its exact task declares a validated external dependency.
+
+This registry update does **not** run those gates.
+
+---
+
+## Next authorized control-plane action
+
+After this parallel-topology governance is accepted and verified:
+
+- S0 may run its independent activation gate.
+- PLATFORM may run its independent activation gate.
+- SUBS may run its independent activation gate.
+
+No lane requires another lane to finish first unless its exact task declares a validated external dependency.
+
+Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation.
+
+This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH implementation from this file alone.
 
 ---
 
@@ -187,53 +468,9 @@ Do not transition S0 from `BASELINE_STALE` / `SYNC_REQUIRED` to `READY` / `ACTIV
 
 | PR | Title / subject | Belongs to | Status | Resulting authority |
 | --- | --- | --- | --- | --- |
-| #6 | S0-IA-AUTH-03R1 governance correction (IA-03 Redis status/abandon boundary) | S0 | **MERGED** / **RESOLVED** into `hardening/s0-baseline` | `origin/hardening/s0-baseline` = `0fe372d1ef435b9826908ed41725457fdf78c034` |
+| #6 | S0-IA-AUTH-03R1 governance correction (IA-03 Redis status/abandon boundary) | S0 | **MERGED** / **RESOLVED** into `hardening/s0-baseline` | `origin/hardening/s0-baseline` tip observed below (candidate evidence only) |
 
 PR #6 authorized a governance/docs correction only. It did **not** implement IA-03.
-
----
-
-## Next authorized control-plane action
-
-After this registry reconciliation is merged and verified, the next authorized action is a **dedicated controlled main-to-S0 integration** workstream:
-
-```text
-latest canonical main
-    +
-latest hardening/s0-baseline
-    →
-dedicated controlled main-to-S0 integration workstream
-    →
-validation
-    →
-exact-head CI
-    →
-independent post-integration review
-```
-
-Until that completes:
-
-| Workstream | Forbidden |
-| --- | --- |
-| S0 | no IA-03 implementation |
-| SUBS | no SBH implementation |
-| PLATFORM | no Platform implementation |
-
-This section is a synchronization gate only. It does **not** authorize starting that integration from an unrelated task.
-
----
-
-## Intended activation order after convergence
-
-Sequencing information only — **not** current implementation authority:
-
-```text
-S0        → IA-03
-PLATFORM  → PLAT-01 / PR #2 reconciliation
-SUBS      → SBH-00 discovery/freeze
-```
-
-Do not mark any of the above active until convergence and synchronization succeed and a later governance update authorizes them.
 
 ---
 
@@ -241,13 +478,22 @@ Do not mark any of the above active until convergence and synchronization succee
 
 Every agent opened in a persistent worktree MUST:
 
-1. Confirm `pwd` matches the intended worktree path in this registry
-2. Confirm `git branch --show-current` matches the registry branch
-3. Run `git status -sb` and require a clean tree unless dirt is already intentionally owned
-4. Record `HEAD` and `@{upstream}` (when present)
-5. `git fetch origin`
-6. Read this registry entry for the workstream
-7. Explicitly state before any modification:
+1. Confirm `pwd` matches the intended persistent worktree path in this registry
+2. Confirm the intended persistent worktree (MAIN / S0 / PLATFORM / SUBS)
+3. Confirm `git branch --show-current` matches the registry branch
+4. Confirm upstream tracking when present
+5. Run `git status -sb` and require a clean tree unless dirt is already intentionally owned
+6. `git fetch origin`
+7. Read canonical `AGENTS.md` from accepted governance authority (`git show origin/main:AGENTS.md`)
+8. Read canonical active-workstream registry from accepted governance authority (`git show origin/main:docs/agent_rules/active_workstreams.md`) — after this PR merges; until then use the accepted PR/governance head for this file
+9. Verify this lane's accepted development base (do **not** merge main merely to obtain governance documents)
+10. Load the exact task contract
+11. Evaluate task-specific external dependencies against the development base
+12. Evaluate shared-authority requirements
+13. Freeze the exact batch/task base SHA
+14. STOP on a genuine mismatch
+
+Before any modification, explicitly state:
 
 ```text
 WORKSTREAM:
@@ -255,12 +501,15 @@ PATH:
 BRANCH:
 HEAD:
 UPSTREAM:
+DEVELOPMENT_BASE:
+INTEGRATION_BASE:
 OWNED AREA:
 EXCLUDED AREA:
 LIFECYCLE STATE:
+TASK:
+EXTERNAL_DEPENDENCY_CHECK:
+SHARED_AUTHORITY_CHECK:
 ```
-
-8. STOP if any value conflicts with this registry
 
 ---
 
@@ -268,13 +517,19 @@ LIFECYCLE STATE:
 
 STOP immediately if:
 
-- path / branch / upstream disagree with this registry
-- expected parent authority moved and the workstream has not been re-authorized
-- the worktree is dirty in an unowned way
-- a shared boundary would be modified without `AUTHORITY_ASSIGNED`
-- lifecycle state is `WAITING_FOR_BASELINE_SYNC`, `BLOCKED_SHARED_AUTHORITY`, `BASELINE_STALE`, or `SYNC_REQUIRED` and the task is implementation
+- wrong worktree
+- wrong branch
+- unexpected / unowned dirt
+- governance authority moved unexpectedly
+- development base invalidated
+- shared authority missing for a shared-boundary change
+- task-specific external dependency unresolved
+- task contract ambiguous
+- integration required for this exact task
 - a force push or history rewrite would be required without explicit authorization
 - work would require implementing directly on `main` in the permanent main worktree
+
+Do **not** globally STOP merely because another independent workstream advanced.
 
 On STOP: make no speculative correction. Report evidence and wait for authority.
 
@@ -288,22 +543,36 @@ When updating:
 
 - keep `AGENTS.md` as permanent law
 - refresh lifecycle states, pending PRs, and ownership assignments here
-- record SHAs as status evidence only, never as frozen forever-law
+- record SHAs as status / candidate evidence only, never as frozen forever-law
 - do not claim a PR merged unless GitHub shows it merged
+- do not self-activate S0, PLATFORM, or SUBS from a registry-only change
 
-### Status evidence (post PR #6 reconciliation; refresh when authority moves)
+### Current status / candidate development-base evidence (refresh when tips move)
+
+Not implementation authority. Not frozen activation pins. Refresh from origin before any activation gate.
 
 - `origin/main` = `486a1c74f5b738d488fdd54118002e90ec67bd49`
-- `origin/hardening/s0-baseline` = `0fe372d1ef435b9826908ed41725457fdf78c034` (PR #6 merge)
-- S0 persistent worktree verified at that authority (fast-forwarded; do not modify from this task)
-- `origin/hardening/subscriptions` tip observed at `77a272c3887a7ab46e84a7fed02163d964e37b9b` (still waiting for converged S0 sync)
-- `origin/hardening/platform-security` tip observed at `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3` (ancestor of current `main`; no independent commits; behind `main`)
+- `origin/hardening/s0-baseline` = `0fe372d1ef435b9826908ed41725457fdf78c034` (includes PR #6 merge)
+- `origin/hardening/platform-security` = `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3`
+- `origin/hardening/subscriptions` = `77a272c3887a7ab46e84a7fed02163d964e37b9b`
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 
-Earlier topology-bootstrap commissioning evidence (historical):
+Earlier topology-bootstrap commissioning evidence (historical only):
 
 - bootstrap `origin/main` was `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3`
 - bootstrap `origin/hardening/s0-baseline` was `77a272c3887a7ab46e84a7fed02163d964e37b9b`
 - PR #6 head was `602d85d12a3d1c990a14b934f53582b84665fffa`
 - PR #2 head was `cfd9be7491230edf4c1bde3281b78db3e4ca12a8`
+
+### Historical serial model (superseded)
+
+Prior registry versions encoded a serial control plane:
+
+```text
+latest main → converge into S0 → then activate PLATFORM/SUBS
+```
+
+and treated S0 tip movement as a blanket `WAITING_FOR_BASELINE_SYNC` stopper for SUBS/PLATFORM.
+
+That global serial activation model is **superseded** by this document. Retain this note only as historical context.
