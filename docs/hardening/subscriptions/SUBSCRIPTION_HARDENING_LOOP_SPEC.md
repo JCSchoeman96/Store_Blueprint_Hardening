@@ -122,7 +122,7 @@ SUB-ACT-01  accepted development base
     ↓
 SUB-ACT-02  activation feasibility
     ↓ ACTIVATION_FEASIBILITY_PASS
-SUB-ACT-03  canonical lane activation and BASELINE_PINNED / READY recording
+SUB-ACT-03  canonical ordered BASELINE_PINNED then READY recording
     ↓
 SBH-00-01 / SBH-00-02  governance and review work becomes available
     ↓
@@ -131,18 +131,22 @@ SBH-00-05  first executable dependency graph and hardening matrix
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
 
-`SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
+`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.4 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.4 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+
+After that compatibility gate, `SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
 
 `SBH-00-01` and `SBH-00-02` remain governance/review tasks with `loop_eligible = No`. They become available only after `SUB-ACT-03`; their availability is not implementation-loop READY admission.
 
 `SUB-ACT-04` owns the Batch 001 base freeze and the v1.3/v1.4 admission recertification. Only after that gate does the implementation loop apply the READY rule below.
 
-The lifecycle responsibility is:
+The canonical lifecycle responsibility is:
 
 ```text
 BOOTSTRAPPED
-    ↓ SUB-ACT-01, SUB-ACT-02, SUB-ACT-03
-BASELINE_PINNED / READY
+    ↓ SUB-ACT-01 accepted development base, recorded by SUB-ACT-03
+BASELINE_PINNED
+    ↓ SUB-ACT-02 == ACTIVATION_FEASIBILITY_PASS, recorded by SUB-ACT-03
+READY
     ↓ SBH-00 governance and contract freeze evidence
 READY with batch admission prepared
     ↓ SUB-ACT-04
@@ -150,6 +154,8 @@ ACTIVE_PARALLEL
 ```
 
 "Governance and contract freeze evidence" and "batch admission prepared" are control-plane evidence phases, not new persistent workstream lifecycle enum values.
+
+`SUB-ACT-03` records two ordered, validated transitions in canonical governance: `BOOTSTRAPPED → BASELINE_PINNED` is guarded by the accepted `SUB-ACT-01` development base, and `BASELINE_PINNED → READY` is guarded by `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02`. A single bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`; `SBH-00-01` and `SBH-00-02` then become available as governance/review work. `SUB-ACT-03` does not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains a successful `SUB-ACT-04` implementation-admission outcome.
 
 ---
 
@@ -1096,6 +1102,7 @@ MODE: PRE_ACTIVATION_VALIDATION
 CANONICAL GOVERNANCE: PARALLEL MODEL PRESENT
 DEVELOPMENT BASE: CANDIDATE_OR_PINNED_AS_RECORDED
 LOCAL AUTHORITY: v1.4
+RUNTIME COMPATIBILITY: VERIFIED_V1_4 | LOCAL_AUTHORITY_UPGRADE_REQUIRED
 ACTIVATION FEASIBILITY: ACTIVATION_FEASIBILITY_PASS | BLOCKED
 OUTCOME: ACTIVATION_FEASIBILITY_PASS | PRE_ACTIVATION_STOP | TASK_SPECIFIC_BLOCKER
 SOURCE CHANGES: 0

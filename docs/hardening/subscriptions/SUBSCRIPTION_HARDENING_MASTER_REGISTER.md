@@ -554,17 +554,21 @@ Historical entries remain for provenance only and may not block current task adm
 
 ## 9.2 Current SUBS activation items
 
-| ID | Task | State | Loop eligible | Dependency | Expected output |
+| ID | Task | Current disposition | Loop eligible | Dependency | Expected output |
 |---|---|---|---:|---|---|
-| `SUB-ACT-00` | Upgrade local loop/register authority from v1.2 to v1.3 parallel semantics | `IN_PROGRESS_AUTHORIZED_PACKAGE` | No | PR #8 merged | reviewed v1.3 five-file authority + new fingerprints |
-| `SUB-ACT-01` | Independently verify and pin SUBS development base | `CANDIDATE` | No | ACT-00 | accepted `development_base_sha` or lane-specific blocker |
-| `SUB-ACT-02` | Verify activation feasibility, task-level dependencies, and shared-authority usability | `BLOCKED_DEPENDENCY` | No | ACT-01 | `ACTIVATION_FEASIBILITY_PASS` or lane-specific blocker |
-| `SUB-ACT-03` | Record accepted SUBS development base and canonical activation state | `BLOCKED_DEPENDENCY` | No | ACT-01 + ACT-02 PASS | canonical `BASELINE_PINNED/READY` authority |
+| `SUB-ACT-00` | Upgrade local loop/register authority from v1.2 to v1.3 parallel semantics | `COMPLETED` | No | PR #8 merged | v1.3 authority upgrade, promotion, and reclassification completed |
+| `SUB-ACT-01` | Independently verify and pin SUBS development base | `DEVELOPMENT_BASE_ACCEPTED` | No | ACT-00 | `development_base_sha = 575ffa1848ac69abe855bd018c7ae8eaf05d61e4` accepted |
+| `SUB-ACT-02` | Verify activation feasibility, task-level dependencies, and shared-authority usability | `NEXT_AFTER_V1_4_RUNTIME_COMPATIBILITY` | No | ACT-01 + separately authorized and verified v1.4 runtime compatibility | `ACTIVATION_FEASIBILITY_PASS` or lane-specific blocker |
+| `SUB-ACT-03` | Record accepted SUBS development base and canonical activation state | `BLOCKED_DEPENDENCY` | No | ACT-01 + ACT-02 PASS + v1.4 runtime compatibility | ordered `BOOTSTRAPPED → BASELINE_PINNED → READY` transitions recorded |
 | `SUB-ACT-04` | Freeze Batch 001 base and run v1.3/v1.4 admission recertification | `BLOCKED_DEPENDENCY` | No | ACT-03 + SBH-00-05 | `batch_base_sha` + 0A-P/0A-B/0A-N PASS |
 
 **Hard gate:** production implementation requires canonical SUBS `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha`, successful v1.3/v1.4 admission recertification, a frozen `batch_base_sha`, a completed SBH-00 executable dependency graph, and at least one task that passes task-level admission.
 
-`SUB-ACT-02` is a feasibility gate, not implementation admission. It must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
+`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.4 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.4 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+
+After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
+
+`SUB-ACT-03` records two ordered, validated canonical lifecycle transitions. The initial canonical state is `BOOTSTRAPPED`. The accepted `SUB-ACT-01` development base guards `BOOTSTRAPPED → BASELINE_PINNED`; an `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guards `BASELINE_PINNED → READY`. One bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. Its resulting canonical lane state is `READY`, and its side effects are recording the accepted `development_base_sha` and making `SBH-00-01` and `SBH-00-02` available as governance/review work. `SUB-ACT-03` must not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation.
 
 A sibling lane moving is not itself a blocker.
 
@@ -1832,13 +1836,13 @@ No Subscription production implementation is authorized yet.
 The immediate lane-local sequence is:
 
 ```text
-SUB-ACT-00  upgrade local loop authority to v1.3
+SUB-ACT-00  completed v1.3 authority upgrade/promotion/reclassification
     ↓
-SUB-ACT-01  verify/pin candidate SUBS development base
+SUB-ACT-01  accepted SUBS development base
     ↓
-SUB-ACT-02  verify activation feasibility
+SUB-ACT-02  verify activation feasibility after v1.4 runtime compatibility
     ↓ ACTIVATION_FEASIBILITY_PASS
-SUB-ACT-03  record accepted base/state in canonical governance
+SUB-ACT-03  record ordered BASELINE_PINNED then READY transitions in canonical governance
     ↓
 SBH-00-01 / SBH-00-02  perform authorized governance/review work
     ↓
@@ -1963,11 +1967,11 @@ HISTORICAL v0.1.3 CANDIDATE:
 ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 external pin; canonical activation remains separate).
 
-NEXT CANDIDATE:
-SUB-ACT-02 activation-feasibility verification after the accepted development-base record.
+NEXT AUTHORIZED GATE:
+Separately authorize and verify v1.4 runtime compatibility, then run SUB-ACT-02 activation-feasibility verification after the accepted development-base record.
 
 FINAL ACTION:
-Prove activation feasibility without requiring implementation-loop READY work. After a pass, record canonical activation, complete SBH-00 governance/contract freeze, then run Batch 001 admission.
+After separately verified v1.4 runtime compatibility, prove activation feasibility without requiring implementation-loop READY work. After a pass, record the ordered canonical activation transitions, complete SBH-00 governance/contract freeze, then run Batch 001 admission.
 ```
 
 ---
