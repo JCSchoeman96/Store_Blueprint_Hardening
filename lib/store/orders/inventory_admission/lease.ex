@@ -52,6 +52,19 @@ defmodule Store.Orders.InventoryAdmission.Lease do
           safety_margin: non_neg_integer()
         }
 
+  @type validation_error ::
+          :invalid_lease
+          | :admission_member_must_be_non_empty
+          | :invalid_lease_variant_id
+          | :lease_variant_id_not_normalized
+          | :lease_token_must_be_non_empty
+          | :owner_epoch_must_be_positive
+          | :identity_digest_must_be_non_empty
+          | :invalid_db_deadline
+          | :invalid_lease_deadline
+          | :invalid_safety_margin
+          | :lease_deadline_before_db_deadline_plus_safety_margin
+
   @spec new(map() | t()) :: {:ok, t()} | {:error, atom()}
   def new(%__MODULE__{} = lease) do
     case validate(lease) do
@@ -87,7 +100,7 @@ defmodule Store.Orders.InventoryAdmission.Lease do
 
   def new(_params), do: {:error, :invalid_lease}
 
-  @spec validate(term()) :: :ok | {:error, atom()}
+  @spec validate(term()) :: :ok | {:error, validation_error()}
   def validate(%__MODULE__{} = lease) do
     with :ok <- validate_non_empty_binary(lease.admission_member, :admission_member),
          {:ok, normalized_variant_id} <- normalize_variant_id(lease.variant_id),
@@ -165,7 +178,7 @@ defmodule Store.Orders.InventoryAdmission.Lease do
   defp fetch_variant_id(params) do
     case Map.fetch(params, :variant_id) do
       {:ok, value} -> normalize_variant_id(value)
-      :error -> {:error, :lease_variant_id_required}
+      :error -> {:error, required_reason(:variant_id)}
     end
   end
 

@@ -18,6 +18,12 @@ defmodule Store.Orders.InventoryAdmission.Operation.Deadline do
           safety_margin: non_neg_integer()
         }
 
+  @type validation_error ::
+          :invalid_deadline
+          | :not_non_negative_integer
+          | :lease_deadline_before_db_deadline_plus_safety_margin
+          | :recovery_deadline_before_lease_deadline
+
   @spec new(map() | t()) :: {:ok, t()} | {:error, atom()}
   def new(%__MODULE__{} = deadline) do
     case validate(deadline) do
@@ -45,7 +51,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.Deadline do
 
   def new(_params), do: {:error, :invalid_deadline}
 
-  @spec validate(term()) :: :ok | {:error, atom()}
+  @spec validate(term()) :: :ok | {:error, validation_error()}
   def validate(%__MODULE__{
         db_deadline: db_deadline,
         lease_deadline: lease_deadline,
@@ -152,6 +158,15 @@ defmodule Store.Orders.InventoryAdmission.Operation.Mutation do
           now: DateTime.t() | nil
         }
 
+  @type validation_error ::
+          :invalid_mutation
+          | :invalid_mutation_variant_id
+          | :mutation_variant_id_not_normalized
+          | :invalid_mutation_kind
+          | :invalid_mutation_quantity
+          | :invalid_expiry_policy
+          | :invalid_mutation_datetime
+
   @spec new(Request.t(), keyword()) :: {:ok, t()} | {:error, atom()}
   def new(request, opts \\ [])
 
@@ -179,7 +194,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.Mutation do
 
   def new(_request, _opts), do: {:error, :invalid_mutation}
 
-  @spec validate(term()) :: :ok | {:error, atom()}
+  @spec validate(term()) :: :ok | {:error, validation_error()}
   def validate(%__MODULE__{
         variant_id: variant_id,
         kind: kind,
@@ -278,6 +293,18 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
           version: pos_integer()
         }
 
+  @type validation_error ::
+          :invalid_reservation_facts
+          | :invalid_reservation_id
+          | :reservation_id_not_normalized
+          | :invalid_reservation_quantity
+          | :invalid_reservation_state
+          | :invalid_reservation_expiry
+          | :invalid_reservation_timestamp
+          | :invalid_reservation_version
+
+  @type existing_validation_error :: validation_error() | :pre_reservation_id_required
+
   @spec new(map() | t()) :: {:ok, t()} | {:error, atom()}
   def new(%__MODULE__{} = facts) do
     case validate(facts) do
@@ -312,7 +339,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
 
   def new(_params), do: {:error, :invalid_reservation_facts}
 
-  @spec validate(term()) :: :ok | {:error, atom()}
+  @spec validate(term()) :: :ok | {:error, validation_error()}
   def validate(%__MODULE__{} = facts) do
     with {:ok, normalized_id} <- normalize_id(facts.id),
          :ok <- validate_quantity(facts.quantity),
@@ -328,7 +355,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
 
   def validate(_facts), do: {:error, :invalid_reservation_facts}
 
-  @spec validate_existing(term()) :: :ok | {:error, atom()}
+  @spec validate_existing(term()) :: :ok | {:error, existing_validation_error()}
   def validate_existing(%__MODULE__{id: id} = facts) when not is_nil(id), do: validate(facts)
   def validate_existing(_facts), do: {:error, :pre_reservation_id_required}
 
@@ -452,6 +479,15 @@ defmodule Store.Orders.InventoryAdmission.Operation.InventoryFacts do
           version: pos_integer()
         }
 
+  @type validation_error ::
+          :invalid_inventory_facts
+          | :invalid_inventory_variant_id
+          | :inventory_variant_id_not_normalized
+          | :invalid_inventory_stock_on_hand
+          | :invalid_inventory_reserved_count
+          | :invalid_inventory_allow_oversell
+          | :invalid_inventory_version
+
   @spec new(map() | t()) :: {:ok, t()} | {:error, atom()}
   def new(%__MODULE__{} = facts) do
     case validate(facts) do
@@ -480,7 +516,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.InventoryFacts do
 
   def new(_params), do: {:error, :invalid_inventory_facts}
 
-  @spec validate(term()) :: :ok | {:error, atom()}
+  @spec validate(term()) :: :ok | {:error, validation_error()}
   def validate(%__MODULE__{} = facts) do
     with {:ok, normalized_variant_id} <- normalize_variant_id(facts.variant_id),
          :ok <- validate_non_negative_integer(facts.stock_on_hand, :stock_on_hand),
@@ -866,7 +902,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   @spec valid_epoch?(term()) :: boolean()
   def valid_epoch?(epoch), do: is_integer(epoch) and epoch > 0
 
-  @spec validate_epoch_progression(term(), term()) :: :ok | {:error, atom()}
+  @spec validate_epoch_progression(term(), term()) ::
+          :ok | {:error, :operation_epoch_not_monotonic}
   def validate_epoch_progression(previous_epoch, next_epoch)
       when is_integer(previous_epoch) and previous_epoch >= 0 and is_integer(next_epoch) and
              next_epoch > previous_epoch,
