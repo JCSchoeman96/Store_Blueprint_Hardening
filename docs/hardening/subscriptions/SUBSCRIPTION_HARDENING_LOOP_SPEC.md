@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Loop Specification
 
-**Version:** v0.1.3  
+**Version:** v0.1.4
 **Status:** APPROVED DESIGN / EXECUTION SPECIFICATION  
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** `SUBS` — Subscription Backbone Hardening  
@@ -8,7 +8,7 @@
 **Persistent workstream branch:** `hardening/subscriptions`  
 **Primary programme authority:** `SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 
-> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. It does **not** activate SUBS or authorize implementation by itself.
+> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.4 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
 
 ---
 
@@ -76,16 +76,18 @@ Task Contract
 
 Purpose: prove the current SUBS development base, canonical governance, local authority package, and task-admission prerequisites without performing implementation.
 
-Allowed: read Git state, fetch refs, read canonical governance from `origin/main`, read the local Subscription register/spec/template/prompt, fingerprint approved bootstrap authority, classify task-specific blockers, and record a STOP result.
+Before canonical activation, this mode also proves activation feasibility. It does not require an implementation task that already satisfies `state == READY` and `loop_eligible == true`.
+
+Allowed: read Git state, fetch refs, read canonical governance from `origin/main`, read the local Subscription register/spec/template/prompt, fingerprint approved bootstrap authority, verify the accepted development base, verify the ownership and dependency model, confirm an authorized next governance/review task, classify task-specific blockers, and record the feasibility result.
 
 Forbidden: task branch creation, Subscription source changes, migrations, push, implementation PR, merge, deployment.
 
 Valid pre-activation outcomes include:
 
 ```text
+ACTIVATION_FEASIBILITY_PASS
 BASELINE_NOT_PINNED
 LOCAL_AUTHORITY_UPGRADE_REQUIRED
-NO_EXECUTABLE_READY_WORK
 BLOCKED_SHARED_AUTHORITY
 BLOCKED_EXTERNAL_DEPENDENCY
 AUTHORITY_MOVED
@@ -109,9 +111,51 @@ at least one complete READY Task Contract is executable against the development 
 
 If activation cannot be proven: STOP.
 
+`NO_EXECUTABLE_READY_WORK` is not an activation-feasibility result. It remains a valid implementation-selection result after canonical activation, governance/contract freeze, and Batch 001 admission begins.
+
+### Activation control-plane sequence
+
+The following are control-plane phases, not additional persistent workstream lifecycle enum values:
+
+```text
+SUB-ACT-01  accepted development base
+    ↓
+SUB-ACT-02  activation feasibility
+    ↓ ACTIVATION_FEASIBILITY_PASS
+SUB-ACT-03  canonical lane activation and BASELINE_PINNED / READY recording
+    ↓
+SBH-00-01 / SBH-00-02  governance and review work becomes available
+    ↓
+SBH-00-05  first executable dependency graph and hardening matrix
+    ↓
+SUB-ACT-04  Batch 001 freeze and implementation-ready admission
+```
+
+`SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
+
+`SBH-00-01` and `SBH-00-02` remain governance/review tasks with `loop_eligible = No`. They become available only after `SUB-ACT-03`; their availability is not implementation-loop READY admission.
+
+`SUB-ACT-04` owns the Batch 001 base freeze and the v1.3/v1.4 admission recertification. Only after that gate does the implementation loop apply the READY rule below.
+
+The lifecycle responsibility is:
+
+```text
+BOOTSTRAPPED
+    ↓ SUB-ACT-01, SUB-ACT-02, SUB-ACT-03
+BASELINE_PINNED / READY
+    ↓ SBH-00 governance and contract freeze evidence
+READY with batch admission prepared
+    ↓ SUB-ACT-04
+ACTIVE_PARALLEL
+```
+
+"Governance and contract freeze evidence" and "batch admission prepared" are control-plane evidence phases, not new persistent workstream lifecycle enum values.
+
 ---
 
 # 5. Loop State Machine
+
+This state machine describes implementation-loop execution after `SUB-ACT-04`. The pre-activation control-plane sequence above is evaluated first.
 
 ```text
 IDLE
@@ -339,6 +383,8 @@ Never silently rebase, merge, or refresh mid-batch.
 ---
 
 # 9. READY Selection
+
+This section applies only after canonical lane activation, SBH-00 contract freezing, and `SUB-ACT-04` Batch 001 admission. `SUB-ACT-02` must not call this selector.
 
 A candidate enters task admission only if:
 
@@ -824,13 +870,17 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/store-blueprint-hardening/subscription-har
 
 `.agent-loop/subscriptions/state.example.json` is schema/documentation only and must never be runtime-written.
 
+The v1.4 example records the corrected control-plane fields. The external runtime remains on its existing schema until a separate runtime migration/reclassification gate authorizes that change.
+
 Minimum conceptual state:
 
 ```json
 {
-  "schema_version": "1.3",
+  "schema_version": "1.4",
   "programme": "subscription-hardening",
   "mode": "PRE_ACTIVATION_VALIDATION",
+  "activation_phase": "PRE_ACTIVATION_FEASIBILITY",
+  "activation_feasibility": null,
   "governance_authority_sha": null,
   "development_base_sha": null,
   "batch_base_sha": null,
@@ -849,6 +899,8 @@ Minimum conceptual state:
 
 Semantics:
 
+- `activation_phase` identifies the control-plane phase; it is separate from `lifecycle_state` and does not add a workstream lifecycle enum.
+- `activation_feasibility` is null before `SUB-ACT-02`, or `ACTIVATION_FEASIBILITY_PASS` after that bounded proof. It is not implementation task admission.
 - `governance_authority_sha` = canonical main governance observed for the run.
 - `development_base_sha` = accepted SUBS code base for independent hardening.
 - `batch_base_sha` = exact SUBS branch SHA frozen for the current batch.
@@ -877,7 +929,7 @@ Keep model context bounded; summarize logs rather than repeatedly pasting raw ou
 
 ---
 
-# 27. Loop v1.3 Hard Limits
+# 27. Loop v1.4 Hard Limits
 
 | Guard | Limit |
 |---|---:|
@@ -933,9 +985,9 @@ do not self-authorize next work
 
 ---
 
-# 29. Run 0 Validation / v1.3 Admission Recertification
+# 29. Run 0 Validation / v1.4 Admission Recertification
 
-The original v1.2 Run 0A/0B/0C certification remains valid evidence for bounded worker/reviewer mechanics. v1.3 changes admission semantics, so run these targeted admission proofs after upgrading authority files.
+The original v1.2 Run 0A/0B/0C certification remains valid evidence for bounded worker/reviewer mechanics. v1.3 evidence remains historical admission evidence. v1.4 changes activation sequencing, so run these targeted admission proofs after the activation and contract-freeze gates.
 
 ## Run 0A-P — Parallel admission positive
 
@@ -996,9 +1048,10 @@ Real Subscription implementation begins only when:
 canonical PR #8 parallel-governance floor is present on origin/main
 SUBS development_base_sha == explicitly accepted
 SUBS lifecycle == READY or ACTIVE_PARALLEL
-local v1.3 authority package == promoted/tracked or external read-only
-v1.3 admission recertification == PASS
+local v1.4 authority package == promoted/tracked or external read-only
+v1.3/v1.4 admission recertification == PASS
 Master Register == current authority
+SBH-00-05 == completed and executable dependency graph frozen
 at least one task == READY and loop_eligible
 that task is executable against development_base_sha
 required shared authority == assigned
@@ -1011,9 +1064,9 @@ Otherwise STOP.
 
 ---
 
-# 31. Loop v1.3 Success Criteria
+# 31. Loop v1.4 Success Criteria
 
-Loop v1.3 succeeds when it can:
+Loop v1.4 succeeds when it can:
 
 - refuse unauthorized work;
 - deterministically select only READY items;
@@ -1036,19 +1089,19 @@ Loop v1.3 succeeds when it can:
 
 # 32. Current Expected Behaviour
 
-Immediately after the v1.3 local-authority upgrade, before the lane activation gate is recorded canonically, the expected result is:
+Before canonical lane activation is recorded, the v1.4 authority can prove feasibility without implementation-loop READY work:
 
 ```text
 MODE: PRE_ACTIVATION_VALIDATION
 CANONICAL GOVERNANCE: PARALLEL MODEL PRESENT
-DEVELOPMENT BASE: CANDIDATE / NOT YET ACCEPTED
-LOCAL AUTHORITY: v1.3
-OUTCOME: PRE_ACTIVATION_STOP
+DEVELOPMENT BASE: CANDIDATE_OR_PINNED_AS_RECORDED
+LOCAL AUTHORITY: v1.4
+ACTIVATION FEASIBILITY: ACTIVATION_FEASIBILITY_PASS | BLOCKED
+OUTCOME: ACTIVATION_FEASIBILITY_PASS | PRE_ACTIVATION_STOP | TASK_SPECIFIC_BLOCKER
 SOURCE CHANGES: 0
 TASK BRANCHES: 0
 PRS: 0
 FINAL ACTION: STOP
 ```
 
-After the independent SUBS activation gate accepts a development base and canonical governance records `READY`/`ACTIVE_PARALLEL`, the loop may admit only task-specific executable READY work.
-
+After `SUB-ACT-03`, SBH-00 governance/review work is available. After `SBH-00-05` and `SUB-ACT-04`, the implementation loop may admit only task-specific executable READY work. If no such task exists then `NO_EXECUTABLE_READY_WORK → STOP` remains valid.
