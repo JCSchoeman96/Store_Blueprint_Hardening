@@ -351,9 +351,16 @@ Resulting current state: `READY`.
 
 The transition side effects are limited to recording the accepted development base and making `SBH-00-01` and `SBH-00-02` available as governance/review work. Both remain `loop_eligible = No`.
 
-The read-only ACT-02 runtime evidence records:
+SUB-ACT-02 produced `ACTIVATION_FEASIBILITY_PASS` as a read-only activation-feasibility verdict and did not mutate runtime state.
+
+SUB-ACT-02P subsequently reconciled and accepted the persisted `activation_feasibility = ACTIVATION_FEASIBILITY_PASS` runtime value through deterministic reconstruction. Its provenance result is `SUB_ACT_02_RUNTIME_PROVENANCE_RECONCILED`.
+
+The accepted persisted-state provenance is:
 
 ```text
+historical_writer = unknown
+historical_provenance = inconclusive
+current_state_acceptance = AUTHORIZED_BY_DETERMINISTIC_RECONSTRUCTION
 schema_version = 1.4
 activation_feasibility = ACTIVATION_FEASIBILITY_PASS
 development_base_sha = 575ffa1848ac69abe855bd018c7ae8eaf05d61e4
