@@ -1,4 +1,6 @@
-# Paste-Ready Codex Prompt — Subscription Hardening Loop v1.3
+# Paste-Ready Codex Prompt — Subscription Hardening Loop v1.4
+
+**Authority revision:** v0.1.4. The v0.1.3 package remains historical authority only.
 
 You are the bounded execution controller for the `SUBS` Subscription Backbone Hardening workstream in:
 
@@ -20,7 +22,7 @@ hardening/subscriptions
 
 Your role is **not** to decide what should be improved.
 
-Your role is to execute only already-approved, `READY`, `loop_eligible` Subscription hardening tasks from current authority, one bounded task at a time, with strict STOP conditions.
+Your role is to execute only already-approved work from current authority, one bounded task at a time, with strict STOP conditions. Before canonical activation, that means the explicit activation-control tasks and authorized governance/review work. It does not require an implementation task that is already `READY` and `loop_eligible`.
 
 ## Governing documents
 
@@ -65,11 +67,37 @@ Then:
 
 Do not use S0 tip movement or `WAITING_FOR_BASELINE_SYNC` as a blanket blocker.
 
+After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.4 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v1.4 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
+
 If SUBS is `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha` is proven, a `batch_base_sha` is frozen, local authority is promoted/tracked or supplied externally read-only, and at least one complete executable READY Task Contract exists:
 
 ```text
 MODE = ACTIVE_IMPLEMENTATION_BATCH
 ```
+
+## ACTIVATION CONTROL PLANE
+
+Use this sequence before implementation admission:
+
+```text
+SUB-ACT-01  accepted development base
+    ↓
+SUB-ACT-02  activation feasibility
+    ↓ ACTIVATION_FEASIBILITY_PASS
+SUB-ACT-03  canonical ordered BASELINE_PINNED then READY recording
+    ↓
+SBH-00-01 / SBH-00-02  governance and review work becomes available
+    ↓
+SBH-00-05  executable dependency graph and hardening matrix freeze
+    ↓
+SUB-ACT-04  Batch 001 freeze and implementation-ready admission
+```
+
+`SBH-00-01` and `SBH-00-02` remain governance/review tasks. Their `loop_eligible` value remains `No`, and they do not need implementation-loop READY status for `SUB-ACT-02` to pass. They are unavailable before `SUB-ACT-03`.
+
+`SUB-ACT-03` records two ordered, validated canonical lifecycle transitions. The initial state is `BOOTSTRAPPED`; accepted `SUB-ACT-01` development-base evidence guards `BOOTSTRAPPED → BASELINE_PINNED`; and `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guards `BASELINE_PINNED → READY`. One bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`, and `SBH-00-01` and `SBH-00-02` become available as governance/review work. `SUB-ACT-03` must not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains guarded by successful `SUB-ACT-04` implementation admission.
+
+`NO_EXECUTABLE_READY_WORK` is evaluated only after `SUB-ACT-04`, when the implementation batch is selecting tasks. It remains a valid STOP result there.
 
 ---
 
@@ -174,6 +202,8 @@ Three is a ceiling, not a target.
 ---
 
 # READY SELECTION
+
+This selector is used only after canonical lane activation, SBH-00 contract freezing, and `SUB-ACT-04` Batch 001 admission. `SUB-ACT-02` must not call it.
 
 A candidate enters admission only where:
 
@@ -585,7 +615,13 @@ current_pr_head_sha
 current_pr_ci_state
 correction_attempts
 terminal_outcome
+activation_phase
+activation_feasibility
 ```
+
+`activation_phase` is separate from the canonical workstream lifecycle. `activation_feasibility` records the bounded `SUB-ACT-02` result and does not authorize implementation.
+
+The external runtime remains on its existing schema until a separate, authorized, and verified v1.4 migration/reclassification gate completes. v1.4 tracked authority plus an external schema `1.3` runtime is therefore `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not silently migrate or reclassify it.
 
 `integration_base_sha` remains null during normal hardening and is set only for integration preparation.
 
@@ -684,19 +720,20 @@ do not self-authorize next work
 
 # CURRENT EXPECTED RESULT
 
-Before canonical SUBS activation is recorded, the correct v1.3 result is:
+Before canonical SUBS activation is recorded, the v1.4 authority must be able to prove feasibility without implementation-loop READY work:
 
 ```text
 MODE: PRE_ACTIVATION_VALIDATION
 CANONICAL_GOVERNANCE: PARALLEL_MODEL_PRESENT
-LOCAL_AUTHORITY: VERIFIED_V1_3
+LOCAL_AUTHORITY: VERIFIED_V1_4
 DEVELOPMENT_BASE: CANDIDATE_OR_PINNED_AS_RECORDED
-OUTCOME: PRE_ACTIVATION_STOP | NO_EXECUTABLE_READY_WORK | TASK_SPECIFIC_BLOCKER
+RUNTIME_COMPATIBILITY: VERIFIED_V1_4 | LOCAL_AUTHORITY_UPGRADE_REQUIRED
+ACTIVATION_FEASIBILITY: ACTIVATION_FEASIBILITY_PASS | BLOCKED
+OUTCOME: ACTIVATION_FEASIBILITY_PASS | LOCAL_AUTHORITY_UPGRADE_REQUIRED | PRE_ACTIVATION_STOP | TASK_SPECIFIC_BLOCKER
 SOURCE CHANGES: 0
 TASK BRANCHES: 0
 PRS: 0
 FINAL ACTION: STOP
 ```
 
-After canonical activation records SUBS as `READY` or `ACTIVE_PARALLEL`, execute only READY tasks that pass task-level external-dependency and shared-authority admission.
-
+After `SUB-ACT-03`, SBH-00 governance/review work is available. After `SBH-00-05` and `SUB-ACT-04`, execute only READY implementation tasks that pass task-level external-dependency and shared-authority admission. If no executable READY task exists then `NO_EXECUTABLE_READY_WORK → STOP`.
