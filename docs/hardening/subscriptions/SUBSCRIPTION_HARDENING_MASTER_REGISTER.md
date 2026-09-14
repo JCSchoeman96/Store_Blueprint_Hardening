@@ -1,7 +1,7 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
 **Version:** v0.1.4
-**Status:** WORKING / APPROVED DESIGN — SUBS READY / JC-219 STAGE A IN REVIEW
+**Status:** WORKING / APPROVED DESIGN — SUBS READY / JC-219 CONTRACT_FROZEN
 **Verified:** 2026-09-14
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -69,7 +69,7 @@ The accepted `development_base_sha` is separately pinned by `SUB-ACT-01`:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4
 ```
 
-The current branch tip is the governance authority being reviewed; it is not a frozen Batch 001 base. Its age relative to another lane is not itself a blocker.
+The current branch tip is the recorded governance authority; it is not a frozen Batch 001 base. Its age relative to another lane is not itself a blocker.
 
 The activation decision asks:
 
@@ -112,7 +112,7 @@ The following high-impact findings were independently confirmed at the current S
 Two corrections were made to the earlier draft:
 
 1. An earlier draft used an undeclared review-stop state. Review-only tasks now terminate only in explicit `STOPPED`, `PASS`, or `INCONCLUSIVE` outcomes.
-2. The owner-approved hybrid `PlanRevision` + `Subscription` binding + exact `RenewalAttempt` charged-contract evidence is canonicalized by JC-219 below. This is governance authority only; production implementation remains separately gated.
+2. The owner-approved hybrid `PlanRevision` + `Subscription` binding + exact `RenewalAttempt` charged-contract evidence is the canonical JC-219 architecture below. This is governance authority only; production implementation remains separately gated.
 
 ---
 
@@ -155,10 +155,9 @@ Canonical governance is no longer the blocker.
 Current remaining lane-local work is:
 
 ```text
-1. independently review and merge the JC-219/SBH-00-01 governance canonicalization;
-2. perform the separately scoped Stage B governance work for JC-220, JC-221, and JC-222;
-3. freeze the first executable dependency graph and hardening matrix;
-4. freeze the first batch_base_sha and perform SUB-ACT-04 admission recertification.
+1. perform the separately scoped Stage B governance work for JC-220, JC-221, and JC-222;
+2. freeze the first executable dependency graph and hardening matrix through JC-223;
+3. freeze the first batch_base_sha and perform SUB-ACT-04 admission recertification through JC-224.
 ```
 
 No production `SBH-*` implementation task is authorized merely by this register, by SUBS `READY`, or by PR #8.
@@ -763,11 +762,11 @@ A sibling lane moving is not itself a blocker.
 
 These are governance/review tasks. They establish law before production code changes.
 
-`SBH-00-01` and `SBH-00-02` remain `loop_eligible = No`. After `SUB-ACT-03` they are available as governance/review work; they do not enter implementation-loop READY admission. JC-219/SBH-00-01 is owner-approved and is currently being canonicalized for independent review. `SBH-00-05` freezes the first executable dependency graph and hardening matrix before `SUB-ACT-04` freezes Batch 001.
+`SBH-00-01` and `SBH-00-02` remain `loop_eligible = No`. After `SUB-ACT-03` they are available as governance/review work; they do not enter implementation-loop READY admission. JC-219/SBH-00-01 is `CONTRACT_FROZEN / CANONICAL`; its implementation remains separately gated. `SBH-00-05` freezes the first executable dependency graph and hardening matrix before `SUB-ACT-04` freezes Batch 001.
 
 | ID | Task | Priority | State | Loop eligible | Dependency |
 |---|---|---:|---|---:|---|
-| `SBH-00-01` | Freeze commercial-contract architecture | P1 | `IN_REVIEW` — governance/review only | No | ACT-03 |
+| `SBH-00-01` | Freeze commercial-contract architecture | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | ACT-03 |
 | `SBH-00-02` | Populate canonical Subscription domain/lifecycle map | P1 | `AVAILABLE_GOVERNANCE_REVIEW` | No | ACT-03 |
 | `SBH-00-03` | Freeze concurrency/race precedence matrix | P1 | `BLOCKED_DEPENDENCY` | No | 00-01 |
 | `SBH-00-04` | Freeze cancellation, dunning, access, revocation, and grandfathering laws | P1 | `BLOCKED_DEPENDENCY` | No | 00-01 |
@@ -2030,7 +2029,7 @@ SUB-ACT-02  ACTIVATION_FEASIBILITY_PASS recorded
     ↓
 SUB-ACT-03  canonical READY recorded after ordered BASELINE_PINNED then READY transitions
     ↓
-JC-219 / SBH-00-01  owner-approved architecture canonicalization in review
+JC-219 / SBH-00-01  CONTRACT_FROZEN / CANONICAL
     ↓
 JC-220 / JC-221 / JC-222  later Stage B lifecycle/product-law canonicalization
     ↓
@@ -2156,10 +2155,10 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
-Independently review and, if certified, merge JC-219/SBH-00-01 into `hardening/subscriptions`; then perform only the separately scoped Stage B governance work.
+Stage B JC-220 + JC-221 + JC-222 canonicalization.
 
 FINAL ACTION:
-After JC-219 is independently reviewed and merged, canonicalize JC-220, JC-221, and JC-222 coherently. Keep JC-223 and JC-224 blocked until the executable graph, hardening matrix, Batch 001 base, and all admission gates are separately certified.
+Canonicalize JC-220, JC-221, and JC-222 coherently. Then complete JC-223's executable dependency graph and hardening matrix, followed by JC-224's Batch 001 base and implementation-admission recertification. Production implementation remains unauthorized until those gates are separately certified.
 ```
 
 ---
