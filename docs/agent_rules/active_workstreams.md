@@ -192,7 +192,7 @@ NO_EXECUTABLE_READY_WORK
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
 | `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
-| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
+| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Governance/review only; production implementation not authorized |
 
 Temporary worktrees (governance / integration / review / task / remediation) may exist under names such as `Store_Blueprint_Hardening-governance-*`, `Store_Blueprint_Hardening-integration-*`, `Store_Blueprint_Hardening-review-*`, `Store_Blueprint_Hardening-task-*`, or `Store_Blueprint_Hardening-remediation-*`. They are disposable. Do **not** create a permanent integration worktree. Do **not** create a fifth programme lane.
 
@@ -300,7 +300,109 @@ Explicit exclusion until separately authorized:
 SUBS may progress without S0 finishing, unless an exact task declares a validated external dependency.
 SUBS does **not** continuously consume S0 as parent authority.
 
-**Activation:** do not begin Subscription Backbone Hardening (SBH) implementation merely because the worktree exists. State remains `BOOTSTRAPPED` until an independent SUBS activation gate runs. Do **not** start or authorize SBH-00 from this registry alone.
+**Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. `SBH-00-01` and `SBH-00-02` are available as governance/review work only, with `loop_eligible = No`.
+
+`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `54871ef3bdda42f067ed5dbd398305151610c060`; it is not the development base. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
+
+Production Subscription implementation remains blocked until all of the following are complete:
+
+- `SBH-00` governance/contract freeze
+- `SBH-00-05` executable dependency graph
+- `SUB-ACT-04`
+- `batch_base_sha` frozen
+- implementation-admission recertification passed
+- an executable `READY` task exists
+
+`ACTIVE_PARALLEL` is not granted. Batch 001 has not started, and `batch_base_sha` is not frozen.
+
+### SUBS activation record: SUB-ACT-03
+
+Initial canonical state:
+
+```text
+BOOTSTRAPPED
+```
+
+Ordered transitions:
+
+```text
+BOOTSTRAPPED
+    ↓ SUB-ACT-01 accepted development base
+BASELINE_PINNED
+    ↓ SUB-ACT-02 == ACTIVATION_FEASIBILITY_PASS
+READY
+```
+
+Transition 1 guard:
+
+```text
+SUB-ACT-01 accepted development base
+575ffa1848ac69abe855bd018c7ae8eaf05d61e4
+```
+
+Transition 2 guard:
+
+```text
+SUB-ACT-02 == ACTIVATION_FEASIBILITY_PASS
+ACT-02 provenance: SUB_ACT_02_RUNTIME_PROVENANCE_RECONCILED
+```
+
+Resulting current state: `READY`.
+
+The transition side effects are limited to recording the accepted development base and making `SBH-00-01` and `SBH-00-02` available as governance/review work. Both remain `loop_eligible = No`.
+
+SUB-ACT-02 produced `ACTIVATION_FEASIBILITY_PASS` as a read-only activation-feasibility verdict and did not mutate runtime state.
+
+SUB-ACT-02P subsequently reconciled and accepted the persisted `activation_feasibility = ACTIVATION_FEASIBILITY_PASS` runtime value through deterministic reconstruction. Its provenance result is `SUB_ACT_02_RUNTIME_PROVENANCE_RECONCILED`.
+
+The accepted persisted-state provenance is:
+
+```text
+historical_writer = unknown
+historical_provenance = inconclusive
+current_state_acceptance = AUTHORIZED_BY_DETERMINISTIC_RECONSTRUCTION
+schema_version = 1.4
+activation_feasibility = ACTIVATION_FEASIBILITY_PASS
+development_base_sha = 575ffa1848ac69abe855bd018c7ae8eaf05d61e4
+batch_base_sha = null
+integration_base_sha = null
+terminal_outcome = null
+```
+
+| Transition | Guard | Side effect | Terminal |
+| --- | --- | --- | --- |
+| `BOOTSTRAPPED → BASELINE_PINNED` | accepted SUB-ACT-01 development base | canonical development base recorded | No |
+| `BASELINE_PINNED → READY` | `ACTIVATION_FEASIBILITY_PASS` with reconciled provenance | `SBH-00-01` and `SBH-00-02` become available as governance/review work | No |
+
+Invalid transitions for this record include:
+
+```text
+BOOTSTRAPPED → READY without BASELINE_PINNED evidence
+READY → ACTIVE_PARALLEL in ACT-03
+BOOTSTRAPPED → ACTIVE_PARALLEL
+READY → Batch 001 started
+```
+
+Any invalid activation transition is `INVALID_ACTIVATION_TRANSITION → STOP`.
+
+`SUB-ACT-03` does not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains an ACT-04-controlled outcome.
+
+### Performance & Scaling Review
+
+This governance record changes no production performance architecture.
+
+| Area | Result |
+| --- | --- |
+| production PostgreSQL | unchanged |
+| Redis | unchanged |
+| ETS/Cachex | unchanged |
+| Oban | unchanged |
+| PubSub | unchanged |
+| indexes | unchanged |
+| TTL | unchanged |
+| production DB calls | none |
+| 100k concurrency | unchanged |
+| latency | unchanged |
 
 ---
 
@@ -366,8 +468,7 @@ AUTHORITY_MOVED
 Task-level blockers are normally **task** states.
 Do not demote an entire workstream merely because one task is blocked.
 
-This governance PR does **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`.
-After merge, each lane must independently run its activation gate.
+`PR #8` itself did **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`. SUB-ACT-03 records only the separately evidenced SUBS transition to `READY`. S0 and PLATFORM remain independently `BOOTSTRAPPED`.
 
 ---
 
@@ -434,11 +535,11 @@ After this parallel-topology governance is accepted:
 
 - S0 may run its independent activation gate.
 - PLATFORM may run its independent activation gate.
-- SUBS may run its independent activation gate.
+- SUBS activation is recorded separately by SUB-ACT-03.
 
 No lane requires another lane to finish first unless its exact task declares a validated external dependency.
 
-This registry update does **not** run those gates.
+`PR #8` did not run those gates. This SUB-ACT-03 record records only the completed SUBS gate sequence; it does not run or alter the S0 or PLATFORM gates.
 
 ---
 
@@ -448,13 +549,13 @@ After this parallel-topology governance is accepted and verified:
 
 - S0 may run its independent activation gate.
 - PLATFORM may run its independent activation gate.
-- SUBS may run its independent activation gate.
+- SUBS activation is recorded by SUB-ACT-03.
 
 No lane requires another lane to finish first unless its exact task declares a validated external dependency.
 
-Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation.
+Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS is `READY` only as recorded by SUB-ACT-03; S0 and PLATFORM remain `BOOTSTRAPPED`.
 
-This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH implementation from this file alone.
+This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` and `SBH-00-02` are available only as governance/review work.
 
 ---
 
@@ -545,16 +646,16 @@ When updating:
 - refresh lifecycle states, pending PRs, and ownership assignments here
 - record SHAs as status / candidate evidence only, never as frozen forever-law
 - do not claim a PR merged unless GitHub shows it merged
-- do not self-activate S0, PLATFORM, or SUBS from a registry-only change
+- do not self-activate S0 or PLATFORM from a registry-only change; record SUBS activation only through an explicit SUB-ACT task
 
 ### Current status / candidate development-base evidence (refresh when tips move)
 
 Not implementation authority. Not frozen activation pins. Refresh from origin before any activation gate.
 
-- `origin/main` = `486a1c74f5b738d488fdd54118002e90ec67bd49`
+- `origin/main` = `56f06d028ec38896f5a927f54dc7adfcb20034a3` (PR #8 merge)
 - `origin/hardening/s0-baseline` = `0fe372d1ef435b9826908ed41725457fdf78c034` (includes PR #6 merge)
 - `origin/hardening/platform-security` = `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3`
-- `origin/hardening/subscriptions` = `77a272c3887a7ab46e84a7fed02163d964e37b9b`
+- `origin/hardening/subscriptions` = `54871ef3bdda42f067ed5dbd398305151610c060` (current authority tip; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 
