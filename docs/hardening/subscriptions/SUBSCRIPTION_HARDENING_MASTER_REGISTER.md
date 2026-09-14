@@ -1,17 +1,17 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
 **Version:** v0.1.4
-**Status:** WORKING / APPROVED DESIGN — PARALLEL PRE-ACTIVATION AUTHORITY  
-**Verified:** 2026-09-09  
+**Status:** WORKING / APPROVED DESIGN — SUBS READY / JC-219 CONTRACT_FROZEN
+**Verified:** 2026-09-14
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
 **Persistent workstream branch:** `hardening/subscriptions`
 
-> **Recommended repository destination after governance authorizes documentation changes:**  
+> **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document is a planning/governance authority candidate. Its existence does **not** activate SUBS, authorize migrations, authorize shared-domain changes, or authorize implementation.
+> This document records the independently verified SUBS activation and the owner-approved JC-219 architecture. It does **not** authorize migrations, authorize shared-domain changes, freeze Batch 001, or authorize production implementation.
 
 ---
 
@@ -27,22 +27,23 @@ This is a hardening programme, not a subscription rewrite.
 
 ---
 
-# 2. Independent Verification Pass — 2026-09-06
+# 2. Independent Verification Pass — 2026-09-14
 
 This register was checked against the current repository before being written.
 
-## 2.1 Verified authority state — refreshed after PR #8 merge
+## 2.1 Verified authority state — refreshed after canonical SUBS activation
 
 | Authority | Verified state |
 |---|---|
-| canonical `main` governance floor | `56f06d028ec38896f5a927f54dc7adfcb20034a3` (PR #8 merge) |
-| `hardening/s0-baseline` candidate tip | `0fe372d1ef435b9826908ed41725457fdf78c034` |
+| canonical `main` governance authority | `67a310988ea5f31081175e934f1eb2a2bd6c8c3b` |
+| `hardening/s0-baseline` current tip | `98dc7711d0aa80c8730e11b1f357491d799f404d` |
 | `hardening/platform-security` candidate tip | `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3` |
-| `hardening/subscriptions` candidate tip | `77a272c3887a7ab46e84a7fed02163d964e37b9b` |
+| `hardening/subscriptions` current authority tip | `54871ef3bdda42f067ed5dbd398305151610c060` |
 | PR #8 | **MERGED** |
 | canonical topology | MAIN governance/integration authority + independent S0/PLATFORM/SUBS lanes |
-| SUBS lifecycle | `BOOTSTRAPPED` — independent activation gate required |
-| Subscription implementation authority | **NONE until SUBS development base is accepted and canonical activation is recorded** |
+| accepted SUBS development base | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01) |
+| SUBS lifecycle | `READY` — governance/review only |
+| Subscription implementation authority | **NONE; Batch 001 and SUB-ACT-04 remain outstanding** |
 
 Canonical governance now explicitly separates:
 
@@ -56,13 +57,19 @@ SUBS no longer waits for S0 merely because S0 moved. Cross-workstream changes bl
 
 ## 2.2 Verified branch topology and development-base interpretation
 
-`hardening/subscriptions` remains at:
+`hardening/subscriptions` current authority tip is:
 
 ```text
-77a272c3887a7ab46e84a7fed02163d964e37b9b
+54871ef3bdda42f067ed5dbd398305151610c060
 ```
 
-This SHA is a **candidate development base**, not yet durable implementation authority. Its age relative to another lane is not itself a blocker.
+The accepted `development_base_sha` is separately pinned by `SUB-ACT-01`:
+
+```text
+575ffa1848ac69abe855bd018c7ae8eaf05d61e4
+```
+
+The current branch tip is the recorded governance authority; it is not a frozen Batch 001 base. Its age relative to another lane is not itself a blocker.
 
 The activation decision asks:
 
@@ -105,7 +112,7 @@ The following high-impact findings were independently confirmed at the current S
 Two corrections were made to the earlier draft:
 
 1. An earlier draft used an undeclared review-stop state. Review-only tasks now terminate only in explicit `STOPPED`, `PASS`, or `INCONCLUSIVE` outcomes.
-2. `SubscriptionPlanRevision` / `PlanRevision` is treated as the **recommended** architecture, not already-frozen implementation law. `SBH-00-01` must freeze the exact contract-storage model before code is authorized.
+2. The owner-approved hybrid `PlanRevision` + `Subscription` binding + exact `RenewalAttempt` charged-contract evidence is the canonical JC-219 architecture below. This is governance authority only; production implementation remains separately gated.
 
 ---
 
@@ -140,22 +147,20 @@ Active implementation must never begin from a worktree containing untracked boot
 # 3. Current Programme Verdict
 
 ```text
-PARALLEL_PRE_ACTIVATION
+SUBS_READY_FOR_GOVERNANCE_REVIEW
 ```
 
 Canonical governance is no longer the blocker.
 
-Current remaining lane-local admission work is:
+Current remaining lane-local work is:
 
 ```text
-1. verify activation feasibility against the accepted SUBS development_base_sha;
-2. record the accepted SUBS base and canonical READY authority;
-3. make SBH-00 governance/review work available after canonical activation;
-4. freeze the first executable dependency graph and hardening matrix;
-5. freeze the first batch_base_sha and perform implementation admission.
+1. perform the separately scoped Stage B governance work for JC-220, JC-221, and JC-222;
+2. freeze the first executable dependency graph and hardening matrix through JC-223;
+3. freeze the first batch_base_sha and perform SUB-ACT-04 admission recertification through JC-224.
 ```
 
-No production `SBH-*` implementation task is authorized merely by this register or by PR #8.
+No production `SBH-*` implementation task is authorized merely by this register, by SUBS `READY`, or by PR #8.
 
 ---
 
@@ -303,6 +308,35 @@ Required hardening:
 - dunning success/failure ordering;
 - durable access-effect convergence.
 
+### JC-219 commercial authority
+
+For the approved commercial-contract architecture, `Subscription` is the aggregate and
+lifecycle authority for:
+
+```text
+status
+period boundaries
+current effective PlanRevision identity
+current variant/quantity where applicable
+stored payment-method identity/reference
+cancellation intent
+dunning/retry state
+pending ContractChange identity
+aggregate version
+```
+
+The canonical commercial meaning of a Subscription is:
+
+```text
+bound immutable PlanRevision
+        +
+explicitly Subscription-owned aggregate state
+```
+
+Compatibility snapshots may exist for migration, reads, or performance, but they are
+not competing commercial authorities. JC-219 does not add schema or change the
+persisted lifecycle law.
+
 ---
 
 ## 7.2 Scheduled Cancellation
@@ -362,6 +396,57 @@ Preserve:
 - initial CAS claim;
 - Oban uniqueness.
 
+### JC-219 charged-contract authority
+
+`RenewalAttempt` is one renewal occurrence plus immutable, exact charged-contract
+evidence. At the first winning renewal claim, the attempt must bind enough evidence to
+answer permanently:
+
+```text
+which contract revision was purchased
+which variant and quantity were charged
+which amount and currency were charged
+which period was purchased
+which ContractChange, if any, was consumed
+which commercial/access policy governed the occurrence
+```
+
+Minimum conceptual evidence is:
+
+```text
+plan_revision_id
+variant_id
+quantity
+amount_minor
+currency
+period_start_at
+period_end_at
+contract_change_id (nullable)
+immutable commercial-policy snapshot or equivalent canonical serialized/versioned evidence
+```
+
+A `PlanRevision` foreign key alone is not sufficient where occurrence-specific truth
+exists outside the revision. The occurrence must remain independently auditable.
+
+The bind point is:
+
+```text
+load authoritative Subscription
+↓
+resolve the bound revision and eligible queued ContractChange
+↓
+atomically bind the exact charged contract to RenewalAttempt
+↓ COMMIT
+provider/payment work may begin
+```
+
+Retries reuse that bound contract and may not re-resolve mutable Plan, pending fields,
+or a newer queued change.
+
+Successful reconciliation applies only the successful attempt's immutable charged-
+contract evidence together with the frozen race precedence. If change A was bound to
+the attempt and change B was queued later, reconciliation applies A and preserves B.
+
 ---
 
 ## 7.4 Dunning
@@ -388,64 +473,163 @@ Required law:
 
 ---
 
-## 7.5 Plan Revision — Proposed, Not Yet Frozen
+## 7.5 Plan Revision — JC-219 Approved Commercial Contract Architecture
 
-The recommended architecture is an immutable commercial revision layer separating:
+JC-219 freezes the approved hybrid model. It separates:
 
-1. reusable commercial-plan identity / merchandising;
-2. immutable customer-contract semantics.
+1. a mutable reusable offer/configuration and sellability surface; and
+2. an immutable effective commercial contract, with exact immutable evidence for each
+   charged renewal occurrence.
 
-Proposed lifecycle:
+The authority chain is:
+
+```text
+SubscriptionPlan
+    ↓ publishes
+PlanRevision
+    ↓ bound by
+Subscription.current_plan_revision_id
+    ↓ exact occurrence binding
+RenewalAttempt.charged_contract_snapshot
+    ↓ payment/provider evidence
+PaymentIntent / Order evidence
+    ↓ successful reconciliation
+Subscription applies exactly charged attempt evidence
+```
+
+### SubscriptionPlan authority
+
+`SubscriptionPlan` remains a mutable reusable offer, authoring, and sellability
+surface. It may evolve for future sales according to governance. It is not historical
+contract truth, and changing it must not silently alter an already-effective
+Subscription contract. `SubscriptionPlan` is not redefined as immutable by this
+decision.
+
+### PlanRevision authority and lifecycle
+
+`PlanRevision` is the Subscription-owned immutable effective commercial contract.
 
 ```text
 DRAFT
-  ↓ publish
+  ↓
 EFFECTIVE
-  ↓ retire
+  ↓
 RETIRED
 ```
 
-Proposed rules:
+The lifecycle rules are:
 
-- `DRAFT` may change.
-- `EFFECTIVE` commercial semantics are immutable.
-- `RETIRED` remains immutable.
-- new sales / newly queued changes cannot use retired revisions.
-- existing Subscriptions may use retired revisions only when grandfathering law allows.
-- recommendation: do not permit `RETIRED → EFFECTIVE`; publish a new revision instead.
+- `DRAFT` is editable before effectiveness.
+- `EFFECTIVE` is immutable.
+- `RETIRED` is immutable and terminal for that revision.
+- `RETIRED → EFFECTIVE` is forbidden; publish a new revision instead.
+- a Plan may publish multiple immutable revisions over time.
+- retirement/sellability and grandfathered continuation are separate questions;
+  JC-222 owns the full grandfathering law.
 
-**This model is not implementation authority until `SBH-00-01` freezes the architecture.**
+### Immutable commercial field ownership
 
-Alternative architectures that must be explicitly considered:
+The revision owns every commercial field whose later mutation could alter recurring
+obligation or access meaning. At minimum this includes:
 
-- full Subscription-owned contractual snapshots;
-- immutable PlanRevision;
-- hybrid PlanRevision + immutable RenewalAttempt contract snapshot.
+```text
+plan identity/key
+variant/offer compatibility identity where contract-relevant
+amount_minor
+currency
+quantity semantics
+interval_unit
+interval_count
+anchor_mode
+anchor_day_of_month
+billing_timezone
+term_mode
+term_cycles
+term_end_at
+trial_days
+retry schedule
+max retries
+grace policy
+access_on_past_due
+access_on_cancel
+entitlement_kind
+entitlement_scope_key
+membership/commercial classification where it changes access
+billing-mode constraints where commercially relevant
+```
 
-Recommended: **hybrid**, subject to SBH-00-01 approval.
+Operational/provider references that do not define commercial policy remain outside
+`PlanRevision`. This list does not invent additional Product Law.
+
+### Historical backfill authority
+
+Existing Subscriptions may not receive invented history. Evidence precedence is:
+
+```text
+1. immutable paid OrderLineItem / SubscriptionItem evidence
+2. Subscription snapshots known to have been captured at purchase
+3. provable historical governance or migration evidence
+4. current mutable Plan only where it can be proven identical to the purchased contract
+```
+
+If material historical commercial meaning cannot be proven, the row or cohort must
+stop for an explicit compatibility/product decision. Today's mutable Plan must never
+be silently copied and presented as historical truth.
+
+### JC-219 boundary and concurrency consequences
+
+SUBS owns `PlanRevision` commercial semantics, `Subscription` commercial/lifecycle
+semantics, `RenewalAttempt` charged-contract semantics, and `ContractChange`
+Subscription-owned identity/semantics. Migrations, Ash snapshots, Orders core,
+Payments core, Entitlements core, provider contracts, and shared platform
+configuration remain shared/external authority. `OrderLineItem` is supporting
+immutable order/payment evidence; it is not Subscription contract authority. No shared
+domain resource is modified by JC-219.
+
+PostgreSQL remains durable commercial-contract, Subscription-lifecycle, and
+charged-occurrence authority. Redis is not contract authority, and a GenServer is not
+global Subscription serialization authority. Renewal processing resolves and binds
+the authoritative contract once per occurrence and carries immutable evidence through
+retries and reconciliation. No cache is required for correctness.
+
+Conceptual lookup/index surfaces for later implementation are:
+
+```text
+PlanRevision plan/revision identity
+Subscription.current_plan_revision_id
+ContractChange subscription/state/effective boundary
+RenewalAttempt.plan_revision_id
+RenewalAttempt.contract_change_id
+existing unique(subscription_id, renewal_key)
+```
+
+These are design guidance only; JC-219 creates no schema, migration, or index.
 
 ---
 
-## 7.6 Contract Change
+## 7.6 Contract Change — JC-219 Stable Identity Requirement
 
-May remain represented by fields if concurrency and audit invariants remain provable.
+The approved architecture requires a stable queued commercial-change identity. The
+exact storage shape may remain a downstream implementation decision: a dedicated Ash
+resource or another Subscription-owned durable representation are both compatible
+unless later approved architecture says otherwise.
 
 Conceptual lifecycle:
 
 ```text
 NONE
-  ↓ request
+  ↓ queue
 QUEUED
-  ├── supersede → QUEUED(new contract)
-  ├── cancel → NONE
+  ├── supersede → SUPERSEDED
+  ├── cancel → CANCELED
   └── renewal binds exact queued contract → BOUND_TO_RENEWAL
-                                      ↓ successful reconciliation
-                                   APPLIED
+                                             ↓ successful reconciliation
+                                          APPLIED
 ```
 
 Required invariant:
 
-> A contract change queued after a RenewalAttempt is bound cannot mutate the already-started charged contract.
+> Once a change is `BOUND_TO_RENEWAL`, later queue or supersession operations cannot mutate the already-started charged occurrence. A later queued change has a distinct identity and survives reconciliation of the older bound occurrence.
 
 ---
 
@@ -558,8 +742,8 @@ Historical entries remain for provenance only and may not block current task adm
 |---|---|---|---:|---|---|
 | `SUB-ACT-00` | Upgrade local loop/register authority from v1.2 to v1.3 parallel semantics | `COMPLETED` | No | PR #8 merged | v1.3 authority upgrade, promotion, and reclassification completed |
 | `SUB-ACT-01` | Independently verify and pin SUBS development base | `DEVELOPMENT_BASE_ACCEPTED` | No | ACT-00 | `development_base_sha = 575ffa1848ac69abe855bd018c7ae8eaf05d61e4` accepted |
-| `SUB-ACT-02` | Verify activation feasibility, task-level dependencies, and shared-authority usability | `NEXT_AFTER_V1_4_RUNTIME_COMPATIBILITY` | No | ACT-01 + separately authorized and verified v1.4 runtime compatibility | `ACTIVATION_FEASIBILITY_PASS` or lane-specific blocker |
-| `SUB-ACT-03` | Record accepted SUBS development base and canonical activation state | `BLOCKED_DEPENDENCY` | No | ACT-01 + ACT-02 PASS + v1.4 runtime compatibility | ordered `BOOTSTRAPPED → BASELINE_PINNED → READY` transitions recorded |
+| `SUB-ACT-02` | Verify activation feasibility, task-level dependencies, and shared-authority usability | `ACTIVATION_FEASIBILITY_PASS` | No | ACT-01 + separately authorized and verified v1.4 runtime compatibility | feasibility pass recorded |
+| `SUB-ACT-03` | Record accepted SUBS development base and canonical activation state | `CANONICAL_READY_RECORDED` | No | ACT-01 + ACT-02 PASS + v1.4 runtime compatibility | ordered `BOOTSTRAPPED → BASELINE_PINNED → READY` transitions recorded |
 | `SUB-ACT-04` | Freeze Batch 001 base and run v1.3/v1.4 admission recertification | `BLOCKED_DEPENDENCY` | No | ACT-03 + SBH-00-05 | `batch_base_sha` + 0A-P/0A-B/0A-N PASS |
 
 **Hard gate:** production implementation requires canonical SUBS `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha`, successful v1.3/v1.4 admission recertification, a frozen `batch_base_sha`, a completed SBH-00 executable dependency graph, and at least one task that passes task-level admission.
@@ -568,7 +752,7 @@ Historical entries remain for provenance only and may not block current task adm
 
 After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
 
-`SUB-ACT-03` records two ordered, validated canonical lifecycle transitions. The initial canonical state is `BOOTSTRAPPED`. The accepted `SUB-ACT-01` development base guards `BOOTSTRAPPED → BASELINE_PINNED`; an `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guards `BASELINE_PINNED → READY`. One bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. Its resulting canonical lane state is `READY`, and its side effects are recording the accepted `development_base_sha` and making `SBH-00-01` and `SBH-00-02` available as governance/review work. `SUB-ACT-03` must not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation.
+`SUB-ACT-03` recorded two ordered, validated canonical lifecycle transitions. The initial canonical state was `BOOTSTRAPPED`. The accepted `SUB-ACT-01` development base guarded `BOOTSTRAPPED → BASELINE_PINNED`; the `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guarded `BASELINE_PINNED → READY`. The resulting canonical lane state is `READY`, and its side effects are recording the accepted `development_base_sha` and making `SBH-00-01` and `SBH-00-02` available as governance/review work. `SUB-ACT-03` did not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation.
 
 A sibling lane moving is not itself a blocker.
 
@@ -578,63 +762,64 @@ A sibling lane moving is not itself a blocker.
 
 These are governance/review tasks. They establish law before production code changes.
 
-`SBH-00-01` and `SBH-00-02` remain `loop_eligible = No`. Before `SUB-ACT-03` they are unavailable because canonical activation has not been recorded. After `SUB-ACT-03` they become available as governance/review work; they do not enter implementation-loop READY admission. `SBH-00-05` freezes the first executable dependency graph and hardening matrix before `SUB-ACT-04` freezes Batch 001.
+`SBH-00-01` and `SBH-00-02` remain `loop_eligible = No`. After `SUB-ACT-03` they are available as governance/review work; they do not enter implementation-loop READY admission. JC-219/SBH-00-01 is `CONTRACT_FROZEN / CANONICAL`; its implementation remains separately gated. `SBH-00-05` freezes the first executable dependency graph and hardening matrix before `SUB-ACT-04` freezes Batch 001.
 
 | ID | Task | Priority | State | Loop eligible | Dependency |
 |---|---|---:|---|---:|---|
-| `SBH-00-01` | Freeze commercial-contract architecture | P1 | `BLOCKED_DEPENDENCY` until ACT-03, then governance/review available | No | ACT-03 |
-| `SBH-00-02` | Populate canonical Subscription domain/lifecycle map | P1 | `BLOCKED_DEPENDENCY` until ACT-03, then governance/review available | No | ACT-03 |
+| `SBH-00-01` | Freeze commercial-contract architecture | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | ACT-03 |
+| `SBH-00-02` | Populate canonical Subscription domain/lifecycle map | P1 | `AVAILABLE_GOVERNANCE_REVIEW` | No | ACT-03 |
 | `SBH-00-03` | Freeze concurrency/race precedence matrix | P1 | `BLOCKED_DEPENDENCY` | No | 00-01 |
 | `SBH-00-04` | Freeze cancellation, dunning, access, revocation, and grandfathering laws | P1 | `BLOCKED_DEPENDENCY` | No | 00-01 |
 | `SBH-00-05` | Freeze first executable dependency graph and hardening matrix | P1 | `BLOCKED_DEPENDENCY` | No | 00-02..04 |
 
 ## `SBH-00-01` architecture decision
 
-Explicitly compare:
+JC-219 records the owner-approved decision; these are no longer unresolved alternatives.
 
-### Option A — Subscription-owned complete contract snapshot
+### APPROVED — Hybrid: PlanRevision + Subscription binding + RenewalAttempt charged-contract snapshot
 
-Strengths:
+The selected model is:
 
-- direct runtime authority;
-- simple historical lookup.
+```text
+mutable SubscriptionPlan offer/configuration
+        ↓ publishes
+immutable PlanRevision commercial contract
+        ↓ bound by
+Subscription.current_plan_revision_id
+        ↓ exact occurrence binding
+RenewalAttempt.charged_contract_snapshot
+```
 
-Costs:
+It provides immutable reusable commercial semantics, exact per-renewal asynchronous
+evidence, deterministic reconciliation, and independent auditability. The model
+requires later schema/migration discipline, but that downstream work is not authorized
+by this documentation PR.
 
-- high field duplication;
-- plan/revision audit and grandfathering semantics weaker;
-- repeated fields across Subscription and RenewalAttempt.
+### Rejected — mutable Plan + partial Subscription snapshots only
 
-### Option B — Immutable PlanRevision
+This does not provide durable immutable contractual provenance. Mutable plan changes
+can drift away from existing customer obligations, while duplicated partial snapshots
+can diverge from the exact terms actually charged.
 
-Strengths:
+### Rejected — PlanRevision reference alone
 
-- clear contractual provenance;
-- strong grandfathering;
-- explicit plan evolution.
+A revision reference does not preserve occurrence-specific truth where variant,
+quantity, amount, period, consumed ContractChange, or commercial/access policy can be
+bound at renewal time. A `PlanRevision` foreign key alone is therefore insufficient
+for exact charged-occurrence auditability.
 
-Costs:
+The owner-approved hybrid is canonical for JC-219. `SBH-10` and later implementation
+tasks may implement it only after the separate activation, dependency, shared-authority,
+and batch gates pass.
 
-- migration/backfill complexity;
-- renewal still needs proof of what exact variant/quantity/price was charged.
+### Stage A boundary
 
-### Option C — Hybrid: PlanRevision + RenewalAttempt charged-contract snapshot
-
-**Recommended.**
-
-Strengths:
-
-- immutable reusable commercial semantics;
-- exact per-renewal asynchronous evidence;
-- deterministic reconciliation;
-- strong auditability.
-
-Costs:
-
-- highest schema/design discipline;
-- requires shared migration authority.
-
-The human owner must approve the selected model before `SBH-10` begins.
+This is a governance/documentation freeze only. It does not authorize production code,
+schema, migrations, Ash snapshots, or changes to Orders, Payments, Entitlements,
+provider contracts, or shared platform configuration. JC-220, JC-221, and JC-222 remain
+the later Stage B lifecycle/product-law canonicalization work; existing lifecycle,
+dunning, scheduling, access, and race-matrix material elsewhere in this register is
+not newly approved by JC-219. JC-223 and JC-224 remain blocked.
 
 ---
 
@@ -1840,13 +2025,15 @@ SUB-ACT-00  completed v1.3 authority upgrade/promotion/reclassification
     ↓
 SUB-ACT-01  accepted SUBS development base
     ↓
-SUB-ACT-02  verify activation feasibility after v1.4 runtime compatibility
-    ↓ ACTIVATION_FEASIBILITY_PASS
-SUB-ACT-03  record ordered BASELINE_PINNED then READY transitions in canonical governance
+SUB-ACT-02  ACTIVATION_FEASIBILITY_PASS recorded
     ↓
-SBH-00-01 / SBH-00-02  perform authorized governance/review work
+SUB-ACT-03  canonical READY recorded after ordered BASELINE_PINNED then READY transitions
     ↓
-SBH-00-05  freeze first executable dependency graph and hardening matrix
+JC-219 / SBH-00-01  CONTRACT_FROZEN / CANONICAL
+    ↓
+JC-220 / JC-221 / JC-222  later Stage B lifecycle/product-law canonicalization
+    ↓
+SBH-00-05 / JC-223  freeze first executable dependency graph and hardening matrix
     ↓
 SUB-ACT-04  freeze Batch 001 base + v1.3/v1.4 admission recertification
 ```
@@ -1956,22 +2143,22 @@ CANONICAL GOVERNANCE:
 PR #8 parallel topology merged at 56f06d028ec38896f5a927f54dc7adfcb20034a3.
 
 CURRENT IMPLEMENTATION AUTHORITY:
-NONE until lane-local activation is recorded.
+NONE. SUBS READY authorizes governance/review only; Batch 001 and SUB-ACT-04 admission remain outstanding.
 
 CURRENT WORKSTREAM STATE:
-BOOTSTRAPPED / PARALLEL PRE-ACTIVATION.
+READY / GOVERNANCE-REVIEW ONLY.
 
 HISTORICAL v0.1.3 CANDIDATE:
 77a272c3887a7ab46e84a7fed02163d964e37b9b.
 
 ACCEPTED DEVELOPMENT BASE RECORD:
-575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 external pin; canonical activation remains separate).
+575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
-Separately authorize and verify v1.4 runtime compatibility, then run SUB-ACT-02 activation-feasibility verification after the accepted development-base record.
+Stage B JC-220 + JC-221 + JC-222 canonicalization.
 
 FINAL ACTION:
-After separately verified v1.4 runtime compatibility, prove activation feasibility without requiring implementation-loop READY work. After a pass, record the ordered canonical activation transitions, complete SBH-00 governance/contract freeze, then run Batch 001 admission.
+Canonicalize JC-220, JC-221, and JC-222 coherently. Then complete JC-223's executable dependency graph and hardening matrix, followed by JC-224's Batch 001 base and implementation-admission recertification. Production implementation remains unauthorized until those gates are separately certified.
 ```
 
 ---
