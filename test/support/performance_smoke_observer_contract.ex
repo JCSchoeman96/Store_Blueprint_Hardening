@@ -1,5 +1,113 @@
+defmodule Store.PerformanceSmoke.ConnectionIdentity do
+  @moduledoc false
+
+  @store_repo_application_name "store_perf_repo"
+  @direct_repo_application_name "store_perf_direct_repo"
+
+  @spec store_repo_application_name() :: String.t()
+  def store_repo_application_name, do: @store_repo_application_name
+
+  @spec direct_repo_application_name() :: String.t()
+  def direct_repo_application_name, do: @direct_repo_application_name
+end
+
+defmodule Store.PerformanceSmoke.ProviderPhase do
+  @moduledoc false
+
+  @table :store_performance_smoke_provider_phase
+  @provider_task_event [:store, :checkout, :provider_setup_task]
+  @terminal_results [:ok, :provider_error, :task_exit, :timeout]
+
+  @spec start_tracking() :: {:ok, {__MODULE__, reference()}}
+  def start_tracking do
+    _ = ensure_table()
+
+    :ets.insert(@table, [
+      {:tracking?, true},
+      {:started, 0},
+      {:active, 0}
+    ])
+
+    handler_id = {__MODULE__, make_ref()}
+    :ok = :telemetry.attach(handler_id, @provider_task_event, &__MODULE__.handle_event/4, nil)
+    {:ok, handler_id}
+  end
+
+  @spec stop_tracking(term()) :: :ok
+  def stop_tracking(handler_id) do
+    :ok = :telemetry.detach(handler_id)
+    _ = ensure_table()
+    :ets.insert(@table, {:tracking?, false})
+    :ok
+  end
+
+  @spec current() :: :pre_provider | :provider_wait | :post_provider | :untracked
+  def current do
+    _ = ensure_table()
+
+    case :ets.lookup(@table, :tracking?) do
+      [{:tracking?, true}] ->
+        active = counter(:active)
+        started = counter(:started)
+
+        cond do
+          active > 0 -> :provider_wait
+          started == 0 -> :pre_provider
+          true -> :post_provider
+        end
+
+      _ ->
+        :untracked
+    end
+  end
+
+  @spec handle_event(list(), map(), map(), term()) :: :ok
+  def handle_event(_event, _measurements, %{result: :started}, _config) do
+    increment(:started)
+    increment(:active)
+    :ok
+  end
+
+  def handle_event(_event, _measurements, %{result: result}, _config)
+      when result in @terminal_results do
+    decrement(:active)
+    :ok
+  end
+
+  def handle_event(_event, _measurements, _metadata, _config), do: :ok
+
+  defp ensure_table do
+    case :ets.whereis(@table) do
+      :undefined ->
+        :ets.new(@table, [:named_table, :public, :set])
+
+      _table ->
+        @table
+    end
+  end
+
+  defp counter(key) do
+    case :ets.lookup(@table, key) do
+      [{^key, value}] -> value
+      [] -> 0
+    end
+  end
+
+  defp increment(key) do
+    _ = :ets.update_counter(@table, key, {2, 1}, {key, 0})
+    :ok
+  end
+
+  defp decrement(key) do
+    _ = :ets.update_counter(@table, key, {2, -1}, {key, 0})
+    :ok
+  end
+end
+
 defmodule Store.PerformanceSmoke.ObserverContract do
   @moduledoc false
+
+  alias Store.PerformanceSmoke.ConnectionIdentity
 
   @type expected_scope :: %{
           required(:kind) => :inventory_reservation,
@@ -18,6 +126,41 @@ defmodule Store.PerformanceSmoke.ObserverContract do
   def uuid_param!(uuid),
     do: raise(ArgumentError, "invalid observer UUID parameter: #{inspect(uuid)}")
 
+  @spec connection_populations([map()], pos_integer(), pos_integer(), keyword()) :: map()
+  def connection_populations(backend_rows, repo_pool_size, direct_repo_pool_size, opts \\ [])
+      when is_list(backend_rows) and is_integer(repo_pool_size) and repo_pool_size > 0 and
+             is_integer(direct_repo_pool_size) and direct_repo_pool_size > 0 and is_list(opts) do
+    observer_pid = Keyword.get(opts, :observer_pid)
+
+    rows =
+      Enum.reject(backend_rows, fn row ->
+        not is_nil(observer_pid) and Map.get(row, :pid) == observer_pid
+      end)
+
+    active_rows = Enum.filter(rows, &(Map.get(&1, :state) == "active"))
+    repo_name = ConnectionIdentity.store_repo_application_name()
+    direct_repo_name = ConnectionIdentity.direct_repo_application_name()
+
+    repo_active_backends = Enum.count(active_rows, &(Map.get(&1, :application_name) == repo_name))
+
+    direct_repo_active_backends =
+      Enum.count(active_rows, &(Map.get(&1, :application_name) == direct_repo_name))
+
+    total_active_backends = length(active_rows)
+
+    %{
+      total_active_backends: total_active_backends,
+      repo_active_backends: repo_active_backends,
+      direct_repo_active_backends: direct_repo_active_backends,
+      other_active_backends:
+        total_active_backends - repo_active_backends - direct_repo_active_backends,
+      repo_pool_size: repo_pool_size,
+      direct_repo_pool_size: direct_repo_pool_size,
+      repo_utilization: ratio(repo_active_backends, repo_pool_size),
+      direct_repo_utilization: ratio(direct_repo_active_backends, direct_repo_pool_size)
+    }
+  end
+
   @spec summarize(String.t(), map(), [map()], keyword()) :: map()
   def summarize(name, config, samples, opts \\ [])
       when is_binary(name) and is_map(config) and is_list(samples) and is_list(opts) do
@@ -28,6 +171,7 @@ defmodule Store.PerformanceSmoke.ObserverContract do
     thresholds = threshold_counts(classified_samples, config)
     {drain_required?, drained?} = drain_state(expected_scope, drain)
     enforced = Keyword.fetch!(opts, :enforced)
+    phase_counts = phase_sample_counts(classified_samples)
 
     %{
       name: name,
@@ -35,19 +179,48 @@ defmodule Store.PerformanceSmoke.ObserverContract do
       enforced: enforced,
       sample_count: length(classified_samples),
       peak_active_backends: peak_value(classified_samples, :active_backends, 0),
+      peak_total_active_backends:
+        peak_value(
+          classified_samples,
+          :total_active_backends,
+          peak_value(classified_samples, :active_backends, 0)
+        ),
+      peak_repo_active_backends: peak_value(classified_samples, :repo_active_backends, 0),
+      peak_direct_repo_active_backends:
+        peak_value(classified_samples, :direct_repo_active_backends, 0),
+      peak_other_active_backends: peak_value(classified_samples, :other_active_backends, 0),
       peak_lock_waiters: peak_value(classified_samples, :lock_waiters, 0),
       peak_lock_wait_ratio: peak_value(classified_samples, :lock_wait_ratio, 0.0),
       peak_total_lock_waiters: peak_value(classified_samples, :total_lock_waiters, 0),
       peak_expected_reservation_waiters:
         peak_value(classified_samples, :expected_reservation_waiters, 0),
+      peak_expected_wait_duration_ms:
+        peak_value(classified_samples, :expected_wait_duration_max_ms, 0.0),
       peak_unexpected_lock_waiters: peak_value(classified_samples, :unexpected_lock_waiters, 0),
       peak_unexpected_lock_wait_ratio:
         peak_value(classified_samples, :unexpected_lock_wait_ratio, 0.0),
       peak_active_backend_utilization:
         peak_value(classified_samples, :active_backend_utilization, 0.0),
+      peak_repo_active_backend_utilization:
+        peak_value(classified_samples, :repo_active_backend_utilization, 0.0),
+      peak_direct_repo_active_backend_utilization:
+        peak_value(classified_samples, :direct_repo_active_backend_utilization, 0.0),
+      phase_sample_counts: phase_counts,
+      provider_wait_sample_count: Map.get(phase_counts, :provider_wait, 0),
+      provider_wait_repo_active_backend_peak:
+        phase_peak(classified_samples, :provider_wait, :repo_active_backends, 0),
+      provider_wait_repo_utilization_peak:
+        phase_peak(classified_samples, :provider_wait, :repo_active_backend_utilization, 0.0),
+      pre_provider_repo_utilization_peak:
+        phase_peak(classified_samples, :pre_provider, :repo_active_backend_utilization, 0.0),
+      post_provider_repo_utilization_peak:
+        phase_peak(classified_samples, :post_provider, :repo_active_backend_utilization, 0.0),
       samples_over_lock_threshold: thresholds.samples_over_lock_threshold,
+      samples_over_expected_wait_duration_threshold:
+        thresholds.samples_over_expected_wait_duration_threshold,
       samples_over_unexpected_lock_threshold: thresholds.samples_over_unexpected_lock_threshold,
       samples_over_pool_threshold: thresholds.samples_over_pool_threshold,
+      samples_over_unmitigated_pool_threshold: thresholds.samples_over_unmitigated_pool_threshold,
       expected_contention_enabled?: drain_required?,
       expected_contention_observed?:
         Enum.any?(classified_samples, &(&1.expected_reservation_waiters > 0)),
@@ -61,6 +234,7 @@ defmodule Store.PerformanceSmoke.ObserverContract do
       drain_elapsed_ms: drain.elapsed_ms,
       lock_wait_max_ratio: config.lock_wait_max_ratio,
       lock_wait_min_active_backends: config.lock_wait_min_active_backends,
+      expected_reservation_wait_max_ms: config.expected_reservation_wait_max_ms,
       pool_utilization_max_ratio: config.pool_utilization_max_ratio
     }
   end
@@ -74,16 +248,25 @@ defmodule Store.PerformanceSmoke.ObserverContract do
       end
 
     active_backends = Map.get(sample, :active_backends, 0)
-    active_backend_utilization = Map.get(sample, :active_backend_utilization, 0.0)
+
+    active_backend_utilization =
+      Map.get(
+        sample,
+        :repo_active_backend_utilization,
+        Map.get(sample, :active_backend_utilization, 0.0)
+      )
 
     Map.merge(sample, %{
       lock_waiters: counts.lock_waiters,
       lock_wait_ratio: ratio(counts.lock_waiters, active_backends),
       total_lock_waiters: counts.total_lock_waiters,
       expected_reservation_waiters: counts.expected_reservation_waiters,
+      expected_wait_duration_max_ms: counts.expected_wait_duration_max_ms,
+      expected_wait_duration_evidence?: counts.expected_wait_duration_evidence?,
       unexpected_lock_waiters: counts.unexpected_lock_waiters,
       unexpected_lock_wait_ratio: ratio(counts.unexpected_lock_waiters, active_backends),
-      active_backend_utilization: active_backend_utilization
+      active_backend_utilization: active_backend_utilization,
+      repo_active_backend_utilization: active_backend_utilization
     })
   end
 
@@ -96,6 +279,7 @@ defmodule Store.PerformanceSmoke.ObserverContract do
 
     valid_scope? and
       Map.get(row, :has_blocker?, false) and
+      Map.get(row, :has_ungranted_lock?, false) and
       Map.get(row, :waits_on_target_row?, false) and
       reservation_lock_query?(Map.get(row, :query))
   end
@@ -105,13 +289,26 @@ defmodule Store.PerformanceSmoke.ObserverContract do
   defp classify_waiters(rows, expected_scope) do
     lock_waiters = Enum.filter(rows, &lock_waiter?/1)
 
-    expected_reservation_waiters =
-      Enum.count(lock_waiters, &expected_reservation_waiter?(&1, expected_scope))
+    expected_waiters =
+      Enum.filter(lock_waiters, &expected_reservation_waiter?(&1, expected_scope))
+
+    expected_reservation_waiters = length(expected_waiters)
+
+    expected_wait_durations =
+      expected_waiters
+      |> Enum.map(&Map.get(&1, :wait_duration_ms))
+      |> Enum.filter(&is_number/1)
+
+    expected_wait_duration_evidence? =
+      expected_reservation_waiters == 0 or
+        length(expected_wait_durations) == expected_reservation_waiters
 
     %{
       lock_waiters: length(lock_waiters),
       total_lock_waiters: length(lock_waiters),
       expected_reservation_waiters: expected_reservation_waiters,
+      expected_wait_duration_max_ms: Enum.max(expected_wait_durations, fn -> 0.0 end),
+      expected_wait_duration_evidence?: expected_wait_duration_evidence?,
       unexpected_lock_waiters: length(lock_waiters) - expected_reservation_waiters
     }
   end
@@ -123,6 +320,8 @@ defmodule Store.PerformanceSmoke.ObserverContract do
       lock_waiters: lock_waiters,
       total_lock_waiters: lock_waiters,
       expected_reservation_waiters: 0,
+      expected_wait_duration_max_ms: 0.0,
+      expected_wait_duration_evidence?: true,
       unexpected_lock_waiters: lock_waiters
     }
   end
@@ -139,10 +338,21 @@ defmodule Store.PerformanceSmoke.ObserverContract do
   defp threshold_counts(samples, config) do
     %{
       samples_over_lock_threshold: count_ratio_threshold(samples, :lock_wait_ratio, config),
+      samples_over_expected_wait_duration_threshold:
+        Enum.count(samples, fn sample ->
+          sample.expected_reservation_waiters > 0 and
+            (not sample.expected_wait_duration_evidence? or
+               sample.expected_wait_duration_max_ms > config.expected_reservation_wait_max_ms)
+        end),
       samples_over_unexpected_lock_threshold:
         count_ratio_threshold(samples, :unexpected_lock_wait_ratio, config),
       samples_over_pool_threshold:
-        Enum.count(samples, &(&1.active_backend_utilization > config.pool_utilization_max_ratio))
+        Enum.count(samples, &(&1.active_backend_utilization > config.pool_utilization_max_ratio)),
+      samples_over_unmitigated_pool_threshold:
+        Enum.count(samples, fn sample ->
+          sample.active_backend_utilization > config.pool_utilization_max_ratio and
+            not bounded_expected_contention?(sample, config)
+        end)
     }
   end
 
@@ -156,8 +366,15 @@ defmodule Store.PerformanceSmoke.ObserverContract do
   defp summary_pass?(false, _thresholds, _drained?), do: true
 
   defp summary_pass?(true, thresholds, drained?) do
-    thresholds.samples_over_unexpected_lock_threshold == 0 and
-      thresholds.samples_over_pool_threshold == 0 and drained?
+    thresholds.samples_over_expected_wait_duration_threshold == 0 and
+      thresholds.samples_over_unexpected_lock_threshold == 0 and
+      thresholds.samples_over_unmitigated_pool_threshold == 0 and drained?
+  end
+
+  defp bounded_expected_contention?(sample, config) do
+    sample.expected_reservation_waiters > 0 and
+      sample.expected_wait_duration_evidence? and
+      sample.expected_wait_duration_max_ms <= config.expected_reservation_wait_max_ms
   end
 
   defp drain_state(expected_scope, drain) do
@@ -196,6 +413,16 @@ defmodule Store.PerformanceSmoke.ObserverContract do
 
   defp lock_waiter?(row) do
     Map.get(row, :state) == "active" and Map.get(row, :wait_event_type) == "Lock"
+  end
+
+  defp phase_sample_counts(samples) do
+    Enum.frequencies_by(samples, &Map.get(&1, :phase, :untracked))
+  end
+
+  defp phase_peak(samples, phase, key, default) do
+    samples
+    |> Enum.filter(&(Map.get(&1, :phase, :untracked) == phase))
+    |> peak_value(key, default)
   end
 
   defp peak_value(samples, key, default) do

@@ -17,6 +17,12 @@ if Enum.any?(Application.started_applications(), fn {app, _desc, _vsn} -> app ==
   """
 end
 
+unless Code.ensure_loaded?(Store.PerformanceSmoke.ProviderPhase) do
+  Code.require_file(
+    Path.expand("../../test/support/performance_smoke_observer_contract.ex", __DIR__)
+  )
+end
+
 schedulers = max(System.schedulers_online(), 1)
 repo_pool_default = min(max(schedulers * 20, 100), 200)
 
@@ -32,6 +38,14 @@ repo_pool_size =
 # designed for correctness, not throughput. Use the real connection pool instead.
 repo_config = Application.get_env(:store, Store.Repo, [])
 
+repo_parameters =
+  repo_config
+  |> Keyword.get(:parameters, [])
+  |> Keyword.put(
+    :application_name,
+    Store.PerformanceSmoke.ConnectionIdentity.store_repo_application_name()
+  )
+
 Application.put_env(
   :store,
   Store.Repo,
@@ -42,6 +56,7 @@ Application.put_env(
     # Transaction-mode PgBouncer cannot use server-side prepared statements,
     # so enabling them here would produce artificially fast results.
     prepare: :unnamed,
+    parameters: repo_parameters,
     queue_target: 10_000,
     queue_interval: 10_000,
     timeout: 60_000
@@ -51,12 +66,21 @@ Application.put_env(
 direct_repo_pool = max(div(repo_pool_size, 4), 10)
 direct_repo_config = Application.get_env(:store, Store.DirectRepo, [])
 
+direct_repo_parameters =
+  direct_repo_config
+  |> Keyword.get(:parameters, [])
+  |> Keyword.put(
+    :application_name,
+    Store.PerformanceSmoke.ConnectionIdentity.direct_repo_application_name()
+  )
+
 Application.put_env(
   :store,
   Store.DirectRepo,
   Keyword.merge(direct_repo_config,
     pool: DBConnection.ConnectionPool,
     pool_size: direct_repo_pool,
+    parameters: direct_repo_parameters,
     queue_target: 10_000,
     queue_interval: 10_000,
     timeout: 60_000
@@ -78,12 +102,6 @@ Application.put_env(:store, Oban,
 
 ExUnit.start(autorun: false)
 ExUnit.configure(max_failures: 1, seed: 0)
-
-unless Code.ensure_loaded?(Store.PerformanceSmoke.ObserverContract) do
-  Code.require_file(
-    Path.expand("../../test/support/performance_smoke_observer_contract.ex", __DIR__)
-  )
-end
 
 unless Code.ensure_loaded?(Store.TestSupport.StripeAPIStub) do
   Code.require_file(Path.expand("../../test/support/stripe_api_stub.ex", __DIR__))
@@ -111,11 +129,15 @@ defmodule Store.PerformanceSmoke.Config do
             stampede_max_resource_queries: 1,
             payment_provider: "stripe",
             repo_pool_size: 20,
+            direct_repo_pool_size: 10,
+            repo_application_name: "store_perf_repo",
+            direct_repo_application_name: "store_perf_direct_repo",
             redis_pool_size: 10,
             observer_interval_ms: 500,
             lock_wait_max_ratio: 0.10,
             lock_wait_min_active_backends: 10,
             pool_utilization_max_ratio: 0.95,
+            expected_reservation_wait_max_ms: 250.0,
             benchee_time_seconds: 2,
             benchee_warmup_seconds: 1,
             sample_iterations: 100,
@@ -209,6 +231,11 @@ defmodule Store.PerformanceSmoke.Config do
       stampede_max_resource_queries: env_int("STORE_PERF_STAMPEDE_MAX_RESOURCE_QUERIES", 1),
       payment_provider: payment_provider(),
       repo_pool_size: Keyword.get(Store.Repo.config(), :pool_size),
+      direct_repo_pool_size: Keyword.get(Store.DirectRepo.config(), :pool_size),
+      repo_application_name:
+        Store.PerformanceSmoke.ConnectionIdentity.store_repo_application_name(),
+      direct_repo_application_name:
+        Store.PerformanceSmoke.ConnectionIdentity.direct_repo_application_name(),
       redis_pool_size: max(env_int("STORE_PERF_REDIS_POOL_SIZE", redis_pool_default), 1),
       observer_interval_ms: env_int("STORE_PERF_OBSERVER_INTERVAL_MS", 500),
       lock_wait_max_ratio: env_float("STORE_PERF_LOCK_WAIT_MAX_RATIO", 0.10),
@@ -625,7 +652,7 @@ defmodule Store.PerformanceSmoke.Gate do
   @spec assert_observer_summary!(map()) :: :ok
   def assert_observer_summary!(summary) when is_map(summary) do
     assert summary.pass,
-           "observer gate failed for #{summary.name}: peak_total_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_total_lock_waiters=#{summary.peak_total_lock_waiters} peak_expected_reservation_waiters=#{summary.peak_expected_reservation_waiters} peak_unexpected_lock_waiters=#{summary.peak_unexpected_lock_waiters} peak_unexpected_lock_wait_ratio=#{summary.peak_unexpected_lock_wait_ratio} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_unexpected_lock_threshold=#{summary.samples_over_unexpected_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold} drained=#{summary.drained?} post_workload_waiters=#{summary.post_workload_waiters}"
+           "observer gate failed for #{summary.name}: peak_total_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_total_lock_waiters=#{summary.peak_total_lock_waiters} peak_expected_reservation_waiters=#{summary.peak_expected_reservation_waiters} peak_expected_wait_duration_ms=#{summary.peak_expected_wait_duration_ms} peak_unexpected_lock_waiters=#{summary.peak_unexpected_lock_waiters} peak_unexpected_lock_wait_ratio=#{summary.peak_unexpected_lock_wait_ratio} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} expected_reservation_wait_max_ms=#{summary.expected_reservation_wait_max_ms} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_expected_wait_duration_threshold=#{summary.samples_over_expected_wait_duration_threshold} samples_over_unexpected_lock_threshold=#{summary.samples_over_unexpected_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold} samples_over_unmitigated_pool_threshold=#{summary.samples_over_unmitigated_pool_threshold} drained=#{summary.drained?} post_workload_waiters=#{summary.post_workload_waiters}"
 
     :ok
   end
@@ -642,7 +669,7 @@ end
 defmodule Store.PerformanceSmoke.Observer do
   @moduledoc false
 
-  alias Store.PerformanceSmoke.{Config, ObserverContract, Reporter}
+  alias Store.PerformanceSmoke.{Config, ObserverContract, ProviderPhase, Reporter}
 
   @reservation_drain_timeout_ms 5_000
 
@@ -655,7 +682,9 @@ defmodule Store.PerformanceSmoke.Observer do
   @aggregate_sample_query """
   SELECT
     COUNT(*) FILTER (WHERE state = 'active')::bigint AS active_backends,
-    COUNT(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')::bigint AS lock_waiters
+    COUNT(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')::bigint AS lock_waiters,
+    COUNT(*) FILTER (WHERE state = 'active' AND application_name = $1)::bigint AS repo_active_backends,
+    COUNT(*) FILTER (WHERE state = 'active' AND application_name = $2)::bigint AS direct_repo_active_backends
   FROM pg_stat_activity
   WHERE datname = current_database()
     AND backend_type = 'client backend'
@@ -670,7 +699,15 @@ defmodule Store.PerformanceSmoke.Observer do
     activity.wait_event_type,
     activity.wait_event,
     activity.query,
+    (EXTRACT(EPOCH FROM (clock_timestamp() - activity.query_start)) * 1000)::float8 AS wait_duration_ms,
     cardinality(pg_blocking_pids(activity.pid)) > 0 AS has_blocker,
+    EXISTS (
+      SELECT 1
+      FROM pg_locks AS wait_lock
+      WHERE wait_lock.pid = activity.pid
+        AND wait_lock.granted = false
+        AND wait_lock.locktype IN ('transactionid', 'tuple')
+    ) AS has_ungranted_lock,
     EXISTS (
       SELECT 1
       FROM pg_locks AS lock
@@ -825,15 +862,26 @@ defmodule Store.PerformanceSmoke.Observer do
   end
 
   defp sample(config, nil) do
-    %{rows: [[active_backends, lock_waiters]]} =
-      Ecto.Adapters.SQL.query!(Store.DirectRepo, @aggregate_sample_query, [])
+    %{rows: [[active_backends, lock_waiters, repo_active_backends, direct_repo_active_backends]]} =
+      Ecto.Adapters.SQL.query!(Store.DirectRepo, @aggregate_sample_query, [
+        config.repo_application_name,
+        config.direct_repo_application_name
+      ])
 
     %{
       timestamp_ms: System.system_time(:millisecond),
+      phase: Store.PerformanceSmoke.ProviderPhase.current(),
       active_backends: active_backends,
+      total_active_backends: active_backends,
+      repo_active_backends: repo_active_backends,
+      direct_repo_active_backends: direct_repo_active_backends,
+      other_active_backends: active_backends - repo_active_backends - direct_repo_active_backends,
       lock_waiters: lock_waiters,
       lock_wait_ratio: ratio(lock_waiters, active_backends),
-      active_backend_utilization: ratio(active_backends, config.repo_pool_size)
+      active_backend_utilization: ratio(repo_active_backends, config.repo_pool_size),
+      repo_active_backend_utilization: ratio(repo_active_backends, config.repo_pool_size),
+      direct_repo_active_backend_utilization:
+        ratio(direct_repo_active_backends, config.direct_repo_pool_size)
     }
   end
 
@@ -846,16 +894,31 @@ defmodule Store.PerformanceSmoke.Observer do
       )
 
     backend_rows = Enum.map(rows, &backend_row/1)
-    active_backends = Enum.count(backend_rows, &(&1.state == "active"))
+
+    populations =
+      ObserverContract.connection_populations(
+        backend_rows,
+        config.repo_pool_size,
+        config.direct_repo_pool_size
+      )
+
+    active_backends = populations.total_active_backends
     lock_waiters = Enum.count(backend_rows, &lock_waiter?/1)
 
     %{
       timestamp_ms: System.system_time(:millisecond),
+      phase: Store.PerformanceSmoke.ProviderPhase.current(),
       active_backends: active_backends,
+      total_active_backends: populations.total_active_backends,
+      repo_active_backends: populations.repo_active_backends,
+      direct_repo_active_backends: populations.direct_repo_active_backends,
+      other_active_backends: populations.other_active_backends,
       backend_rows: backend_rows,
       lock_waiters: lock_waiters,
       lock_wait_ratio: ratio(lock_waiters, active_backends),
-      active_backend_utilization: ratio(active_backends, config.repo_pool_size)
+      active_backend_utilization: populations.repo_utilization,
+      repo_active_backend_utilization: populations.repo_utilization,
+      direct_repo_active_backend_utilization: populations.direct_repo_utilization
     }
   end
 
@@ -866,7 +929,9 @@ defmodule Store.PerformanceSmoke.Observer do
          wait_event_type,
          wait_event,
          query,
+         wait_duration_ms,
          has_blocker?,
+         has_ungranted_lock?,
          waits_on_target_row?
        ]) do
     %{
@@ -876,7 +941,9 @@ defmodule Store.PerformanceSmoke.Observer do
       wait_event_type: wait_event_type,
       wait_event: wait_event,
       query: query,
+      wait_duration_ms: wait_duration_ms,
       has_blocker?: has_blocker?,
+      has_ungranted_lock?: has_ungranted_lock?,
       waits_on_target_row?: waits_on_target_row?
     }
   end
@@ -1491,6 +1558,7 @@ defmodule Store.PerformanceSmokeTest do
     Config,
     Gate,
     Observer,
+    ProviderPhase,
     RedisPool,
     Reporter,
     SingleFlightCache,
@@ -2157,32 +2225,34 @@ defmodule Store.PerformanceSmokeTest do
     end
 
     {{{results, duration_events}, repo_events}, observer_summary} =
-      Observer.capture("#{scenario_name}_observer", config, fn ->
-        with_repo_query_telemetry(repo_filter, fn ->
-          with_checkout_intent_telemetry(fn ->
-            with_provider_fault_stub(
-              config,
-              mode,
-              fn ->
-                prepared_checkouts
-                |> async_stream_with_stripe_stub(
-                  fn prepared ->
-                    Store.Payments.create_intent_for_order(
-                      prepared.actor,
-                      prepared.checkout_key,
-                      fixture.payment_input
-                    )
-                  end,
-                  max_concurrency: config.provider_fault_users,
-                  ordered: false,
-                  timeout: :infinity
-                )
-                |> Enum.map(fn
-                  {:ok, result} -> result
-                  {:exit, reason} -> {:error, reason}
-                end)
-              end
-            )
+      with_provider_phase_tracking(fn ->
+        Observer.capture("#{scenario_name}_observer", config, fn ->
+          with_repo_query_telemetry(repo_filter, fn ->
+            with_checkout_intent_telemetry(fn ->
+              with_provider_fault_stub(
+                config,
+                mode,
+                fn ->
+                  prepared_checkouts
+                  |> async_stream_with_stripe_stub(
+                    fn prepared ->
+                      Store.Payments.create_intent_for_order(
+                        prepared.actor,
+                        prepared.checkout_key,
+                        fixture.payment_input
+                      )
+                    end,
+                    max_concurrency: config.provider_fault_users,
+                    ordered: false,
+                    timeout: :infinity
+                  )
+                  |> Enum.map(fn
+                    {:ok, result} -> result
+                    {:exit, reason} -> {:error, reason}
+                  end)
+                end
+              )
+            end)
           end)
         end)
       end)
@@ -2201,6 +2271,16 @@ defmodule Store.PerformanceSmokeTest do
 
     Reporter.record_provider_fault(summary)
     summary
+  end
+
+  defp with_provider_phase_tracking(fun) when is_function(fun, 0) do
+    {:ok, handler_id} = ProviderPhase.start_tracking()
+
+    try do
+      fun.()
+    after
+      ProviderPhase.stop_tracking(handler_id)
+    end
   end
 
   defp with_provider_fault_stub(config, mode, fun) when is_function(fun, 0) do
@@ -2287,9 +2367,14 @@ defmodule Store.PerformanceSmokeTest do
     pool_utilization_max_ratio =
       provider_fault_pool_utilization_max_ratio(mode, config)
 
+    provider_wait_pool_pass =
+      observer_summary.provider_wait_sample_count > 0 and
+        observer_summary.provider_wait_repo_utilization_peak <= pool_utilization_max_ratio
+
     pressure_pass =
       mean_db_share_ratio <= config.provider_fault_db_share_max_ratio and
-        observer_summary.peak_active_backend_utilization <= pool_utilization_max_ratio and
+        observer_summary.pass and
+        provider_wait_pool_pass and
         observer_summary.peak_lock_wait_ratio <= config.provider_fault_lock_wait_max_ratio
 
     telemetry_pass = sample_count == request_count
@@ -2307,11 +2392,15 @@ defmodule Store.PerformanceSmokeTest do
       mean_repo_query_ms: mean_repo_query_ms,
       mean_db_share_ratio: mean_db_share_ratio,
       peak_lock_wait_ratio: observer_summary.peak_lock_wait_ratio,
+      peak_repo_active_backend_utilization: observer_summary.peak_repo_active_backend_utilization,
+      provider_wait_repo_utilization_peak: observer_summary.provider_wait_repo_utilization_peak,
+      provider_wait_sample_count: observer_summary.provider_wait_sample_count,
       peak_active_backend_utilization: observer_summary.peak_active_backend_utilization,
       provider_fault_db_share_max_ratio: config.provider_fault_db_share_max_ratio,
       provider_fault_pool_utilization_max_ratio: pool_utilization_max_ratio,
       provider_fault_lock_wait_max_ratio: config.provider_fault_lock_wait_max_ratio,
       telemetry_sample_count_expected: request_count,
+      provider_wait_pool_gate_pass?: provider_wait_pool_pass,
       pass: if(enforced, do: expectation_pass and pressure_pass and telemetry_pass, else: true)
     }
   end
@@ -2580,6 +2669,7 @@ summary = %{
     lock_wait_max_ratio: run_config.lock_wait_max_ratio,
     lock_wait_min_active_backends: run_config.lock_wait_min_active_backends,
     pool_utilization_max_ratio: run_config.pool_utilization_max_ratio,
+    expected_reservation_wait_max_ms: run_config.expected_reservation_wait_max_ms,
     provider_fault_db_share_max_ratio: run_config.provider_fault_db_share_max_ratio,
     provider_fault_pool_utilization_max_ratio:
       run_config.provider_fault_pool_utilization_max_ratio,
