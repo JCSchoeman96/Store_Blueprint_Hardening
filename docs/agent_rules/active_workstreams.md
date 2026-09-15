@@ -302,7 +302,7 @@ SUBS does **not** continuously consume S0 as parent authority.
 
 **Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. `SBH-00-01` and `SBH-00-02` are available as governance/review work only, with `loop_eligible = No`.
 
-`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `54871ef3bdda42f067ed5dbd398305151610c060`; it is not the development base. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
+`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `b2f46896e72bd907c800df5e0e4718177741b176`; it is not the development base. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
 
 Production Subscription implementation remains blocked until all of the following are complete:
 
@@ -652,10 +652,10 @@ When updating:
 
 Not implementation authority. Not frozen activation pins. Refresh from origin before any activation gate.
 
-- `origin/main` = `56f06d028ec38896f5a927f54dc7adfcb20034a3` (PR #8 merge)
-- `origin/hardening/s0-baseline` = `0fe372d1ef435b9826908ed41725457fdf78c034` (includes PR #6 merge)
-- `origin/hardening/platform-security` = `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3`
-- `origin/hardening/subscriptions` = `54871ef3bdda42f067ed5dbd398305151610c060` (current authority tip; not the accepted development base)
+- `origin/main` = `2ed93e76e0bbb9830591338fb7b7a03256dec415` (current canonical tip after PR #18 and PR #19)
+- `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
+- `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
+- `origin/hardening/subscriptions` = `b2f46896e72bd907c800df5e0e4718177741b176` (current authority tip after governance cleanup propagation; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 
