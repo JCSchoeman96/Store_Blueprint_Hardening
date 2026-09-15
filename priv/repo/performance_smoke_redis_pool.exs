@@ -87,8 +87,6 @@ defmodule Store.PerformanceSmoke.RedisPool do
   @spec transfer_teardown_ownership!(pid(), (-> term())) :: pid()
   def transfer_teardown_ownership!(pid, cleanup_fun)
       when is_pid(pid) and is_function(cleanup_fun, 0) do
-    true = Process.unlink(pid)
-
     try do
       ExUnit.Callbacks.on_exit({:performance_smoke_redis_pool, pid}, fn ->
         try do
@@ -98,6 +96,7 @@ defmodule Store.PerformanceSmoke.RedisPool do
         end
       end)
 
+      true = Process.unlink(pid)
       pid
     catch
       kind, reason ->

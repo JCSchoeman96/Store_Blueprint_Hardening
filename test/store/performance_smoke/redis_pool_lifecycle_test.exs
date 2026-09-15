@@ -6,6 +6,57 @@ defmodule Store.PerformanceSmoke.RedisPoolLifecycleTest do
 
   alias Store.PerformanceSmoke.RedisPool
 
+  defmodule LegacyLinkedPool do
+    @moduledoc false
+
+    use Supervisor
+
+    @state_name __MODULE__.State
+
+    def start_link(opts) do
+      Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+    end
+
+    @impl true
+    def init(opts) do
+      pool_size = Keyword.fetch!(opts, :pool_size)
+      redis_opts = Keyword.fetch!(opts, :redis_opts)
+      names = Enum.map(1..pool_size, &worker_name/1)
+
+      children =
+        Enum.map(names, fn name ->
+          redix_opts =
+            redis_opts |> Keyword.put(:name, name) |> Keyword.put_new(:sync_connect, true)
+
+          Supervisor.child_spec({Redix, redix_opts}, id: name)
+        end) ++
+          [
+            %{
+              id: @state_name,
+              start:
+                {Agent, :start_link, [fn -> %{names: names, index: 0} end, [name: @state_name]]}
+            }
+          ]
+
+      Supervisor.init(children, strategy: :one_for_one)
+    end
+
+    def command(command) when is_list(command) do
+      if Process.whereis(@state_name) do
+        name = Agent.get(@state_name, &worker_name_for/1)
+        Redix.command(name, command)
+      else
+        {:error, :redis_pool_not_started}
+      end
+    catch
+      :exit, _reason -> {:error, :redis_pool_not_started}
+    end
+
+    defp worker_name(index), do: String.to_atom("store_perf_legacy_redis_pool_#{index}")
+
+    defp worker_name_for(%{names: [name | _]}), do: name
+  end
+
   setup_all do
     {:ok, pid} = RedisPool.start_link(pool_size: 1, redis_opts: redis_opts())
     key = "store:perf:lifecycle:#{System.unique_integer([:positive])}"
@@ -26,6 +77,30 @@ defmodule Store.PerformanceSmoke.RedisPoolLifecycleTest do
     end)
 
     {:ok, pid: pid}
+  end
+
+  test "legacy linked setup ownership dies before on_exit cleanup" do
+    parent = self()
+
+    owner =
+      spawn(fn ->
+        {:ok, pid} =
+          LegacyLinkedPool.start_link(pool_size: 1, redis_opts: redis_opts())
+
+        send(parent, {:legacy_pool_started, pid})
+
+        receive do
+          :shutdown_owner -> Process.exit(self(), :shutdown)
+        end
+      end)
+
+    assert_receive {:legacy_pool_started, pid}, 5_000
+    pool_ref = Process.monitor(pid)
+    send(owner, :shutdown_owner)
+    assert_receive {:DOWN, ^pool_ref, :process, ^pid, _reason}, 5_000
+
+    assert {:error, :redis_pool_not_started} =
+             LegacyLinkedPool.command(["PING"])
   end
 
   test "setup_all Redis pool remains usable until its cleanup callback", %{pid: pid} do
