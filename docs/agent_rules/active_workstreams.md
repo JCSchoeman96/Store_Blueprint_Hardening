@@ -652,7 +652,7 @@ When updating:
 
 Not implementation authority. Not frozen activation pins. Refresh from origin before any activation gate.
 
-- `origin/main` = `177ec0a9a6dac8553f4ce21a352375a6e8bc644b` (current canonical tip after PR #18 and PR #19)
+- `origin/main` = `2ed93e76e0bbb9830591338fb7b7a03256dec415` (current canonical tip after PR #18 and PR #19)
 - `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
 - `origin/hardening/subscriptions` = `b2f46896e72bd907c800df5e0e4718177741b176` (current authority tip after governance cleanup propagation; not the accepted development base)
