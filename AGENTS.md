@@ -379,7 +379,7 @@ Parallel work requires all three.
 
 ## Performance (Phase 29) (MUST on hot paths)
 - Hot paths: storefront reads, cart, checkout, webhooks, outbox/email, digital downloads, renewals
-- Bead/PR notes MUST include “Performance & Scaling Review”:
+- PR notes MUST include “Performance & Scaling Review”:
   - hot/warm/cold
   - DB query count + N+1 risk
   - indexes
@@ -413,18 +413,15 @@ Parallel work requires all three.
 
 ## Closure Protocol (MUST)
 - `mix check` passes
-- Git: `git pull --rebase` OK, `git push` OK, `git status -sb` clean vs origin
-- Beads: `bd dolt test` OK
-- Phase close: Beads DB push to `origin`
-- Close bead:
-  - `bd close <id> --reason "<outcome + files + gates>" --suggest-next`
+- Git: branch-aware sync complete per Git Sync Authority; `git push` OK when publishing; `git status -sb` clean vs the **current** upstream
+- Required PR, CI, and independent review gates pass
+- Verify the target authority after merge where required
 
 ---
 
 ## End of session (MANDATORY)
 1) `mix check` (if anything changed)
-2) `git pull --rebase`
-3) `git push`
-4) `git status -sb`
-5) `bd status`
-6) Optional daily: stop service → `dolt push origin main` → start service
+2) Branch-aware sync per Git Sync Authority (no blanket `git pull --rebase`)
+3) `git push` (only when publishing commits from the current workstream branch)
+4) `git status -sb` (must be clean vs the **current** branch upstream)
+5) Confirm required PR, CI, review, and post-merge verification gates
