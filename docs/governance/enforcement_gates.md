@@ -181,3 +181,26 @@ Required (at minimum for release-1):
 - payment_intent creation must be idempotent (payment_intent_key uniqueness).
 - Paid side effects must be exactly-once under webhook and redirect replays.
 - See `docs/governance/checkout_interlocks.md`.
+
+
+## Memory, GC & Runtime Resource Safety gates (MUST)
+
+Every runtime-relevant change must include a review against the Phase 29 memory,
+GC, mailbox, and resource-lifecycle contract. The review must cover bounded
+creation and cleanup for processes, Tasks, workers, GenServers, ETS tables,
+Cachex entries, Redis state, Oban jobs, LiveView sockets, PubSub subscribers,
+timers, monitors, telemetry handlers, ports, and NIFs where applicable.
+
+Required evidence records baseline-before-load, peak-load, and post-load
+cooldown or drain measurements where a load or soak test applies. The evidence
+must identify the relevant BEAM/process/binary/ETS/atom memory, process/port/ETS
+counts, hot-process heap and mailbox measurements, and GC behavior where
+feasible. The result must distinguish memory leak, memory bloat, memory churn or
+allocation churn, GC pressure, mailbox pressure, and resource leak.
+
+The review must evaluate `PERF-MEM-001`, `PERF-GC-001`, `PERF-MBOX-001`, and
+`PERF-RESOURCE-001`. A high-concurrency design also answers where waiting state
+lives, whether it is bounded, who cleans it up, and what remains after cooldown.
+
+See `docs/phases/phase_29_performance_architecture_optimizations.md` and
+`docs/governance/performance_scaling.md`.

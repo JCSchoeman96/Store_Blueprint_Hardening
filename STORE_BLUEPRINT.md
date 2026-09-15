@@ -76,6 +76,7 @@ Includes:
   - error code registry + canonical error envelope
   - outbound HTTP wrapper (Req)
 - CI gates (`mix check`, `mix check.ci`) and enforcement checks
+- Memory, GC, and runtime resource safety review contract
 - Web skeleton: endpoint/router/layouts/components/base plugs
 - Auth wiring (AshAuthenticationPhoenix routing patterns)
 
@@ -243,7 +244,10 @@ These governance documents are **authoritative**:
 - `docs/governance/refund_semantics.md`
 - `docs/governance/tax_shipping.md`
 - `docs/governance/checkout_interlocks.md`
-- `docs/governance/performance_scaling.md` (optional pack)
+- `docs/governance/performance_scaling.md` (required short-form performance and runtime review companion)
+
+The detailed performance and runtime safety authority is
+`docs/phases/phase_29_performance_architecture_optimizations.md`.
 
 ---
 
@@ -292,6 +296,7 @@ These governance documents are **authoritative**:
 - Refund semantics: idempotent, step-up protected, and interlocked with order/payment state machines
 - Tax & shipping: deterministic selection/calculation with pinned rounding and evidence snapshots
 - Checkout interlocks: begin_checkout/payment_intent idempotency and paid side-effects exactly-once
+- Memory, GC & runtime resource safety: bounded processes, heaps, mailboxes, caches, queues, subscriptions, and cleanup verified at baseline, peak, and post-load cooldown when load, soak, or performance testing is relevant
 
 ---
 

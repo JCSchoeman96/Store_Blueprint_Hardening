@@ -268,9 +268,125 @@ Avoid:
 
 ---
 
-## 10) Measurement & observability (must exist before “enterprise complete”)
+## 10) Memory, GC & Runtime Resource Safety (permanent)
 
-### 10.1 Telemetry events (minimum)
+Memory, garbage collection, mailbox pressure, and runtime resource lifecycle are
+part of the performance and hardening contract. Apply this section to every
+runtime-relevant plan, implementation, review, and load or soak test.
+
+### 10.1 Process and state bounds
+
+- **PROCESS LIFETIME:** bound process creation, verify expected termination, and
+  ensure Tasks and workers cannot become orphaned.
+- **PROCESS MEMORY:** investigate unexplained monotonic heap growth and keep
+  long-lived process memory bounded.
+- **MAILBOXES:** keep `message_queue_len` bounded under supported load. No
+  long-lived consumer may accumulate messages indefinitely.
+- **GENSERVERS:** bound in-memory state and prevent unbounded event or history
+  accumulation.
+- **ETS:** make table ownership explicit, bound table size, and name the owner
+  responsible for cleanup or TTL expiry.
+- **BINARIES:** inspect large-binary retention and sub-binary retention risks.
+- **ATOMS:** do not create atoms dynamically from user-controlled input. Atom
+  growth must remain bounded.
+
+### 10.2 Caches and coordination state
+
+- **CACHE:** Cachex and ETS entries need bounded capacity, TTL, and eviction
+  where appropriate.
+- **REDIS:** queues, leases, metadata, fences, and hot keys need explicit
+  bounded retention and cleanup.
+- **OBAN:** backlog, retries, dead jobs, uniqueness windows, and cleanup must
+  remain bounded.
+- **LIVEVIEW:** socket assigns and state must remain bounded. Disconnected
+  clients must clean up subscriptions and processes.
+- **PUBSUB:** subscriber and process lifetimes must be bounded. Stale
+  subscriptions must not accumulate.
+- **TIMERS / MONITORS:** prevent timer and monitor accumulation.
+- **PORTS / NIFS:** make lifecycle and cleanup explicit wherever used.
+
+### 10.3 GC and leak review
+
+- Monitor minor and full-sweep GC behavior.
+- Avoid oversized heaps in hot or long-lived processes.
+- Identify GC-driven latency spikes and excessive allocation churn.
+- Check for leaks of processes, ETS tables, ports, timers, telemetry handlers,
+  subscriptions, workers, and caches.
+
+The review must distinguish these failure modes instead of collapsing them into
+"memory usage": memory leak, memory bloat, memory churn or allocation churn, GC
+pressure, mailbox pressure, and resource leak.
+
+### 10.4 Permanent invariants
+
+- **PERF-MEM-001:** After a bounded workload and cooldown or expiry period,
+  memory, process counts, mailbox depths, ETS/cache state, and transient
+  coordination state must converge toward a stable post-load baseline rather
+  than increase monotonically across equivalent runs.
+- **PERF-GC-001:** Hot and long-lived processes must not require continuously
+  expanding heaps or excessive major or full-sweep garbage collection to sustain
+  supported throughput.
+- **PERF-MBOX-001:** No long-lived process may accumulate an unbounded mailbox
+  under supported load.
+- **PERF-RESOURCE-001:** Processes, Tasks, timers, ETS tables, telemetry
+  handlers, PubSub subscriptions, leases, fences, cache entries, and other
+  transient resources must have explicit ownership and bounded cleanup.
+
+### 10.5 Runtime measurement requirement
+
+Relevant performance evidence must include all three windows:
+
+1. **BASELINE BEFORE LOAD**
+2. **PEAK LOAD**
+3. **POST-LOAD COOLDOWN / DRAIN**
+
+Where feasible, record BEAM total memory, process memory, binary memory, ETS
+memory, atom memory, process count, port count, ETS table count, and for hot
+processes memory, `heap_size`, `total_heap_size`, `message_queue_len`, and
+reductions. Record GC behavior as well. At each window, also record applicable
+resource cardinalities such as active Tasks/workers, timer and monitor counts,
+ETS entries, Cachex entries and capacity, Redis keys/queues/leases/fences,
+Oban ready/retry/scheduled/dead-job/backlog and uniqueness counts, LiveView
+sockets/subscriptions, PubSub subscribers, and telemetry handlers.
+
+Compare equivalent runs after cooldown. The measurements must show whether
+memory, process counts, mailbox depths, ETS/cache state, and transient
+coordination state converge toward a stable baseline. A peak sample alone cannot
+classify a leak or prove safe cleanup.
+
+### 10.6 100k and flash-sale review
+
+Moving contention away from PostgreSQL is insufficient if the replacement creates
+one BEAM process per waiter, one timer or monitor per unbounded request,
+unbounded Redis state, unbounded ETS or cache state, unbounded Oban jobs, or
+unbounded mailboxes.
+
+For every high-concurrency design, answer:
+
+- Where does waiting state live?
+- Is it bounded?
+- Who cleans it up?
+- What happens after cooldown?
+
+### 10.7 TOON Note requirements
+
+For performance or runtime-relevant TOON prompts, the `Note` field must include
+these fields as applicable:
+
+- `MEMORY`: bounded process, ETS, cache, and transient resource state
+- `GC`: allocation, heap, and major or full-sweep considerations
+- `MAILBOX`: bounded long-lived process queues
+- `RESOURCE CLEANUP`: owner plus expiry or termination behavior
+- `POST-LOAD`: expected convergence after workload cooldown
+
+Retain the existing performance fields: `DATA LAYER`, `INDEXES`, `CACHE`,
+`REDIS STRUCTURE`, `TTL`, `INVALIDATION/CLEANUP`, `PUBSUB`, `STORE.REPO
+EFFECT`, and `100K STATUS`. Do not force irrelevant memory fields onto prompts
+that are purely documentation-only.
+
+## 11) Measurement & observability (must exist before “enterprise complete”)
+
+### 11.1 Telemetry events (minimum)
 Emit telemetry for:
 - `catalog.list` duration + result_count + cache_hit
 - `catalog.detail` duration + cache_hit
@@ -283,25 +399,25 @@ Emit telemetry for:
 - `digital.sign_url` duration
 - `subscription.renewal` duration + outcome
 
-### 10.2 Query visibility
+### 11.2 Query visibility
 - Enable slow query logging in production.
 - Track “queries per request” for hot paths.
 - Add alerts for p95/p99 breaches.
 
 ---
 
-## 11) Load testing & validation plan
+## 12) Load testing & validation plan
 
 Before declaring the blueprint “fully working enterprise ecommerce”:
 
-### 11.1 Scenarios (minimum)
+### 12.1 Scenarios (minimum)
 - 500 concurrent users browsing catalog
 - 200 concurrent add-to-cart actions
 - 50 concurrent checkout starts
 - webhook burst: 100 events/min for 10 minutes (simulate provider retries)
 - subscription renewal burst (cron window): 1k renewals over 10 minutes (scaled down for your store)
 
-### 11.2 Acceptance thresholds
+### 12.2 Acceptance thresholds
 - No error spikes
 - No DB saturation
 - Cache hit ratio > 80% for catalog/detail under browse load
@@ -310,26 +426,37 @@ Before declaring the blueprint “fully working enterprise ecommerce”:
 
 ---
 
-## 12) Performance & Scaling Review template (MANDATORY)
+## 13) Performance & Scaling Review template (MANDATORY)
 
 For every new action/surface, fill this in:
 
 - **Surface name**: (e.g., `Store.Catalog.list_public/2`)
 - **Hot path touched**: (catalog/detail/cart/checkout/webhook/admin)
-- **Data layer**: hot / warm / cold
+- **DATA LAYER**: hot / warm / cold
 - **Query shape**: filters, sorts, loads
 - **Pagination**: offset/keyset, ordering keys
-- **Indexes required**: list them
-- **Cache key**: (what identifies the entry)
+- **INDEXES**: list them
+- **CACHE**: key and capacity, if applicable
+- **REDIS STRUCTURE**: keys, queues, leases, fences, or hot keys, if applicable
 - **TTL**: (seconds/minutes)
-- **Invalidation triggers**: (what changes invalidate)
+- **INVALIDATION/CLEANUP**: triggers, owner, and expiry behavior
+- **PUBSUB**: topics, subscriber lifecycle, and stale-subscription cleanup
+- **STORE.REPO EFFECT**: query, pool, lock, and connection pressure
+- **100K STATUS**: boundedness result, risk, or unmeasured status
 - **Stampede protection**: (single-flight, soft TTL, prewarm)
 - **Side effects**: none / Oban queue name
 - **Worst-case behavior**: (cache miss; DB fallback; degradation plan)
+- **MEMORY**: bounded process, ETS, cache, and transient resource state, where applicable
+- **GC**: allocation, heap, and major or full-sweep considerations, where applicable
+- **MAILBOX**: bounded long-lived process queues, where applicable
+- **RESOURCE CLEANUP**: owner, expiry, and termination behavior, where applicable
+- **POST-LOAD**: expected convergence after workload cooldown, where applicable
 
 ---
 
 ## Governance impact
-No governance docs are modified in this step.  
-However, **Phase 29 is authoritative**: future phases must reference it and conform to its budgets and review template.
-
+`AGENTS.md` is the process authority. Phase 29 is authoritative for the detailed
+performance and runtime resource safety methodology. Future phases must conform
+to its budgets, invariants, measurement windows, 100k review, and review
+template. `docs/governance/performance_scaling.md` is the short mandatory
+companion checklist.
