@@ -143,7 +143,7 @@ One active authority per schema/resource lineage across all concurrent workstrea
 
 ## Performance (Phase 29) (MUST on hot paths)
 - Hot paths: storefront reads, cart, checkout, webhooks, outbox/email, digital downloads, renewals
-- Bead/PR notes MUST include “Performance & Scaling Review”:
+- PR notes MUST include “Performance & Scaling Review”:
   - hot/warm/cold
   - DB query count + N+1 risk
   - indexes
@@ -162,60 +162,6 @@ One active authority per schema/resource lineage across all concurrent workstrea
 
 ---
 
-# Beads (MANDATORY — HARD MODE)
-- NO WORK WITHOUT A BEAD (code/docs/config/tests)
-- Use normal bd create (no --sandbox) for parent/children.
-
-## Session start (EVERY SESSION)
-1) `bd dolt test`
-2) `bd status`
-3) `bd ready`
-4) `bd update <id> --claim` (claim exactly one)
-5) If nothing ready: create bead then claim
-
-## Bead requirements
-- Must include: `--description`, `--acceptance`, `--labels` (phase+area), `--priority` (P0–P4), `--parent`
-
-## Dependencies/blockers
-- `bd dep add <blocked_id> <blocker_id>` (blocked DEPENDS ON blocker)
-- If blocked: create blocker bead, link dep, stop/pivot
-
-## Notes format (MUST)
-- GOAL / PLAN / DONE / NEXT / BLOCKERS / COMMANDS RUN / GATES
-
-## Tree
-- Use: `bd show <id>`
-- Do not rely on: `bd list --parent`, `bd children --json`, `bd query` (unless proven)
-
----
-
-## Beads Storage + Sync (v0.56.1 Dolt server-mode)
-- DB path: `.beads/dolt/beads_store_blueprint/`
-- Service: `dolt-beads.service` (systemd user)
-- Safe checks:
-  - `systemctl --user status dolt-beads.service --no-pager`
-  - `bd dolt test`
-- Never run two Dolt SQL servers against same repo
-
-### Remotes
-- `origin` (DoltHub `jc_s/store_blueprint`) is authoritative
-- `local_backup` = `file://$HOME/beads_remotes/store_blueprint_beads_remote`
-
-### Push (REQUIRED for phase close)
-1) `systemctl --user stop dolt-beads.service`
-2) `cd .beads/dolt/beads_store_blueprint && dolt push origin main`
-3) `systemctl --user start dolt-beads.service`
-
-### Pull
-1) stop service
-2) `dolt pull origin main`
-3) start service
-
-- If `bd dolt push/pull` fails: use native `dolt push/pull`
-- Do NOT commit `.beads/dolt/**` to Git
-
----
-
 ## Git Sync Authority (Code Repo) (MANDATORY)
 - `git pull --rebase`
 - `git push`
@@ -225,18 +171,15 @@ One active authority per schema/resource lineage across all concurrent workstrea
 
 ## Closure Protocol (MUST)
 - `mix check` passes
-- Git: `git pull --rebase` OK, `git push` OK, `git status -sb` clean vs origin
-- Beads: `bd dolt test` OK
-- Phase close: Beads DB push to `origin`
-- Close bead:
-  - `bd close <id> --reason "<outcome + files + gates>" --suggest-next`
+- Git: branch-aware sync complete per Git Sync Authority; `git push` OK when publishing; `git status -sb` clean vs the **current** upstream
+- Required PR, CI, and independent review gates pass
+- Verify the target authority after merge where required
 
 ---
 
 ## End of session (MANDATORY)
 1) `mix check` (if anything changed)
-2) `git pull --rebase`
-3) `git push`
-4) `git status -sb`
-5) `bd status`
-6) Optional daily: stop service → `dolt push origin main` → start service
+2) Branch-aware sync per Git Sync Authority (no blanket `git pull --rebase`)
+3) `git push` (only when publishing commits from the current workstream branch)
+4) `git status -sb` (must be clean vs the **current** branch upstream)
+5) Confirm required PR, CI, review, and post-merge verification gates
