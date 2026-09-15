@@ -768,115 +768,7 @@ defmodule Store.PerformanceSmoke.ProviderFault do
   end
 end
 
-defmodule Store.PerformanceSmoke.RedisPool do
-  @moduledoc false
-
-  use Supervisor
-
-  @state_name __MODULE__.State
-
-  @spec start_link(keyword()) :: Supervisor.on_start()
-  def start_link(opts) do
-    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @impl true
-  def init(opts) do
-    pool_size = Keyword.fetch!(opts, :pool_size)
-    redis_opts = Keyword.fetch!(opts, :redis_opts)
-
-    names = Enum.map(1..pool_size, &worker_name/1)
-
-    workers =
-      Enum.map(names, fn name ->
-        redix_opts =
-          redis_opts |> Keyword.put(:name, name) |> Keyword.put_new(:sync_connect, true)
-
-        Supervisor.child_spec({Redix, redix_opts}, id: name)
-      end)
-
-    children =
-      workers ++
-        [
-          %{
-            id: @state_name,
-            start:
-              {Agent, :start_link, [fn -> %{names: names, index: 0} end, [name: @state_name]]}
-          }
-        ]
-
-    Supervisor.init(children, strategy: :one_for_one)
-  end
-
-  @spec ping() :: :ok | {:error, term()}
-  def ping do
-    case command(["PING"]) do
-      {:ok, "PONG"} -> :ok
-      {:ok, other} -> {:error, {:unexpected_ping_reply, other}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @spec command([String.t()]) :: {:ok, term()} | {:error, term()}
-  def command(command) when is_list(command) do
-    with {:ok, name} <- next_worker() do
-      Redix.command(name, command)
-    end
-  end
-
-  @spec hgetall_map(String.t()) :: {:ok, map()} | {:error, term()}
-  def hgetall_map(key) when is_binary(key) do
-    case command(["HGETALL", key]) do
-      {:ok, values} when is_list(values) ->
-        {:ok, hgetall_list_to_map(values)}
-
-      {:ok, other} ->
-        {:error, {:unexpected_hgetall_reply, other}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec maybe_delete_keys([String.t()]) :: :ok
-  def maybe_delete_keys(keys) when is_list(keys) do
-    keys
-    |> Enum.filter(&is_binary/1)
-    |> Enum.each(fn key ->
-      _ = command(["DEL", key])
-    end)
-
-    :ok
-  end
-
-  defp hgetall_list_to_map(values) do
-    values
-    |> Enum.chunk_every(2)
-    |> Enum.reduce(%{}, fn
-      [k, v], acc -> Map.put(acc, k, v)
-      _other, acc -> acc
-    end)
-  end
-
-  defp worker_name(index), do: String.to_atom("store_perf_redis_pool_#{index}")
-
-  defp next_worker do
-    if Process.whereis(@state_name) do
-      try do
-        {:ok,
-         Agent.get_and_update(@state_name, fn %{names: names, index: index} = state ->
-           size = max(length(names), 1)
-           next_index = rem(index + 1, size)
-           {Enum.at(names, index, hd(names)), %{state | index: next_index}}
-         end)}
-      catch
-        :exit, _reason -> {:error, :redis_pool_not_started}
-      end
-    else
-      {:error, :redis_pool_not_started}
-    end
-  end
-end
+Code.require_file("performance_smoke_redis_pool.exs", __DIR__)
 
 defmodule Store.PerformanceSmoke.SingleFlightCache do
   @moduledoc false
@@ -1374,13 +1266,63 @@ defmodule Store.PerformanceSmokeTest do
 
     config = Config.load()
 
-    case RedisPool.start_link(pool_size: config.redis_pool_size, redis_opts: Config.redis_opts()) do
-      {:ok, _pid} ->
-        :ok
+    redis_pool_pid =
+      case RedisPool.start_link(
+             pool_size: config.redis_pool_size,
+             redis_opts: Config.redis_opts()
+           ) do
+        {:ok, pid} ->
+          pid
 
-      {:error, reason} ->
-        raise "unable to start Redis pool: #{inspect(reason)}"
-    end
+        {:error, reason} ->
+          raise "unable to start Redis pool: #{inspect(reason)}"
+      end
+
+    # Transfer ownership immediately so setup failure still has a registered
+    # teardown that cleans up and stops the pool.
+    _ =
+      RedisPool.transfer_teardown_ownership!(redis_pool_pid, fn ->
+        # Clean up Redis keys created during the run.
+        RedisPool.maybe_delete_keys([
+          "#{config.redis_prefix}:seat_holds",
+          "#{config.redis_prefix}:seat_map",
+          "#{config.redis_prefix}:seat_lock",
+          "#{config.redis_prefix}:visitors:hll",
+          "#{config.redis_prefix}:seat_map:mirror",
+          "#{config.redis_prefix}:bench:seat_map",
+          "#{config.redis_prefix}:bench:holds",
+          "#{config.redis_prefix}:bench:hll"
+        ])
+
+        # Clean up database rows created during the run.
+        # Without the Sandbox, test data persists — truncate perf-specific tables
+        # to prevent unique constraint violations on subsequent runs.
+        # Order matters: respect foreign key dependencies (children first).
+        tables_to_truncate = [
+          "payment_intents",
+          "order_line_items",
+          "inventory_reservations",
+          "checkout_sessions",
+          "cart_items",
+          "carts",
+          "orders",
+          "shipping_rate_rules",
+          "shipping_zones",
+          "shipping_methods",
+          "tax_rates",
+          "inventory_items",
+          "variants",
+          "products"
+        ]
+
+        Enum.each(tables_to_truncate, fn table ->
+          try do
+            Ecto.Adapters.SQL.query!(Store.Repo, "TRUNCATE TABLE #{table} CASCADE", [])
+          rescue
+            _ -> :ok
+          end
+        end)
+      end)
 
     case RedisPool.ping() do
       :ok ->
@@ -1403,49 +1345,6 @@ defmodule Store.PerformanceSmokeTest do
       )
 
     :persistent_term.put({__MODULE__, :config}, config)
-
-    on_exit(fn ->
-      # Clean up Redis keys created during the run.
-      RedisPool.maybe_delete_keys([
-        "#{config.redis_prefix}:seat_holds",
-        "#{config.redis_prefix}:seat_map",
-        "#{config.redis_prefix}:seat_lock",
-        "#{config.redis_prefix}:visitors:hll",
-        "#{config.redis_prefix}:seat_map:mirror",
-        "#{config.redis_prefix}:bench:seat_map",
-        "#{config.redis_prefix}:bench:holds",
-        "#{config.redis_prefix}:bench:hll"
-      ])
-
-      # Clean up database rows created during the run.
-      # Without the Sandbox, test data persists — truncate perf-specific tables
-      # to prevent unique constraint violations on subsequent runs.
-      # Order matters: respect foreign key dependencies (children first).
-      tables_to_truncate = [
-        "payment_intents",
-        "order_line_items",
-        "inventory_reservations",
-        "checkout_sessions",
-        "cart_items",
-        "carts",
-        "orders",
-        "shipping_rate_rules",
-        "shipping_zones",
-        "shipping_methods",
-        "tax_rates",
-        "inventory_items",
-        "variants",
-        "products"
-      ]
-
-      Enum.each(tables_to_truncate, fn table ->
-        try do
-          Ecto.Adapters.SQL.query!(Store.Repo, "TRUNCATE TABLE #{table} CASCADE", [])
-        rescue
-          _ -> :ok
-        end
-      end)
-    end)
 
     {:ok, config: config, mirror_hash_key: mirror_hash_key}
   end
