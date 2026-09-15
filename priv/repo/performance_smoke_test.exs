@@ -1059,6 +1059,15 @@ defmodule Store.PerformanceSmoke.Mirror do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @spec stop_owned!(pid()) :: :ok
+  def stop_owned!(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      _ = GenServer.stop(pid, :normal)
+    end
+
+    :ok
+  end
+
   @spec update_async(String.t(), map()) :: :ok
   def update_async(seat_id, payload) when is_binary(seat_id) and is_map(payload) do
     GenServer.cast(__MODULE__, {:update, seat_id, payload})
@@ -1557,11 +1566,25 @@ defmodule Store.PerformanceSmokeTest do
 
     mirror_hash_key = "#{config.redis_prefix}:seat_map:mirror"
 
-    {:ok, _mirror_pid} =
+    {:ok, mirror_pid} =
       Store.PerformanceSmoke.Mirror.start_link(
         ets_table: :store_perf_mirror,
         redis_hash_key: mirror_hash_key
       )
+
+    # Register mirror teardown before unlinking it. ExUnit runs this callback
+    # before the RedisPool callback because callbacks execute in reverse order.
+    try do
+      ExUnit.Callbacks.on_exit({:performance_smoke_mirror, mirror_pid}, fn ->
+        Store.PerformanceSmoke.Mirror.stop_owned!(mirror_pid)
+      end)
+
+      true = Process.unlink(mirror_pid)
+    catch
+      kind, reason ->
+        _ = Store.PerformanceSmoke.Mirror.stop_owned!(mirror_pid)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
 
     :persistent_term.put({__MODULE__, :config}, config)
 
