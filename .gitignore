@@ -4,12 +4,6 @@
 # If you run "mix test --cover", coverage assets end up here.
 /cover/
 
-# ─────────────────────────────────────────────────────────────
-# Beads (bd) — Dolt-backed database (do NOT commit)
-# Source of truth is the Dolt repo under .beads/dolt/*
-# Remotes/backups live outside this Git repo (recommended).
-.beads/
-
 # The directory Mix downloads your dependencies sources to.
 /deps/
 
