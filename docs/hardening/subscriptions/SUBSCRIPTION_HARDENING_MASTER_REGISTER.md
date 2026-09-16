@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
 **Version:** v0.1.4
-**Status:** WORKING / APPROVED DESIGN — SUBS READY / JC-219 CONTRACT_FROZEN
-**Verified:** 2026-09-14
+**Status:** WORKING / APPROVED DESIGN — SUBS READY / JC-219 + JC-220 + JC-221 + JC-222 CONTRACT_FROZEN
+**Verified:** 2026-09-16
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the independently verified SUBS activation and the owner-approved JC-219 architecture. It does **not** authorize migrations, authorize shared-domain changes, freeze Batch 001, or authorize production implementation.
+> This document records the independently verified SUBS activation, the owner-approved JC-219 architecture, and the Stage B JC-220/JC-221/JC-222 governance freeze. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does **not** authorize migrations, shared-domain changes, Batch 001, or production implementation.
 
 ---
 
@@ -27,23 +27,24 @@ This is a hardening programme, not a subscription rewrite.
 
 ---
 
-# 2. Independent Verification Pass — 2026-09-14
+# 2. Independent Verification Pass — 2026-09-16
 
-This register was checked against the current repository before being written.
+This register was checked against the current repository during the Stage B preflight.
 
-## 2.1 Verified authority state — refreshed after canonical SUBS activation
+## 2.1 Verified authority state — refreshed before Stage B freeze
 
 | Authority | Verified state |
 |---|---|
-| canonical `main` governance authority | `67a310988ea5f31081175e934f1eb2a2bd6c8c3b` |
-| `hardening/s0-baseline` current tip | `98dc7711d0aa80c8730e11b1f357491d799f404d` |
-| `hardening/platform-security` candidate tip | `7a89dc20aa4b2a261ed6bb96f1d3182254d0b7d3` |
-| `hardening/subscriptions` current authority tip | `54871ef3bdda42f067ed5dbd398305151610c060` |
+| canonical `main` governance authority observed at preflight | `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f` |
+| `hardening/s0-baseline` current tip observed at preflight | `9b0b26a68399149abdde7c96529fbc1951e22cac` |
+| `hardening/platform-security` current tip observed at preflight | `cc605040bfc8ddd6868a62de20f52c905f999835` |
+| `hardening/subscriptions` current authority tip observed at preflight | `b2f46896e72bd907c800df5e0e4718177741b176` |
 | PR #8 | **MERGED** |
 | canonical topology | MAIN governance/integration authority + independent S0/PLATFORM/SUBS lanes |
 | accepted SUBS development base | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01) |
 | SUBS lifecycle | `READY` — governance/review only |
 | Subscription implementation authority | **NONE; Batch 001 and SUB-ACT-04 remain outstanding** |
+| Stage B law | **JC-220 + JC-221 + JC-222 CONTRACT_FROZEN / CANONICAL in this governance change** |
 
 Canonical governance now explicitly separates:
 
@@ -57,10 +58,10 @@ SUBS no longer waits for S0 merely because S0 moved. Cross-workstream changes bl
 
 ## 2.2 Verified branch topology and development-base interpretation
 
-`hardening/subscriptions` current authority tip is:
+`hardening/subscriptions` current authority tip at preflight was:
 
 ```text
-54871ef3bdda42f067ed5dbd398305151610c060
+b2f46896e72bd907c800df5e0e4718177741b176
 ```
 
 The accepted `development_base_sha` is separately pinned by `SUB-ACT-01`:
@@ -86,11 +87,14 @@ Has S0 or main been continuously merged into SUBS?
 
 Any external capability absent from this base is evaluated per task. Shared boundaries still require explicit authority.
 
-## 2.3 Verified documentation defect
+## 2.3 Verified documentation defect and Stage B result
 
-`docs/hardening/01_domain_map.md` is currently zero bytes.
+Before this task, `docs/hardening/01_domain_map.md` was zero bytes.
 
-Therefore completing the canonical Subscription domain map remains a valid SBH-00 task.
+This governance change populates it as the canonical Subscription domain,
+lifecycle, and race map. It is the only Stage B lifecycle/race authority. The
+scheduling document remains the policy-specific authority and is reconciled to the
+same law.
 
 ## 2.4 Verified technical findings
 
@@ -147,7 +151,7 @@ Active implementation must never begin from a worktree containing untracked boot
 # 3. Current Programme Verdict
 
 ```text
-SUBS_READY_FOR_GOVERNANCE_REVIEW
+SUBS_STAGE_B_GOVERNANCE_FROZEN
 ```
 
 Canonical governance is no longer the blocker.
@@ -155,9 +159,10 @@ Canonical governance is no longer the blocker.
 Current remaining lane-local work is:
 
 ```text
-1. perform the separately scoped Stage B governance work for JC-220, JC-221, and JC-222;
-2. freeze the first executable dependency graph and hardening matrix through JC-223;
-3. freeze the first batch_base_sha and perform SUB-ACT-04 admission recertification through JC-224.
+1. merge this bounded Stage B governance change to hardening/subscriptions and verify the exact merged target;
+2. perform the separately bounded main-governance registry refresh;
+3. freeze the first executable dependency graph and hardening matrix through JC-223 / SBH-00-05;
+4. only after those gates, freeze batch_base_sha and perform SUB-ACT-04 admission recertification.
 ```
 
 No production `SBH-*` implementation task is authorized merely by this register, by SUBS `READY`, or by PR #8.
@@ -279,24 +284,65 @@ Rules:
 
 ## 7.1 Subscription
 
-Canonical executable states currently include:
+The canonical Stage B states are:
 
 ```text
-pending → active ↔ past_due → canceled
-                       ↘
-                       expired
+PENDING → ACTIVE
+PENDING → CANCELED                    pre-activation termination only
+
+ACTIVE → ACTIVE                       successful renewal
+ACTIVE → PAST_DUE                     retryable renewal failure
+ACTIVE → CANCELED                     immediate or scheduled cancellation
+ACTIVE → EXPIRED                      governed term completion
+
+PAST_DUE → ACTIVE                     same authorized renewal succeeds
+PAST_DUE → SUSPENDED                  failed-payment boundary
+PAST_DUE → CANCELED                   cancellation
+PAST_DUE → EXPIRED                    governed term completion
+
+SUSPENDED → ACTIVE                    same still-authorized renewal succeeds
+SUSPENDED → CANCELED                  cancellation
+SUSPENDED → EXPIRED                   governed term completion
+
+CANCELED = terminal
+EXPIRED  = terminal
+SUSPENDED = nonterminal / extant
 ```
 
-### Required transition model
+`PENDING → CANCELED` is permitted only when no authoritative activation or payment
+evidence has established `ACTIVE` truth. It ends recurring authority, forbids
+provider starts, begins no dunning lifecycle, and supersedes unbound future
+changes.
+
+`PAST_DUE` is an extant renewal-recovery episode. `SUSPENDED` is the nonterminal
+failed-payment boundary. Retry exhaustion alone does not end the relationship.
+
+`CANCELED` and `EXPIRED` are terminal. The following transitions are forbidden:
+
+```text
+CANCELED → ACTIVE
+EXPIRED → ACTIVE
+CANCELED → PENDING
+EXPIRED → PENDING
+```
+
+### Transition model
 
 | Transition | Guard | Major side effects | Terminal |
 |---|---|---|---|
-| `pending → active` | valid activation/payment authority | initialize period; clear dunning | No |
-| `past_due → active` | proven successful recovery/payment | advance/recover period; clear dunning | No |
-| `active → active` | proven successful renewal | advance period and apply exact bound contract | No |
-| `active → past_due` | canonical renewal/payment failure | record dunning evidence/retry schedule | No |
-| `pending/active/past_due → canceled` | valid cancellation law | end/suppress renewal; create access-effect obligations | Yes |
-| `active/past_due → expired` | frozen terminal expiry law | end/suppress renewal; create access-effect obligations | Yes |
+| `PENDING → ACTIVE` | authoritative activation or payment evidence; a return URL is not proof | initialize the first paid/current period and clear pre-activation termination | No |
+| `PENDING → CANCELED` | no authoritative activation/payment evidence has established `ACTIVE` | end recurring authority; forbid provider starts; begin no dunning; supersede unbound changes | Yes |
+| `ACTIVE → ACTIVE` | successful evidence for the same eligible B-bound renewal | apply the exact bound contract once and advance the paid period | No |
+| `ACTIVE → PAST_DUE` | first retryable renewal failure wins | fix `past_due_since_at`, record evidence, and schedule governed retries | No |
+| `ACTIVE → CANCELED` | immediate cancellation or actual scheduled-cancellation boundary | end recurring authority and create the cancellation access-effect target | Yes |
+| `ACTIVE → EXPIRED` | governed term or paid-period completion; not retry exhaustion alone | end recurring authority and create the expiry access-effect target | Yes |
+| `PAST_DUE → ACTIVE` | same still-authorized renewal succeeds | recover that episode and apply its exact bound contract once | No |
+| `PAST_DUE → SUSPENDED` | failed-payment boundary before success or another terminal decision | stop automatic retries and make the affected recurring-source access effect non-effective | No |
+| `PAST_DUE → CANCELED` | valid cancellation | end recurring authority without waiting for an artificial paid boundary | Yes |
+| `PAST_DUE → EXPIRED` | separately governed term or paid-period completion | end recurring authority and create the expiry access-effect target | Yes |
+| `SUSPENDED → ACTIVE` | same still-authorized renewal succeeds | recover that occurrence only; this is not generic reactivation | No |
+| `SUSPENDED → CANCELED` | valid cancellation | end recurring authority and create the cancellation access-effect target | Yes |
+| `SUSPENDED → EXPIRED` | separately governed term or paid-period completion | end recurring authority and create the expiry access-effect target | Yes |
 
 Required hardening:
 
@@ -341,31 +387,29 @@ persisted lifecycle law.
 
 ## 7.2 Scheduled Cancellation
 
-This is a meaningful lifecycle even if it remains represented by fields rather than a new Subscription enum.
+Scheduled cancellation is a current versioned instruction, not a terminal state:
 
 ```text
-NONE
-  ↓ schedule
-SCHEDULED
-  ├── rescind → NONE
-  └── period boundary reached → TERMINATED
+DO_NOT_RENEW
 ```
 
-Required guards and side effects:
+The current funded paid term may continue. At the actual paid-period boundary, the
+Subscription transitions to `CANCELED`. Do not manufacture another period after the
+last paid period has ended.
 
-- authorized actor;
-- allowed source Subscription states;
-- whether rescind is permitted;
-- exact period-boundary authority;
-- interaction with already-claimed renewal;
-- interaction with provider-accepted payment;
-- access end timing;
-- communications;
-- canonical terminal state.
+The governing rules are:
 
-A boolean may remain sufficient.
+- `DO_NOT_RENEW` before checkpoint B blocks that renewal boundary;
+- checkpoint B first freezes the occurrence and a later schedule targets the next
+  eligible uncommitted boundary;
+- cancellation in `PAST_DUE` or `SUSPENDED` becomes `CANCELED` without waiting for
+  an artificial future paid boundary;
+- before terminalization, authenticated current-version rescission creates
+  `RENEW_UNCHANGED(current live contract)`;
+- after `CANCELED`, rescission requires a new Subscription, not resurrection.
 
-The lifecycle may not end at `cancel_at_period_end = true`.
+A boolean or equivalent field may represent the instruction. The instruction itself
+does not replace the terminal `CANCELED` state.
 
 ---
 
@@ -447,6 +491,20 @@ Successful reconciliation applies only the successful attempt's immutable charge
 contract evidence together with the frozen race precedence. If change A was bound to
 the attempt and change B was queued later, reconciliation applies A and preserves B.
 
+Checkpoint B is not a global winner over later commercial authority. It freezes one
+charged occurrence. A later cancellation, payment-method revocation, or future
+ContractChange still governs later provider starts and later boundaries.
+
+Checkpoint C is the provider-specific point at which an external financial
+occurrence may happen even if local execution stops. This register does not invent a
+Paystack or other provider operation as C. C does not prove payment success.
+
+Checkpoint D is authoritative provider/payment occurrence evidence. D proves what
+financially occurred, but it does not automatically reactivate `CANCELED` or
+`EXPIRED`, undo a valid cancellation or expiry, restore stale future terms, or
+restore a revoked payment-method binding. Ambiguous ordering fails closed and is
+reconciled.
+
 ---
 
 ## 7.4 Dunning
@@ -454,22 +512,33 @@ the attempt and change B was queued later, reconciliation applies A and preserve
 Conceptual lifecycle:
 
 ```text
-HEALTHY
-  ↓ payment failure
-PAST_DUE_RETRYABLE
-  ├── payment success → RECOVERED → HEALTHY
-  ├── retry available → PAST_DUE_RETRYABLE
-  ├── retry budget exhausted but grace remains → DELINQUENT_NO_MORE_RETRIES
-  └── canonical terminal boundary reached → TERMINAL
+ACTIVE
+  ↓ first retryable failure
+PAST_DUE
+  ├── same authorized renewal succeeds → ACTIVE
+  ├── retry remains available → PAST_DUE
+  ├── retries exhausted before boundary → PAST_DUE, no more automatic retries
+  └── failed-payment boundary → SUSPENDED
 ```
 
 Required law:
 
-- retry budget and grace duration are separate concepts;
-- retry exhaustion must not automatically terminate the commercial contract unless explicitly frozen as product law;
-- terminal state must be explicit;
-- access during past-due/grace must match plan/revision law;
-- late success ordering must be deterministic.
+- initial collection is attempt 1 and retries are attempts 2+;
+- the retry budget counts retries after the initial collection;
+- retry offsets are measured from the first retryable failure and offset `0` is
+  valid;
+- the first retryable failure fixes `past_due_since_at`; retries do not reset it;
+- retry exhaustion before the failed-payment boundary leaves the Subscription
+  `PAST_DUE` and stops automatic retries;
+- the governed failed-payment boundary performs `PAST_DUE → SUSPENDED` unless
+  success or another terminal event wins first;
+- `SUSPENDED` is nonterminal and extant;
+- access during recovery follows the frozen source-specific policy;
+- late success ordering is deterministic and cannot revive `CANCELED` or `EXPIRED`.
+
+Retry exhaustion is not relationship termination. Generic failed-payment handling
+must not use dunning cancellation as a substitute for `EXPIRED` term completion or
+an explicit `CANCELED` decision.
 
 ---
 
@@ -635,25 +704,28 @@ Required invariant:
 
 ## 7.7 StoredPaymentMethod
 
-Current conceptual states:
+The frozen conceptual states are:
 
 ```text
-active ↔ inactive
-active/inactive → revoked
+ACTIVE ↔ INACTIVE
+
+ACTIVE   → REVOKED
+INACTIVE → REVOKED
+
+REVOKED = terminal
 ```
 
-Unresolved:
+Forbidden transitions are:
 
 ```text
-revoked → active ?
+REVOKED → ACTIVE
+REVOKED → INACTIVE
 ```
 
-Two legitimate meanings exist:
-
-- permanent security revocation → `revoked` terminal;
-- recoverable provider-state marker → recovery may be legal, but naming/documentation must reflect it.
-
-Freeze semantics before implementation.
+Replacement changes the Subscription's durable payment-method binding under
+aggregate version/CAS control. It does not create a new RenewalAttempt and does
+not automatically revoke the old method globally. Immediately before provider
+checkpoint C, current payment-method authority must be revalidated.
 
 ---
 
@@ -685,37 +757,49 @@ Invariant:
 
 > Every Subscription lifecycle transition that changes effective access must create a durable, idempotent access-effect obligation that can be retried and reconciled until access truth converges with Subscription truth.
 
+The effect obligation is source-specific. A stale executor must read the latest
+Commerce target, apply only that target, or supersede the stale obligation. It must
+not restore rights from an older commercial version and must not mutate Subscription
+truth to make execution easier.
+
 ---
 
-# 8. Race Precedence Matrix — Required Before Implementation
+# 8. Race Precedence Matrix — JC-221 frozen
 
-At minimum, the programme must freeze expected outcomes for:
+The full canonical map is in `docs/hardening/01_domain_map.md`. This register
+records the same deterministic outcomes for programme navigation and review.
 
-| Race | Required law |
+| Race | Frozen result |
 |---|---|
-| renewal ↔ immediate cancellation | define provider point-of-no-return and compensation |
-| renewal ↔ scheduled-cancellation boundary | define whether renewal was already irrevocably claimed |
-| renewal ↔ plan change | exact contract snapshot must win |
-| renewal ↔ variant change | exact charged variant must win |
-| renewal ↔ payment-method revocation | define use-after-revocation boundary |
-| paid reconciliation ↔ expiry | define authoritative evidence and terminality |
-| payment success ↔ late failure | successful proof must not regress |
-| two Subscription mutations | stale writer rejected |
-| two queued contract changes | deterministic winner/supersession |
-| cancellation ↔ queued contract change | terminating contract may not silently acquire future terms |
+| renewal vs immediate cancellation | Cancellation before B prevents the bind. Cancellation after B but before C forbids provider start. After C, reconcile the in-flight occurrence. Late money never automatically resurrects a terminal Subscription. |
+| renewal vs scheduled cancellation | Current `DO_NOT_RENEW` before B blocks that boundary. B first freezes the occurrence and later scheduling targets the next eligible uncommitted boundary. |
+| renewal vs ContractChange | The target current at B is bound. Later changes cannot rewrite or be consumed by that occurrence. |
+| renewal vs payment-method replacement/revocation | Current method authority is checked before C. Replacement does not create a new RenewalAttempt. No authorized method means no provider start. |
+| reconciliation vs expiry | Successful D application first makes stale expiry fail its aggregate/version guard. Expiry first forbids new provider starts. In-flight outcomes reconcile without generic `EXPIRED → ACTIVE`. |
+| reconciliation vs suspension | A success for the same still-authorized renewal may recover `SUSPENDED → ACTIVE`. This is not generic reactivation. |
+| success vs late failure | A successful occurrence cannot regress because older failure evidence arrives. Refund, reversal, and chargeback are separate financial events. |
+| two Subscription writers | Only one incompatible mutation may commit against a version. The stale writer reloads and re-evaluates its original intent. |
+| dunning vs successful recovery | The same valid success beats a stale dunning write. Retry exhaustion means no more automatic retries, not terminal relationship end. |
+| access effect vs commercial state | The effect converges from the latest source target. A stale access worker cannot restore obsolete rights. |
+| duplicate provider callbacks | One logical occurrence applies once. Equivalent duplicates are no-ops; materially conflicting reuse of one identity fails closed and reconciles. |
+| out-of-order provider callbacks | Use trustworthy provider identity, occurrence time, provider sequence/state authority, and reconciled payment state. Arrival time alone never regresses truth. |
+| late success after cancellation | Preserve financial truth while `CANCELED` remains terminal. If cancellation won before the occurrence, use explicit refund, reversal, credit, or other remedy. Ambiguous ordering remains fail-closed. |
+| queued retry after cancellation | Queue presence grants no authority. Re-read before C. A canceled Subscription creates no new occurrence and exits idempotently. |
+| provider-event reordering across webhook, browser return, polling, and reconciliation | All paths converge on one stable logical occurrence. No channel independently extends a Subscription. |
+| restart or crash recovery | Reconstruct from durable Subscription/version, future-target version, RenewalAttempt binding, payment evidence, and access effects. Never use worker history as authority. |
 
-Every race entry must include:
+Checkpoint law:
 
 ```text
-initial state
-event ordering
-winner / precedence law
-irreversible external boundary
-expected DB state
-expected provider/payment state
-expected entitlement/access state
-compensation / reconciliation rule
+A = authoritative aggregate/version commit
+B = exact RenewalAttempt charged-contract bind commit
+C = provider-specific point of no return, not invented here
+D = authoritative provider/payment occurrence evidence
 ```
+
+These checkpoints are not a global "last checkpoint wins" hierarchy. D proves
+payment truth but does not override valid terminal Commerce truth. Ambiguous
+provider ordering fails closed and enters reconciliation.
 
 ---
 
@@ -752,7 +836,7 @@ Historical entries remain for provenance only and may not block current task adm
 
 After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
 
-`SUB-ACT-03` recorded two ordered, validated canonical lifecycle transitions. The initial canonical state was `BOOTSTRAPPED`. The accepted `SUB-ACT-01` development base guarded `BOOTSTRAPPED → BASELINE_PINNED`; the `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guarded `BASELINE_PINNED → READY`. The resulting canonical lane state is `READY`, and its side effects are recording the accepted `development_base_sha` and making `SBH-00-01` and `SBH-00-02` available as governance/review work. `SUB-ACT-03` did not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation.
+`SUB-ACT-03` recorded two ordered, validated canonical lifecycle transitions. The initial canonical state was `BOOTSTRAPPED`. The accepted `SUB-ACT-01` development base guarded `BOOTSTRAPPED → BASELINE_PINNED`; the `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guarded `BASELINE_PINNED → READY`. The resulting canonical lane state is `READY`, and its side effects are recording the accepted `development_base_sha` and making `SBH-00-01` through `SBH-00-04` available as governance/review work in the frozen order. `SUB-ACT-03` did not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation.
 
 A sibling lane moving is not itself a blocker.
 
@@ -762,15 +846,20 @@ A sibling lane moving is not itself a blocker.
 
 These are governance/review tasks. They establish law before production code changes.
 
-`SBH-00-01` and `SBH-00-02` remain `loop_eligible = No`. After `SUB-ACT-03` they are available as governance/review work; they do not enter implementation-loop READY admission. JC-219/SBH-00-01 is `CONTRACT_FROZEN / CANONICAL`; its implementation remains separately gated. `SBH-00-05` freezes the first executable dependency graph and hardening matrix before `SUB-ACT-04` freezes Batch 001.
+The Stage B freeze records JC-219, JC-220, JC-221, and JC-222 as canonical
+governance. All four items remain `loop_eligible = No`; canonical does not mean
+implementation-authorized. `SBH-00-05` / JC-223 is the next governance step after
+this Stage B change is merged and independently verified. It freezes the first
+executable dependency graph and hardening matrix before `SUB-ACT-04` can consider
+Batch 001.
 
 | ID | Task | Priority | State | Loop eligible | Dependency |
 |---|---|---:|---|---:|---|
 | `SBH-00-01` | Freeze commercial-contract architecture | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | ACT-03 |
-| `SBH-00-02` | Populate canonical Subscription domain/lifecycle map | P1 | `AVAILABLE_GOVERNANCE_REVIEW` | No | ACT-03 |
-| `SBH-00-03` | Freeze concurrency/race precedence matrix | P1 | `BLOCKED_DEPENDENCY` | No | 00-01 |
-| `SBH-00-04` | Freeze cancellation, dunning, access, revocation, and grandfathering laws | P1 | `BLOCKED_DEPENDENCY` | No | 00-01 |
-| `SBH-00-05` | Freeze first executable dependency graph and hardening matrix | P1 | `BLOCKED_DEPENDENCY` | No | 00-02..04 |
+| `SBH-00-02` | Populate canonical Subscription domain/lifecycle map | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | ACT-03 |
+| `SBH-00-03` | Freeze concurrency/race precedence matrix | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | 00-01..02 |
+| `SBH-00-04` | Freeze cancellation, dunning, access, revocation, and grandfathering laws | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | 00-01..03 |
+| `SBH-00-05` | Freeze first executable dependency graph and hardening matrix | P1 | `NEXT / AVAILABLE_GOVERNANCE_REVIEW` | No | 00-01..04 verified |
 
 ## `SBH-00-01` architecture decision
 
@@ -816,10 +905,10 @@ and batch gates pass.
 
 This is a governance/documentation freeze only. It does not authorize production code,
 schema, migrations, Ash snapshots, or changes to Orders, Payments, Entitlements,
-provider contracts, or shared platform configuration. JC-220, JC-221, and JC-222 remain
-the later Stage B lifecycle/product-law canonicalization work; existing lifecycle,
-dunning, scheduling, access, and race-matrix material elsewhere in this register is
-not newly approved by JC-219. JC-223 and JC-224 remain blocked.
+provider contracts, or shared platform configuration. Stage B now freezes JC-220,
+JC-221, and JC-222 as governance law in the canonical domain map, this register, and
+the reconciled scheduling document. JC-223 / SBH-00-05 remains downstream and is not
+started by this PR. JC-224, Batch 001, and production implementation remain blocked.
 
 ---
 
@@ -1039,12 +1128,12 @@ Explicitly define:
 attempt numbering
 offset-0 meaning
 retry budget
-grace duration
-access during grace
+recovery-window duration
+access during recovery
 retry suppression
 recovery
-terminal boundary
-terminal Subscription state
+failed-payment suspension boundary
+terminal Subscription states
 ```
 
 Loop eligible: No.
@@ -1073,7 +1162,7 @@ normalized schedule behaviour
 
 ---
 
-## SBH-30-03 — Separate Retry Exhaustion from Grace Expiry
+## SBH-30-03 — Separate Retry Exhaustion from Suspension Boundary
 
 Proposed branch:
 
@@ -1083,16 +1172,16 @@ subs-task/sbh-30-03-retry-grace-separation
 
 Invariant:
 
-> Retry-budget exhaustion must not silently define commercial termination unless the frozen dunning contract explicitly says so.
+> Retry-budget exhaustion leaves the Subscription `PAST_DUE` and stops automatic retries. It does not terminate the relationship or substitute for the governed `PAST_DUE → SUSPENDED` boundary.
 
 ---
 
-## SBH-30-04 — Enforce Terminal Dunning Outcome
+## SBH-30-04 — Enforce Failed-Payment Suspension Boundary
 
 Proposed branch:
 
 ```text
-subs-task/sbh-30-04-dunning-terminal-law
+subs-task/sbh-30-04-dunning-suspension-boundary
 ```
 
 Depends on `SBH-30-01` and `SBH-30-03`.
@@ -1110,9 +1199,10 @@ subs-task/sbh-30-05-dunning-boundary-tests
 Coverage:
 
 - retry at exact configured offset;
-- retry/grace same instant;
+- retry/recovery-window boundary at the same instant;
 - successful final retry;
-- success after retry exhaustion but before terminal boundary, if permitted;
+- success after retry exhaustion while still `PAST_DUE`, if permitted;
+- `PAST_DUE → SUSPENDED` at the governed failed-payment boundary;
 - late success after terminal boundary;
 - duplicate failure;
 - success/failure ordering.
@@ -1307,9 +1397,11 @@ Proposed branch:
 subs-task/sbh-60-02-grandfathered-renewals
 ```
 
-Only implement if the frozen product law permits grandfathering.
-
-Do not accidentally terminate or prevent renewal for existing subscribers solely because a commercial revision is no longer offered to new customers.
+Stage B permits grandfathered existing-renewal evaluation under the bound immutable
+contract and applicable policy. Do not terminate or prevent renewal for an extant
+subscriber solely because a commercial revision is no longer offered to new
+customers. This task remains implementation work and is not authorized by this
+governance PR.
 
 ---
 
@@ -1349,20 +1441,17 @@ Do not replace working initial CAS machinery simply for stylistic uniformity.
 
 Legacy source finding: `SUB-HARD-07`.
 
-## SBH-80-01 — Freeze Revocation Semantics
+## SBH-80-01 — Implement Frozen Revocation Semantics
 
-Review/product/provider task.
+The Stage B governance law is frozen. This later implementation task must enforce
+the terminal meaning of `REVOKED` and may not reopen the product decision.
 
-Decide whether:
-
-```text
-revoked = permanent
-```
-
-or:
+The frozen graph is:
 
 ```text
-revoked = recoverable provider state
+ACTIVE ↔ INACTIVE
+ACTIVE/INACTIVE → REVOKED
+REVOKED = terminal
 ```
 
 ---
@@ -1538,7 +1627,15 @@ Primary dependency chain:
 ```text
 CONTROL PLANE
       ↓
-SBH-00 contract/lifecycle freeze
+SBH-00-01 / JC-219 commercial-contract architecture — frozen
+      ↓
+SBH-00-02 / JC-220 domain and lifecycle map — frozen
+      ↓
+SBH-00-03 / JC-221 race precedence — frozen
+      ↓
+SBH-00-04 / JC-222 cancellation, dunning, access, payment-method, and grandfathering law — frozen
+      ↓
+SBH-00-05 / JC-223 dependency graph and hardening matrix — next
       ↓
 SBH-10 commercial-contract foundation
       ↓
@@ -2031,9 +2128,11 @@ SUB-ACT-03  canonical READY recorded after ordered BASELINE_PINNED then READY tr
     ↓
 JC-219 / SBH-00-01  CONTRACT_FROZEN / CANONICAL
     ↓
-JC-220 / JC-221 / JC-222  later Stage B lifecycle/product-law canonicalization
+JC-220 / JC-221 / JC-222  CONTRACT_FROZEN / CANONICAL in this Stage B governance change
     ↓
-SBH-00-05 / JC-223  freeze first executable dependency graph and hardening matrix
+exact merged-target verification + separate main registry refresh
+    ↓
+SBH-00-05 / JC-223  next: freeze first executable dependency graph and hardening matrix
     ↓
 SUB-ACT-04  freeze Batch 001 base + v1.3/v1.4 admission recertification
 ```
@@ -2146,7 +2245,7 @@ CURRENT IMPLEMENTATION AUTHORITY:
 NONE. SUBS READY authorizes governance/review only; Batch 001 and SUB-ACT-04 admission remain outstanding.
 
 CURRENT WORKSTREAM STATE:
-READY / GOVERNANCE-REVIEW ONLY.
+READY / GOVERNANCE-REVIEW ONLY / STAGE B FROZEN.
 
 HISTORICAL v0.1.3 CANDIDATE:
 77a272c3887a7ab46e84a7fed02163d964e37b9b.
@@ -2155,10 +2254,14 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
-Stage B JC-220 + JC-221 + JC-222 canonicalization.
+JC-223 / SBH-00-05 after exact Stage B target verification and the separate main registry refresh.
 
 FINAL ACTION:
-Canonicalize JC-220, JC-221, and JC-222 coherently. Then complete JC-223's executable dependency graph and hardening matrix, followed by JC-224's Batch 001 base and implementation-admission recertification. Production implementation remains unauthorized until those gates are separately certified.
+Merge and independently verify the coherent JC-220/JC-221/JC-222 Stage B governance
+freeze. Refresh the main registry in a separate bounded governance change. Then
+complete JC-223's executable dependency graph and hardening matrix, followed by
+JC-224's Batch 001 base and implementation-admission recertification. Production
+implementation remains unauthorized until those gates are separately certified.
 ```
 
 ---

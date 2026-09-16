@@ -124,9 +124,15 @@ SUB-ACT-02  activation feasibility
     ↓ ACTIVATION_FEASIBILITY_PASS
 SUB-ACT-03  canonical ordered BASELINE_PINNED then READY recording
     ↓
-SBH-00-01 / SBH-00-02  governance and review work becomes available
+SBH-00-01  commercial-contract architecture — frozen
     ↓
-SBH-00-05  first executable dependency graph and hardening matrix
+SBH-00-02  domain/lifecycle map — frozen
+    ↓
+SBH-00-03  race precedence — frozen
+    ↓
+SBH-00-04  cancellation/dunning/access/grandfathering — frozen
+    ↓
+SBH-00-05 / JC-223  dependency graph and hardening matrix — NEXT
     ↓
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
@@ -135,7 +141,14 @@ SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 
 After that compatibility gate, `SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
 
-`SBH-00-01` and `SBH-00-02` remain governance/review tasks with `loop_eligible = No`. They become available only after `SUB-ACT-03`; their availability is not implementation-loop READY admission.
+`SBH-00-01` through `SBH-00-04` are governance/review tasks with `loop_eligible = No`.
+After this Stage B freeze they are `CONTRACT_FROZEN / CANONICAL`; canonical status is
+not implementation-loop READY admission. They become available as governance work
+after `SUB-ACT-03` and are completed in the order shown above.
+
+`SBH-00-05` / JC-223 is the next governance step after this PR is merged and the
+exact `hardening/subscriptions` target is independently verified. Do not start
+JC-223 in the Stage B PR.
 
 `SUB-ACT-04` owns the Batch 001 base freeze and the v1.3/v1.4 admission recertification. Only after that gate does the implementation loop apply the READY rule below.
 
@@ -155,7 +168,7 @@ ACTIVE_PARALLEL
 
 "Governance and contract freeze evidence" and "batch admission prepared" are control-plane evidence phases, not new persistent workstream lifecycle enum values.
 
-`SUB-ACT-03` records two ordered, validated transitions in canonical governance: `BOOTSTRAPPED → BASELINE_PINNED` is guarded by the accepted `SUB-ACT-01` development base, and `BASELINE_PINNED → READY` is guarded by `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02`. A single bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`; `SBH-00-01` and `SBH-00-02` then become available as governance/review work. `SUB-ACT-03` does not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains a successful `SUB-ACT-04` implementation-admission outcome.
+`SUB-ACT-03` records two ordered, validated transitions in canonical governance: `BOOTSTRAPPED → BASELINE_PINNED` is guarded by the accepted `SUB-ACT-01` development base, and `BASELINE_PINNED → READY` is guarded by `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02`. A single bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`; `SBH-00-01` through `SBH-00-04` then become available as governance/review work. `SUB-ACT-03` does not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains a successful `SUB-ACT-04` implementation-admission outcome.
 
 ---
 
@@ -1111,4 +1124,18 @@ PRS: 0
 FINAL ACTION: STOP
 ```
 
-After `SUB-ACT-03`, SBH-00 governance/review work is available. After `SBH-00-05` and `SUB-ACT-04`, the implementation loop may admit only task-specific executable READY work. If no such task exists then `NO_EXECUTABLE_READY_WORK → STOP` remains valid.
+After `SUB-ACT-03`, SBH-00 governance/review work is available in this order:
+
+```text
+SBH-00-01  commercial-contract architecture — frozen
+SBH-00-02  domain/lifecycle map — frozen
+SBH-00-03  race precedence — frozen
+SBH-00-04  cancellation/dunning/access/grandfathering — frozen
+SBH-00-05  dependency graph and hardening matrix — NEXT
+```
+
+After the Stage B target is merged and independently verified, a separate main
+registry refresh must record the new SUBS authority tip before JC-223 begins. After
+`SBH-00-05` and `SUB-ACT-04`, the implementation loop may admit only task-specific
+executable READY work. If no such task exists then `NO_EXECUTABLE_READY_WORK → STOP`
+remains valid.
