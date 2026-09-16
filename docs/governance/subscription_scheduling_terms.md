@@ -1,304 +1,454 @@
-# Subscription Scheduling, Terms, Access & Dunning (Authoritative)
+# Subscription scheduling, terms, access and dunning
 
-**Status:** Governance law (must be followed by all subscription implementations)  
-**Last updated:** 2026-02-27
+**Status:** Governance law, Stage B aligned
+**Last updated:** 2026-09-16
 
-This document defines the **subscription flexibility contract** for the Store Blueprint:
-- daily / monthly / yearly (and every-N)
-- bill on start anniversary vs normalized day-of-month
-- short-lived terms (days/months/years) vs never-ending
-- access removal rules when unpaid/ended
-- retries (dunning), grace periods, notifications/reminders
-- replay safety (idempotency), concurrency safety, and performance expectations
+This document defines the scheduling and policy terms for Store subscriptions:
 
-It applies to:
-- Physical product subscriptions (Phase 26/27)
-- Membership/entitlement subscriptions (Phase 27A)
+- cadence and billing anchors
+- fixed and open-ended terms
+- access during payment recovery and cancellation
+- retry and failed-payment suspension
+- notifications and replay safety
+- concurrency and performance expectations
 
-It does **not** change the core blueprint law:
-> Orders/Payments remain product-type agnostic. Subscription logic is orchestration.
+It applies to physical product subscriptions and membership or entitlement
+subscriptions. Orders and Payments remain product-type agnostic. Subscription
+logic is orchestration and commercial authority.
 
----
+The canonical lifecycle and race map is
+`docs/hardening/01_domain_map.md`. This document must remain consistent with that
+map.
 
-## 1) Core Concepts (must be explicit)
+## 1. Core concepts
 
-Every subscription MUST model these independently:
+Every Subscription must model these independently:
 
-1. **Cadence** — how often billing occurs
-2. **Anchor** — what date/time billing is aligned to
-3. **Term** — when the subscription ends (if ever)
-4. **Access policy** — what happens to access/benefits when unpaid or ended
-5. **Dunning** — retries, grace periods, cancellation rules
-6. **Notifications** — reminders and failure/expiry messaging
+1. cadence, which defines how often a billing period is formed;
+2. anchor, which defines when that period is due;
+3. term, which defines when recurring authority ends;
+4. access policy, which defines source-specific access during recovery and after a
+   terminal decision;
+5. dunning, which defines retry and failed-payment suspension;
+6. notifications, which communicate upcoming and failed events.
 
-Do not infer these from dates or “magic defaults”.
+Do not infer one concept from another or from a date alone.
 
----
+## 2. Cadence
 
-## 2) Cadence (interval unit + count)
+Plans define:
 
-### Required fields (Plan)
-- `interval_unit`: `:day | :month | :year`
-- `interval_count`: integer ≥ 1 (default 1)
-
-Examples:
-- Daily: `{:day, 1}`
-- Every 3 days: `{:day, 3}`
-- Monthly: `{:month, 1}`
-- Quarterly: `{:month, 3}`
-- Yearly: `{:year, 1}`
-
-### Law
-- Cadence determines the **length of a billing period** and how `next_renewal_at` is computed.
-- Cadence must be used consistently for:
-  - period windows (`current_period_start_at` / `current_period_end_at`)
-  - renewal scheduling (`next_renewal_at`)
-  - term consumption (cycles)
-
----
-
-## 3) Anchor rules (start anniversary vs normalized billing day)
-
-Anchoring MUST be explicit. Two MVP modes are supported:
-
-### Required fields (Plan)
-- `anchor_mode`: `:start_anniversary | :fixed_day_of_month`
-- `anchor_day_of_month`: integer 1–31 (required if `fixed_day_of_month`)
-- `billing_timezone`: IANA timezone string (store default recommended: `Africa/Johannesburg`)
-
-### Anchor modes
-#### A) `:start_anniversary` (bill on the day/time you started)
-- Billing aligns to the subscription’s `started_at` (or first paid activation time).
-- Example: starts 2026-03-05 09:00 → renews every month on day 5 at 09:00 in billing timezone.
-
-#### B) `:fixed_day_of_month` (normalize everyone to a specific day)
-- Billing aligns to a configured day-of-month.
-- Example: “bill on the 1st” or “bill on the 25th” regardless of signup date.
-
-### End-of-month rule (required)
-If `anchor_day_of_month` exceeds the number of days in the target month:
-- bill on the **last day of that month** at the configured time.
+- interval_unit: :day | :month | :year
+- interval_count: an integer of at least 1, defaulting to 1
 
 Examples:
-- Day 31 in April → bill Apr 30
-- Day 31 in February → bill Feb 28/29
 
-### Law
-- `next_renewal_at` MUST be computed using `billing_timezone`.
-- Store all timestamps in UTC, but compute anchors using the timezone and then convert to UTC.
+```text
+daily        = {:day, 1}
+every 3 days = {:day, 3}
+monthly      = {:month, 1}
+quarterly    = {:month, 3}
+yearly       = {:year, 1}
+```
 
----
+Cadence determines the length of a billing period. Use it consistently for period
+windows, next_renewal_at, and fixed-cycle term consumption.
 
-## 4) Term (few days/months/years vs never-ending)
+## 3. Billing anchors
 
-Term is separate from cadence. MVP supports:
+Anchoring is explicit. Supported modes are:
 
-### Required fields (Plan or Subscription)
-- `term_mode`: `:until_canceled | :fixed_cycles | :fixed_end_at`
-- `term_cycles`: integer ≥ 1 (required if `fixed_cycles`)
-- `term_end_at`: datetime (required if `fixed_end_at`)
+- anchor_mode: :start_anniversary | :fixed_day_of_month
+- anchor_day_of_month: 1 through 31 when fixed-day mode is used
+- billing_timezone: an IANA timezone string
 
-Examples:
-- “Only lasts 10 days” → cadence `{:day, 1}` + term `fixed_cycles=10`
-- “Only lasts 6 months” → cadence `{:month, 1}` + term `fixed_cycles=6`
-- “Only lasts 2 years” → cadence `{:year, 1}` + term `fixed_cycles=2`
-- “Never ending” → `:until_canceled`
+For :start_anniversary, billing follows the start or first paid activation time.
+For :fixed_day_of_month, billing follows the configured day regardless of the
+signup date.
 
-### Term consumption rules (required)
-- `fixed_cycles`: decrement by 1 **only on successful period extension**.
-- `fixed_end_at`: subscription expires when `now >= term_end_at` (timezone-normalized comparison).
+If the requested day is absent in the target month, use the last day of that
+month. All timestamps are stored in UTC. Compute the anchor in the billing
+timezone before converting it to UTC.
 
-### Law
-- When term ends, the subscription must transition to `:canceled` (or `:expired` if you distinguish) and must not schedule further renewals.
-- Entitlements (if any) must expire/revoke according to access policy (see below).
+## 4. Terms
 
----
+Term is separate from cadence. Supported term concepts are:
 
-## 5) Access policy (what happens to access/benefits)
+- term_mode: :until_canceled | :fixed_cycles | :fixed_end_at
+- term_cycles: at least 1 for fixed-cycle terms
+- term_end_at: required for fixed-end terms
 
-This applies primarily to **membership/entitlement subscriptions**, but the rules must still exist even for physical subscriptions (for support clarity).
+A fixed-cycle term consumes one cycle only after a successful period extension. A
+fixed-end term reaches its governed completion when the term end is authoritative.
 
-### Required fields (Plan)
-- `access_on_past_due`: `:keep_during_grace | :remove_immediately`
-- `access_on_cancel`: `:keep_until_period_end | :remove_immediately`
-- `access_on_term_end`: `:remove_at_end` (fixed; do not keep past the end)
+Term completion uses:
 
-### Membership implementation law (Phase 27A)
-- Access MUST be represented by `EntitlementGrant` validity:
-  - `valid_to_at` = membership `current_period_end_at`
-  - `revoked_at` when access is removed immediately (past_due cancel/term end)
-- Access checks MUST use a **cached entitlement set** (Phase 29) and must not cause N+1 DB reads in hot paths.
+```text
+→ EXPIRED
+```
 
-### Physical subscription law
-- If subscription is physical and is `:past_due` and policy removes access immediately, you still do not “remove shipping”; you simply do not create a paid renewal order.
-- Never ship without paid status.
+EXPIRED ends recurring authority, prevents future provider starts, and ends
+source-specific access at the governed term boundary. Dunning does not replace term
+expiry, and a failed-payment boundary does not invent another paid period.
 
----
+## 5. Access policy
 
-## 6) Dunning (retries + grace period) — deterministic, plan-driven
+Access is source-specific and derived from Subscription authority. It is not a
+second Subscription lifecycle, and an access worker may not mutate Subscription
+truth.
 
-Dunning must be explicit and deterministic.
+### Access during payment recovery
 
-### Required fields (Plan)
-- `grace_period_days`: integer ≥ 0 (default 7)
-- `max_retry_attempts`: integer ≥ 0 (default 3)
-- `retry_schedule_hours`: list of non-negative integers (e.g. `[0, 24, 72]`)
+The two supported policies for PAST_DUE are:
 
-Interpretation:
-- Attempt 1 occurs at hour offset 0 (immediate retry allowed).
-- Subsequent attempts occur at configured offsets.
-- Attempts beyond `max_retry_attempts` are forbidden.
+```text
+KEEP_DURING_GRACE
+REMOVE_IMMEDIATELY
+```
 
-### Required fields (Subscription)
-- `past_due_since_at`
-- `billing_status_reason` (e.g. `:payment_failed`, `:missing_payment_method`, `:out_of_stock`, `:variant_unavailable`)
+KEEP_DURING_GRACE may keep the affected recurring-source effect effective through
+the governed recovery window. At SUSPENDED, that effect becomes non-effective.
 
-### State transition law (minimum)
-- On renewal payment failure:
-  - set `status = :past_due`
-  - set `past_due_since_at = now`
-  - set `billing_status_reason = :payment_failed`
-- Retry until:
-  - success → `:active` and extend period, clear past_due markers
-  - grace expires (`now > past_due_since_at + grace_period_days`) → `:canceled` with `canceled_reason = :dunning_expired`
+REMOVE_IMMEDIATELY makes the affected recurring-source effect non-effective when
+ACTIVE → PAST_DUE commits. The Subscription remains PAST_DUE while recovery is
+possible.
 
-### Missing payment method
-- If `provider_billing_ref` is missing at renewal time:
-  - do not create a payment intent
-  - set `:past_due` with reason `:missing_payment_method`
-  - send “update payment method” notification
+For SUSPENDED, the affected recurring-source effect is non-effective. Do not add
+an Entitlements SUSPENDED business state solely to mirror Commerce. Other valid
+entitlement sources remain independently valid.
 
-### Inventory/fulfillment blockers (physical)
-- If renewal cannot be fulfilled (out of stock, shipping invalid, etc.):
-  - do not charge
-  - set `:paused` or `:past_due` with reason `:out_of_stock` (choose one; be consistent)
-  - notify customer/admin
+Access-on-past-due and access-on-cancel are independent policy dimensions. One
+must not be inferred from the other.
 
-This avoids “charged but cannot ship” incidents.
+### Access after cancellation
 
----
+The two supported cancellation policies are:
 
-## 7) Notifications & reminders (Comms spine, idempotent)
+```text
+KEEP_UNTIL_PERIOD_END
+REMOVE_IMMEDIATELY
+```
 
-All reminders/notifications MUST go through the Phase 23 Comms Outbox + workers.
+KEEP_UNTIL_PERIOD_END uses only the already-funded authoritative paid period. It
+does not extend the recovery window, create a period, turn a failed renewal into
+paid coverage, or extend beyond fixed-term completion.
 
-### Plan-configurable notifications (recommended)
-- `remind_before_days`: list (e.g. `[7, 1]`)
-- `remind_on_payment_failure`: boolean
-- `remind_before_grace_expires_days`: integer (e.g. 1)
+REMOVE_IMMEDIATELY creates a source-specific non-effective target after the
+cancellation decision.
 
-### Idempotency law for notifications
-Every notification job MUST have a deterministic idempotency key:
-- e.g. `(subscription_id, type, target_period_end_at)`
-and a DB uniqueness constraint in the outbox to prevent duplicates.
+### Physical subscriptions
 
-### Required notification types (minimum)
-- Upcoming renewal reminder(s)
-- Payment failed / action required
-- Grace period ending soon
-- Subscription canceled / ended
-- Membership access ended (if access removed)
+For a physical Subscription, removing access does not mean removing shipping.
+A failed or unpaid renewal must not create a paid renewal order, and the system
+must never ship without paid status.
 
----
+## 6. Cancellation
 
-## 8) Scheduling implementation (Oban-only, no external cron dependency)
+### Immediate cancellation
 
-Renewal and reminder scheduling MUST be Oban-driven.
+Immediate cancellation ends recurring authority immediately:
 
-### Allowed patterns
-1) **Oban Cron plugin**: a tick job runs every minute (or 5 minutes).
-2) **Self-scheduling tick**: job re-enqueues itself on completion.
+```text
+→ CANCELED
+```
 
-### Tick worker rules (performance)
-- Query due subscriptions by `next_renewal_at <= now` (batched).
-- Must use indexes:
-  - `subscriptions(status, next_renewal_at)`
-- Must cap batch size and avoid per-row N+1 loads.
-- Must enqueue per-subscription renewal attempt jobs with uniqueness.
+It forbids future provider starts, automatic retries, and unbound future changes.
+Already-in-flight provider activity remains an external occurrence to reconcile
+under the A/B/C/D checkpoint law.
 
----
+PAST_DUE → CANCELED and SUSPENDED → CANCELED do not wait for another paid
+boundary.
 
-## 9) Idempotency & concurrency safety (must be enforced)
+PENDING → CANCELED is allowed only before authoritative activation or payment
+evidence establishes ACTIVE. It starts no dunning episode and creates no paid
+period.
 
-### Renewal key (required)
-Every billing period must have a unique, deterministic `renewal_key`, e.g.:
-- `renewal_key = "sub:{subscription_id}:end:{period_end_iso8601}"`
+### Scheduled cancellation
 
-### Required uniqueness
-- DB unique: `renewal_attempts(subscription_id, renewal_key)`
-- Oban uniqueness: job args include `subscription_id` + `renewal_key`
+Scheduled cancellation means:
 
-### Race law
-If two workers attempt the same renewal:
-- One inserts the `RenewalAttempt` and proceeds.
-- The other hits uniqueness and must **reuse** the existing attempt (no new order/payment intent).
+```text
+DO_NOT_RENEW
+```
 
-### Webhook replay law
-Webhook repeats must not create duplicate “paid extensions”:
-- renewal order/payment application must be replay-safe (interlocks enforce apply-once)
-- membership/grant issuance must be idempotent (unique constraints)
-- outbox notifications must be idempotent (unique keys)
+The current funded paid term may continue. At the actual paid-period boundary, the
+Subscription becomes CANCELED. Do not create an extra period after the last paid
+period has ended.
 
----
+A current DO_NOT_RENEW instruction before RenewalAttempt checkpoint B blocks that
+renewal boundary. If checkpoint B commits first, the bound occurrence remains
+immutable and the later instruction targets the next eligible uncommitted boundary.
 
-## 10) Required indexes (minimum set)
+### Rescission
+
+Before terminalization, an authenticated current-version rescission creates:
+
+```text
+RENEW_UNCHANGED(current live contract)
+```
+
+It does not resurrect an older hidden target. After CANCELED, the customer must
+start a new Subscription rather than resubscribe through a resurrection transition.
+
+## 7. Dunning and retry law
+
+Dunning is a recovery episode, not an alternate terminal lifecycle.
+
+### Required concepts
+
+Plan or Subscription policy must define:
+
+- grace_period_days, which determines the governed recovery window, default 7;
+- max_retry_attempts, default 3, whose meaning is the number of retries after
+  initial collection;
+- retry_schedule_hours, a list of non-negative offsets such as [0, 24, 72];
+- access_on_past_due, one of the supported access policies above.
+
+Subscription evidence must include:
+
+- past_due_since_at;
+- a billing status reason such as payment failure or missing payment method.
+
+### Attempt numbering
+
+```text
+initial collection = attempt 1
+retries = attempts 2+
+```
+
+The retry budget is not the total number of collections. The existing field name
+max_retry_attempts does not authorize a schema rename or a different interpretation.
+
+### Retry offsets
+
+Retry offsets are measured from the first retryable failure. Offset 0 is valid.
+Do not clamp it to a later time. Use the final configured offset once and do not
+repeat it indefinitely.
+
+The first retryable failure performs:
+
+```text
+ACTIVE → PAST_DUE
+past_due_since_at = first retryable failure time
+```
+
+Only the first retryable failure sets past_due_since_at. Retries do not reset the
+episode clock.
+
+### Retry exhaustion
+
+If the retry budget is exhausted before the failed-payment boundary:
+
+```text
+remain PAST_DUE
+stop automatic retries
+```
+
+Retry exhaustion is not relationship termination. It does not mean CANCELED,
+EXPIRED, or SUSPENDED by itself.
+
+At the governed failed-payment boundary:
+
+```text
+PAST_DUE → SUSPENDED
+```
+
+unless successful recovery or a separate terminal event wins first. SUSPENDED is
+nonterminal and extant, but new automatic recurring capability is suspended.
+
+There is no current generic rule that turns a grace or dunning boundary into
+CANCELED. A historical reference to an older rule is not current authority.
+
+### Missing payment method and other blockers
+
+If no authorized payment method exists, do not create a provider payment intent or
+start collection. Enter PAST_DUE with the relevant reason and send the
+payment-method notification.
+
+Inventory, variant, shipping, and other physical blockers must not charge a renewal
+that cannot be fulfilled. They enter the governed recovery episode or a separately
+authorized terminal path; they do not invent a new Subscription state.
+
+## 8. Stored payment methods
+
+The conceptual lifecycle is:
+
+```text
+ACTIVE ↔ INACTIVE
+
+ACTIVE   → REVOKED
+INACTIVE → REVOKED
+
+REVOKED = terminal
+```
+
+REVOKED → ACTIVE and REVOKED → INACTIVE are forbidden. Replacement and
+revocation are different operations.
+
+Replacement changes the Subscription's durable method binding under current aggregate
+authority. It does not create a new RenewalAttempt or automatically revoke the old
+method globally.
+
+Immediately before provider checkpoint C, the current payment-method authority must
+be checked. If replacement or revocation committed first, the stale method is not
+used. If C occurred first, the in-flight request remains an occurrence to reconcile.
+
+## 9. Contract changes and grandfathering
+
+Keep these eligibility decisions separate:
+
+```text
+NEW-SALE ELIGIBILITY
+CHANGE ELIGIBILITY
+EXISTING-RENEWAL ELIGIBILITY
+```
+
+A retired or publicly unavailable PlanRevision may remain valid evidence for an
+existing renewal. Existing-renewal evaluation uses:
+
+```text
+Subscription
++ bound immutable current contract
++ applicable grandfathering policy
++ renewal occurrence
+```
+
+A new sale uses new-sale eligibility. A queued ContractChange uses change
+eligibility. An extant PAST_DUE or SUSPENDED Subscription may recover the same
+authorized renewal occurrence without becoming a new sale.
+
+Terminal CANCELED and EXPIRED Subscriptions cannot be revived by grandfathering.
+
+## 10. Scheduling
+
+Renewal and notification scheduling are Oban-driven.
+
+Allowed patterns include:
+
+1. an Oban Cron tick that selects due work; or
+2. a self-scheduling tick that re-enqueues after completion.
+
+Scheduling must preserve the authority laws:
+
+- queue existence grants no collection authority;
+- every retry re-reads current Subscription authority before C;
+- due selection and worker start time do not decide precedence;
+- a current DO_NOT_RENEW, terminal state, or revoked payment-method binding
+  blocks a new provider start;
+- one logical renewal key reuses one RenewalAttempt;
+- provider idempotency and reconciliation protect operations that may have crossed C.
+
+Due selection must be batched and indexed. The worker must avoid N+1 loads and must
+not use cache or queue state as the lifecycle authority.
+
+## 11. Idempotency and concurrency
+
+Every billing boundary has a deterministic renewal_key, for example:
+
+```text
+renewal_key = "sub:{subscription_id}:end:{period_end_iso8601}"
+```
+
+Required protections remain:
+
+- durable uniqueness for Subscription and renewal key;
+- Oban uniqueness using Subscription and renewal key;
+- provider idempotency for external collection;
+- durable provider-event or payment-occurrence deduplication;
+- apply-once period extension, access effect, notification, and order/payment
+  application.
+
+If two workers claim the same renewal, one logical RenewalAttempt wins and the other
+reuses it. Retries do not re-resolve current Plan state or a newer ContractChange.
+
+Material Subscription writes use optimistic version/CAS or equivalent PostgreSQL
+authority. A stale writer fails and re-evaluates current authority. Redis locks,
+node-local mutexes, and worker serialization are not correctness authority.
+
+## 12. Required indexes
+
+These are governance expectations for later implementation, not schema authorization.
 
 ### Subscriptions
-- `subscriptions(status, next_renewal_at)`
-- `subscriptions(user_id)` (self lookups)
-- `subscriptions(plan_id)` (admin/analytics)
+
+- (status, next_renewal_at)
+- (user_id)
+- (plan_id)
 
 ### Renewal attempts
-- unique: `renewal_attempts(subscription_id, renewal_key)`
-- index: `renewal_attempts(inserted_at)`
 
-### Entitlement grants (membership)
-- index: `(user_id, valid_to_at, revoked_at)`
-- unique: `(source_id, entitlement_code)` (or `(membership_id, entitlement_id)`)
+- unique (subscription_id, renewal_key)
+- (inserted_at)
 
----
+### Entitlement grants, if applicable
 
-## 11) Governance tests (must exist once implemented)
+- (user_id, valid_to_at, revoked_at)
+- source-specific grant identity uniqueness
 
-The following governance tests MUST exist before declaring subscriptions “done”:
+## 13. Notifications
 
-1) **Anchor correctness**
-- fixed_day_of_month handles Feb/30-day months as end-of-month
-- start anniversary renews on the same day/time in timezone
+Notifications go through the Comms outbox and workers. Each notification uses a
+deterministic idempotency key, such as:
 
-2) **Term correctness**
-- fixed_cycles ends exactly after N successful extensions
-- until_canceled never ends automatically
+```text
+(subscription_id, notification_kind, target_period_end_at)
+```
 
-3) **Access policy correctness (membership)**
-- access persists through grace if configured
-- access removed on cancel/term end
-- grants are revoked/expired deterministically
+At minimum, support:
 
-4) **Dunning correctness**
-- bounded retries follow schedule
-- grace expiry cancels deterministically
-- missing payment method transitions to past_due without charging
+- upcoming renewal reminders;
+- payment failure and payment-method action;
+- recovery window reminders;
+- cancellation or expiry messaging;
+- membership access-ended messaging when access is removed.
 
-5) **Idempotency**
-- renewal_key uniqueness prevents duplicates under race
-- webhook/job replay does not duplicate grants/emails/orders
+A notification does not change Subscription truth.
 
-6) **Notifications idempotency**
-- reminders do not duplicate under worker retry/replay
+## 14. Governance checks required once implemented
 
----
+These checks are future implementation acceptance criteria:
 
-## 12) Implementation note (where these rules live)
-- Plan fields live in the Plan resources (Phase 26/27/27A).
-- Computation lives in `Store.Subscriptions.Scheduler` (pure functions) and `Store.Subscriptions` facade.
-- Side effects:
-  - renewal execution via workers
-  - notifications via Comms outbox workers
-  - no outbound IO in web; webhook verify + enqueue only
+1. Anchor correctness for end-of-month clamping and timezone-aware anniversaries.
+2. Term correctness for fixed cycles, fixed end, and open-ended subscriptions.
+3. Access correctness for both recovery policies and both cancellation policies.
+4. Dunning correctness for attempt numbering, offset 0, bounded retries,
+   fixed episode clock, retry exhaustion, and the PAST_DUE → SUSPENDED boundary.
+5. Idempotency under duplicate renewal claims, callback replay, and worker retry.
+6. Concurrency for cancellation, ContractChange, payment-method authority, expiry,
+   suspension, successful recovery, and late provider evidence.
+7. Notification idempotency under replay.
 
----
+## 15. Implementation note
 
-## Appendix: Recommended enums (for consistency)
-- `billing_status_reason`: `:payment_failed | :missing_payment_method | :out_of_stock | :variant_unavailable | :canceled_by_user | :dunning_expired`
-- `canceled_reason`: `:user_request | :admin_override | :dunning_expired | :term_ended | :provider_canceled`
+Plan and contract fields live in the Subscription-owned commercial model. Pure
+scheduling calculations and domain transitions belong behind Subscription domain
+facades. Renewal execution, reconciliation, access effects, and notifications use
+durable workers.
+
+This section describes future implementation placement only. It does not authorize
+source code, schema, migrations, provider integration changes, Entitlements,
+Payments, Orders, infrastructure, Batch 001, or rollout.
+
+## Appendix: Conceptual reason labels
+
+Reason labels are governance concepts, not a schema change. Current law includes:
+
+```text
+billing_status_reason =
+  payment_failed
+  missing_payment_method
+  out_of_stock
+  variant_unavailable
+
+canceled_reason =
+  user_request
+  admin_override
+  provider_canceled
+
+expired_reason =
+  term_ended
+  paid_period_completed
+```
+
+A generic failed-payment boundary is represented by PAST_DUE → SUSPENDED, not by a
+dunning-specific cancellation reason.

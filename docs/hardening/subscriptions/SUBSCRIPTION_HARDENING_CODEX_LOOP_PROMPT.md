@@ -86,16 +86,29 @@ SUB-ACT-02  activation feasibility
     ↓ ACTIVATION_FEASIBILITY_PASS
 SUB-ACT-03  canonical ordered BASELINE_PINNED then READY recording
     ↓
-SBH-00-01 / SBH-00-02  governance and review work becomes available
+SBH-00-01  commercial-contract architecture — frozen
     ↓
-SBH-00-05  executable dependency graph and hardening matrix freeze
+SBH-00-02  domain/lifecycle map — frozen
+    ↓
+SBH-00-03  race precedence — frozen
+    ↓
+SBH-00-04  cancellation/dunning/access/grandfathering — frozen
+    ↓
+SBH-00-05 / JC-223  executable dependency graph and hardening matrix — NEXT
     ↓
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
 
-`SBH-00-01` and `SBH-00-02` remain governance/review tasks. Their `loop_eligible` value remains `No`, and they do not need implementation-loop READY status for `SUB-ACT-02` to pass. They are unavailable before `SUB-ACT-03`.
+`SBH-00-01` through `SBH-00-04` are governance/review tasks with `loop_eligible = No`.
+After the Stage B freeze they are `CONTRACT_FROZEN / CANONICAL`; this does not grant
+implementation admission. They become available after `SUB-ACT-03` in the order
+shown above.
 
-`SUB-ACT-03` records two ordered, validated canonical lifecycle transitions. The initial state is `BOOTSTRAPPED`; accepted `SUB-ACT-01` development-base evidence guards `BOOTSTRAPPED → BASELINE_PINNED`; and `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guards `BASELINE_PINNED → READY`. One bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`, and `SBH-00-01` and `SBH-00-02` become available as governance/review work. `SUB-ACT-03` must not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains guarded by successful `SUB-ACT-04` implementation admission.
+`SBH-00-05` / JC-223 is the next governance step after the Stage B PR is merged and
+the exact `hardening/subscriptions` target is independently verified. Do not start
+JC-223 in the Stage B PR.
+
+`SUB-ACT-03` records two ordered, validated canonical lifecycle transitions. The initial state is `BOOTSTRAPPED`; accepted `SUB-ACT-01` development-base evidence guards `BOOTSTRAPPED → BASELINE_PINNED`; and `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guards `BASELINE_PINNED → READY`. One bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`, and `SBH-00-01` through `SBH-00-04` become available as governance/review work. `SUB-ACT-03` must not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains guarded by successful `SUB-ACT-04` implementation admission.
 
 `NO_EXECUTABLE_READY_WORK` is evaluated only after `SUB-ACT-04`, when the implementation batch is selecting tasks. It remains a valid STOP result there.
 
@@ -736,4 +749,18 @@ PRS: 0
 FINAL ACTION: STOP
 ```
 
-After `SUB-ACT-03`, SBH-00 governance/review work is available. After `SBH-00-05` and `SUB-ACT-04`, execute only READY implementation tasks that pass task-level external-dependency and shared-authority admission. If no executable READY task exists then `NO_EXECUTABLE_READY_WORK → STOP`.
+After `SUB-ACT-03`, SBH-00 governance/review work is available in this order:
+
+```text
+SBH-00-01  commercial-contract architecture — frozen
+SBH-00-02  domain/lifecycle map — frozen
+SBH-00-03  race precedence — frozen
+SBH-00-04  cancellation/dunning/access/grandfathering — frozen
+SBH-00-05  dependency graph and hardening matrix — NEXT
+```
+
+After the Stage B target is merged and independently verified, perform the separate
+main-governance registry refresh before starting JC-223. Do not start JC-223 in the
+Stage B PR. After `SBH-00-05` and `SUB-ACT-04`, execute only READY implementation
+tasks that pass task-level external-dependency and shared-authority admission. If no
+executable READY task exists then `NO_EXECUTABLE_READY_WORK → STOP`.
