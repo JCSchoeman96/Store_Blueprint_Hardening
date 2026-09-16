@@ -1,7 +1,7 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.4
-**Status:** WORKING / APPROVED DESIGN — SUBS READY / JC-219 + JC-220 + JC-221 + JC-222 CONTRACT_FROZEN
+**Version:** v0.1.5
+**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-16
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the independently verified SUBS activation, the owner-approved JC-219 architecture, and the Stage B JC-220/JC-221/JC-222 governance freeze. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does **not** authorize migrations, shared-domain changes, Batch 001, or production implementation.
+> This document records the independently verified SUBS activation, the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, and the JC-223 executable dependency graph and hardening matrix freeze. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does **not** authorize migrations, shared-domain changes, Batch 001, or production implementation.
 
 ---
 
@@ -27,9 +27,12 @@ This is a hardening programme, not a subscription rewrite.
 
 ---
 
-# 2. Independent Verification Pass — 2026-09-16
+# 2. Historical Independent Verification Pass — 2026-09-16
 
-This register was checked against the current repository during the Stage B preflight.
+The material in §§2.1–2.6 is retained v0.1.4 provenance from the earlier Stage B
+preflight. Its recorded hashes, observations, and statements about the next task
+describe that earlier fixed point. They are not claims about the JC-223 fixed point
+recorded in §2.7.
 
 ## 2.1 Verified authority state — refreshed before Stage B freeze
 
@@ -146,26 +149,62 @@ Rules:
 
 Active implementation must never begin from a worktree containing untracked bootstrap authority files.
 
+## 2.7 Current JC-223 fixed-point verification — 2026-09-16
+
+This is the current verification boundary for v0.1.5. It records the fixed
+authority supplied at authorization and does not rewrite the historical preflight
+evidence above.
+
+| Authority | Current fixed point | Meaning for this register |
+|---|---|---|
+| `origin/main` | `95f0a51e6e14e494b30ff589da64ad0d8d15fca8` | canonical main authority at authorization |
+| `origin/hardening/subscriptions` | `4af7f3889d03eea1a9719600202449b5a8e488b8` | SUBS target authority at authorization |
+| accepted SUBS development base | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` | unchanged; accepted by `SUB-ACT-01` |
+| `batch_base_sha` | `null` | not frozen; Batch 001 has not started |
+| SUBS lifecycle | `READY` | governance/review only; not `ACTIVE_PARALLEL` |
+| current verdict | `SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN` | JC-223 / SBH-00-05 is canonically frozen |
+
+The JC-223 content change is bounded to this register and its PR targets
+`hardening/subscriptions`. It grants no production implementation authority, no
+migration/schema/Ash-snapshot authority, no Payments, Orders, Entitlements,
+provider, or shared-infrastructure authority, no Batch 001, no `batch_base_sha`
+freeze, no `ACTIVE_PARALLEL`, and does not start `SUB-ACT-04`.
+
+The next control-plane sequence is:
+
+```text
+merge this content PR to hardening/subscriptions
+    ↓
+verify the exact merged target against the fixed authority
+    ↓
+separate main-governance registry refresh
+    ↓
+SUB-ACT-04 Batch 001 base freeze and admission recertification
+```
+
+No other persistent SUBS lifecycle state is introduced.
+
 ---
 
 # 3. Current Programme Verdict
 
 ```text
-SUBS_STAGE_B_GOVERNANCE_FROZEN
+SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN
 ```
 
-Canonical governance is no longer the blocker.
+The JC-219, JC-220, JC-221, JC-222, and JC-223 governance contracts are frozen
+and canonical. SUBS remains `READY`.
 
-Current remaining lane-local work is:
+The next control-plane gates are:
 
 ```text
-1. merge this bounded Stage B governance change to hardening/subscriptions and verify the exact merged target;
+1. merge this bounded JC-223 content PR to hardening/subscriptions and verify the exact merged target;
 2. perform the separately bounded main-governance registry refresh;
-3. freeze the first executable dependency graph and hardening matrix through JC-223 / SBH-00-05;
-4. only after those gates, freeze batch_base_sha and perform SUB-ACT-04 admission recertification.
+3. only after those gates, perform SUB-ACT-04 Batch 001 base and admission recertification.
 ```
 
-No production `SBH-*` implementation task is authorized merely by this register, by SUBS `READY`, or by PR #8.
+No production `SBH-*` implementation task is authorized merely by this register,
+by SUBS `READY`, or by PR #8. `batch_base_sha` remains null and unfrozen.
 
 ---
 
@@ -801,6 +840,33 @@ These checkpoints are not a global "last checkpoint wins" hierarchy. D proves
 payment truth but does not override valid terminal Commerce truth. Ambiguous
 provider ordering fails closed and enters reconciliation.
 
+## 8.1 JC-221 race-coverage matrix
+
+This matrix maps each approved race to the hardening rows or existing evidence
+that must cover it. Coverage is still open; no row below is `PROVEN_GOOD`.
+
+| Race coverage | Required rows or evidence | Current proof status |
+|---|---|---|
+| renewal vs immediate cancellation | `SBH-20-02` + `SBH-40-03` | OPEN |
+| renewal vs scheduled cancellation | `SBH-40-02` + `SBH-40-03` | OPEN |
+| renewal vs ContractChange | `SBH-10-06` + `SBH-20-03` | OPEN |
+| renewal vs payment-method replacement/revocation | `SBH-80-03` | OPEN |
+| reconciliation vs expiry | `SBH-20-04` | OPEN |
+| reconciliation vs suspension | `SBH-30-04` + `SBH-30-05` | OPEN |
+| success vs late failure | `SBH-70-02` + `SBH-20-05` | OPEN |
+| two Subscription writers | `SBH-20-01` + race suites | OPEN |
+| dunning vs successful recovery | `SBH-30-04` + `SBH-30-05` | OPEN |
+| access effect vs commercial state | `SBH-50-06` + `SBH-50-05` | OPEN |
+| duplicate provider callbacks | `SBH-95-02` + existing replay/idempotency evidence | OPEN |
+| out-of-order callbacks | `SBH-95-02` | OPEN |
+| late success after cancellation | `SBH-20-02` + `SBH-40-03` + provider reconciliation proof | OPEN |
+| queued retry after cancellation | `SBH-20-02` + `SBH-30-05` | OPEN |
+| provider-event reordering across evidence paths | `SBH-95-02` | OPEN |
+| restart/crash recovery | `SBH-95-04` | OPEN |
+
+The matrix is a coverage obligation, not evidence that the pending work is
+complete. Audits remain open and cannot promote a pending row to `PROVEN_GOOD`.
+
 ---
 
 # 9. Activation / Historical Control-Plane Register
@@ -846,10 +912,9 @@ A sibling lane moving is not itself a blocker.
 
 These are governance/review tasks. They establish law before production code changes.
 
-The Stage B freeze records JC-219, JC-220, JC-221, and JC-222 as canonical
-governance. All four items remain `loop_eligible = No`; canonical does not mean
-implementation-authorized. `SBH-00-05` / JC-223 is the next governance step after
-this Stage B change is merged and independently verified. It freezes the first
+The Stage B and JC-223 freeze records JC-219, JC-220, JC-221, JC-222, and JC-223
+as canonical governance. All five items remain `loop_eligible = No`; canonical
+does not mean implementation-authorized. `SBH-00-05` / JC-223 freezes the first
 executable dependency graph and hardening matrix before `SUB-ACT-04` can consider
 Batch 001.
 
@@ -859,7 +924,7 @@ Batch 001.
 | `SBH-00-02` | Populate canonical Subscription domain/lifecycle map | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | ACT-03 |
 | `SBH-00-03` | Freeze concurrency/race precedence matrix | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | 00-01..02 |
 | `SBH-00-04` | Freeze cancellation, dunning, access, revocation, and grandfathering laws | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | 00-01..03 |
-| `SBH-00-05` | Freeze first executable dependency graph and hardening matrix | P1 | `NEXT / AVAILABLE_GOVERNANCE_REVIEW` | No | 00-01..04 verified |
+| `SBH-00-05` | Freeze first executable dependency graph and hardening matrix | P1 | `CONTRACT_FROZEN / CANONICAL` — governance/review only | No | 00-01..04 verified |
 
 ## `SBH-00-01` architecture decision
 
@@ -905,10 +970,12 @@ and batch gates pass.
 
 This is a governance/documentation freeze only. It does not authorize production code,
 schema, migrations, Ash snapshots, or changes to Orders, Payments, Entitlements,
-provider contracts, or shared platform configuration. Stage B now freezes JC-220,
-JC-221, and JC-222 as governance law in the canonical domain map, this register, and
-the reconciled scheduling document. JC-223 / SBH-00-05 remains downstream and is not
-started by this PR. JC-224, Batch 001, and production implementation remain blocked.
+provider contracts, or shared platform configuration. JC-220, JC-221, and JC-222
+remain governance law in the canonical domain map, this register, and the reconciled
+scheduling document. JC-223 / SBH-00-05 is frozen by this bounded register change,
+but it does not start `SUB-ACT-04`, freeze `batch_base_sha`, start Batch 001, set
+`ACTIVE_PARALLEL`, or authorize production implementation. The separate main
+registry refresh remains next, followed by `SUB-ACT-04`.
 
 ---
 
@@ -919,7 +986,9 @@ Legacy source finding: `SUB-HARD-00`.
 ## SBH-10-01 — Plan Revision / Approved Contract Foundation
 
 **Priority:** P1 / release blocker  
-**Loop eligible:** Yes only after contract freeze and shared migration authority.
+**State:** `BLOCKED_SHARED_AUTHORITY` until migration and Ash snapshot authority is
+explicitly assigned.
+**Loop eligible:** No.
 
 Objective:
 
@@ -931,9 +1000,10 @@ Proposed branch after activation:
 subs-task/sbh-10-01-plan-revision-foundation
 ```
 
-If the chosen architecture does not use PlanRevision, rename this task before it becomes READY.
+JC-219 fixes PlanRevision as the approved architecture. This row may not replace
+it with an alternative without a new governance decision.
 
-Shared authority:
+Shared-authority requirement:
 
 ```text
 priv/repo/migrations/**
@@ -954,6 +1024,10 @@ Performance/scaling:
 
 ## SBH-10-02 — Existing Subscription Contract Binding
 
+**State:** `BLOCKED_SHARED_AUTHORITY` until the required migration and Ash snapshot
+authority is assigned.
+**Loop eligible:** No.
+
 Bind each existing Subscription to its exact authoritative commercial contract.
 
 Proposed branch:
@@ -971,9 +1045,40 @@ Required:
 - required FK/query indexes;
 - no unrelated cross-domain change.
 
+This foundation remains non-executable while its migration-sensitive authority is
+unassigned, even though its semantic dependency is frozen.
+
+## SBH-10-06 — Durable ContractChange / Future-Target Foundation
+
+**State:** `BLOCKED_SHARED_AUTHORITY` until the required migration and Ash snapshot
+authority is explicitly assigned.
+**Loop eligible:** No.
+
+Create durable stable `ContractChange` identity and a versioned current future
+target. The conceptual lifecycle is:
+
+```text
+NONE → QUEUED → SUPERSEDED / CANCELED / BOUND_TO_RENEWAL → APPLIED
+```
+
+The contract must guarantee:
+
+- a later change cannot mutate a B-bound occurrence;
+- cancellation voids an unbound target;
+- rescission creates `RENEW_UNCHANGED(current live contract)`;
+- no stale predecessor restoration occurs.
+
+Depends on `SBH-10-02` and is required before `SBH-10-03` and `SBH-20-03`.
+Migrations and Ash snapshots are likely required, so this row remains
+`BLOCKED_SHARED_AUTHORITY` until assigned. Do not implement the renewal-versus-
+change race here; that belongs to `SBH-20-03`.
+
 ---
 
 ## SBH-10-03 — Immutable RenewalAttempt Charged-Contract Snapshot
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Bind each renewal to the exact contract it attempts to purchase.
 
@@ -1007,6 +1112,9 @@ Invariant:
 
 ## SBH-10-04 — Renewal Initiation Uses Bound Contract
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1020,6 +1128,9 @@ Invariant:
 ---
 
 ## SBH-10-05 — Reconciliation Applies Charged Contract Only
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1041,6 +1152,10 @@ Legacy source finding: `SUB-HARD-01`.
 
 ## SBH-20-01 — Optimistic Aggregate-Version Foundation
 
+**State:** `BLOCKED_SHARED_AUTHORITY` until migration and Ash snapshot authority is
+explicitly assigned.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1060,6 +1175,9 @@ Requirements:
 
 ## SBH-20-02 — Renewal vs Immediate Cancellation
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1076,6 +1194,9 @@ Compensation/reconciliation must be explicit where necessary.
 
 ## SBH-20-03 — Renewal vs Contract / Variant Change
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1090,6 +1211,9 @@ Invariant:
 
 ## SBH-20-04 — Paid Reconciliation vs Expiry
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1101,6 +1225,9 @@ Preserve proven payment evidence while obeying the frozen terminal-state law.
 ---
 
 ## SBH-20-05 — Success vs Late Failure / Dunning
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1120,7 +1247,11 @@ Legacy source finding: `SUB-HARD-08`.
 
 ## SBH-30-01 — Freeze Dunning Law
 
-Review-only.
+**State:** `CONTRACT_FROZEN / CANONICAL` from JC-222.
+**Loop eligible:** No. This is satisfied canonical governance, not unfinished
+architecture.
+
+Review-only governance record.
 
 Explicitly define:
 
@@ -1142,6 +1273,10 @@ Loop eligible: No.
 
 ## SBH-30-02 — Correct Retry Schedule Offset Semantics
 
+**State:** `READY`.
+**Loop eligible:** Yes.
+**Shared-authority status:** `NONE`.
+
 Current implementation prevents configured zero-hour retry semantics by forcing offsets through a minimum of 24 hours.
 
 Proposed branch:
@@ -1160,9 +1295,17 @@ schedule exhaustion / edge selection
 normalized schedule behaviour
 ```
 
+This is genuinely lane-local because the frozen contract targets Subscription
+scheduler offset normalization and selection. It does not require migration,
+Payments, Orders, Entitlements, provider-business-contract, or generic
+infrastructure changes. `READY` in this register is not Batch 001 admission.
+
 ---
 
 ## SBH-30-03 — Separate Retry Exhaustion from Suspension Boundary
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1178,6 +1321,9 @@ Invariant:
 
 ## SBH-30-04 — Enforce Failed-Payment Suspension Boundary
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1189,6 +1335,9 @@ Depends on `SBH-30-01` and `SBH-30-03`.
 ---
 
 ## SBH-30-05 — Dunning Adversarial Boundary Suite
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1215,7 +1364,11 @@ Legacy source finding: `SUB-HARD-02`.
 
 ## SBH-40-01 — Freeze Scheduled-Cancellation Law
 
-Review-only.
+**State:** `CONTRACT_FROZEN / CANONICAL` from JC-222.
+**Loop eligible:** No. This is satisfied canonical governance, not unfinished
+architecture.
+
+Review-only governance record.
 
 Define:
 
@@ -1235,6 +1388,9 @@ canonical terminal state
 
 ## SBH-40-02 — Durable Period-Boundary Terminalization
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1250,6 +1406,9 @@ Do not poll from the UI.
 ---
 
 ## SBH-40-03 — Scheduled-Cancellation Race Suite
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1275,9 +1434,13 @@ Legacy source findings: `SUB-HARD-03` plus the P1 access-policy part of `SUB-HAR
 
 ## SBH-50-01 — Freeze Durable Access-Effect Architecture
 
-Review-only / shared-boundary task.
+**State:** `CONTRACT_FROZEN / CANONICAL` from JC-222.
+**Loop eligible:** No. This is satisfied canonical governance, not unfinished
+architecture.
 
-Recommended shape:
+Review-only governance record with a shared-boundary implementation consequence.
+
+Frozen shape:
 
 ```text
 Subscription truth transition
@@ -1295,9 +1458,37 @@ Do not jump to event sourcing.
 
 Do not embed arbitrary Entitlements side effects directly inside unrelated Subscription resource changes.
 
+## SBH-50-06 — Durable AccessEffect Obligation Foundation
+
+**State:** `BLOCKED_SHARED_AUTHORITY` until required migration and Ash snapshot
+authority is assigned.
+**Loop eligible:** No.
+
+Freeze durable, source-specific access-effect convergence:
+
+```text
+REQUIRED → PENDING → APPLIED
+PENDING → FAILED_RETRYABLE → PENDING
+PENDING → SUPERSEDED
+```
+
+The obligation must be idempotent, carry the latest target and version, and
+prevent stale effects from restoring obsolete rights. It must leave Subscription
+truth untouched, and independent sources must remain independent. It depends on
+`SBH-10-02` and `SBH-20-01`, and is required before `SBH-50-02` through
+`SBH-50-05`, `SBH-30-04`, and `SBH-40-02`.
+
+Migrations and Ash snapshots are likely shared. Do not invent an Entitlements
+`:suspended` state. If Entitlements core must change, this row remains
+`BLOCKED_SHARED_AUTHORITY` until that authority is explicitly assigned. This task
+does not change actual shared authorities.
+
 ---
 
 ## SBH-50-02 — Durable Active-Entitlement Issuance Recovery
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1312,6 +1503,9 @@ Invariant:
 ---
 
 ## SBH-50-03 — Durable Terminal-Entitlement Revocation Recovery
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1329,6 +1523,9 @@ Shared Entitlements authority must be explicitly assigned where required.
 
 ## SBH-50-04 — Enforce `access_on_past_due` and `access_on_cancel`
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1345,6 +1542,9 @@ These settings affect purchased authorization and are not merely dormant metadat
 ---
 
 ## SBH-50-05 — Entitlement Reconciliation / Repair
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1377,6 +1577,9 @@ Legacy source finding: `SUB-HARD-05`.
 
 ## SBH-60-01 — Canonical New-Sale / Change Eligibility
 
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
 Proposed branch:
 
 ```text
@@ -1390,6 +1593,9 @@ Invariant:
 ---
 
 ## SBH-60-02 — Grandfathered Retired-Contract Renewal
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1411,6 +1617,10 @@ Legacy source finding: `SUB-HARD-06`.
 
 ## SBH-70-01 — Prove Attempt Ordering
 
+**State:** `CONTRACT_FROZEN / CANONICAL` from JC-221.
+**Loop eligible:** No. This is a satisfied canonical review/test contract, not
+unfinished architecture.
+
 Review/test contract:
 
 ```text
@@ -1425,6 +1635,10 @@ failed → retry claim
 
 ## SBH-70-02 — Enforce Successful Terminal Monotonicity
 
+**State:** `READY`.
+**Loop eligible:** Yes.
+**Shared-authority status:** `NONE`.
+
 Proposed branch:
 
 ```text
@@ -1435,16 +1649,27 @@ Use the smallest correct state/CAS/version mechanism.
 
 Do not replace working initial CAS machinery simply for stylistic uniformity.
 
+This is genuinely lane-local because it hardens RenewalAttempt state monotonicity
+within the existing Subscription renewal resource and test boundary. It does not
+require migrations, Payments, Orders, Entitlements, provider-business-contract,
+or generic infrastructure changes. `READY` in this register is not Batch 001
+admission.
+
 ---
 
 # 18. SBH-80 — StoredPaymentMethod Lifecycle
 
 Legacy source finding: `SUB-HARD-07`.
 
-## SBH-80-01 — Implement Frozen Revocation Semantics
+## SBH-80-01 — Implement Frozen StoredPaymentMethod Revocation Semantics Across All Write Paths
 
-The Stage B governance law is frozen. This later implementation task must enforce
-the terminal meaning of `REVOKED` and may not reopen the product decision.
+**State:** `READY`.
+**Loop eligible:** Yes.
+**Shared-authority status:** `NONE`.
+
+The JC-222 governance law is frozen. This lane-local implementation task must
+enforce the terminal meaning of `REVOKED` across every StoredPaymentMethod status
+write path without reopening the product decision.
 
 The frozen graph is:
 
@@ -1454,19 +1679,62 @@ ACTIVE/INACTIVE → REVOKED
 REVOKED = terminal
 ```
 
+The implementation must cover:
+
+- `ACTIVE ↔ INACTIVE`;
+- `ACTIVE → REVOKED`;
+- `INACTIVE → REVOKED`;
+- terminal `REVOKED`;
+- every status write path, including `mark_active`, `mark_inactive`,
+  `mark_revoked`, and `create_or_reuse` / upsert.
+
+Do not prescribe or add AshStateMachine solely because the status is an enum.
+The task is lane-local because the current StoredPaymentMethod resource, its
+status actions, upsert, and related tests are under `Store.Subscriptions`. If
+source inspection during task admission proves that a shared write path must be
+changed, the task must stop as `BLOCKED_SHARED_AUTHORITY` rather than retaining
+`READY`.
+
 ---
 
-## SBH-80-02 — Enforce Frozen Transition Graph
+## SBH-80-02 — StoredPaymentMethod Transition-Graph Adversarial Proof
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+**Dependency:** `SBH-80-01`.
+
+Prove that no write path bypasses terminal `REVOKED`. This is adversarial proof
+and regression coverage for `SBH-80-01`; it must not duplicate that item's
+implementation.
 
 Proposed branch:
 
 ```text
-subs-task/sbh-80-02-payment-method-state-guards
+subs-task/sbh-80-02-payment-method-transition-proof
 ```
 
-Do not add an AshStateMachine solely because an enum exists.
+Do not add an AshStateMachine solely because an enum exists. Use one only if a
+later authorized implementation proves that it materially improves transition
+correctness and auditability.
 
-Use it only if it materially improves transition correctness and auditability.
+## SBH-80-03 — Renewal vs Payment-Method Replacement / Revocation Race
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
+
+This is separate from StoredPaymentMethod transition validity. It must prove:
+
+- durable, versioned Subscription payment-method binding;
+- replacement is not a new RenewalAttempt;
+- replacing a method does not automatically revoke the old method globally;
+- immediate revalidation before provider checkpoint C;
+- replacement or revocation before C prevents a stale provider start;
+- replacement after C cannot erase in-flight financial truth;
+- checkpoint D governs financial evidence;
+- a stale binding writer cannot win.
+
+Depends on `SBH-20-01` + `SBH-80-01` + `SBH-10-03` + `SBH-10-04`.
+Do not invent a provider-specific definition of checkpoint C.
 
 ---
 
@@ -1475,6 +1743,9 @@ Use it only if it materially improves transition correctness and auditability.
 Legacy source finding: `SUB-HARD-09`.
 
 ## SBH-90-01 — Validate Billing Timezone Before Contract Effectiveness
+
+**State:** `BLOCKED_DEPENDENCY`.
+**Loop eligible:** No.
 
 Proposed branch:
 
@@ -1494,7 +1765,8 @@ Whether this is P1 or P2 depends on the commercial billing modes proven active d
 
 # 20. SBH-95 — Remaining Structured Audits
 
-These audit tasks may end in `PROVEN_GOOD` or create new `CANDIDATE` findings.
+These audit tasks remain open. They may later end in `PROVEN_GOOD` or create new
+`CANDIDATE` findings. Pending proof is not `PROVEN_GOOD`.
 
 They do not self-authorize implementation.
 
@@ -1509,17 +1781,28 @@ They do not self-authorize implementation.
 | `SBH-95-07` | Facade responsibility / transaction-boundary audit | P2 |
 | `SBH-95-08` | Comprehensive failure-injection/concurrency certification | P1 final gate |
 
-Any new problem discovered here becomes a new `CANDIDATE`.
+Audit ordering is part of the executable review graph:
 
-It must pass:
+- `SBH-95-02` provider ordering, replay, and missing-event recovery comes after
+  stable renewal binding and reconciliation, especially `SBH-10-03` through
+  `SBH-10-05`.
+- `SBH-95-04` scheduler/worker overlap and crash recovery comes after the
+  relevant lifecycle and worker paths are implemented and reviewed.
+- `SBH-95-08` final P1 failure-injection and concurrency certification comes only
+  after all release-blocking streams close.
+
+Audits do not authorize fixes. A new finding follows:
 
 ```text
-evidence
-→ validation
-→ contract freeze
-→ authority
-→ dependency review
-→ READY
+CANDIDATE → VALIDATED → CONTRACT_FROZEN
+    → dependency/authority review → READY
+```
+
+Any new problem discovered here becomes a new `CANDIDATE` and follows:
+
+```text
+CANDIDATE → VALIDATED → CONTRACT_FROZEN
+    → dependency/authority review → READY
 ```
 
 before implementation.
@@ -1618,51 +1901,171 @@ immutable revision content → no mutation invalidation required
 
 Do not make Subscription transactional decisions from warm caches.
 
+## 22.6 JC-223 Performance & Scaling Review
+
+This is a governance-only change. It makes no production performance changes.
+Later implementation PRs must retain this review boundary:
+
+| Temperature | Review expectation |
+|---|---|
+| Hot | Storefront reads, cart, checkout, webhooks, renewal, access, and dunning paths must state DB query count and N+1 risk, required indexes, and the durable authority used for each decision. |
+| Warm | Any ETS/Redis or other derived cache must record TTL, invalidation, and stampede protection. A cache must not decide contract, payment, lifecycle, or race precedence. |
+| Cold | Reconciliation, audit, repair, and certification work must be bounded and retry-safe. Oban uniqueness and idempotency must be explicit, and telemetry/logging must distinguish provider occurrence, local observation, queue execution, and Commerce application. |
+
+No row in the JC-223 matrix authorizes a cache, index, worker, telemetry, or
+database change. The expectations are acceptance and review criteria for the
+later task contracts.
+
 ---
 
-# 23. Dependency Spine
+# 23. Execution Classes and Dependency Spine
 
-Primary dependency chain:
+Task identifiers do not determine execution order. The executable dependency
+graph determines execution order. Numbering and `P1` labels are navigation and
+priority labels; neither creates an executable edge.
 
-```text
-CONTROL PLANE
-      ↓
-SBH-00-01 / JC-219 commercial-contract architecture — frozen
-      ↓
-SBH-00-02 / JC-220 domain and lifecycle map — frozen
-      ↓
-SBH-00-03 / JC-221 race precedence — frozen
-      ↓
-SBH-00-04 / JC-222 cancellation, dunning, access, payment-method, and grandfathering law — frozen
-      ↓
-SBH-00-05 / JC-223 dependency graph and hardening matrix — next
-      ↓
-SBH-10 commercial-contract foundation
-      ↓
-SBH-10 Subscription binding
-      ↓
-SBH-10 RenewalAttempt charged-contract snapshot
-      ↓
-SBH-10 bound renewal initiation
-      ↓
-SBH-10 bound reconciliation
-      ↓
-SBH-20 aggregate/race hardening
-```
+The graph distinguishes four classes:
 
-Major streams may gradually become parallel after their prerequisites close:
+1. the foundational commercial/concurrency spine: immutable contract authority,
+   Subscription binding, aggregate/version control, future-target identity,
+   RenewalAttempt binding, provider initiation, reconciliation, and their races;
+2. independent lane-local hardening: `SBH-30-02`, `SBH-70-02`, and `SBH-80-01`,
+   each of which may be admitted only after task-level checks;
+3. shared-boundary hardening: durable access effects, lifecycle terminalization,
+   provider/payment boundaries, migrations, snapshots, and any core owned outside
+   SUBS;
+4. audit and final certification: `SBH-95-*`, which may prove a contract or
+   create a finding but cannot authorize its own fix.
+
+## 23.1 Foundational commercial/concurrency spine
+
+The executable foundation is:
 
 ```text
-              ┌→ SBH-30 Dunning
-SBH-20 stable ├→ SBH-40 Cancellation
-              ├→ SBH-50 Access / Entitlements
-              ├→ SBH-60 Availability / Grandfathering
-              ├→ SBH-70 RenewalAttempt monotonicity
-              ├→ SBH-80 StoredPaymentMethod
-              └→ SBH-90 Timezone
+SBH-10-01  PlanRevision foundation
+    ↓
+SBH-10-02  existing Subscription contract binding
+    ├──→ SBH-20-01  aggregate/version foundation ──┐
+    └──→ SBH-10-06  ContractChange/future-target foundation ──┤
+                                                               ↓
+                          SBH-10-02 + SBH-20-01 + SBH-10-06
+                                                               ↓
+SBH-10-03  exact RenewalAttempt charged-contract bind
+    ↓
+SBH-10-04  bound provider work
+    ↓
+SBH-10-05  bound reconciliation
 ```
 
-Actual READY ordering must be generated from the final dependency graph, not this illustration alone.
+`SBH-20-01` therefore precedes `SBH-10-03`. The old illustrative `SBH-10` then
+`SBH-20` sequence is not executable order. Later race rows consume the stable
+foundation according to the frozen edges below.
+
+## 23.2 Explicit executable lane graphs
+
+Dunning:
+
+```text
+SBH-30-02 independently
+
+SBH-20-01 → SBH-30-03 → SBH-30-04 → SBH-30-05
+                         ↑             ↑
+             SBH-10-05 + SBH-50-06   SBH-30-02 + SBH-70-02
+```
+
+Retry exhaustion != `SUSPENDED`/`CANCELED`/`EXPIRED`. `SBH-30-04` also needs the
+bound reconciliation and durable access-effect foundations. `SBH-30-05` also
+needs the independent retry-offset and RenewalAttempt monotonicity work.
+
+Cancellation:
+
+```text
+SBH-20-01 + SBH-10-03 + SBH-10-04 + SBH-10-05 + SBH-50-06
+    ↓
+SBH-40-02
+    ↓
+SBH-40-03 + SBH-20-02 + SBH-70-02
+```
+
+The queue and worker order never becomes authority.
+
+Access:
+
+```text
+SBH-10-02 + SBH-20-01
+    ↓
+SBH-50-06
+    ↓
+SBH-50-02 / SBH-50-03
+    ↓
+SBH-50-04
+    ↓
+SBH-50-05
+```
+
+`SBH-50-04` also needs the relevant implemented commercial lifecycle paths.
+Entitlements is not commercial authority.
+
+Grandfathering:
+
+```text
+SBH-10-01 → SBH-60-01
+SBH-10-02 + SBH-60-01 + SBH-10-05 → SBH-60-02
+```
+
+Preserve `NEW-SALE`, `CHANGE`, and `EXISTING-RENEWAL` as separate decisions.
+
+Timezone:
+
+```text
+SBH-10-01 → SBH-90-01
+```
+
+There is no silent runtime timezone fallback.
+
+Conditional lifecycle dependencies are capability requirements, not additional
+hard-order edges. A task must stop if the required capability is absent or owned
+by an unassigned shared authority. In particular, `SBH-50-04` needs the relevant
+`PAST_DUE`, `SUSPENDED`, cancellation, and expiry paths implemented, and
+`SBH-80-03` must use the provider contract's actual checkpoint-C evidence without
+inventing a provider-specific C.
+
+## 23.3 Frozen core dependency edges
+
+| Row | Frozen dependency |
+|---|---|
+| `SBH-10-01` | JC-219..223 frozen; migration authority before execution |
+| `SBH-10-02` | `SBH-10-01` |
+| `SBH-20-01` | `SBH-10-02` |
+| `SBH-10-06` | `SBH-10-02` |
+| `SBH-10-03` | `SBH-10-02` + `SBH-20-01` + `SBH-10-06` |
+| `SBH-10-04` | `SBH-10-03` |
+| `SBH-10-05` | `SBH-10-03` + `SBH-10-04` |
+| `SBH-20-02` | `SBH-20-01` + `SBH-10-03` + `SBH-10-04` + `SBH-10-05` |
+| `SBH-20-03` | `SBH-20-01` + `SBH-10-06` + `SBH-10-03` + `SBH-10-04` |
+| `SBH-20-04` | `SBH-20-01` + `SBH-10-05` |
+| `SBH-20-05` | `SBH-20-01` + `SBH-10-05` + `SBH-70-02` |
+| `SBH-30-02` | `JC-222` |
+| `SBH-30-03` | `SBH-20-01` |
+| `SBH-30-04` | `SBH-20-01` + `SBH-10-05` + `SBH-30-03` + `SBH-50-06` |
+| `SBH-30-05` | `SBH-30-02` + `SBH-30-03` + `SBH-30-04` + `SBH-70-02` |
+| `SBH-40-02` | `SBH-20-01` + `SBH-10-03` + `SBH-10-04` + `SBH-10-05` + `SBH-50-06` |
+| `SBH-40-03` | `SBH-40-02` + `SBH-20-02` + `SBH-70-02` |
+| `SBH-50-06` | `SBH-10-02` + `SBH-20-01` |
+| `SBH-50-02` | `SBH-50-06` |
+| `SBH-50-03` | `SBH-50-06` |
+| `SBH-50-04` | `SBH-50-06` + implemented relevant PAST_DUE/SUSPENDED/cancellation/expiry lifecycle paths |
+| `SBH-50-05` | `SBH-50-02` + `SBH-50-03` + `SBH-50-04` |
+| `SBH-60-01` | `SBH-10-01` |
+| `SBH-60-02` | `SBH-10-02` + `SBH-60-01` + `SBH-10-05` |
+| `SBH-70-02` | `JC-221` |
+| `SBH-80-01` | `JC-222` |
+| `SBH-80-02` | `SBH-80-01` |
+| `SBH-80-03` | `SBH-20-01` + `SBH-80-01` + `SBH-10-03` + `SBH-10-04` |
+| `SBH-90-01` | `SBH-10-01` |
+
+These edges are semantic prerequisites. Queue order, worker start order, task
+number, and priority do not add authority or reorder a race.
 
 ---
 
@@ -1671,33 +2074,66 @@ Actual READY ordering must be generated from the final dependency graph, not thi
 These surfaces are not implicitly owned by SUBS:
 
 ```text
-priv/repo/migrations/**
+migrations
 Ash snapshots
 Payments core
 Orders core
-generic Entitlements infrastructure
-InventoryAdmission
-auth platform
-generic dependency/platform infrastructure
-shared config
+Entitlements core
 provider business contracts
-AGENTS.md
-docs/agent_rules/**
-.github/workflows/**
+generic infrastructure
+main governance
 ```
 
-Required transition:
+The implementation-row matrix uses only these shared-authority values:
 
 ```text
-UNOWNED / SHARED
-        ↓ explicit authority decision
+NONE
 AUTHORITY_ASSIGNED
-        ↓
-MODIFICATION
+BLOCKED_SHARED_AUTHORITY
+EXTERNALIZED
 ```
 
-No authority decision = no modification.
+`NONE` means the current task contract identifies no shared modification.
+`AUTHORITY_ASSIGNED` means an explicit authority exists for the named shared
+surface. `BLOCKED_SHARED_AUTHORITY` means the task cannot proceed until that
+authority is assigned. `EXTERNALIZED` means the surface remains owned outside
+SUBS and the task must not modify it. No row is `AUTHORITY_ASSIGNED` at this
+fixed point, and this register changes no actual shared authority.
 
+| Row | Shared surface or boundary | Shared-authority status | Execution consequence |
+|---|---|---|---|
+| `SBH-10-01` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Not executable until assigned. |
+| `SBH-10-02` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Historical binding cannot run without assigned migration authority. |
+| `SBH-20-01` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Version foundation cannot run without assigned migration authority. |
+| `SBH-10-06` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Future-target foundation remains blocked until assigned. |
+| `SBH-10-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-10-04` | provider business contracts | `EXTERNALIZED` | Use the existing provider boundary; do not change provider business contracts. |
+| `SBH-10-05` | Payments core | `EXTERNALIZED` | Use payment evidence authority; do not change Payments core. |
+| `SBH-20-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-20-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-20-04` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-20-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-30-02` | no shared modification identified in this contract | `NONE` | Lane-local; eligible only after Batch 001 admission gates. |
+| `SBH-30-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-30-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
+| `SBH-30-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-40-02` | no shared modification identified in this contract | `NONE` | Durable worker path remains dependency-blocked. |
+| `SBH-40-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-50-06` | migrations, Ash snapshots, Entitlements core if required | `BLOCKED_SHARED_AUTHORITY` | Not executable until required authority is assigned. |
+| `SBH-50-02` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
+| `SBH-50-03` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
+| `SBH-50-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
+| `SBH-50-05` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
+| `SBH-60-01` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-60-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-70-02` | no shared modification identified in this contract | `NONE` | Lane-local; eligible only after Batch 001 admission gates. |
+| `SBH-80-01` | no shared modification identified in this contract | `NONE` | Lane-local; eligible only after Batch 001 admission gates. |
+| `SBH-80-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-80-03` | provider business contracts only if a provider contract must change | `EXTERNALIZED` | Use existing provider evidence; stop if a shared change is required. |
+| `SBH-90-01` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+
+Migration-sensitive foundations must not become executable merely because semantic
+dependencies are frozen. Shared blockers are task-specific, not programme-wide.
 If the correct Subscription fix requires a shared surface without authority:
 
 ```text
@@ -1705,6 +2141,52 @@ current item → BLOCKED_SHARED_AUTHORITY → STOP
 ```
 
 Do not "helpfully" fix the neighbouring domain.
+
+## 24.1 Current hardening matrix
+
+Every implementation row has a frozen scope. `State` below is its current
+execution/admission state. Exactly three rows are `READY` with
+`loop_eligible = true`.
+
+| ID | Class | State | Loop eligible |
+|---|---|---|---:|
+| `SBH-10-01` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-02` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-20-01` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-06` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-03` | foundational spine | `BLOCKED_DEPENDENCY` | No |
+| `SBH-10-04` | foundational spine | `BLOCKED_DEPENDENCY` | No |
+| `SBH-10-05` | foundational spine | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-02` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-03` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-04` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-05` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
+| `SBH-30-02` | independent lane-local | `READY` | Yes |
+| `SBH-30-03` | dunning boundary | `BLOCKED_DEPENDENCY` | No |
+| `SBH-30-04` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
+| `SBH-30-05` | dunning boundary | `BLOCKED_DEPENDENCY` | No |
+| `SBH-40-02` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
+| `SBH-40-03` | cancellation proof | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-06` | shared-boundary hardening | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-50-02` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-03` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-04` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-05` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
+| `SBH-60-01` | commercial availability | `BLOCKED_DEPENDENCY` | No |
+| `SBH-60-02` | commercial availability | `BLOCKED_DEPENDENCY` | No |
+| `SBH-70-02` | independent lane-local | `READY` | Yes |
+| `SBH-80-01` | independent lane-local | `READY` | Yes |
+| `SBH-80-02` | payment-method proof | `BLOCKED_DEPENDENCY` | No |
+| `SBH-80-03` | shared-boundary race proof | `BLOCKED_DEPENDENCY` | No |
+| `SBH-90-01` | billing safety | `BLOCKED_DEPENDENCY` | No |
+
+`READY` here means the row is genuinely lane-local and has no identified shared
+modification in its current contract. It does not admit the row into Batch 001.
+Admission still requires `SUB-ACT-04`, a frozen `batch_base_sha`, an exact Task
+Contract, task-level admission, current governance, and a clean worktree. If
+task-level source inspection proves that a purported lane-local fix must change a
+shared write path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this
+documentation change grants no authority to make that shared change.
 
 ---
 
@@ -1778,6 +2260,11 @@ into one PR.
 # 27. Loop Admission Rule
 
 An item may enter the implementation loop only when all are true:
+
+`READY` in the register is not admission into Batch 001. The only rows currently
+marked `READY` and `loop_eligible = true` are `SBH-30-02`, `SBH-70-02`, and
+`SBH-80-01`. Each still needs `SUB-ACT-04`, a frozen `batch_base_sha`, an exact
+Task Contract, task-level admission, current governance, and a clean worktree.
 
 ```text
 state == READY
@@ -1914,12 +2401,17 @@ promote candidate directly to READY
 New finding lifecycle:
 
 ```text
-DISCOVERED
-   ↓
-CANDIDATE
-   ↓ separate review
-VALIDATED / NOT_APPLICABLE / EXTERNALIZED
+DISCOVERED → CANDIDATE → VALIDATED
+                         ↓
+                 CONTRACT_FROZEN
+                         ↓
+              dependency/authority review
+                         ↓
+                       READY
 ```
+
+`NOT_APPLICABLE` and `EXTERNALIZED` remain explicit review outcomes after
+validation when appropriate. A finding may not move directly to implementation.
 
 ---
 
@@ -2026,7 +2518,12 @@ Additional tools are forbidden unless the exact task proves them necessary.
 
 # 33. Hardening Matrix Closure States
 
-Every final matrix row must end in exactly one of:
+The current matrix is an admission register, not the programme closure record.
+Its implementation rows may remain `CONTRACT_FROZEN`, `READY`,
+`BLOCKED_DEPENDENCY`, or `BLOCKED_SHARED_AUTHORITY` while the required work is
+outstanding. Audit rows remain open and pending proof is not `PROVEN_GOOD`.
+
+At final programme closure, every completed matrix row must end in exactly one of:
 
 ```text
 PROVEN_GOOD
@@ -2036,22 +2533,19 @@ EXTERNALIZED
 ACCEPTED_RISK
 ```
 
-There must be zero unresolved:
+Before final closure, these are valid current register states:
 
 ```text
-UNKNOWN
-UNREVIEWED
-ASSUMED
-TODO
-CANDIDATE
-VALIDATED
 CONTRACT_FROZEN
 READY
-IMPLEMENTING
-BLOCKED
+BLOCKED_DEPENDENCY
+BLOCKED_SHARED_AUTHORITY
 ```
 
-unless programme closure explicitly records a still-open external dependency and the owner accepts that the Subscription programme cannot yet close.
+`CANDIDATE` and `VALIDATED` remain valid states in the new-finding lifecycle.
+They are not evidence of closure and cannot be promoted directly to
+implementation. Audit work remains open outside this closure-state list. No new
+persistent SUBS lifecycle state is introduced.
 
 ---
 
@@ -2115,29 +2609,23 @@ The answer must not depend on reconstructing mutable historical plan state from 
 
 No Subscription production implementation is authorized yet.
 
-The immediate lane-local sequence is:
+JC-223 completion boundary and the next gate are:
 
 ```text
-SUB-ACT-00  completed v1.3 authority upgrade/promotion/reclassification
+JC-219 / JC-220 / JC-221 / JC-222 / JC-223
+    CONTRACT_FROZEN / CANONICAL; SBH-00-01..05 loop_eligible = No
     ↓
-SUB-ACT-01  accepted SUBS development base
+merge this bounded content PR to hardening/subscriptions
     ↓
-SUB-ACT-02  ACTIVATION_FEASIBILITY_PASS recorded
+verify the exact merged target against the fixed authority
     ↓
-SUB-ACT-03  canonical READY recorded after ordered BASELINE_PINNED then READY transitions
-    ↓
-JC-219 / SBH-00-01  CONTRACT_FROZEN / CANONICAL
-    ↓
-JC-220 / JC-221 / JC-222  CONTRACT_FROZEN / CANONICAL in this Stage B governance change
-    ↓
-exact merged-target verification + separate main registry refresh
-    ↓
-SBH-00-05 / JC-223  next: freeze first executable dependency graph and hardening matrix
+separate main-governance registry refresh
     ↓
 SUB-ACT-04  freeze Batch 001 base + v1.3/v1.4 admission recertification
 ```
 
-Each step is bounded and must STOP after producing its evidence.
+Do not start `SUB-ACT-04` in this PR. `batch_base_sha` remains null and unfrozen,
+and this register does not set `ACTIVE_PARALLEL` or authorize production work.
 
 No step requires continuous S0 synchronization merely because S0 moved.
 
@@ -2239,13 +2727,19 @@ Billing-timezone safety.
 Provider/event/recovery certification.
 
 CANONICAL GOVERNANCE:
-PR #8 parallel topology merged at 56f06d028ec38896f5a927f54dc7adfcb20034a3.
+At JC-223 authorization, `origin/main` =
+95f0a51e6e14e494b30ff589da64ad0d8d15fca8 and `origin/hardening/subscriptions` =
+4af7f3889d03eea1a9719600202449b5a8e488b8. The PR #8 parallel-topology merge
+remains historical provenance in §2.1.
 
 CURRENT IMPLEMENTATION AUTHORITY:
-NONE. SUBS READY authorizes governance/review only; Batch 001 and SUB-ACT-04 admission remain outstanding.
+NONE. SUBS READY authorizes governance/review only; Batch 001 and SUB-ACT-04 admission remain outstanding. `batch_base_sha` is null and unfrozen.
 
 CURRENT WORKSTREAM STATE:
-READY / GOVERNANCE-REVIEW ONLY / STAGE B FROZEN.
+READY / GOVERNANCE-REVIEW ONLY / JC-223 DEPENDENCY GRAPH FROZEN.
+
+CURRENT VERDICT:
+SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN.
 
 HISTORICAL v0.1.3 CANDIDATE:
 77a272c3887a7ab46e84a7fed02163d964e37b9b.
@@ -2254,13 +2748,13 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
-JC-223 / SBH-00-05 after exact Stage B target verification and the separate main registry refresh.
+Merge and verify this content PR at the exact `hardening/subscriptions` target,
+perform the separate main-governance registry refresh, then run `SUB-ACT-04`.
 
 FINAL ACTION:
-Merge and independently verify the coherent JC-220/JC-221/JC-222 Stage B governance
-freeze. Refresh the main registry in a separate bounded governance change. Then
-complete JC-223's executable dependency graph and hardening matrix, followed by
-JC-224's Batch 001 base and implementation-admission recertification. Production
+Merge and independently verify this bounded JC-223 content change. Refresh the
+main registry in a separate bounded governance change. Then complete `SUB-ACT-04`
+Batch 001 base and implementation-admission recertification. Production
 implementation remains unauthorized until those gates are separately certified.
 ```
 
