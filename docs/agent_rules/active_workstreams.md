@@ -651,7 +651,7 @@ When updating:
 
 Not implementation authority. Not frozen activation pins. Refresh from origin before any activation gate.
 
-- `origin/main` = `2ed93e76e0bbb9830591338fb7b7a03256dec415` (current canonical tip after PR #18 and PR #19)
+- `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
 - `origin/hardening/subscriptions` = `4af7f3889d03eea1a9719600202449b5a8e488b8` (verified Stage B governance-freeze merge; not the accepted development base)
