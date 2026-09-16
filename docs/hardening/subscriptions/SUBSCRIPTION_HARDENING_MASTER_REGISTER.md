@@ -177,9 +177,11 @@ merge this content PR to hardening/subscriptions
     ↓
 verify the exact merged target against the fixed authority
     ↓
-separate main-governance registry refresh
+merge the separate main-governance registry refresh
     ↓
-SUB-ACT-04 Batch 001 base freeze and admission recertification
+independently verify the merged main-governance registry refresh
+    ↓
+only then start SUB-ACT-04 Batch 001 base freeze and admission recertification
 ```
 
 No other persistent SUBS lifecycle state is introduced.
@@ -199,8 +201,8 @@ The next control-plane gates are:
 
 ```text
 1. merge this bounded JC-223 content PR to hardening/subscriptions and verify the exact merged target;
-2. perform the separately bounded main-governance registry refresh;
-3. only after those gates, perform SUB-ACT-04 Batch 001 base and admission recertification.
+2. merge the separately bounded main-governance registry refresh and independently verify the merged result;
+3. only after both gates, perform SUB-ACT-04 Batch 001 base and admission recertification.
 ```
 
 No production `SBH-*` implementation task is authorized merely by this register,
@@ -975,7 +977,8 @@ remain governance law in the canonical domain map, this register, and the reconc
 scheduling document. JC-223 / SBH-00-05 is frozen by this bounded register change,
 but it does not start `SUB-ACT-04`, freeze `batch_base_sha`, start Batch 001, set
 `ACTIVE_PARALLEL`, or authorize production implementation. The separate main
-registry refresh remains next, followed by `SUB-ACT-04`.
+registry refresh must be merged and independently verified before `SUB-ACT-04`
+may start.
 
 ---
 
@@ -1330,7 +1333,9 @@ Proposed branch:
 subs-task/sbh-30-04-dunning-suspension-boundary
 ```
 
-Depends on `SBH-30-01` and `SBH-30-03`.
+Frozen dependencies: `SBH-20-01` + `SBH-10-05` + `SBH-30-03` + `SBH-50-06`.
+The `SBH-30-01` JC-222 dunning governance is already satisfied and canonical;
+it is not an executable dependency.
 
 ---
 
@@ -2619,9 +2624,11 @@ merge this bounded content PR to hardening/subscriptions
     ↓
 verify the exact merged target against the fixed authority
     ↓
-separate main-governance registry refresh
+merge the separate main-governance registry refresh
     ↓
-SUB-ACT-04  freeze Batch 001 base + v1.3/v1.4 admission recertification
+independently verify the merged main-governance registry refresh
+    ↓
+only then start SUB-ACT-04  freeze Batch 001 base + v1.3/v1.4 admission recertification
 ```
 
 Do not start `SUB-ACT-04` in this PR. `batch_base_sha` remains null and unfrozen,
@@ -2749,13 +2756,15 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 
 NEXT AUTHORIZED GATE:
 Merge and verify this content PR at the exact `hardening/subscriptions` target,
-perform the separate main-governance registry refresh, then run `SUB-ACT-04`.
+then merge the separate main-governance registry refresh and independently verify
+the merged result before running `SUB-ACT-04`.
 
 FINAL ACTION:
-Merge and independently verify this bounded JC-223 content change. Refresh the
-main registry in a separate bounded governance change. Then complete `SUB-ACT-04`
-Batch 001 base and implementation-admission recertification. Production
-implementation remains unauthorized until those gates are separately certified.
+Merge and independently verify this bounded JC-223 content change. Merge the
+separate main-governance registry refresh and independently verify that merged
+refresh. Only then complete `SUB-ACT-04` Batch 001 base and
+implementation-admission recertification. Production implementation remains
+unauthorized until those gates are separately certified.
 ```
 
 ---
