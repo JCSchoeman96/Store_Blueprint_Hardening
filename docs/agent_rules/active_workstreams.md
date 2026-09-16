@@ -192,7 +192,7 @@ NO_EXECUTABLE_READY_WORK
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
 | `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
-| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Governance/review only; production implementation not authorized |
+| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; governance/review only; production implementation not authorized |
 
 Temporary worktrees (governance / integration / review / task / remediation) may exist under names such as `Store_Blueprint_Hardening-governance-*`, `Store_Blueprint_Hardening-integration-*`, `Store_Blueprint_Hardening-review-*`, `Store_Blueprint_Hardening-task-*`, or `Store_Blueprint_Hardening-remediation-*`. They are disposable. Do **not** create a permanent integration worktree. Do **not** create a fifth programme lane.
 
@@ -300,14 +300,13 @@ Explicit exclusion until separately authorized:
 SUBS may progress without S0 finishing, unless an exact task declares a validated external dependency.
 SUBS does **not** continuously consume S0 as parent authority.
 
-**Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. `SBH-00-01` and `SBH-00-02` are available as governance/review work only, with `loop_eligible = No`.
+**Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. Stage B is now frozen and canonical: `SBH-00-01` through `SBH-00-04` are `CONTRACT_FROZEN / CANONICAL` governance/review records, with `loop_eligible = No`. `SBH-00-05 / JC-223` is the next governance task and is not started by this registry refresh.
 
-`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `b2f46896e72bd907c800df5e0e4718177741b176`; it is not the development base. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
+`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `4af7f3889d03eea1a9719600202449b5a8e488b8`, the verified Stage B governance-freeze merge commit; it is not the development base. JC-219, JC-220, JC-221, and JC-222 are repository-canonical. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
 
-Production Subscription implementation remains blocked until all of the following are complete:
+The Stage B governance freeze is complete. Production Subscription implementation remains blocked until all of the following are complete:
 
-- `SBH-00` governance/contract freeze
-- `SBH-00-05` executable dependency graph
+- `SBH-00-05 / JC-223` executable dependency graph and hardening matrix
 - `SUB-ACT-04`
 - `batch_base_sha` frozen
 - implementation-admission recertification passed
@@ -349,7 +348,7 @@ ACT-02 provenance: SUB_ACT_02_RUNTIME_PROVENANCE_RECONCILED
 
 Resulting current state: `READY`.
 
-The transition side effects are limited to recording the accepted development base and making `SBH-00-01` and `SBH-00-02` available as governance/review work. Both remain `loop_eligible = No`.
+The activation transition initially made `SBH-00-01` and `SBH-00-02` available as governance/review work. The subsequent Stage B freeze records `SBH-00-01` through `SBH-00-04` as `CONTRACT_FROZEN / CANONICAL`; all remain governance/review work with `loop_eligible = No`.
 
 SUB-ACT-02 produced `ACTIVATION_FEASIBILITY_PASS` as a read-only activation-feasibility verdict and did not mutate runtime state.
 
@@ -372,7 +371,7 @@ terminal_outcome = null
 | Transition | Guard | Side effect | Terminal |
 | --- | --- | --- | --- |
 | `BOOTSTRAPPED → BASELINE_PINNED` | accepted SUB-ACT-01 development base | canonical development base recorded | No |
-| `BASELINE_PINNED → READY` | `ACTIVATION_FEASIBILITY_PASS` with reconciled provenance | `SBH-00-01` and `SBH-00-02` become available as governance/review work | No |
+| `BASELINE_PINNED → READY` | `ACTIVATION_FEASIBILITY_PASS` with reconciled provenance | `SBH-00-01` and `SBH-00-02` initially become available as governance/review work | No |
 
 Invalid transitions for this record include:
 
@@ -555,7 +554,7 @@ No lane requires another lane to finish first unless its exact task declares a v
 
 Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS is `READY` only as recorded by SUB-ACT-03; S0 and PLATFORM remain `BOOTSTRAPPED`.
 
-This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` and `SBH-00-02` are available only as governance/review work.
+This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` through `SBH-00-04` are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`; `SBH-00-05 / JC-223` is next and has not started.
 
 ---
 
@@ -655,7 +654,7 @@ Not implementation authority. Not frozen activation pins. Refresh from origin be
 - `origin/main` = `2ed93e76e0bbb9830591338fb7b7a03256dec415` (current canonical tip after PR #18 and PR #19)
 - `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
-- `origin/hardening/subscriptions` = `b2f46896e72bd907c800df5e0e4718177741b176` (current authority tip after governance cleanup propagation; not the accepted development base)
+- `origin/hardening/subscriptions` = `4af7f3889d03eea1a9719600202449b5a8e488b8` (verified Stage B governance-freeze merge; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 
