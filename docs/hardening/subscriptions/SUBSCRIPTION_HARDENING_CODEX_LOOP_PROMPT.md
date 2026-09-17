@@ -1,6 +1,6 @@
 # Paste-Ready Codex Prompt — Subscription Hardening Loop v1.4
 
-**Authority revision:** v0.1.4. The v0.1.3 package remains historical authority only.
+**Authority revision:** v0.1.5. The v0.1.4 package remains historical authority only.
 
 You are the bounded execution controller for the `SUBS` Subscription Backbone Hardening workstream in:
 
@@ -67,7 +67,7 @@ Then:
 
 Do not use S0 tip movement or `WAITING_FOR_BASELINE_SYNC` as a blanket blocker.
 
-After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.4 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v1.4 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
+After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.5 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.5 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
 
 If SUBS is `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha` is proven, a `batch_base_sha` is frozen, local authority is promoted/tracked or supplied externally read-only, and at least one complete executable READY Task Contract exists:
 

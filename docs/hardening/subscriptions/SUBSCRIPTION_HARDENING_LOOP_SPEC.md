@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Loop Specification
 
-**Version:** v0.1.4
+**Version:** v0.1.5
 **Status:** APPROVED DESIGN / EXECUTION SPECIFICATION  
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** `SUBS` — Subscription Backbone Hardening  
@@ -8,7 +8,7 @@
 **Persistent workstream branch:** `hardening/subscriptions`  
 **Primary programme authority:** `SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 
-> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.4 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
+> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.5 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
 
 ---
 
@@ -139,7 +139,7 @@ separate main-governance registry refresh
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
 
-`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.4 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.4 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.5 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.5 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
 After that compatibility gate, `SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
 
