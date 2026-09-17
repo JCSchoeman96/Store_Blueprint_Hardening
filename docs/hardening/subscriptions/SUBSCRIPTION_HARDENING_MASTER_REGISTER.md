@@ -2667,9 +2667,14 @@ The answer must not depend on reconstructing mutable historical plan state from 
 
 ---
 
-# 36. Immediate Next Authorized Candidate
+# 36. Historical v0.1.5 Immediate Next Authorized Candidate
 
 No Subscription production implementation is authorized yet.
+
+This section is historical v0.1.5 control-plane narration retained for
+provenance only. It is not the current next action. The current v0.1.6 path
+requires separate external runtime-state reconciliation before a fresh
+`SUB-ACT-04` admission attempt.
 
 JC-223 completion boundary and the next gate are:
 

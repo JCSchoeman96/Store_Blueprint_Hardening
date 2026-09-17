@@ -80,7 +80,9 @@ admitted Task Contract means no implementation.
 
 ## ACTIVATION CONTROL PLANE
 
-Use this sequence before implementation admission:
+The following v0.1.5 activation sequence is historical provenance only. Do not
+execute it as the current admission sequence. The current v0.1.6 sequence,
+which requires separate external runtime-state reconciliation, appears below.
 
 ```text
 SUB-ACT-01  accepted development base
