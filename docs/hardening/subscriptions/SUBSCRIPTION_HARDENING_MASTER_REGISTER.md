@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.5
-**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
-**Verified:** 2026-09-16
+**Version:** v0.1.6
+**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / SUB-ACT-04 RECONCILIATION RECORDED / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
+**Verified:** 2026-09-17
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -186,6 +186,36 @@ only then start SUB-ACT-04 Batch 001 base freeze and admission recertification
 
 No other persistent SUBS lifecycle state is introduced.
 
+## 2.8 Current post-SUB-ACT-04 reconciliation fixed point — 2026-09-17
+
+This is the current tracked-authority fixed point for v0.1.6. It records the
+metadata reconciliation after the first SUB-ACT-04 admission attempt. It does
+not rewrite the historical JC-223 fixed point in §2.7.
+
+| Authority | Current fixed point | Meaning for this register |
+|---|---|---|
+| `origin/main` | `baeac140f68db80643b76626e99387089821f790` | current canonical main authority |
+| `origin/hardening/subscriptions` | `81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae` | current tracked SUBS authority |
+| accepted `development_base_sha` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` | unchanged; accepted by `SUB-ACT-01` |
+| `batch_base_sha` | `null` | not frozen; Batch 001 has not started |
+| `integration_base_sha` | `null` | not set during normal hardening |
+| SUBS lifecycle | `READY` | governance/review only |
+| `ACTIVE_PARALLEL` | not granted | requires a passing fresh `SUB-ACT-04` admission |
+| Batch 001 | not started | requires a passing fresh `SUB-ACT-04` admission |
+
+Provenance chain: JC-219 through JC-223 are canonical; the separate
+main-governance registry refresh was merged and independently verified; the
+first SUB-ACT-04 was attempted and returned `BLOCKED / STOP`; PR #26 is the
+immutable failed-gate findings evidence; this v0.1.6 tracked-authority
+reconciliation resolves the stale tracked metadata; separate external
+runtime-state reconciliation is required; then SUB-ACT-04 must run again as a
+fresh admission attempt.
+
+PR #26 is failed-gate evidence, not Batch 001 authority. This reconciliation
+does not freeze `batch_base_sha`, set `ACTIVE_PARALLEL`, start Batch 001, or
+start implementation. The external controller runtime remains a separate
+authority record and must be reconciled independently.
+
 ---
 
 # 3. Current Programme Verdict
@@ -197,16 +227,27 @@ SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN
 The JC-219, JC-220, JC-221, JC-222, and JC-223 governance contracts are frozen
 and canonical. SUBS remains `READY`.
 
-The next control-plane gates are:
+The current control-plane sequence is:
 
 ```text
-1. merge this bounded JC-223 content PR to hardening/subscriptions and verify the exact merged target;
-2. merge the separately bounded main-governance registry refresh and independently verify the merged result;
-3. only after both gates, perform SUB-ACT-04 Batch 001 base and admission recertification.
+JC-223 canonical
+    ↓
+main-governance registry refresh merged and independently verified
+    ↓
+first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings recorded
+    ↓
+tracked-authority reconciliation v0.1.6
+    ↓
+separate external runtime-state reconciliation
+    ↓
+fresh SUB-ACT-04 admission attempt
+    ↓ PASS only
+ACTIVE_PARALLEL + Batch 001 frozen
 ```
 
 No production `SBH-*` implementation task is authorized merely by this register,
-by SUBS `READY`, or by PR #8. `batch_base_sha` remains null and unfrozen.
+by SUBS `READY`, or by PR #26. `batch_base_sha` remains null and unfrozen until
+a fresh SUB-ACT-04 admission passes.
 
 ---
 
@@ -900,7 +941,7 @@ Historical entries remain for provenance only and may not block current task adm
 
 **Hard gate:** production implementation requires canonical SUBS `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha`, successful v1.3/v1.4 admission recertification, a frozen `batch_base_sha`, a completed SBH-00 executable dependency graph, and at least one task that passes task-level admission.
 
-`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.5 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.5 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.6 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.6 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
 After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
 
@@ -1277,6 +1318,11 @@ terminal Subscription states
 **State:** `READY`.
 **Loop eligible:** Yes.
 **Shared-authority status:** `NONE`.
+**Priority:** P1.
+
+Priority rationale: zero-hour retry behavior and durable first-failure anchoring
+are release-blocking dunning correctness risks. This P1 label is equal to the
+other current READY rows and does not rank them.
 
 Current implementation prevents configured zero-hour retry semantics by forcing offsets through a minimum of 24 hours.
 
@@ -1641,6 +1687,11 @@ failed → retry claim
 **State:** `READY`.
 **Loop eligible:** Yes.
 **Shared-authority status:** `NONE`.
+**Priority:** P1.
+
+Priority rationale: a successful renewal must remain terminal when late failure
+or retry evidence arrives. This P1 label is equal to the other current READY
+rows and does not rank them.
 
 Proposed branch:
 
@@ -1669,6 +1720,11 @@ Legacy source finding: `SUB-HARD-07`.
 **State:** `READY`.
 **Loop eligible:** Yes.
 **Shared-authority status:** `NONE`.
+**Priority:** P1.
+
+Priority rationale: a revoked payment method must remain terminal across every
+write path. This P1 label is equal to the other current READY rows and does not
+rank them.
 
 The JC-222 governance law is frozen. This lane-local implementation task must
 enforce the terminal meaning of `REVOKED` across every StoredPaymentMethod status
@@ -2144,39 +2200,42 @@ Do not "helpfully" fix the neighbouring domain.
 
 Every implementation row has a frozen scope. `State` below is its current
 execution/admission state. Exactly three rows are `READY` with
-`loop_eligible = true`.
+`loop_eligible = true`; those three rows carry the owner-approved `P1` priority.
 
-| ID | Class | State | Loop eligible |
-|---|---|---|---:|
-| `SBH-10-01` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
-| `SBH-10-02` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
-| `SBH-20-01` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
-| `SBH-10-06` | foundational spine | `BLOCKED_SHARED_AUTHORITY` | No |
-| `SBH-10-03` | foundational spine | `BLOCKED_DEPENDENCY` | No |
-| `SBH-10-04` | foundational spine | `BLOCKED_DEPENDENCY` | No |
-| `SBH-10-05` | foundational spine | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-02` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-03` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-04` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-05` | foundational/concurrency | `BLOCKED_DEPENDENCY` | No |
-| `SBH-30-02` | independent lane-local | `READY` | Yes |
-| `SBH-30-03` | dunning boundary | `BLOCKED_DEPENDENCY` | No |
-| `SBH-30-04` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
-| `SBH-30-05` | dunning boundary | `BLOCKED_DEPENDENCY` | No |
-| `SBH-40-02` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
-| `SBH-40-03` | cancellation proof | `BLOCKED_DEPENDENCY` | No |
-| `SBH-50-06` | shared-boundary hardening | `BLOCKED_SHARED_AUTHORITY` | No |
-| `SBH-50-02` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
-| `SBH-50-03` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
-| `SBH-50-04` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
-| `SBH-50-05` | shared-boundary hardening | `BLOCKED_DEPENDENCY` | No |
-| `SBH-60-01` | commercial availability | `BLOCKED_DEPENDENCY` | No |
-| `SBH-60-02` | commercial availability | `BLOCKED_DEPENDENCY` | No |
-| `SBH-70-02` | independent lane-local | `READY` | Yes |
-| `SBH-80-01` | independent lane-local | `READY` | Yes |
-| `SBH-80-02` | payment-method proof | `BLOCKED_DEPENDENCY` | No |
-| `SBH-80-03` | shared-boundary race proof | `BLOCKED_DEPENDENCY` | No |
-| `SBH-90-01` | billing safety | `BLOCKED_DEPENDENCY` | No |
+| ID | Class | Priority | State | Loop eligible |
+|---|---|---:|---|---:|
+| `SBH-10-01` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-02` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-20-01` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-06` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-03` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-10-04` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-10-05` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-02` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-03` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-04` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-20-05` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-30-02` | independent lane-local | P1 | `READY` | Yes |
+| `SBH-30-03` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-30-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-30-05` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-40-02` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-40-03` | cancellation proof | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-06` | shared-boundary hardening | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-50-02` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-03` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-50-05` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-60-01` | commercial availability | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-60-02` | commercial availability | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-70-02` | independent lane-local | P1 | `READY` | Yes |
+| `SBH-80-01` | independent lane-local | P1 | `READY` | Yes |
+| `SBH-80-02` | payment-method proof | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-80-03` | shared-boundary race proof | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-90-01` | billing safety | — | `BLOCKED_DEPENDENCY` | No |
+
+An em dash in the Priority column means this reconciliation assigns no priority
+to that row. No other priority is inferred.
 
 `READY` here means the row is genuinely lane-local and has no identified shared
 modification in its current contract. It does not admit the row into Batch 001.
@@ -2185,6 +2244,18 @@ Contract, task-level admission, current governance, and a clean worktree. If
 task-level source inspection proves that a purported lane-local fix must change a
 shared write path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this
 documentation change grants no authority to make that shared change.
+
+The human-owner priority decision is:
+
+```text
+SBH-30-02 = P1
+SBH-70-02 = P1
+SBH-80-01 = P1
+```
+
+All three current READY rows have equal P1 priority. The labels provide no
+severity ordering and do not alter the frozen dependency edges. A fresh
+SUB-ACT-04 admission remains required before any of them can enter Batch 001.
 
 ---
 
@@ -2720,10 +2791,11 @@ Billing-timezone safety.
 Provider/event/recovery certification.
 
 CANONICAL GOVERNANCE:
-At JC-223 authorization, `origin/main` =
-95f0a51e6e14e494b30ff589da64ad0d8d15fca8 and `origin/hardening/subscriptions` =
-4af7f3889d03eea1a9719600202449b5a8e488b8. The PR #8 parallel-topology merge
-remains historical provenance in §2.1.
+At the v0.1.6 reconciliation fixed point, `origin/main` =
+baeac140f68db80643b76626e99387089821f790 and
+`origin/hardening/subscriptions` =
+81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae. The JC-223 authorization hashes
+remain historical provenance in §2.7.
 
 CURRENT IMPLEMENTATION AUTHORITY:
 NONE. SUBS READY authorizes governance/review only; Batch 001 and SUB-ACT-04 admission remain outstanding. `batch_base_sha` is null and unfrozen.
@@ -2741,16 +2813,15 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
-Merge and verify this content PR at the exact `hardening/subscriptions` target,
-then merge the separate main-governance registry refresh and independently verify
-the merged result before running `SUB-ACT-04`.
+Reconcile the external runtime state separately, then rerun `SUB-ACT-04` against
+the current tracked authority. Only a passing fresh admission may freeze
+`batch_base_sha`, grant `ACTIVE_PARALLEL`, and start Batch 001.
 
 FINAL ACTION:
-Merge and independently verify this bounded JC-223 content change. Merge the
-separate main-governance registry refresh and independently verify that merged
-refresh. Only then complete `SUB-ACT-04` Batch 001 base and
+Complete the separate external runtime-state reconciliation and independently
+verify it. Then rerun `SUB-ACT-04` as a fresh Batch 001 base and
 implementation-admission recertification. Production implementation remains
-unauthorized until those gates are separately certified.
+unauthorized until that gate passes.
 ```
 
 ---
