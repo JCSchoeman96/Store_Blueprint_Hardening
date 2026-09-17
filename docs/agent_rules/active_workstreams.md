@@ -300,17 +300,22 @@ Explicit exclusion until separately authorized:
 SUBS may progress without S0 finishing, unless an exact task declares a validated external dependency.
 SUBS does **not** continuously consume S0 as parent authority.
 
-**Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. Stage B is now frozen and canonical: `SBH-00-01` through `SBH-00-04` are `CONTRACT_FROZEN / CANONICAL` governance/review records, with `loop_eligible = No`. `SBH-00-05 / JC-223` is the next governance task and is not started by this registry refresh.
+**Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. Stage B is now frozen and canonical: `SBH-00-01` through `SBH-00-04` are `CONTRACT_FROZEN / CANONICAL` governance/review records, with `loop_eligible = No`. The subsequent JC-223 dependency-graph freeze records `SBH-00-05 / JC-223` as `CONTRACT_FROZEN / CANONICAL` governance/review work, with `loop_eligible = No`.
 
-`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `4af7f3889d03eea1a9719600202449b5a8e488b8`, the verified Stage B governance-freeze merge commit; it is not the development base. JC-219, JC-220, JC-221, and JC-222 are repository-canonical. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
+`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `8f93e0c9b6edc083093c74cc8e6243259683d50b`, the verified JC-223 dependency-graph / governance-freeze merge commit; it is not the development base. JC-219, JC-220, JC-221, JC-222, and JC-223 are repository-canonical. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
 
 The Stage B governance freeze is complete. Production Subscription implementation remains blocked until all of the following are complete:
 
-- `SBH-00-05 / JC-223` executable dependency graph and hardening matrix
+- separate main-registry refresh merged and independently verified
 - `SUB-ACT-04`
 - `batch_base_sha` frozen
 - implementation-admission recertification passed
 - an executable `READY` task exists
+
+The separate main-registry refresh must be merged and independently verified before `SUB-ACT-04`.
+Once this refresh is verified, `SUB-ACT-04` is the next authorized SUBS control-plane
+action; it does not freeze `batch_base_sha` or grant implementation authority until
+its own gates pass.
 
 `ACTIVE_PARALLEL` is not granted. Batch 001 has not started, and `batch_base_sha` is not frozen.
 
@@ -348,7 +353,7 @@ ACT-02 provenance: SUB_ACT_02_RUNTIME_PROVENANCE_RECONCILED
 
 Resulting current state: `READY`.
 
-The activation transition initially made `SBH-00-01` and `SBH-00-02` available as governance/review work. The subsequent Stage B freeze records `SBH-00-01` through `SBH-00-04` as `CONTRACT_FROZEN / CANONICAL`; all remain governance/review work with `loop_eligible = No`.
+The activation transition initially made `SBH-00-01` and `SBH-00-02` available as governance/review work. The subsequent Stage B freeze records `SBH-00-01` through `SBH-00-04` as `CONTRACT_FROZEN / CANONICAL`; the subsequent JC-223 dependency-graph freeze records `SBH-00-05 / JC-223` the same way. All remain governance/review work with `loop_eligible = No`.
 
 SUB-ACT-02 produced `ACTIVATION_FEASIBILITY_PASS` as a read-only activation-feasibility verdict and did not mutate runtime state.
 
@@ -554,7 +559,7 @@ No lane requires another lane to finish first unless its exact task declares a v
 
 Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS is `READY` only as recorded by SUB-ACT-03; S0 and PLATFORM remain `BOOTSTRAPPED`.
 
-This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` through `SBH-00-04` are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`; `SBH-00-05 / JC-223` is next and has not started.
+This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
 
 ---
 
@@ -654,7 +659,7 @@ Not implementation authority. Not frozen activation pins. Refresh from origin be
 - `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
-- `origin/hardening/subscriptions` = `4af7f3889d03eea1a9719600202449b5a8e488b8` (verified Stage B governance-freeze merge; not the accepted development base)
+- `origin/hardening/subscriptions` = `8f93e0c9b6edc083093c74cc8e6243259683d50b` (verified JC-223 dependency-graph / governance-freeze merge; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 
