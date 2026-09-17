@@ -1270,8 +1270,6 @@ failed-payment suspension boundary
 terminal Subscription states
 ```
 
-Loop eligible: No.
-
 ---
 
 ## SBH-30-02 — Correct Retry Schedule Offset Semantics
@@ -1799,18 +1797,11 @@ Audit ordering is part of the executable review graph:
 Audits do not authorize fixes. A new finding follows:
 
 ```text
-CANDIDATE → VALIDATED → CONTRACT_FROZEN
-    → dependency/authority review → READY
+CANDIDATE → VALIDATED → CONTRACT_FROZEN → dependency/authority review → READY
 ```
 
-Any new problem discovered here becomes a new `CANDIDATE` and follows:
-
-```text
-CANDIDATE → VALIDATED → CONTRACT_FROZEN
-    → dependency/authority review → READY
-```
-
-before implementation.
+Any new problem discovered here becomes a new `CANDIDATE` and follows that
+canonical lifecycle before implementation.
 
 ---
 
@@ -2000,15 +1991,17 @@ Access:
 SBH-10-02 + SBH-20-01
     ↓
 SBH-50-06
-    ↓
-SBH-50-02 / SBH-50-03
-    ↓
-SBH-50-04
-    ↓
-SBH-50-05
+    ├──→ SBH-50-02 ──┐
+    ├──→ SBH-50-03 ──┼──→ SBH-50-05
+    └──→ SBH-50-04 ──┘
+          ↑
+relevant implemented PAST_DUE/SUSPENDED/cancellation/expiry lifecycle capability
 ```
 
-`SBH-50-04` also needs the relevant implemented commercial lifecycle paths.
+`SBH-50-02` and `SBH-50-03` are parallel children of `SBH-50-06`; neither is a
+prerequisite for `SBH-50-04`. `SBH-50-04` independently depends on `SBH-50-06`
+and the relevant implemented `PAST_DUE`, `SUSPENDED`, cancellation, and expiry
+lifecycle capability. All three rows feed `SBH-50-05`.
 Entitlements is not commercial authority.
 
 Grandfathering:
@@ -2405,15 +2398,8 @@ promote candidate directly to READY
 
 New finding lifecycle:
 
-```text
-DISCOVERED → CANDIDATE → VALIDATED
-                         ↓
-                 CONTRACT_FROZEN
-                         ↓
-              dependency/authority review
-                         ↓
-                       READY
-```
+Once recorded as `CANDIDATE`, a new finding follows the canonical hardening-item
+lifecycle defined in §6 and may not skip a stage.
 
 `NOT_APPLICABLE` and `EXTERNALIZED` remain explicit review outcomes after
 validation when appropriate. A finding may not move directly to implementation.
