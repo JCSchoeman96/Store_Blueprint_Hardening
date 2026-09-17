@@ -132,7 +132,9 @@ SBH-00-03  race precedence — frozen
     ↓
 SBH-00-04  cancellation/dunning/access/grandfathering — frozen
     ↓
-SBH-00-05 / JC-223  dependency graph and hardening matrix — NEXT
+SBH-00-05 / JC-223  dependency graph and hardening matrix — CONTRACT_FROZEN / CANONICAL
+    ↓
+separate main-governance registry refresh
     ↓
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
@@ -146,9 +148,11 @@ After this Stage B freeze they are `CONTRACT_FROZEN / CANONICAL`; canonical stat
 not implementation-loop READY admission. They become available as governance work
 after `SUB-ACT-03` and are completed in the order shown above.
 
-`SBH-00-05` / JC-223 is the next governance step after this PR is merged and the
-exact `hardening/subscriptions` target is independently verified. Do not start
-JC-223 in the Stage B PR.
+`SBH-00-05` / JC-223 is `CONTRACT_FROZEN / CANONICAL` in the JC-223 register
+change. It remains governance/review only. After this PR is merged and the exact
+`hardening/subscriptions` target is independently verified, merge and verify the
+separate main-governance registry refresh before `SUB-ACT-04`. Register rows
+marked `READY` still do not admit Batch 001.
 
 `SUB-ACT-04` owns the Batch 001 base freeze and the v1.3/v1.4 admission recertification. Only after that gate does the implementation loop apply the READY rule below.
 
@@ -1124,18 +1128,22 @@ PRS: 0
 FINAL ACTION: STOP
 ```
 
-After `SUB-ACT-03`, SBH-00 governance/review work is available in this order:
+After `SUB-ACT-03` and the JC-223 freeze, the control-plane state is:
 
 ```text
 SBH-00-01  commercial-contract architecture — frozen
 SBH-00-02  domain/lifecycle map — frozen
 SBH-00-03  race precedence — frozen
 SBH-00-04  cancellation/dunning/access/grandfathering — frozen
-SBH-00-05  dependency graph and hardening matrix — NEXT
+SBH-00-05  dependency graph and hardening matrix — CONTRACT_FROZEN / CANONICAL
+    ↓
+separate main-governance registry refresh
+    ↓
+SUB-ACT-04  Batch 001 base freeze and admission recertification — NEXT
 ```
 
-After the Stage B target is merged and independently verified, a separate main
-registry refresh must record the new SUBS authority tip before JC-223 begins. After
-`SBH-00-05` and `SUB-ACT-04`, the implementation loop may admit only task-specific
+After the JC-223 target is merged and independently verified, the separate main
+registry refresh must be merged and independently verified before `SUB-ACT-04`
+starts. After `SUB-ACT-04`, the implementation loop may admit only task-specific
 executable READY work. If no such task exists then `NO_EXECUTABLE_READY_WORK → STOP`
 remains valid.
