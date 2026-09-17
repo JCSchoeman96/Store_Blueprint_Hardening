@@ -1,6 +1,6 @@
 # Paste-Ready Codex Prompt — Subscription Hardening Loop v1.4
 
-**Authority revision:** v0.1.4. The v0.1.3 package remains historical authority only.
+**Authority revision:** v0.1.5. The v0.1.4 package remains historical authority only.
 
 You are the bounded execution controller for the `SUBS` Subscription Backbone Hardening workstream in:
 
@@ -67,7 +67,7 @@ Then:
 
 Do not use S0 tip movement or `WAITING_FOR_BASELINE_SYNC` as a blanket blocker.
 
-After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.4 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v1.4 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
+After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.5 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.5 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
 
 If SUBS is `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha` is proven, a `batch_base_sha` is frozen, local authority is promoted/tracked or supplied externally read-only, and at least one complete executable READY Task Contract exists:
 
@@ -94,7 +94,9 @@ SBH-00-03  race precedence — frozen
     ↓
 SBH-00-04  cancellation/dunning/access/grandfathering — frozen
     ↓
-SBH-00-05 / JC-223  executable dependency graph and hardening matrix — NEXT
+SBH-00-05 / JC-223  executable dependency graph and hardening matrix — CONTRACT_FROZEN / CANONICAL
+    ↓
+separate main-governance registry refresh
     ↓
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
@@ -104,9 +106,11 @@ After the Stage B freeze they are `CONTRACT_FROZEN / CANONICAL`; this does not g
 implementation admission. They become available after `SUB-ACT-03` in the order
 shown above.
 
-`SBH-00-05` / JC-223 is the next governance step after the Stage B PR is merged and
-the exact `hardening/subscriptions` target is independently verified. Do not start
-JC-223 in the Stage B PR.
+`SBH-00-05` / JC-223 is `CONTRACT_FROZEN / CANONICAL` in the JC-223 register
+change. It remains governance/review only. After the exact
+`hardening/subscriptions` target is merged and independently verified, merge and
+verify the separate main-governance registry refresh before `SUB-ACT-04`. Register
+rows marked `READY` still do not admit Batch 001.
 
 `SUB-ACT-03` records two ordered, validated canonical lifecycle transitions. The initial state is `BOOTSTRAPPED`; accepted `SUB-ACT-01` development-base evidence guards `BOOTSTRAPPED → BASELINE_PINNED`; and `ACTIVATION_FEASIBILITY_PASS` from `SUB-ACT-02` guards `BASELINE_PINNED → READY`. One bounded governance record may record both transitions, but it must not skip `BASELINE_PINNED`. The resulting canonical lane state is `READY`, and `SBH-00-01` through `SBH-00-04` become available as governance/review work. `SUB-ACT-03` must not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains guarded by successful `SUB-ACT-04` implementation admission.
 
@@ -749,18 +753,22 @@ PRS: 0
 FINAL ACTION: STOP
 ```
 
-After `SUB-ACT-03`, SBH-00 governance/review work is available in this order:
+After `SUB-ACT-03` and the JC-223 freeze, the control-plane state is:
 
 ```text
 SBH-00-01  commercial-contract architecture — frozen
 SBH-00-02  domain/lifecycle map — frozen
 SBH-00-03  race precedence — frozen
 SBH-00-04  cancellation/dunning/access/grandfathering — frozen
-SBH-00-05  dependency graph and hardening matrix — NEXT
+SBH-00-05  dependency graph and hardening matrix — CONTRACT_FROZEN / CANONICAL
+    ↓
+separate main-governance registry refresh
+    ↓
+SUB-ACT-04  Batch 001 base freeze and admission recertification — NEXT
 ```
 
-After the Stage B target is merged and independently verified, perform the separate
-main-governance registry refresh before starting JC-223. Do not start JC-223 in the
-Stage B PR. After `SBH-00-05` and `SUB-ACT-04`, execute only READY implementation
-tasks that pass task-level external-dependency and shared-authority admission. If no
-executable READY task exists then `NO_EXECUTABLE_READY_WORK → STOP`.
+After the JC-223 target is merged and independently verified, merge and independently
+verify the separate main-governance registry refresh before `SUB-ACT-04`. After
+`SUB-ACT-04`, execute only READY implementation tasks that pass task-level
+external-dependency and shared-authority admission. If no executable READY task
+exists then `NO_EXECUTABLE_READY_WORK → STOP`.

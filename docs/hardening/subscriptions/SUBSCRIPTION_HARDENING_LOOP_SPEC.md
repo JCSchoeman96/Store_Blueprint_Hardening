@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Loop Specification
 
-**Version:** v0.1.4
+**Version:** v0.1.5
 **Status:** APPROVED DESIGN / EXECUTION SPECIFICATION  
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** `SUBS` — Subscription Backbone Hardening  
@@ -8,7 +8,7 @@
 **Persistent workstream branch:** `hardening/subscriptions`  
 **Primary programme authority:** `SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 
-> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.4 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
+> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.5 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
 
 ---
 
@@ -132,12 +132,14 @@ SBH-00-03  race precedence — frozen
     ↓
 SBH-00-04  cancellation/dunning/access/grandfathering — frozen
     ↓
-SBH-00-05 / JC-223  dependency graph and hardening matrix — NEXT
+SBH-00-05 / JC-223  dependency graph and hardening matrix — CONTRACT_FROZEN / CANONICAL
+    ↓
+separate main-governance registry refresh
     ↓
 SUB-ACT-04  Batch 001 freeze and implementation-ready admission
 ```
 
-`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.4 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.4 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.5 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.5 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
 After that compatibility gate, `SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
 
@@ -146,9 +148,11 @@ After this Stage B freeze they are `CONTRACT_FROZEN / CANONICAL`; canonical stat
 not implementation-loop READY admission. They become available as governance work
 after `SUB-ACT-03` and are completed in the order shown above.
 
-`SBH-00-05` / JC-223 is the next governance step after this PR is merged and the
-exact `hardening/subscriptions` target is independently verified. Do not start
-JC-223 in the Stage B PR.
+`SBH-00-05` / JC-223 is `CONTRACT_FROZEN / CANONICAL` in the JC-223 register
+change. It remains governance/review only. After this PR is merged and the exact
+`hardening/subscriptions` target is independently verified, merge and verify the
+separate main-governance registry refresh before `SUB-ACT-04`. Register rows
+marked `READY` still do not admit Batch 001.
 
 `SUB-ACT-04` owns the Batch 001 base freeze and the v1.3/v1.4 admission recertification. Only after that gate does the implementation loop apply the READY rule below.
 
@@ -1124,18 +1128,22 @@ PRS: 0
 FINAL ACTION: STOP
 ```
 
-After `SUB-ACT-03`, SBH-00 governance/review work is available in this order:
+After `SUB-ACT-03` and the JC-223 freeze, the control-plane state is:
 
 ```text
 SBH-00-01  commercial-contract architecture — frozen
 SBH-00-02  domain/lifecycle map — frozen
 SBH-00-03  race precedence — frozen
 SBH-00-04  cancellation/dunning/access/grandfathering — frozen
-SBH-00-05  dependency graph and hardening matrix — NEXT
+SBH-00-05  dependency graph and hardening matrix — CONTRACT_FROZEN / CANONICAL
+    ↓
+separate main-governance registry refresh
+    ↓
+SUB-ACT-04  Batch 001 base freeze and admission recertification — NEXT
 ```
 
-After the Stage B target is merged and independently verified, a separate main
-registry refresh must record the new SUBS authority tip before JC-223 begins. After
-`SBH-00-05` and `SUB-ACT-04`, the implementation loop may admit only task-specific
+After the JC-223 target is merged and independently verified, the separate main
+registry refresh must be merged and independently verified before `SUB-ACT-04`
+starts. After `SUB-ACT-04`, the implementation loop may admit only task-specific
 executable READY work. If no such task exists then `NO_EXECUTABLE_READY_WORK → STOP`
 remains valid.

@@ -666,7 +666,8 @@ FAIL CLOSED
 RECONCILE
 ```
 
-JC-223 / SBH-00-05 is the next governance step after this Stage B freeze is merged
-and independently verified. Production implementation, Batch 001, `SUB-ACT-04`,
-`ACTIVE_PARALLEL`, schema changes, migrations, and provider implementation remain
-unauthorized.
+JC-223 / SBH-00-05 is `CONTRACT_FROZEN / CANONICAL` after the bounded register
+change. It remains governance/review only. The separate main-governance registry
+refresh must be merged and independently verified before `SUB-ACT-04`. Production
+implementation, Batch 001, `ACTIVE_PARALLEL`, schema changes, migrations, and
+provider implementation remain unauthorized.
