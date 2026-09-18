@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.6
-**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / SUB-ACT-04 RECONCILIATION RECORDED / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
-**Verified:** 2026-09-17
+**Version:** v0.1.7
+**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / SUB-ACT-04 RECONCILIATION RECORDED / DYNAMIC GOVERNANCE AUTHORITY CORRECTION RECORDED / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
+**Verified:** 2026-09-18
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -188,13 +188,15 @@ No other persistent SUBS lifecycle state is introduced.
 
 ## 2.8 Current post-SUB-ACT-04 reconciliation fixed point — 2026-09-17
 
-This is the v0.1.6 reconciliation base recorded after the first SUB-ACT-04
-admission attempt. It does not assert the final canonical post-PR #27 SUBS
-authority and does not rewrite the historical JC-223 fixed point in §2.7.
+This section preserves the v0.1.6 reconciliation-base observation recorded after
+the first SUB-ACT-04 admission attempt. It does not assert a permanently current
+canonical main or SUBS authority, and it does not rewrite the historical JC-223
+fixed point in §2.7. The literal SHAs in this section remain historical
+provenance for that reconciliation base.
 
 | Authority | Reconciliation fixed point | Meaning for this register |
 |---|---|---|
-| `origin/main` | `baeac140f68db80643b76626e99387089821f790` | current canonical main authority |
+| `origin/main` | `baeac140f68db80643b76626e99387089821f790` | v0.1.6 reconciliation-base canonical main authority; historical observation |
 | `origin/hardening/subscriptions` | `81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae` | reconciliation base / post-PR #26 SUBS authority; not canonical post-PR #27 authority |
 | accepted `development_base_sha` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` | unchanged; accepted by `SUB-ACT-01` |
 | `batch_base_sha` | `null` | not frozen; Batch 001 has not started |
@@ -217,11 +219,25 @@ start implementation. The external controller runtime remains a separate
 authority record and must be reconciled independently.
 
 The SHA above is the reconciliation base and post-PR #26 SUBS authority. The
-canonical v0.1.6 SUBS authority SHA is established only by exact post-merge
-verification of PR #27. This document does not embed that post-merge SHA. The
-external runtime reconciliation and fresh `SUB-ACT-04` admission must read the
-actual current `origin/hardening/subscriptions` after PR #27 merges. They must
-not assume `81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae` remains current.
+canonical v0.1.6 SUBS authority SHA was established only by exact post-merge
+verification of PR #27. This document does not embed a permanently current
+post-merge SHA.
+
+The v0.1.7 dynamic governance rule applies before every external runtime
+reconciliation and fresh `SUB-ACT-04` admission:
+
+1. Run `git fetch origin`.
+2. Resolve `governance_authority_sha` as the exact SHA returned by
+   `git rev-parse origin/main`.
+3. Read `AGENTS.md` and `docs/agent_rules/active_workstreams.md` from that
+   exact SHA, then verify the current SUBS authority and lifecycle against Git.
+4. Persist the resolved SHA as `governance_authority_sha` in the external
+   runtime or run evidence for that execution.
+
+If `origin/main` moves after resolution and before the protected transition,
+the run must return `AUTHORITY_MOVED` and stop without substituting another
+SHA. A later movement invalidates the current-authority assumption for future
+runs but does not rewrite historical run evidence.
 
 ---
 
@@ -243,7 +259,7 @@ main-governance registry refresh merged and independently verified
     ↓
 first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings recorded
     ↓
-tracked-authority reconciliation v0.1.6
+tracked-authority reconciliation v0.1.7
     ↓
 separate external runtime-state reconciliation
     ↓
@@ -950,7 +966,7 @@ Historical entries remain for provenance only and may not block current task adm
 
 **Hard gate:** production implementation requires canonical SUBS `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha`, successful v1.3/v1.4 admission recertification, a frozen `batch_base_sha`, a completed SBH-00 executable dependency graph, and at least one task that passes task-level admission.
 
-`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.6 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.6 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.7 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.7 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
 After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
 
@@ -2681,7 +2697,7 @@ The answer must not depend on reconstructing mutable historical plan state from 
 No Subscription production implementation is authorized yet.
 
 This section is historical v0.1.5 control-plane narration retained for
-provenance only. It is not the current next action. The current v0.1.6 path
+provenance only. It is not the current next action. The current v0.1.7 path
 requires separate external runtime-state reconciliation before a fresh
 `SUB-ACT-04` admission attempt.
 
@@ -2805,7 +2821,7 @@ Billing-timezone safety.
 Provider/event/recovery certification.
 
 CANONICAL GOVERNANCE:
-At the v0.1.6 reconciliation base, `origin/main` =
+Historical v0.1.6 reconciliation-base observation: `origin/main` =
 baeac140f68db80643b76626e99387089821f790 and
 `origin/hardening/subscriptions` =
 81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae, the reconciliation base and
