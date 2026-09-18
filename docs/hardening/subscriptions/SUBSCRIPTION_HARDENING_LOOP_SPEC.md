@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Loop Specification
 
-**Version:** v0.1.6
+**Version:** v0.1.7
 **Status:** APPROVED DESIGN / EXECUTION SPECIFICATION  
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** `SUBS` — Subscription Backbone Hardening  
@@ -8,7 +8,7 @@
 **Persistent workstream branch:** `hardening/subscriptions`  
 **Primary programme authority:** `SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 
-> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.6 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
+> This specification defines how bounded Subscription hardening work is selected, executed, reviewed, recorded, and stopped. v0.1.7 separates activation feasibility, canonical lane activation, governance/contract freeze, and implementation admission. It does **not** activate SUBS or authorize implementation by itself.
 
 ---
 
@@ -149,7 +149,7 @@ main-governance registry refresh merged and independently verified
     ↓
 first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings recorded
     ↓
-tracked-authority reconciliation v0.1.6
+tracked-authority reconciliation v0.1.7
     ↓
 separate external runtime-state reconciliation
     ↓
@@ -162,7 +162,7 @@ Only a passing fresh `SUB-ACT-04` may freeze `batch_base_sha` and grant
 `ACTIVE_PARALLEL`. Tracked repository authority and external controller runtime
 state remain separate records. Updating one does not update or prove the other.
 
-`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.6 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.6 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+`SUB-ACT-02` is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.7 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.7 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
 After that compatibility gate, `SUB-ACT-02` proves that a viable authority-compliant path exists. Its proof requires an accepted development base, a valid authority package, valid SUBS ownership, at least one authorized next governance/review task, a usable task-specific external-dependency model, a usable shared-authority model, and no programme-wide blocker. It does not select an implementation-loop READY task.
 
@@ -175,7 +175,7 @@ after `SUB-ACT-03` and are completed in the order shown above.
 change. It remains governance/review only. The separate main-governance registry
 refresh was merged and independently verified. The first `SUB-ACT-04` attempt
 returned `BLOCKED / STOP`, with PR #26 retaining the immutable findings evidence.
-This v0.1.6 tracked-authority reconciliation resolves the stale metadata. A
+This v0.1.7 tracked-authority reconciliation resolves the stale metadata. A
 separate external runtime-state reconciliation is still required before a fresh
 `SUB-ACT-04` attempt. Register rows marked `READY` still do not admit Batch 001.
 
@@ -183,12 +183,25 @@ separate external runtime-state reconciliation is still required before a fresh
 
 ### Pre-rerun external state requirements
 
-Before the fresh `SUB-ACT-04` admission attempt, separately reconcile the
-external controller state to this fixed point:
+Before the fresh `SUB-ACT-04` admission attempt, resolve the canonical
+governance authority for this run and separately reconcile the external
+controller state to this fixed point:
+
+```bash
+git fetch origin
+governance_authority_sha="$(git rev-parse origin/main)"
+git show origin/main:AGENTS.md
+git show origin/main:docs/agent_rules/active_workstreams.md
+```
+
+Read and validate both governance files at the resolved SHA. Confirm that
+`origin/main` still resolves to the same SHA after those reads. Persist that
+exact value as `governance_authority_sha` in the external runtime or run
+evidence for this execution. Do not use a SHA copied from this specification.
 
 ```text
 schema_version == "1.4"
-governance_authority_sha == "baeac140f68db80643b76626e99387089821f790"
+governance_authority_sha == <exact origin/main SHA resolved after git fetch and canonical-governance verification for this run>
 development_base_sha == "575ffa1848ac69abe855bd018c7ae8eaf05d61e4"
 lifecycle_state == "READY"
 activation_feasibility == "ACTIVATION_FEASIBILITY_PASS"
@@ -199,6 +212,11 @@ ACTIVE_PARALLEL == not granted
 current_task_id == null
 current_task_branch == null
 ```
+
+If `origin/main` moves after resolution and before the protected transition,
+return `AUTHORITY_MOVED` and stop. Do not silently substitute another SHA. A
+later movement invalidates the current-authority assumption for future runs but
+does not rewrite historical run evidence.
 
 No task is claimed at this fixed point. `activation_phase` must remain an
 existing schema-valid runtime value proven from the external state. This
@@ -1192,7 +1210,7 @@ main-governance registry refresh merged and independently verified
     ↓
 first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings recorded
     ↓
-tracked-authority reconciliation v0.1.6
+tracked-authority reconciliation v0.1.7
     ↓
 separate external runtime-state reconciliation
     ↓
@@ -1202,7 +1220,7 @@ ACTIVE_PARALLEL + Batch 001 frozen
 ```
 
 Tracked repository authority and external controller runtime state remain
-separate records. The tracked v0.1.6 reconciliation does not rewrite runtime
+separate records. The tracked v0.1.7 reconciliation does not rewrite runtime
 state. If the external runtime reconciliation cannot prove the exact valid
 `activation_phase`, it is incomplete or blocked and the fresh `SUB-ACT-04` run
 must STOP. After a passing `SUB-ACT-04`, the implementation loop may admit only
