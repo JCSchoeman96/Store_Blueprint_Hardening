@@ -188,14 +188,14 @@ No other persistent SUBS lifecycle state is introduced.
 
 ## 2.8 Current post-SUB-ACT-04 reconciliation fixed point — 2026-09-17
 
-This is the current tracked-authority fixed point for v0.1.6. It records the
-metadata reconciliation after the first SUB-ACT-04 admission attempt. It does
-not rewrite the historical JC-223 fixed point in §2.7.
+This is the v0.1.6 reconciliation base recorded after the first SUB-ACT-04
+admission attempt. It does not assert the final canonical post-PR #27 SUBS
+authority and does not rewrite the historical JC-223 fixed point in §2.7.
 
-| Authority | Current fixed point | Meaning for this register |
+| Authority | Reconciliation fixed point | Meaning for this register |
 |---|---|---|
 | `origin/main` | `baeac140f68db80643b76626e99387089821f790` | current canonical main authority |
-| `origin/hardening/subscriptions` | `81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae` | current tracked SUBS authority |
+| `origin/hardening/subscriptions` | `81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae` | reconciliation base / post-PR #26 SUBS authority; not canonical post-PR #27 authority |
 | accepted `development_base_sha` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` | unchanged; accepted by `SUB-ACT-01` |
 | `batch_base_sha` | `null` | not frozen; Batch 001 has not started |
 | `integration_base_sha` | `null` | not set during normal hardening |
@@ -215,6 +215,13 @@ PR #26 is failed-gate evidence, not Batch 001 authority. This reconciliation
 does not freeze `batch_base_sha`, set `ACTIVE_PARALLEL`, start Batch 001, or
 start implementation. The external controller runtime remains a separate
 authority record and must be reconciled independently.
+
+The SHA above is the reconciliation base and post-PR #26 SUBS authority. The
+canonical v0.1.6 SUBS authority SHA is established only by exact post-merge
+verification of PR #27. This document does not embed that post-merge SHA. The
+external runtime reconciliation and fresh `SUB-ACT-04` admission must read the
+actual current `origin/hardening/subscriptions` after PR #27 merges. They must
+not assume `81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae` remains current.
 
 ---
 
@@ -247,7 +254,9 @@ ACTIVE_PARALLEL + Batch 001 frozen
 
 No production `SBH-*` implementation task is authorized merely by this register,
 by SUBS `READY`, or by PR #26. `batch_base_sha` remains null and unfrozen until
-a fresh SUB-ACT-04 admission passes.
+a fresh SUB-ACT-04 admission passes. Before that admission, read the actual
+current `origin/hardening/subscriptions` after PR #27 merges. Do not assume the
+reconciliation base SHA in §2.8 is still current.
 
 ---
 
@@ -2796,11 +2805,14 @@ Billing-timezone safety.
 Provider/event/recovery certification.
 
 CANONICAL GOVERNANCE:
-At the v0.1.6 reconciliation fixed point, `origin/main` =
+At the v0.1.6 reconciliation base, `origin/main` =
 baeac140f68db80643b76626e99387089821f790 and
 `origin/hardening/subscriptions` =
-81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae. The JC-223 authorization hashes
-remain historical provenance in §2.7.
+81d203df8cd0c63f87e7fa7bf5bc02aea9e730ae, the reconciliation base and
+post-PR #26 SUBS authority. The canonical v0.1.6 SUBS authority SHA is
+established only by exact post-merge verification of PR #27 and is not embedded
+in this document. The JC-223 authorization hashes remain historical provenance
+in §2.7.
 
 CURRENT IMPLEMENTATION AUTHORITY:
 NONE. SUBS READY authorizes governance/review only; Batch 001 and SUB-ACT-04 admission remain outstanding. `batch_base_sha` is null and unfrozen.
@@ -2818,15 +2830,17 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
+After PR #27 merges, read the actual current `origin/hardening/subscriptions`.
 Reconcile the external runtime state separately, then rerun `SUB-ACT-04` against
-the current tracked authority. Only a passing fresh admission may freeze
+that verified current authority. Only a passing fresh admission may freeze
 `batch_base_sha`, grant `ACTIVE_PARALLEL`, and start Batch 001.
 
 FINAL ACTION:
-Complete the separate external runtime-state reconciliation and independently
-verify it. Then rerun `SUB-ACT-04` as a fresh Batch 001 base and
-implementation-admission recertification. Production implementation remains
-unauthorized until that gate passes.
+After PR #27 merges, read the actual current `origin/hardening/subscriptions`
+and complete the separate external runtime-state reconciliation against it.
+Independently verify that reconciliation, then rerun `SUB-ACT-04` as a fresh
+Batch 001 base and implementation-admission recertification. Production
+implementation remains unauthorized until that gate passes.
 ```
 
 ---
