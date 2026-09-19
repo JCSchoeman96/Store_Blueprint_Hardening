@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.9
+**Version:** v0.1.10
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-19
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,7 +13,7 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes, or manufacture READY work.
 
-## Current authority boundary — v0.1.9
+## Current authority boundary — v0.1.10
 
 Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
 supersedes the autonomous SUBS execution model. SUBS lifecycle remains
@@ -1490,22 +1490,35 @@ terminal Subscription states
 
 ## SBH-30-02 — Correct Retry Schedule Offset Semantics
 
-**State:** `READY`.
-**Loop eligible:** Yes.
+**State:** `CLOSED`.
+**Loop eligible:** No.
 **Shared-authority status:** `NONE`.
 **Priority:** P1.
 
 Priority rationale: zero-hour retry behavior and durable first-failure anchoring
-are release-blocking dunning correctness risks. This P1 label is equal to the
-other current READY rows and does not rank them.
+are release-blocking dunning correctness risks. This P1 label was assigned
+alongside the other implementation rows and did not rank them.
 
-Current implementation prevents configured zero-hour retry semantics by forcing offsets through a minimum of 24 hours.
+Completed implementation uses configured retry offsets exactly, normalizes
+schedules deterministically, exhausts after the final configured offset, and
+anchors each dunning episode to its first durable retryable-failure timestamp.
 
-Proposed branch:
+Completed task branch:
 
 ```text
-subs-task/sbh-30-02-retry-offset-semantics
+subs-task/sbh-30-02-retry-offset-semantics-v2
 ```
+
+Completion provenance: original selected task `SBH-30-02`; task base
+`10e894902dc3af6ed9071bd74fc01b554f3c7d2a`; successful task HEAD
+`b9ce01c3cdd5ee13f6d35d6d399d7c51697cd50e`; successful PR `#36`; merge SHA
+`91c391cae894a61869c0bc2ad77b0d02eac5ed10`; exact-head required CI: PASS;
+independent review: PASS; exact post-merge verification: PASS; post-sync
+`mix check`: 590 tests, 3 properties, 0 failures.
+
+PR `#33` remains historical superseded evidence: historical HEAD
+`a03a4534d6373dd9a0ff99c32c95b30d62f918f8`; closed without merge; superseded
+by PR `#36`.
 
 TDD must cover:
 
@@ -1517,11 +1530,11 @@ schedule exhaustion / edge selection
 normalized schedule behaviour
 ```
 
-This is genuinely lane-local because the frozen contract targets Subscription
-scheduler offset normalization and selection. It does not require migration,
+This was genuinely lane-local because the frozen contract targeted Subscription
+scheduler offset normalization and selection. It did not require migration,
 Payments, Orders, Entitlements, provider-business-contract, or generic
-infrastructure changes. `READY` is the required register state for serial
-selection; it does not itself select or authorize the task.
+infrastructure changes. `READY` was the required register state for serial
+selection; this completed record is no longer eligible for selection.
 
 ---
 
@@ -2157,8 +2170,9 @@ The graph distinguishes four classes:
 1. the foundational commercial/concurrency spine: immutable contract authority,
    Subscription binding, aggregate/version control, future-target identity,
    RenewalAttempt binding, provider initiation, reconciliation, and their races;
-2. independent lane-local hardening: `SBH-30-02`, `SBH-70-02`, and `SBH-80-01`,
-   each of which may be admitted only after task-level checks;
+2. independent lane-local hardening: the completed `SBH-30-02` record plus
+   `SBH-70-02` and `SBH-80-01`; the latter two may be admitted only after
+   task-level checks;
 3. shared-boundary hardening: durable access effects, lifecycle terminalization,
    provider/payment boundaries, migrations, snapshots, and any core owned outside
    SUBS;
@@ -2343,7 +2357,7 @@ fixed point, and this register changes no actual shared authority.
 | `SBH-20-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-20-04` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-20-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-30-02` | no shared modification identified in this contract | `NONE` | Lane-local; still requires the current serial admission checks. |
+| `SBH-30-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-30-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-30-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-30-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
@@ -2375,9 +2389,10 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-register state. Exactly three rows are `READY`; those three rows carry the
-owner-approved `P1` priority. The recorded `loop_eligible` values are retained
-as historical/register metadata and do not admit work.
+register state. Exactly two rows are `READY`; `SBH-30-02` is `CLOSED`, and the
+remaining READY rows carry the owner-approved `P1` priority. The recorded
+`loop_eligible` values are retained as historical/register metadata and do not
+admit work.
 
 | ID | Class | Priority | State | Loop eligible |
 |---|---|---:|---|---:|
@@ -2392,7 +2407,7 @@ as historical/register metadata and do not admit work.
 | `SBH-20-03` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-04` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-05` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-30-02` | independent lane-local | P1 | `READY` | Yes |
+| `SBH-30-02` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-30-03` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-30-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-30-05` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
@@ -2423,7 +2438,7 @@ inspection proves that a purported lane-local fix must change a shared write
 path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this register
 grants no authority to make that shared change.
 
-The human-owner priority decision is:
+The recorded human-owner priority decision was:
 
 ```text
 SBH-30-02 = P1
@@ -2431,10 +2446,10 @@ SBH-70-02 = P1
 SBH-80-01 = P1
 ```
 
-All three current READY rows have equal P1 priority. The labels provide no
-severity ordering and do not alter the frozen dependency edges. A human may
-select only one of these READY rows at a time, subject to the serial contract,
-review, gates, and merge boundary.
+`SBH-30-02` is now `CLOSED`; only `SBH-70-02` and `SBH-80-01` remain READY.
+The P1 labels provide no severity ordering and do not alter the frozen
+dependency edges. A human may select only one of the remaining READY rows at a
+time, subject to the serial contract, review, gates, and merge boundary.
 
 ---
 
@@ -3067,7 +3082,7 @@ passes.
 
 ---
 
-# 41. Current v0.1.9 Serial Verdict
+# 41. Current v0.1.10 Serial Verdict
 
 ```text
 SUBS lifecycle = READY
@@ -3075,18 +3090,19 @@ SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
 ```
 
-The canonical READY rows remain available for explicit human selection. One
+`SBH-70-02` and `SBH-80-01` remain available for explicit human selection. One
 bounded issue may be active at a time. Each selected issue must use a current
 governance check, an exact `task_base_sha` from the current explicitly accepted
 SUBS tip, TDD/minimal implementation where required, focused verification,
 fresh independent review, repository gates, exact-head PR CI, and a human merge
 decision. The SUBS tip is refreshed before another issue is selected.
 
-`SBH-30-02` remains `READY`; its existing PR #33 and HEAD
-`a03a4534d6373dd9a0ff99c32c95b30d62f918f8` remain bounded historical
-implementation/review evidence and are not declared complete. Required CI is
-still a merge gate, and no source change or merge is authorized by this
-register reconciliation.
+`SBH-30-02` is `CLOSED` after exact post-merge verification. Successful PR #36
+merged at `91c391cae894a61869c0bc2ad77b0d02eac5ed10`; exact-head required CI,
+independent review, exact post-merge verification, and post-sync `mix check`
+are recorded above. PR #33 remains closed historical evidence at HEAD
+`a03a4534d6373dd9a0ff99c32c95b30d62f918f8` and was superseded by PR #36. No
+downstream task is promoted by this reconciliation.
 
 `SUB-ACT-04`, Batch 001, `ACTIVE_PARALLEL`, frozen batch bases, batch IDs,
 controller claims/counters, autonomous runtime, and controller CI-cycle
