@@ -302,7 +302,7 @@ SUBS does **not** continuously consume S0 as parent authority.
 
 **Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. Stage B is now frozen and canonical: `SBH-00-01` through `SBH-00-04` are `CONTRACT_FROZEN / CANONICAL` governance/review records, with `loop_eligible = No`. The subsequent JC-223 dependency-graph freeze records `SBH-00-05 / JC-223` as `CONTRACT_FROZEN / CANONICAL` governance/review work, with `loop_eligible = No`.
 
-`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `08f5db67f7bf524ecd7fcf77d54a1ab27ecfe6e3`, the verified PR #29 dynamic-governance-authority merge commit; it is not the development base. The prior `317d3c1e4304f671162b53f9d31a060682849e9e` PR #27 authority-reconciliation merge and the earlier `8f93e0c9b6edc083093c74cc8e6243259683d50b` JC-223 dependency-graph / governance-freeze merge remain historical provenance. JC-219, JC-220, JC-221, JC-222, and JC-223 are repository-canonical. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
+`PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `80d44613dc45a26ecb34a8eb6cbad8cce1e4f0c1`, the verified PR #31 v0.1.8 runtime-transition merge commit; it is not the development base. The prior `08f5db67f7bf524ecd7fcf77d54a1ab27ecfe6e3` PR #29 dynamic-governance-authority merge, the earlier `317d3c1e4304f671162b53f9d31a060682849e9e` PR #27 authority-reconciliation merge, and the earlier `8f93e0c9b6edc083093c74cc8e6243259683d50b` JC-223 dependency-graph / governance-freeze merge remain historical provenance. JC-219, JC-220, JC-221, JC-222, and JC-223 are repository-canonical. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
 
 The Stage B governance freeze is complete. Production Subscription implementation remains blocked until all of the following are complete:
 
@@ -659,7 +659,7 @@ Not implementation authority. Not frozen activation pins. Refresh from origin be
 - `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
-- `origin/hardening/subscriptions` = `08f5db67f7bf524ecd7fcf77d54a1ab27ecfe6e3` (verified PR #29 dynamic-governance-authority merge; not the accepted development base)
+- `origin/hardening/subscriptions` = `80d44613dc45a26ecb34a8eb6cbad8cce1e4f0c1` (verified PR #31 v0.1.8 runtime-transition merge; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 
