@@ -1,7 +1,7 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.8
-**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / SUB-ACT-04 RECONCILIATION RECORDED / SUB-ACT-04 RUNTIME TRANSITION CONTRACT COMPLETED / DYNAMIC GOVERNANCE AUTHORITY CORRECTION RECORDED / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
+**Version:** v0.1.9
+**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-19
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -11,9 +11,56 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the independently verified SUBS activation, the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 executable dependency graph and hardening matrix freeze, and the v0.1.8 successful `SUB-ACT-04` runtime transition contract. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does **not** authorize migrations, shared-domain changes, Batch 001, or production implementation.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes, or manufacture READY work.
 
----
+## Current authority boundary — v0.1.9
+
+Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
+supersedes the autonomous SUBS execution model. SUBS lifecycle remains
+`READY`; its separate execution policy is **`SERIAL / EXPLICIT HARDENING`**:
+
+```text
+human selects one canonical READY issue
+    ↓
+verify current origin/main governance and origin/hardening/subscriptions authority
+    ↓
+materialize one bounded task contract and exact task_base_sha
+    ↓
+one task branch → TDD / minimal implementation → focused verification
+    ↓
+fresh independent review → required repository gates / exact-head CI
+    ↓
+human merge decision → refresh canonical SUBS authority
+    ↓
+only then select the next issue
+```
+
+At most one SUBS implementation issue may be active through this workflow.
+`SUB-ACT-04`, Batch 001, `ACTIVE_PARALLEL`, frozen multi-task batch bases,
+batch identifiers, successful-PR counters, persistent controller task claims,
+autonomous runtime, and controller CI-cycle accounting are historical
+provenance only. None is a prerequisite for a serial task, and no runtime
+reconciliation is required merely to execute one.
+
+Serial admission still requires the selected issue to be canonical `READY`,
+frozen relevant Product/Architecture/Domain law, deterministic acceptance
+criteria, explicit human selection, current authority inspection, required
+dependencies and shared authority, and explicit allowed/forbidden scope.
+`loop_eligible` may remain register metadata, but it is not the serial
+execution-admission switch.
+
+SUBS retains ownership of `Subscription`, `SubscriptionPlan`,
+`SubscriptionItem`, `RenewalAttempt`, renewal scheduling, dunning,
+cancellation, plan/variant changes, Subscription commercial-contract law, and
+Subscription-specific reconciliation and certification. It does not own
+`InventoryAdmission`, generic dependency/platform work, the auth platform,
+migrations unless separately authorized, Payments core, Orders core, or
+generic Entitlements infrastructure. Cross-domain mutations still require the
+owning workstream/domain authority.
+
+JC-219, JC-220, JC-221, JC-222, JC-223, and the existing frozen Subscription
+lifecycle and scheduling law remain canonical. Simplifying execution does not
+reopen or supersede them.
 
 # 1. Programme Objective
 
@@ -125,6 +172,9 @@ Two corrections were made to the earlier draft:
 
 ## 2.6 Local authority bootstrap rule
 
+This subsection records the former pre-activation bootstrap protocol as
+historical evidence. It is not a current serial admission requirement.
+
 Before SUBS activation, the approved hardening documents may exist as **intentional untracked local authority bootstrap files** in the persistent SUBS worktree.
 
 This exception is narrow:
@@ -149,11 +199,11 @@ Rules:
 
 Active implementation must never begin from a worktree containing untracked bootstrap authority files.
 
-## 2.7 Current JC-223 fixed-point verification — 2026-09-16
+## 2.7 Historical JC-223 fixed-point verification — 2026-09-16
 
-This is the current verification boundary for v0.1.5. It records the fixed
-authority supplied at authorization and does not rewrite the historical preflight
-evidence above.
+This was the verification boundary for v0.1.5. It records the fixed authority
+supplied at that authorization and does not rewrite the historical preflight
+evidence above or establish current execution authority.
 
 | Authority | Current fixed point | Meaning for this register |
 |---|---|---|
@@ -186,7 +236,7 @@ only then start SUB-ACT-04 Batch 001 base freeze and admission recertification
 
 No other persistent SUBS lifecycle state is introduced.
 
-## 2.8 Current post-SUB-ACT-04 reconciliation fixed point — 2026-09-17
+## 2.8 Historical post-SUB-ACT-04 reconciliation fixed point — 2026-09-17
 
 This section preserves the v0.1.6 reconciliation-base observation recorded after
 the first SUB-ACT-04 admission attempt. It does not assert a permanently current
@@ -223,8 +273,9 @@ canonical v0.1.6 SUBS authority SHA was established only by exact post-merge
 verification of PR #27. This document does not embed a permanently current
 post-merge SHA.
 
-The v0.1.8 dynamic governance and transition rule applies before every external runtime
-reconciliation and fresh `SUB-ACT-04` admission:
+At that historical fixed point, the v0.1.8 dynamic governance and transition
+rule was recorded as applying before external runtime reconciliation and fresh
+`SUB-ACT-04` admission. It is not a current serial-task requirement:
 
 1. Run `git fetch origin`.
 2. Resolve `governance_authority_sha` as the exact SHA returned by
@@ -239,7 +290,11 @@ the run must return `AUTHORITY_MOVED` and stop without substituting another
 SHA. A later movement invalidates the current-authority assumption for future
 runs but does not rewrite historical run evidence.
 
-## 2.9 v0.1.8 successful SUB-ACT-04 runtime transition contract — 2026-09-19
+## 2.9 Historical v0.1.8 successful SUB-ACT-04 runtime transition contract — 2026-09-19
+
+This section is retained as historical controller provenance. It is superseded
+by the current serial policy in the authority boundary above and grants no
+current implementation authority.
 
 The v0.1.8 amendment completes the machine-state contract for a successful
 fresh `SUB-ACT-04`. The Subscription Hardening Loop remains v1.4 and the
@@ -300,40 +355,44 @@ implementation.
 # 3. Current Programme Verdict
 
 ```text
-SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN
+SUBS READY / SERIAL EXPLICIT HARDENING
 ```
 
 The JC-219, JC-220, JC-221, JC-222, and JC-223 governance contracts are frozen
-and canonical. SUBS remains `READY`.
+and canonical. The Subscription lifecycle remains `READY`; no new persistent
+`ACTIVE_SERIAL` lifecycle value is introduced.
 
-The current control-plane sequence is:
+Current execution is explicitly serial:
 
 ```text
-JC-223 canonical
+human selects one canonical READY issue
     ↓
-main-governance registry refresh merged and independently verified
+inspect current origin/main governance and origin/hardening/subscriptions
     ↓
-first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings recorded
+confirm dependencies, shared authority, deterministic acceptance, and bounded scope
     ↓
-tracked-authority reconciliation v0.1.8
+branch from the exact current explicitly accepted SUBS tip (`task_base_sha`)
     ↓
-separate external runtime-state reconciliation
+TDD / minimal implementation / focused verification
     ↓
-fresh SUB-ACT-04 admission attempt
-    ↓ PASS only
-atomic transition:
-  mode = ACTIVE_IMPLEMENTATION_BATCH
-  activation_phase = ACTIVE_IMPLEMENTATION_BATCH
-  lifecycle_state = ACTIVE_PARALLEL
-  batch_base_sha = exact frozen SHA
-  batch_id = SUBS-BATCH-001
+fresh independent review / required repository gates / exact-head PR CI
+    ↓
+human merge decision
+    ↓
+refresh canonical SUBS authority before selecting another issue
 ```
 
-No production `SBH-*` implementation task is authorized merely by this register,
-by SUBS `READY`, or by PR #26. `batch_base_sha` remains null and unfrozen until
-a fresh SUB-ACT-04 admission passes. Before that admission, read the actual
-current `origin/hardening/subscriptions` after PR #27 merges. Do not assume the
-reconciliation base SHA in §2.8 is still current.
+At most one SUBS implementation issue may be active in this workflow. `READY`
+is necessary but not sufficient: the human must explicitly select the issue,
+and all serial admission checks must pass. `loop_eligible` is historical
+register metadata only. The retired autonomous controller, Batch 001,
+`SUB-ACT-04`, `ACTIVE_PARALLEL`, frozen batch bases, batch identifiers,
+controller claims/counters, and controller CI-cycle accounting cannot admit or
+resume current work.
+
+The register preserves historical controller observations in §§2.7–2.9 and
+elsewhere for provenance; those observations do not compete with this current
+serial authority.
 
 ---
 
@@ -1015,7 +1074,11 @@ The former global main→S0→SUBS activation chain was superseded by canonical 
 
 Historical entries remain for provenance only and may not block current task admission.
 
-## 9.2 Current SUBS activation items
+## 9.2 Historical SUBS activation items
+
+The activation items and controller-gate text in this subsection are retained
+as historical evidence. They do not describe current implementation admission;
+the v0.1.9 serial rule follows the table.
 
 | ID | Task | Current disposition | Loop eligible | Dependency | Expected output |
 |---|---|---|---:|---|---|
@@ -1025,7 +1088,10 @@ Historical entries remain for provenance only and may not block current task adm
 | `SUB-ACT-03` | Record accepted SUBS development base and canonical activation state | `CANONICAL_READY_RECORDED` | No | ACT-01 + ACT-02 PASS + v1.4 runtime compatibility | ordered `BOOTSTRAPPED → BASELINE_PINNED → READY` transitions recorded |
 | `SUB-ACT-04` | Freeze Batch 001 base and run v1.3/v1.4 admission recertification | `BLOCKED_DEPENDENCY` | No | ACT-03 + SBH-00-05 + separately merged and independently verified main-governance registry refresh + v0.1.8 runtime transition contract | `batch_base_sha` + `batch_id` + 0A-P/0A-B/0A-N PASS + atomic transition PASS |
 
-**Hard gate:** production implementation requires canonical SUBS `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha`, successful v1.3/v1.4 admission recertification, a frozen `batch_base_sha`, a completed SBH-00 executable dependency graph, and at least one task that passes task-level admission.
+The former hard gate required canonical SUBS `READY` or `ACTIVE_PARALLEL`, an
+accepted `development_base_sha`, v1.3/v1.4 admission recertification, a frozen
+`batch_base_sha`, and controller state. That sentence is historical only and
+is superseded by the serial admission rule below.
 
 `SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.8 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.8 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
@@ -1035,6 +1101,28 @@ After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, a
 
 A sibling lane moving is not itself a blocker.
 
+### Current serial admission rule
+
+A SUBS issue may be implemented only when all of the following are true:
+
+1. its register state is exactly `READY`;
+2. relevant Product/Architecture/Domain law is frozen and canonical;
+3. acceptance criteria are deterministic;
+4. a human explicitly selects that canonical issue;
+5. current `origin/main` governance and current `origin/hardening/subscriptions`
+   authority are inspected;
+6. required external dependencies are present and required shared authority is
+   assigned;
+7. the objective is bounded; and
+8. allowed and forbidden write scope are explicit.
+
+Only one SUBS implementation issue may be active through this workflow. The
+human creates one task branch from the exact current explicitly accepted SUBS
+tip, records that SHA as `task_base_sha`, and does not silently rebase during
+the task. After merge, the canonical SUBS tip is refreshed before another
+issue is selected. `loop_eligible` remains historical/register metadata and is
+not an admission switch.
+
 ---
 
 # 10. SBH-00 — Discovery, Contract, and Lifecycle Freeze
@@ -1043,9 +1131,10 @@ These are governance/review tasks. They establish law before production code cha
 
 The Stage B and JC-223 freeze records JC-219, JC-220, JC-221, JC-222, and JC-223
 as canonical governance. All five items remain `loop_eligible = No`; canonical
-does not mean implementation-authorized. `SBH-00-05` / JC-223 freezes the first
-executable dependency graph and hardening matrix before `SUB-ACT-04` can consider
-Batch 001.
+does not mean implementation-authorized. `SBH-00-05` / JC-223 freezes the
+dependency graph and hardening matrix. Earlier text described that freeze as a
+precondition for Batch 001; Batch 001 and that autonomous gate are historical
+only. Current implementation admission follows the serial rule in §9.2.
 
 | ID | Task | Priority | State | Loop eligible | Dependency |
 |---|---|---:|---|---:|---|
@@ -1431,7 +1520,8 @@ normalized schedule behaviour
 This is genuinely lane-local because the frozen contract targets Subscription
 scheduler offset normalization and selection. It does not require migration,
 Payments, Orders, Entitlements, provider-business-contract, or generic
-infrastructure changes. `READY` in this register is not Batch 001 admission.
+infrastructure changes. `READY` is the required register state for serial
+selection; it does not itself select or authorize the task.
 
 ---
 
@@ -1792,8 +1882,8 @@ Do not replace working initial CAS machinery simply for stylistic uniformity.
 This is genuinely lane-local because it hardens RenewalAttempt state monotonicity
 within the existing Subscription renewal resource and test boundary. It does not
 require migrations, Payments, Orders, Entitlements, provider-business-contract,
-or generic infrastructure changes. `READY` in this register is not Batch 001
-admission.
+or generic infrastructure changes. `READY` is the required register state for
+serial selection; it does not itself select or authorize the task.
 
 ---
 
@@ -2253,7 +2343,7 @@ fixed point, and this register changes no actual shared authority.
 | `SBH-20-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-20-04` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-20-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-30-02` | no shared modification identified in this contract | `NONE` | Lane-local; eligible only after Batch 001 admission gates. |
+| `SBH-30-02` | no shared modification identified in this contract | `NONE` | Lane-local; still requires the current serial admission checks. |
 | `SBH-30-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-30-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-30-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
@@ -2266,8 +2356,8 @@ fixed point, and this register changes no actual shared authority.
 | `SBH-50-05` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-60-01` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-60-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-70-02` | no shared modification identified in this contract | `NONE` | Lane-local; eligible only after Batch 001 admission gates. |
-| `SBH-80-01` | no shared modification identified in this contract | `NONE` | Lane-local; eligible only after Batch 001 admission gates. |
+| `SBH-70-02` | no shared modification identified in this contract | `NONE` | Lane-local; still requires the current serial admission checks. |
+| `SBH-80-01` | no shared modification identified in this contract | `NONE` | Lane-local; still requires the current serial admission checks. |
 | `SBH-80-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-80-03` | provider business contracts only if a provider contract must change | `EXTERNALIZED` | Use existing provider evidence; stop if a shared change is required. |
 | `SBH-90-01` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
@@ -2285,8 +2375,9 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-execution/admission state. Exactly three rows are `READY` with
-`loop_eligible = true`; those three rows carry the owner-approved `P1` priority.
+register state. Exactly three rows are `READY`; those three rows carry the
+owner-approved `P1` priority. The recorded `loop_eligible` values are retained
+as historical/register metadata and do not admit work.
 
 | ID | Class | Priority | State | Loop eligible |
 |---|---|---:|---|---:|
@@ -2324,12 +2415,13 @@ An em dash in the Priority column means this reconciliation assigns no priority
 to that row. No other priority is inferred.
 
 `READY` here means the row is genuinely lane-local and has no identified shared
-modification in its current contract. It does not admit the row into Batch 001.
-Admission still requires `SUB-ACT-04`, a frozen `batch_base_sha`, an exact Task
-Contract, task-level admission, current governance, and a clean worktree. If
-task-level source inspection proves that a purported lane-local fix must change a
-shared write path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this
-documentation change grants no authority to make that shared change.
+modification in its current contract. It is eligible for explicit human
+selection, not automatic execution. Before implementation, the selected row
+must pass the current serial admission checks, receive an exact task contract,
+and branch from the current explicitly accepted SUBS tip. If task-level source
+inspection proves that a purported lane-local fix must change a shared write
+path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this register
+grants no authority to make that shared change.
 
 The human-owner priority decision is:
 
@@ -2340,12 +2432,13 @@ SBH-80-01 = P1
 ```
 
 All three current READY rows have equal P1 priority. The labels provide no
-severity ordering and do not alter the frozen dependency edges. A fresh
-SUB-ACT-04 admission remains required before any of them can enter Batch 001.
+severity ordering and do not alter the frozen dependency edges. A human may
+select only one of these READY rows at a time, subject to the serial contract,
+review, gates, and merge boundary.
 
 ---
 
-# 25. Proposed Branch Model After Activation
+# 25. Current Serial Branch Rule
 
 Persistent worktree:
 
@@ -2359,7 +2452,7 @@ Persistent workstream branch:
 hardening/subscriptions
 ```
 
-Proposed task-branch namespace:
+Task-branch namespace:
 
 ```text
 subs-task/<canonical-id>-<short-description>
@@ -2381,19 +2474,23 @@ hardening/subscriptions/<child>
 
 because `hardening/subscriptions` is already an existing Git ref.
 
-**Important:** this task-branch namespace is proposed by this programme and must be confirmed when SUBS is activated. It is not current repository governance law merely because this document recommends it.
+For each selected issue, fetch current refs, verify the current canonical
+`hardening/subscriptions` tip, and create the task branch from that exact
+explicitly accepted tip. Record the exact tip as `task_base_sha` in the task
+evidence and do not silently rebase during the task. This rule is subordinate
+to canonical `main` governance and does not create a second lifecycle value.
 
 ---
 
 # 26. One-Task / One-Branch Rule
 
-Each implementation item should normally map to:
+Each selected implementation item maps to:
 
 ```text
 one bounded contract
 one task branch
 one TDD cycle
-one draft PR
+one PR
 one independent review
 ```
 
@@ -2412,22 +2509,23 @@ into one PR.
 
 ---
 
-# 27. Loop Admission Rule
+# 27. Current Serial Task Admission
 
-An item may enter the implementation loop only when all are true:
+An item may enter the current serial workflow only when all are true:
 
-`READY` in the register is not admission into Batch 001. The only rows currently
-marked `READY` and `loop_eligible = true` are `SBH-30-02`, `SBH-70-02`, and
-`SBH-80-01`. Each still needs `SUB-ACT-04`, a frozen `batch_base_sha`, an exact
-Task Contract, task-level admission, current governance, and a clean worktree.
+The register state is exactly `READY`; relevant Product/Architecture/Domain law
+is frozen; acceptance criteria are deterministic; a human explicitly selected
+this issue; current `origin/main` governance and current
+`origin/hardening/subscriptions` are inspected; required dependencies and shared
+authority are present; the objective is bounded; and allowed/forbidden write
+scope is explicit. `loop_eligible` remains historical/register metadata only.
 
 ```text
 state == READY
-loop_eligible == true
-SUBS lifecycle == READY or ACTIVE_PARALLEL
+human_selected == true
+SUBS lifecycle == READY
 governance_authority_sha == current accepted canonical governance
-development_base_sha == accepted SUBS development base
-task batch_base_sha == frozen batch_base_sha
+task_base_sha == exact current explicitly accepted SUBS tip
 product / architecture law == frozen
 acceptance criteria == deterministic
 ```
@@ -2435,29 +2533,38 @@ acceptance criteria == deterministic
 Then perform task-level admission:
 
 ```text
-required external capability absent from development_base_sha
+required external capability absent from the accepted task base
 → BLOCKED_EXTERNAL_DEPENDENCY for this item
-→ consider another READY item
+→ STOP this item and return to human selection
 
 shared boundary required without AUTHORITY_ASSIGNED
 → BLOCKED_SHARED_AUTHORITY for this item
-→ consider another READY item
+→ STOP this item and return to the owning authority
 ```
 
 Do not globally block SUBS merely because another workstream or `main` advanced.
 
-If no executable READY item remains:
+At most one SUBS implementation issue may be active through this workflow. If no
+human-selected READY item is available:
 
 ```text
-NO_EXECUTABLE_READY_WORK
+NO_HUMAN_SELECTED_READY_TASK
 STOP
 ```
 
-The coding agent cannot reinterpret this rule.
+If implementation reveals a new authority problem, scope expansion,
+shared-boundary dependency, migration requirement, or upstream contradiction,
+stop at the owning authority level. The coding agent cannot reinterpret this
+rule or manufacture READY work.
 
 ---
 
-# 28. Batch Rule
+# 28. Historical Autonomous Batch Rule (superseded)
+
+The remainder of this section records the former controller's batch ceiling and
+independence rule as historical provenance only. It is not current execution
+authority; no autonomous batch, batch identifier, or controller resumption is
+required or permitted for serial SUBS work.
 
 A single autonomous implementation-loop invocation may complete:
 
@@ -2483,7 +2590,38 @@ Early contract/concurrency work is expected to produce many one-item batches.
 
 ---
 
-# 29. Per-Item Execution Loop
+# 29. Current Serial Per-Task Execution
+
+Every selected issue follows one bounded task sequence:
+
+```text
+VERIFY CURRENT GOVERNANCE AND SUBS AUTHORITY
+    ↓
+MATERIALIZE ONE BOUNDED READY TASK
+    ↓
+CREATE ONE TASK BRANCH FROM EXACT task_base_sha
+    ↓
+TDD / MINIMAL IMPLEMENTATION
+    ↓
+FOCUSED VERIFICATION
+    ↓
+FRESH INDEPENDENT REVIEW
+    ↓
+REQUIRED REPOSITORY GATES / EXACT-HEAD PR CI
+    ↓
+HUMAN MERGE DECISION
+    ↓
+REFRESH CANONICAL SUBS AUTHORITY
+    ↓
+SELECT THE NEXT ISSUE ONLY THEN
+```
+
+The task contract must include the performance/scaling review,
+security/multi-tenant review, named neighbouring regressions where relevant,
+and explicit STOP conditions. The agent never merges automatically.
+
+The former controller sequence below is retained as historical provenance and
+must not be executed.
 
 Once implementation authority exists:
 
@@ -2541,7 +2679,7 @@ Allowed:
 record candidate finding
 capture evidence
 identify affected boundary
-continue current task if still safe
+continue the current task if still safe
 ```
 
 Forbidden:
@@ -2556,7 +2694,8 @@ promote candidate directly to READY
 New finding lifecycle:
 
 Once recorded as `CANDIDATE`, a new finding follows the canonical hardening-item
-lifecycle defined in §6 and may not skip a stage.
+lifecycle defined in §6 and may not skip a stage. It is not automatically
+selected for a later serial task.
 
 `NOT_APPLICABLE` and `EXTERNALIZED` remain explicit review outcomes after
 validation when appropriate. A finding may not move directly to implementation.
@@ -2621,7 +2760,12 @@ Additional tools are forbidden unless the exact task proves them necessary.
 
 ---
 
-# 32. Universal STOP Conditions
+# 32. Historical Autonomous STOP Conditions (superseded)
+
+The autonomous batch/controller STOP taxonomy below is retained as historical
+evidence only. Current serial work stops the selected task at the owning
+authority level whenever its scope, dependency, migration, law, review, or CI
+assumptions fail; it never widens the task or starts another issue.
 
 ## 32.1 STOP the entire batch when
 
@@ -2820,47 +2964,46 @@ INTEGRATION BASE
     latest accepted canonical main used for convergence before integration
 ```
 
-The coding loop executes Task Contracts against a frozen batch base derived from the accepted development base. It does not own programme/governance authority and may not manufacture READY work.
+The coding agent executes one Task Contract against the exact `task_base_sha`
+recorded for that issue. It does not own programme/governance authority, may
+not manufacture READY work, and may not silently rebase during the task.
 
 ---
 
-# 39. Recommended Operating Cadence
+# 39. Current Serial Operating Cadence
 
 ```text
 REVIEW / GOVERNANCE
     ↓
-validate findings
-freeze laws
-mark bounded items READY
+validate findings and freeze laws
     ↓
-IMPLEMENTATION BATCH
+human selects one canonical READY issue
     ↓
-0–3 independent READY items
-one branch + draft PR each
+inspect current main and SUBS authorities
     ↓
-MANDATORY STOP
+record exact task_base_sha and bounded scope
     ↓
-INDEPENDENT REVIEW
+one task branch / TDD / focused verification
     ↓
-exact diff
-exact head
-CI
-authority
-lifecycle invariants
-cross-domain effects
+fresh independent review / repository gates / exact-head CI
     ↓
-approved merge(s) into the SUBS workstream branch
+human merge decision
     ↓
-refresh persistent SUBS branch and freeze next batch base
+refresh canonical SUBS tip
     ↓
-next batch
+human selects the next issue
 ```
 
-This is the intended long-term subscription-hardening loop discipline.
+This is the current subscription-hardening discipline. No automatic selector,
+batch ceiling, controller claim, or runtime reconciliation is part of it.
 
 ---
 
-# 40. Final Current Verdict
+# 40. Historical v0.1.8 Final Verdict (superseded)
+
+The following verdict is retained as dated historical evidence. Its controller,
+Batch 001, `ACTIVE_PARALLEL`, and runtime-gate conclusions no longer describe
+current authority.
 
 ```text
 SUBSCRIPTION ENGINE:
@@ -2923,3 +3066,29 @@ passes.
 ```
 
 ---
+
+# 41. Current v0.1.9 Serial Verdict
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
+```
+
+The canonical READY rows remain available for explicit human selection. One
+bounded issue may be active at a time. Each selected issue must use a current
+governance check, an exact `task_base_sha` from the current explicitly accepted
+SUBS tip, TDD/minimal implementation where required, focused verification,
+fresh independent review, repository gates, exact-head PR CI, and a human merge
+decision. The SUBS tip is refreshed before another issue is selected.
+
+`SBH-30-02` remains `READY`; its existing PR #33 and HEAD
+`a03a4534d6373dd9a0ff99c32c95b30d62f918f8` remain bounded historical
+implementation/review evidence and are not declared complete. Required CI is
+still a merge gate, and no source change or merge is authorized by this
+register reconciliation.
+
+`SUB-ACT-04`, Batch 001, `ACTIVE_PARALLEL`, frozen batch bases, batch IDs,
+controller claims/counters, autonomous runtime, and controller CI-cycle
+accounting remain historical provenance only. They do not grant serial
+implementation authority or require runtime reconciliation for future issues.
