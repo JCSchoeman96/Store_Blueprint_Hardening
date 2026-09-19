@@ -1,6 +1,6 @@
 # Paste-Ready Codex Prompt — Subscription Hardening Loop v1.4
 
-**Authority revision:** v0.1.7. The v0.1.4 package remains historical authority only.
+**Authority revision:** v0.1.8. The v0.1.4 package remains historical authority only.
 
 You are the bounded execution controller for the `SUBS` Subscription Backbone Hardening workstream in:
 
@@ -67,7 +67,7 @@ Then:
 
 Do not use S0 tip movement or `WAITING_FOR_BASELINE_SYNC` as a blanket blocker.
 
-After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.7 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.7 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
+After `SUB-ACT-01` accepts a development base, `SUB-ACT-02` performs activation-feasibility verification only after a separate v1.4 runtime-compatibility gate. The tracked authority must be v0.1.8 and the external controller state must be compatible with it: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.8 authority is tracked while the external runtime remains schema `1.3`, record `LOCAL_AUTHORITY_UPGRADE_REQUIRED` and STOP. Do not mutate runtime state in `SUB-ACT-02`. It must not select implementation-loop READY work. A feasibility pass is valid when the accepted base, authority package, SUBS ownership, authorized next governance/review task, task-specific external-dependency model, shared-authority model, and programme-wide blocker review all pass.
 
 If SUBS is `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha` is proven, a `batch_base_sha` is frozen, local authority is promoted/tracked or supplied externally read-only, and at least one complete executable READY Task Contract exists:
 
@@ -81,7 +81,7 @@ admitted Task Contract means no implementation.
 ## ACTIVATION CONTROL PLANE
 
 The following v0.1.5 activation sequence is historical provenance only. Do not
-execute it as the current admission sequence. The current v0.1.7 sequence,
+execute it as the current admission sequence. The current v0.1.8 sequence,
 which requires separate external runtime-state reconciliation, appears below.
 
 ```text
@@ -115,7 +115,9 @@ shown above.
 change. It remains governance/review only. The separate main-governance registry
 refresh was merged and independently verified. The first `SUB-ACT-04` attempt
 returned `BLOCKED / STOP`, with PR #26 retaining the immutable findings evidence.
-The tracked-authority reconciliation v0.1.7 resolves the stale metadata. A
+The tracked-authority reconciliation v0.1.8 resolves the stale metadata. The
+v0.1.8 runtime transition contract completes the missing post-success phase and
+Batch 001 identifier. A
 separate external runtime-state reconciliation is still required before a fresh
 `SUB-ACT-04` admission run. Register rows marked `READY` still do not admit Batch
 001.
@@ -133,19 +135,24 @@ main-governance registry refresh merged and independently verified
     ↓
 first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings evidence retained
     ↓
-tracked-authority reconciliation v0.1.7
+tracked-authority reconciliation v0.1.8
     ↓
 separate external runtime-state reconciliation
     ↓
 fresh SUB-ACT-04 admission run
     ↓ PASS only
-ACTIVE_PARALLEL + Batch 001 frozen
+atomic transition:
+  mode = ACTIVE_IMPLEMENTATION_BATCH
+  activation_phase = ACTIVE_IMPLEMENTATION_BATCH
+  lifecycle_state = ACTIVE_PARALLEL
+  batch_base_sha = exact frozen SHA
+  batch_id = SUBS-BATCH-001
 ```
 
-Only a passing fresh `SUB-ACT-04` may freeze `batch_base_sha` and grant
-`ACTIVE_PARALLEL`. Tracked repository authority and external controller runtime
-state are separate records. The tracked reconciliation does not rewrite runtime
-state.
+Only a passing fresh `SUB-ACT-04` may atomically freeze `batch_base_sha`, set
+`batch_id = SUBS-BATCH-001`, and grant `ACTIVE_PARALLEL`. Tracked repository
+authority and external controller runtime state are separate records. The
+tracked reconciliation does not rewrite runtime state.
 
 ---
 
@@ -314,6 +321,12 @@ Do not invent READY work.
 # TASK CONTRACT
 
 Before touching code, load/materialize one complete Task Contract using the approved template.
+
+Before successful `SUB-ACT-04`, any completed candidate contract is inert
+admission evidence. It grants no task branch, implementation, or production
+authority. A contract becomes executable only after the atomic active runtime
+tuple has been persisted. For Batch 001, its identity must contain
+`batch_id = SUBS-BATCH-001` and the exact frozen `batch_base_sha`.
 
 It must define:
 
@@ -677,7 +690,7 @@ activation_feasibility
 
 `activation_phase` is separate from the canonical workstream lifecycle. `activation_feasibility` records the bounded `SUB-ACT-02` result and does not authorize implementation.
 
-The external runtime remains on its existing schema until a separate, authorized, and verified v1.4 migration/reclassification gate completes. v0.1.7 tracked authority plus an external schema `1.3` runtime is therefore `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not silently migrate or reclassify it.
+The external runtime remains on its existing schema until a separate, authorized, and verified v1.4 migration/reclassification gate completes. v0.1.8 tracked authority plus an external schema `1.3` runtime is therefore `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not silently migrate or reclassify it.
 
 Before a fresh `SUB-ACT-04` admission run, resolve canonical governance and
 separately reconcile the external controller state to:
@@ -719,6 +732,57 @@ schema-valid runtime value proven from the external state. This prompt does not
 define or invent an `activation_phase` string. If the exact valid phase cannot be
 proven, external runtime reconciliation is incomplete or blocked and the fresh
 `SUB-ACT-04` run must STOP.
+
+## SUCCESSFUL SUB-ACT-04 RUNTIME TRANSITION
+
+The v0.1.8 authority completes the post-success machine-state contract while
+keeping protocol v1.4 and runtime schema 1.4.
+
+Immediately before the protected transition:
+
+```text
+mode = PRE_ACTIVATION_VALIDATION
+activation_phase = PRE_ACTIVATION_FEASIBILITY
+lifecycle_state = READY
+batch_base_sha = null
+batch_id = null
+```
+
+A passing `SUB-ACT-04` must atomically persist all of these fields together:
+
+```text
+mode = ACTIVE_IMPLEMENTATION_BATCH
+activation_phase = ACTIVE_IMPLEMENTATION_BATCH
+lifecycle_state = ACTIVE_PARALLEL
+batch_base_sha = exact frozen current origin/hardening/subscriptions SHA admitted by SUB-ACT-04
+batch_id = SUBS-BATCH-001
+```
+
+`SUBS-BATCH-001` is the exact Batch 001 identifier. Later identifiers require
+explicit governance and must not be inferred by arithmetic alone.
+
+The controller must reject partial success. The following combinations are
+invalid:
+
+```text
+ACTIVE_PARALLEL + batch_base_sha = null
+ACTIVE_IMPLEMENTATION_BATCH + batch_id = null
+batch_base_sha != null + lifecycle_state = READY
+activation_phase = PRE_ACTIVATION_FEASIBILITY + mode = ACTIVE_IMPLEMENTATION_BATCH
+```
+
+Immediately before the write, re-resolve `origin/main` and
+`origin/hardening/subscriptions`. If either differs from the values admitted by
+the current run, return `AUTHORITY_MOVED`, write no activation state, and STOP.
+If the write fails, return `ACTIVATION_STATE_COMMIT_FAILED`, write no partial
+state, and STOP.
+
+Before this transition, candidate Task Contracts are inert admission evidence.
+They become executable only after the complete active tuple is persisted. A
+Batch 001 contract must contain the current governance SHA, the accepted
+development base, the frozen `batch_base_sha`, and `batch_id = SUBS-BATCH-001`.
+The `SUB-ACT-04` invocation itself creates no task branch and performs no
+implementation.
 
 `integration_base_sha` remains null during normal hardening and is set only for integration preparation.
 
@@ -800,7 +864,8 @@ STOP immediately if:
 16. production access/credentials/deployment/destructive action is required;
 17. three successful draft PRs exist;
 18. no READY independent task exists;
-19. bounded task/batch terminal result has been recorded.
+19. bounded task/batch terminal result has been recorded;
+20. the successful `SUB-ACT-04` transition cannot be committed atomically.
 
 On STOP:
 
@@ -842,17 +907,22 @@ main-governance registry refresh merged and independently verified
     ↓
 first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings evidence retained
     ↓
-tracked-authority reconciliation v0.1.7
+tracked-authority reconciliation v0.1.8
     ↓
 separate external runtime-state reconciliation
     ↓
 fresh SUB-ACT-04 admission run
     ↓ PASS only
-ACTIVE_PARALLEL + Batch 001 frozen
+atomic transition:
+  mode = ACTIVE_IMPLEMENTATION_BATCH
+  activation_phase = ACTIVE_IMPLEMENTATION_BATCH
+  lifecycle_state = ACTIVE_PARALLEL
+  batch_base_sha = exact frozen SHA
+  batch_id = SUBS-BATCH-001
 ```
 
 Tracked repository authority and external controller runtime state remain
-separate records. The tracked v0.1.7 reconciliation does not rewrite runtime
+separate records. The tracked v0.1.8 reconciliation does not rewrite runtime
 state. If the external runtime reconciliation cannot prove the exact valid
 `activation_phase`, it is incomplete or blocked and the fresh `SUB-ACT-04` run
 must STOP. After a passing `SUB-ACT-04`, execute only READY implementation tasks
