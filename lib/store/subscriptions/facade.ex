@@ -3121,6 +3121,7 @@ defmodule Store.Subscriptions.Facade do
     next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
     max_retry_attempts = Map.get(plan, :max_retry_attempts) || 0
     retry_suppressed? = hard_retry_suppressed_reason?(message)
+    past_due_since_at = dunning_anchor(subscription, now)
 
     status =
       if next_attempt_count > max_retry_attempts do
@@ -3137,7 +3138,7 @@ defmodule Store.Subscriptions.Facade do
         if retry_suppressed? do
           nil
         else
-          Scheduler.next_retry_at(now, next_attempt_count - 1, plan)
+          next_retry_at_or_nil(past_due_since_at, next_attempt_count - 1, plan)
         end
 
       _ =
@@ -3146,6 +3147,7 @@ defmodule Store.Subscriptions.Facade do
           :mark_past_due_transition,
           %{
             billing_status_reason: message,
+            past_due_since_at: past_due_since_at,
             dunning_attempt_count: next_attempt_count,
             next_retry_at: next_retry_at,
             retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
@@ -3159,6 +3161,16 @@ defmodule Store.Subscriptions.Facade do
 
     :ok
   end
+
+  defp next_retry_at_or_nil(reference_at, attempt_index, plan) do
+    case Scheduler.next_retry_at(reference_at, attempt_index, plan) do
+      :exhausted -> nil
+      next_retry_at -> next_retry_at
+    end
+  end
+
+  defp dunning_anchor(%Subscription{past_due_since_at: nil}, now), do: now
+  defp dunning_anchor(%Subscription{past_due_since_at: anchor}, _now), do: anchor
 
   defp mark_subscription_past_due(subscription, reason) do
     message =
