@@ -2,6 +2,9 @@
 
 **Template version:** v0.1.3  
 **Purpose:** Materialize exactly one branch-sized, already-authorized Subscription hardening task.
+**Compatible SUBS authority:** v0.1.8
+**Loop protocol:** v1.4
+**Runtime schema:** 1.4
 
 > A completed Task Contract is execution authority only for the exact bounded task described here. It does not authorize adjacent findings, architecture changes, shared-domain changes, merges, deployment, or production operations.
 
@@ -9,7 +12,8 @@
 
 ## Active-mode precondition
 
-This template is used only in `ACTIVE_IMPLEMENTATION_BATCH`.
+This template may record inert admission evidence before activation. It becomes
+execution authority only in `ACTIVE_IMPLEMENTATION_BATCH`.
 
 Before materializing a task:
 
@@ -25,6 +29,11 @@ If any bootstrap authority file remains untracked:
 BOOTSTRAP_NOT_PROMOTED
 STOP
 ```
+
+Before a successful `SUB-ACT-04`, a completed candidate contract is inert
+admission evidence. It does not authorize a task branch, implementation, or
+production work. A contract becomes executable only after the atomic active
+runtime tuple has been persisted.
 
 ---
 
@@ -43,10 +52,18 @@ STOP
 | `development_base_sha` | `<ACCEPTED_SUBS_DEVELOPMENT_BASE_SHA>` |
 | `batch_base_sha` | `<EXACT_BATCH_BASE_SHA>` |
 | `integration_base_sha` | `<NULL_DURING_HARDENING_OR_EXACT_INTEGRATION_SHA>` |
+| `mode` | `ACTIVE_IMPLEMENTATION_BATCH` |
+| `activation_phase` | `ACTIVE_IMPLEMENTATION_BATCH` |
+| `lifecycle_state` | `ACTIVE_PARALLEL` |
 | `workstream_branch` | `hardening/subscriptions` |
 | `task_branch` | `<AUTHORIZED_TASK_BRANCH>` |
 
 If `task_state != READY` or `loop_eligible != true`, STOP.
+
+For Batch 001, `batch_id` must equal `SUBS-BATCH-001`. The contract must carry
+the exact frozen `batch_base_sha`, the accepted development base, and the
+current governance authority SHA. Later batch identifiers require explicit
+governance and must not be inferred by arithmetic alone.
 
 ---
 

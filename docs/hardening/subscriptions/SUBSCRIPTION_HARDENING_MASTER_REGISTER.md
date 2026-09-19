@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.7
-**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / SUB-ACT-04 RECONCILIATION RECORDED / DYNAMIC GOVERNANCE AUTHORITY CORRECTION RECORDED / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
-**Verified:** 2026-09-18
+**Version:** v0.1.8
+**Status:** SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUBS READY / SUB-ACT-04 RECONCILIATION RECORDED / SUB-ACT-04 RUNTIME TRANSITION CONTRACT COMPLETED / DYNAMIC GOVERNANCE AUTHORITY CORRECTION RECORDED / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
+**Verified:** 2026-09-19
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the independently verified SUBS activation, the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, and the JC-223 executable dependency graph and hardening matrix freeze. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does **not** authorize migrations, shared-domain changes, Batch 001, or production implementation.
+> This document records the independently verified SUBS activation, the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 executable dependency graph and hardening matrix freeze, and the v0.1.8 successful `SUB-ACT-04` runtime transition contract. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does **not** authorize migrations, shared-domain changes, Batch 001, or production implementation.
 
 ---
 
@@ -223,7 +223,7 @@ canonical v0.1.6 SUBS authority SHA was established only by exact post-merge
 verification of PR #27. This document does not embed a permanently current
 post-merge SHA.
 
-The v0.1.7 dynamic governance rule applies before every external runtime
+The v0.1.8 dynamic governance and transition rule applies before every external runtime
 reconciliation and fresh `SUB-ACT-04` admission:
 
 1. Run `git fetch origin`.
@@ -238,6 +238,62 @@ If `origin/main` moves after resolution and before the protected transition,
 the run must return `AUTHORITY_MOVED` and stop without substituting another
 SHA. A later movement invalidates the current-authority assumption for future
 runs but does not rewrite historical run evidence.
+
+## 2.9 v0.1.8 successful SUB-ACT-04 runtime transition contract — 2026-09-19
+
+The v0.1.8 amendment completes the machine-state contract for a successful
+fresh `SUB-ACT-04`. The Subscription Hardening Loop remains v1.4 and the
+external runtime schema remains 1.4. This amendment changes no production
+Subscription semantics and does not mutate the external runtime.
+
+Immediately before the protected transition, the admitted runtime state is:
+
+```text
+mode = PRE_ACTIVATION_VALIDATION
+activation_phase = PRE_ACTIVATION_FEASIBILITY
+lifecycle_state = READY
+batch_base_sha = null
+batch_id = null
+```
+
+A passing `SUB-ACT-04` must atomically write this complete transition:
+
+```text
+mode = ACTIVE_IMPLEMENTATION_BATCH
+activation_phase = ACTIVE_IMPLEMENTATION_BATCH
+lifecycle_state = ACTIVE_PARALLEL
+batch_base_sha = exact frozen current origin/hardening/subscriptions SHA admitted by SUB-ACT-04
+batch_id = SUBS-BATCH-001
+```
+
+`SUBS-BATCH-001` is the exact identifier for the first admitted implementation
+batch. Later batch identifiers require an explicit governance decision; the
+controller must not infer them by arithmetic alone.
+
+The controller must persist the five successful-transition fields as one
+atomic state update. These combinations are invalid and must never be
+persisted:
+
+```text
+ACTIVE_PARALLEL + batch_base_sha = null
+ACTIVE_IMPLEMENTATION_BATCH + batch_id = null
+batch_base_sha != null + lifecycle_state = READY
+activation_phase = PRE_ACTIVATION_FEASIBILITY + mode = ACTIVE_IMPLEMENTATION_BATCH
+```
+
+Immediately before the write, the controller must re-resolve `origin/main` and
+`origin/hardening/subscriptions`. If either authority differs from the values
+admitted by the current run, it must return `AUTHORITY_MOVED`, persist no
+activation transition, and stop. If the atomic write fails, it must return
+`ACTIVATION_STATE_COMMIT_FAILED`, persist no partial success, and stop.
+
+Before this successful transition, candidate Task Contracts are inert admission
+evidence. They become executable only after the runtime proves the complete
+active tuple above. An executable Batch 001 contract must carry
+`batch_id = SUBS-BATCH-001`, the exact frozen `batch_base_sha`, the accepted
+development base, and the current governance authority SHA.
+The `SUB-ACT-04` invocation itself creates no task branch and performs no
+implementation.
 
 ---
 
@@ -259,13 +315,18 @@ main-governance registry refresh merged and independently verified
     ↓
 first SUB-ACT-04 attempted → BLOCKED / STOP; PR #26 findings recorded
     ↓
-tracked-authority reconciliation v0.1.7
+tracked-authority reconciliation v0.1.8
     ↓
 separate external runtime-state reconciliation
     ↓
 fresh SUB-ACT-04 admission attempt
     ↓ PASS only
-ACTIVE_PARALLEL + Batch 001 frozen
+atomic transition:
+  mode = ACTIVE_IMPLEMENTATION_BATCH
+  activation_phase = ACTIVE_IMPLEMENTATION_BATCH
+  lifecycle_state = ACTIVE_PARALLEL
+  batch_base_sha = exact frozen SHA
+  batch_id = SUBS-BATCH-001
 ```
 
 No production `SBH-*` implementation task is authorized merely by this register,
@@ -962,11 +1023,11 @@ Historical entries remain for provenance only and may not block current task adm
 | `SUB-ACT-01` | Independently verify and pin SUBS development base | `DEVELOPMENT_BASE_ACCEPTED` | No | ACT-00 | `development_base_sha = 575ffa1848ac69abe855bd018c7ae8eaf05d61e4` accepted |
 | `SUB-ACT-02` | Verify activation feasibility, task-level dependencies, and shared-authority usability | `ACTIVATION_FEASIBILITY_PASS` | No | ACT-01 + separately authorized and verified v1.4 runtime compatibility | feasibility pass recorded |
 | `SUB-ACT-03` | Record accepted SUBS development base and canonical activation state | `CANONICAL_READY_RECORDED` | No | ACT-01 + ACT-02 PASS + v1.4 runtime compatibility | ordered `BOOTSTRAPPED → BASELINE_PINNED → READY` transitions recorded |
-| `SUB-ACT-04` | Freeze Batch 001 base and run v1.3/v1.4 admission recertification | `BLOCKED_DEPENDENCY` | No | ACT-03 + SBH-00-05 + separately merged and independently verified main-governance registry refresh | `batch_base_sha` + 0A-P/0A-B/0A-N PASS |
+| `SUB-ACT-04` | Freeze Batch 001 base and run v1.3/v1.4 admission recertification | `BLOCKED_DEPENDENCY` | No | ACT-03 + SBH-00-05 + separately merged and independently verified main-governance registry refresh + v0.1.8 runtime transition contract | `batch_base_sha` + `batch_id` + 0A-P/0A-B/0A-N PASS + atomic transition PASS |
 
 **Hard gate:** production implementation requires canonical SUBS `READY` or `ACTIVE_PARALLEL`, an accepted `development_base_sha`, successful v1.3/v1.4 admission recertification, a frozen `batch_base_sha`, a completed SBH-00 executable dependency graph, and at least one task that passes task-level admission.
 
-`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.7 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.7 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
+`SUB-ACT-02` is a feasibility gate, not implementation admission. It is not executable merely because `SUB-ACT-01` passed. Before it runs, the tracked authority must be v0.1.8 and the external controller state must be compatible with that authority: schema `1.4`, `activation_phase`, and `activation_feasibility` must be present, and any schema migration or runtime reclassification must have been separately authorized and verified. If v0.1.8 authority is tracked while the external runtime remains schema `1.3`, the deterministic result is `LOCAL_AUTHORITY_UPGRADE_REQUIRED → STOP`; `SUB-ACT-02` must not mutate runtime state.
 
 After that compatibility gate, `SUB-ACT-02` must prove that the accepted base, authority package, SUBS ownership, task-specific external-dependency model, shared-authority model, and at least one authorized next governance/review task are usable, with no programme-wide blocker. It must not require `state == READY`, `loop_eligible == true`, or a frozen `batch_base_sha`.
 
@@ -2837,7 +2898,7 @@ CURRENT WORKSTREAM STATE:
 READY / GOVERNANCE-REVIEW ONLY / JC-223 DEPENDENCY GRAPH FROZEN.
 
 CURRENT VERDICT:
-SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN.
+SUBS_JC_223_DEPENDENCY_GRAPH_FROZEN / SUB-ACT-04_RUNTIME_TRANSITION_CONTRACT_COMPLETE.
 
 HISTORICAL v0.1.3 CANDIDATE:
 77a272c3887a7ab46e84a7fed02163d964e37b9b.
@@ -2846,17 +2907,19 @@ ACCEPTED DEVELOPMENT BASE RECORD:
 575ffa1848ac69abe855bd018c7ae8eaf05d61e4 (SUB-ACT-01 accepted development base).
 
 NEXT AUTHORIZED GATE:
-After PR #27 merges, read the actual current `origin/hardening/subscriptions`.
-Reconcile the external runtime state separately, then rerun `SUB-ACT-04` against
-that verified current authority. Only a passing fresh admission may freeze
-`batch_base_sha`, grant `ACTIVE_PARALLEL`, and start Batch 001.
+After the v0.1.8 authority is independently verified, read the actual current
+`origin/hardening/subscriptions`. Reconcile the external runtime state
+separately, then rerun `SUB-ACT-04` against that verified current authority.
+Only a passing fresh admission may atomically freeze `batch_base_sha`, set
+`batch_id = SUBS-BATCH-001`, grant `ACTIVE_PARALLEL`, and start Batch 001.
 
 FINAL ACTION:
-After PR #27 merges, read the actual current `origin/hardening/subscriptions`
-and complete the separate external runtime-state reconciliation against it.
-Independently verify that reconciliation, then rerun `SUB-ACT-04` as a fresh
-Batch 001 base and implementation-admission recertification. Production
-implementation remains unauthorized until that gate passes.
+After the v0.1.8 authority is independently verified, read the actual current
+`origin/hardening/subscriptions` and complete the separate external runtime-
+state reconciliation against it. Independently verify that reconciliation, then
+rerun `SUB-ACT-04` as a fresh Batch 001 base and implementation-admission
+recertification. Production implementation remains unauthorized until that gate
+passes.
 ```
 
 ---
