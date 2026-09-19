@@ -1567,9 +1567,14 @@ defmodule Store.Subscriptions.Facade do
         {:error, reason}
 
       {:error, reason} ->
-        _ = mark_attempt_failed(attempt, reason)
-        mark_subscription_past_due(subscription, plan, reason, now)
-        {:error, reason}
+        case mark_attempt_failed(attempt, reason) do
+          :terminal_success ->
+            :ok
+
+          :ok ->
+            mark_subscription_past_due(subscription, plan, reason, now)
+            {:error, reason}
+        end
     end
   end
 
@@ -2086,10 +2091,19 @@ defmodule Store.Subscriptions.Facade do
     case attempt
          |> Ash.Changeset.for_update(:mark_failed, attrs, context: %{system?: true})
          |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true}) do
-      {:ok, _updated_attempt} -> :ok
-      {:error, _reason} -> :ok
+      {:ok, _updated_attempt} ->
+        :ok
+
+      {:error, reason} ->
+        if terminal_success_conflict?(reason), do: :terminal_success, else: :ok
     end
   end
+
+  defp terminal_success_conflict?(%Ash.Error.Invalid{errors: errors}) when is_list(errors) do
+    Enum.any?(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+  end
+
+  defp terminal_success_conflict?(_reason), do: false
 
   defp ensure_renewal_chargeability(subscription, _plan) do
     with :ok <- Providers.ensure_enabled_provider(subscription.provider),

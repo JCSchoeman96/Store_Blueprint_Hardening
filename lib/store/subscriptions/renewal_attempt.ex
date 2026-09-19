@@ -129,12 +129,14 @@ defmodule Store.Subscriptions.RenewalAttempt do
     update :mark_processing do
       require_atomic?(false)
       accept([:order_id, :payment_intent_id])
+      change(filter(expr(status != :succeeded)))
       change(set_attribute(:status, :processing))
     end
 
     update :mark_failed do
       require_atomic?(false)
       accept([:failure_code, :failure_message, :attempt_no])
+      change(filter(expr(status != :succeeded)))
       change(set_attribute(:status, :failed))
     end
   end
