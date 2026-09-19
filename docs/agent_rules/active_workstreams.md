@@ -1,6 +1,6 @@
 # Active Workstream Registry
 
-Dynamic authority registry for parallel hardening programmes.
+Dynamic authority registry for hardening programmes.
 
 `AGENTS.md` is permanent law. This file records the **current** workstream topology, ownership, lifecycle state, and ownership-relevant pending PRs.
 
@@ -17,7 +17,7 @@ Do not treat transient SHAs below as permanent law; they are commissioning/statu
 - Declare owned domains, exclusions, and shared boundaries
 - Record lifecycle state so agents do not start unauthorized implementation
 - Point to pending PRs that affect ownership
-- Make independent parallel activation of S0, PLATFORM, and SUBS legally possible after this governance is accepted
+- Make independent activation of S0, PLATFORM, and SUBS legally possible after this governance is accepted
 
 This registry grants **no** implementation authority by itself. Each hardening lane requires a separate post-merge activation gate.
 
@@ -49,6 +49,8 @@ S0 is **not** the mandatory development parent of PLATFORM or SUBS.
 PLATFORM and SUBS do **not** wait for S0 merely because S0 moved.
 Cross-workstream dependencies are evaluated at the **task** level.
 Convergence with canonical `main` remains mandatory before integration.
+
+This topology remains parallel across independent workstreams. It does not authorize parallel SUBS issue execution. SUBS implementation follows the serial policy in the SUBS section below.
 
 ---
 
@@ -98,7 +100,7 @@ A development base must be:
 - explicit
 - provenanced
 - verified
-- frozen for the relevant activation/batch
+- frozen for the relevant activation or task
 
 Do not describe transient SHAs as permanent law.
 Candidate tip SHAs in this file are status evidence only until an activation gate accepts them.
@@ -141,8 +143,10 @@ Valid reasons for `BASELINE_INVALIDATED`:
 
 Replace global workstream serialization with task-level dependency admission.
 
+This law classifies dependencies after a lane's execution policy explicitly selects a task. It does not authorize automatic task selection. SUBS uses the serial policy below.
+
 ```text
-SELECT READY TASK
+SELECT A READY TASK UNDER THE LANE'S CURRENT POLICY
        ↓
 Does this exact task require an external change
 not present in the lane's development base?
@@ -153,7 +157,7 @@ not present in the lane's development base?
        │     ↓
        │ do not execute this task
        │     ↓
-       │ consider another independent READY task
+       │ consider another independent READY task where that lane's policy permits it
        │
        └── NO
              ↓
@@ -192,7 +196,7 @@ NO_EXECUTABLE_READY_WORK
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
 | `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
-| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; governance/review only; production implementation not authorized |
+| `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
 Temporary worktrees (governance / integration / review / task / remediation) may exist under names such as `Store_Blueprint_Hardening-governance-*`, `Store_Blueprint_Hardening-integration-*`, `Store_Blueprint_Hardening-review-*`, `Store_Blueprint_Hardening-task-*`, or `Store_Blueprint_Hardening-remediation-*`. They are disposable. Do **not** create a permanent integration worktree. Do **not** create a fifth programme lane.
 
@@ -287,10 +291,10 @@ Primary authority:
 - subscription commercial contract law
 - subscription-specific reconciliation and certification
 
-Explicit exclusion until separately authorized:
+Explicit exclusions unless separately authorized by the owning authority:
 
 - `InventoryAdmission`
-- generic dependency graph
+- generic dependency/platform work
 - auth platform
 - migrations
 - Payments core
@@ -300,26 +304,139 @@ Explicit exclusion until separately authorized:
 SUBS may progress without S0 finishing, unless an exact task declares a validated external dependency.
 SUBS does **not** continuously consume S0 as parent authority.
 
-**Activation:** SUB-ACT-03 records the separately completed SUBS activation gate. The canonical lifecycle is now `READY`, but this does not authorize Subscription production implementation. Stage B is now frozen and canonical: `SBH-00-01` through `SBH-00-04` are `CONTRACT_FROZEN / CANONICAL` governance/review records, with `loop_eligible = No`. The subsequent JC-223 dependency-graph freeze records `SBH-00-05 / JC-223` as `CONTRACT_FROZEN / CANONICAL` governance/review work, with `loop_eligible = No`.
+Cross-domain mutations still require the owning workstream or domain authority.
+
+The following law remains frozen and is not reopened by this execution-model change:
+
+- JC-219
+- JC-220
+- JC-221
+- JC-222
+- JC-223
+- existing frozen Subscription lifecycle and scheduling law
+
+Stage B remains frozen and canonical. `SBH-00-01` through `SBH-00-04` are `CONTRACT_FROZEN / CANONICAL` governance/review records with `loop_eligible = No`. The subsequent JC-223 dependency-graph freeze records `SBH-00-05 / JC-223` as `CONTRACT_FROZEN / CANONICAL` governance/review work with `loop_eligible = No`.
 
 `PR #8` itself did not activate SUBS. SUBS subsequently completed its independent activation gates. The current SUBS authority tip is `80d44613dc45a26ecb34a8eb6cbad8cce1e4f0c1`, the verified PR #31 v0.1.8 runtime-transition merge commit; it is not the development base. The prior `08f5db67f7bf524ecd7fcf77d54a1ab27ecfe6e3` PR #29 dynamic-governance-authority merge, the earlier `317d3c1e4304f671162b53f9d31a060682849e9e` PR #27 authority-reconciliation merge, and the earlier `8f93e0c9b6edc083093c74cc8e6243259683d50b` JC-223 dependency-graph / governance-freeze merge remain historical provenance. JC-219, JC-220, JC-221, JC-222, and JC-223 are repository-canonical. The accepted development base remains `575ffa1848ac69abe855bd018c7ae8eaf05d61e4`.
 
-The Stage B governance freeze is complete. Production Subscription implementation remains blocked until all of the following are complete:
+### SUBS execution policy: SERIAL / EXPLICIT HARDENING
 
-- separate main-registry refresh merged and independently verified
-- `SUB-ACT-04`
-- `batch_base_sha` frozen
-- implementation-admission recertification passed
-- an executable `READY` task exists
+`SUBS lifecycle = READY`.
 
-The separate main-registry refresh must be merged and independently verified before `SUB-ACT-04`.
-Once this refresh is verified, `SUB-ACT-04` is the next authorized SUBS control-plane
-action; it does not freeze `batch_base_sha` or grant implementation authority until
-its own gates pass.
+Lifecycle is separate from execution policy. The current SUBS execution policy is:
 
-`ACTIVE_PARALLEL` is not granted. Batch 001 has not started, and `batch_base_sha` is not frozen.
+```text
+SERIAL / EXPLICIT HARDENING
+
+human explicitly selects one canonical READY issue
+    ↓
+verify current governance + SUBS authority
+    ↓
+materialize bounded task scope
+    ↓
+one task branch
+    ↓
+TDD / minimal implementation
+    ↓
+focused verification
+    ↓
+fresh independent review
+    ↓
+required repository quality gates / CI
+    ↓
+human merge decision
+    ↓
+refresh canonical SUBS authority
+    ↓
+only then select the next issue
+```
+
+At most one SUBS implementation issue may be active through this serial workflow at a time. Future governance must explicitly change that rule before more than one issue may be active. Do not create a persistent `ACTIVE_SERIAL` lifecycle value.
+
+READY issues may be implemented serially and explicitly only under the admission, scope, review, and CI rules below. `loop_eligible` may remain historical or register metadata, but it is not the execution-admission switch. Do not manufacture READY work.
+
+#### Serial task admission
+
+A SUBS issue may be implemented only when all of the following are true:
+
+- its register state is `READY`
+- relevant Product, Architecture, and Domain law is frozen
+- acceptance criteria are deterministic
+- the user or human explicitly selects that issue
+- current `origin/main` governance is inspected
+- current `origin/hardening/subscriptions` is inspected
+- required external dependencies are present
+- required shared authority is assigned
+- the task has a bounded objective
+- allowed and forbidden write scope are explicit
+
+#### Per-task execution
+
+Every selected issue requires:
+
+- one bounded task
+- explicit authority
+- exact allowed and forbidden scope
+- TDD where implementation changes are required
+- a minimal change
+- focused tests
+- named neighbouring regressions where relevant
+- performance and scaling consideration
+- security and multi-tenant consideration
+- fresh independent read-only review
+- required repository quality gates
+- required PR CI
+- no automatic merge
+
+If implementation reveals a new authority problem, scope expansion, shared-boundary dependency, migration requirement, or upstream contradiction, stop at the owning authority level.
+
+#### Branch and base rule
+
+Do not freeze a multi-task batch base. For each new serial issue:
+
+1. fetch current refs
+2. verify the current canonical `hardening/subscriptions` tip
+3. create that issue's task branch from the current explicitly accepted SUBS tip
+4. record that exact base in the task evidence
+5. do not silently rebase during the task
+
+After a task is merged, refresh the canonical SUBS tip before selecting another issue. Each issue therefore receives a fresh current base instead of sharing a frozen autonomous batch base.
+
+#### Historical controller and batch provenance
+
+The following references remain historical/controller provenance. They no longer form the implementation-admission mechanism for new serial SUBS tasks:
+
+- autonomous SUBS implementation batches
+- automatic READY task selection
+- `SUB-ACT-04` as an implementation-admission gate
+- `ACTIVE_PARALLEL` as a prerequisite for implementation
+- `batch_base_sha` as a prerequisite for serial tasks
+- `SUBS-BATCH-001` and future autonomous batch identifiers
+- `successful_pr_count` batch ceilings
+- multi-task same-batch independence admission
+- persistent controller task claims
+- autonomous 0–3 PR execution
+- controller-specific CI wait-cycle accounting
+
+External SUBS controller runtime and Batch 001 evidence remain historical evidence. Do not rewrite or delete that evidence. It does not grant implementation authority after this amendment becomes canonical, and runtime reconciliation is not required to execute future serial issues.
+
+#### Existing PR #33 evidence
+
+PR #33 remains bounded implementation evidence:
+
+- Task: `SBH-30-02`
+- PR: `#33`
+- Current task HEAD: `a03a4534d6373dd9a0ff99c32c95b30d62f918f8`
+
+The autonomous-loop retirement does not declare PR #33 successful and does not authorize merge while required CI is red. Its existing implementation and review evidence remains valid historical evidence unless its HEAD changes or new contradictory evidence appears.
+
+Under the serial model, required CI must pass before merge. Unrelated CI or platform failures must not be repaired inside SBH-30-02 without authority. Controller-specific batch or resumption state no longer determines whether the task may be manually reviewed or revalidated. Any source change to PR #33 requires normal focused verification, fresh review, and exact-head CI again.
+
+Do not rerun CI or alter PR #33 in a governance task.
 
 ### SUBS activation record: SUB-ACT-03
+
+This record is historical activation evidence. It establishes the current SUBS lifecycle as `READY`; it does not define the current serial task-admission policy.
 
 Initial canonical state:
 
@@ -359,6 +476,8 @@ SUB-ACT-02 produced `ACTIVATION_FEASIBILITY_PASS` as a read-only activation-feas
 
 SUB-ACT-02P subsequently reconciled and accepted the persisted `activation_feasibility = ACTIVATION_FEASIBILITY_PASS` runtime value through deterministic reconstruction. Its provenance result is `SUB_ACT_02_RUNTIME_PROVENANCE_RECONCILED`.
 
+The accepted persisted-state provenance is historical metadata. In particular, `batch_base_sha = null` is evidence from that record, not a current prerequisite for a serial task.
+
 The accepted persisted-state provenance is:
 
 ```text
@@ -378,7 +497,7 @@ terminal_outcome = null
 | `BOOTSTRAPPED → BASELINE_PINNED` | accepted SUB-ACT-01 development base | canonical development base recorded | No |
 | `BASELINE_PINNED → READY` | `ACTIVATION_FEASIBILITY_PASS` with reconciled provenance | `SBH-00-01` and `SBH-00-02` initially become available as governance/review work | No |
 
-Invalid transitions for this record include:
+The following invalid-transition entries are retained as historical SUB-ACT-03 provenance:
 
 ```text
 BOOTSTRAPPED → READY without BASELINE_PINNED evidence
@@ -387,9 +506,9 @@ BOOTSTRAPPED → ACTIVE_PARALLEL
 READY → Batch 001 started
 ```
 
-Any invalid activation transition is `INVALID_ACTIVATION_TRANSITION → STOP`.
+Any invalid activation transition is `INVALID_ACTIVATION_TRANSITION → STOP` in the historical activation record.
 
-`SUB-ACT-03` does not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. `ACTIVE_PARALLEL` remains an ACT-04-controlled outcome.
+Historically, `SUB-ACT-03` did not set `ACTIVE_PARALLEL`, freeze `batch_base_sha`, start Batch 001, or authorize production Subscription implementation. Those historical entries do not make `ACTIVE_PARALLEL`, `batch_base_sha`, Batch 001, or `SUB-ACT-04` prerequisites for the current serial process.
 
 ### Performance & Scaling Review
 
@@ -436,7 +555,7 @@ Do not weaken this protection to gain parallelism.
 
 ## Workstream state machine
 
-Persistent hardening programmes use:
+Persistent hardening programmes that use the parallel execution model use:
 
 ```text
 BOOTSTRAPPED
@@ -460,6 +579,8 @@ INTEGRATED
 
 `MAIN` uses `CANONICAL` instead of the implementation ladder.
 
+SUBS does not use `ACTIVE_PARALLEL` or any downstream parallel state for issue execution. Its lifecycle remains `READY`, and its serial execution policy governs each explicitly selected issue. Do not add an `ACTIVE_SERIAL` lifecycle state.
+
 Exceptional states:
 
 ```text
@@ -472,7 +593,7 @@ AUTHORITY_MOVED
 Task-level blockers are normally **task** states.
 Do not demote an entire workstream merely because one task is blocked.
 
-`PR #8` itself did **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`. SUB-ACT-03 records only the separately evidenced SUBS transition to `READY`. S0 and PLATFORM remain independently `BOOTSTRAPPED`.
+`PR #8` itself did **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`. SUB-ACT-03 records only the separately evidenced SUBS transition to `READY`. S0 and PLATFORM remain independently `BOOTSTRAPPED`. The `ACTIVE_PARALLEL` reference is retained as historical state evidence and is not a current SUBS implementation prerequisite.
 
 ---
 
@@ -539,7 +660,9 @@ After this parallel-topology governance is accepted:
 
 - S0 may run its independent activation gate.
 - PLATFORM may run its independent activation gate.
-- SUBS activation is recorded separately by SUB-ACT-03.
+- SUBS remains `READY` as recorded by SUB-ACT-03 and uses the serial execution policy above.
+
+The SUBS gate in the topology diagram is the completed SUB-ACT-03 activation record, not a new autonomous implementation gate.
 
 No lane requires another lane to finish first unless its exact task declares a validated external dependency.
 
@@ -553,11 +676,11 @@ After this parallel-topology governance is accepted and verified:
 
 - S0 may run its independent activation gate.
 - PLATFORM may run its independent activation gate.
-- SUBS activation is recorded by SUB-ACT-03.
+- SUBS remains `READY` as recorded by SUB-ACT-03 and may begin a serial issue only after the admission rules above pass.
 
 No lane requires another lane to finish first unless its exact task declares a validated external dependency.
 
-Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS is `READY` only as recorded by SUB-ACT-03; S0 and PLATFORM remain `BOOTSTRAPPED`.
+Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS has completed the activation recorded by SUB-ACT-03 and remains `READY`; S0 and PLATFORM remain `BOOTSTRAPPED`.
 
 This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
 
@@ -595,7 +718,7 @@ Every agent opened in a persistent worktree MUST:
 10. Load the exact task contract
 11. Evaluate task-specific external dependencies against the development base
 12. Evaluate shared-authority requirements
-13. Freeze the exact batch/task base SHA
+13. Record the exact task base SHA; do not freeze a multi-task batch base
 14. STOP on a genuine mismatch
 
 Before any modification, explicitly state:
@@ -650,7 +773,7 @@ When updating:
 - refresh lifecycle states, pending PRs, and ownership assignments here
 - record SHAs as status / candidate evidence only, never as frozen forever-law
 - do not claim a PR merged unless GitHub shows it merged
-- do not self-activate S0 or PLATFORM from a registry-only change; record SUBS activation only through an explicit SUB-ACT task
+- do not self-activate S0 or PLATFORM from a registry-only change; keep SUBS at `READY` as recorded by SUB-ACT-03 and require serial admission for new implementation
 
 ### Current status / candidate development-base evidence (refresh when tips move)
 
