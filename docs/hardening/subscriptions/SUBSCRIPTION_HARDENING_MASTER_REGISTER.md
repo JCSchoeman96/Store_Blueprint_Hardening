@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.12
+**Version:** v0.1.13
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-20
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,7 +13,7 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes, or manufacture READY work.
 
-## Current authority boundary — v0.1.12
+## Current authority boundary — v0.1.13
 
 Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
 supersedes the autonomous SUBS execution model. SUBS lifecycle remains
@@ -1990,13 +1990,16 @@ infrastructure changes.
 
 ## SBH-80-02 — StoredPaymentMethod Transition-Graph Adversarial Proof
 
-**State:** `BLOCKED_DEPENDENCY`.
-**Loop eligible:** No.
-**Dependency:** `SBH-80-01`.
+**State:** `READY`.
+**Loop eligible:** Yes.
+**Shared-authority status:** `NONE`.
+**Dependency:** `SBH-80-01` (satisfied by the canonical closure of `SBH-80-01` at
+register v0.1.12 / PR #41 / merge `50f0549b1f84acd18fc5bc1b6aa3d3724a2d1f25`).
 
 Prove that no write path bypasses terminal `REVOKED`. This is adversarial proof
 and regression coverage for `SBH-80-01`; it must not duplicate that item's
-implementation.
+implementation. The `SBH-80-01` suite is strong lifecycle implementation
+evidence, but it does not complete this independent proof obligation.
 
 Proposed branch:
 
@@ -2414,7 +2417,7 @@ fixed point, and this register changes no actual shared authority.
 | `SBH-60-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-70-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-80-01` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
-| `SBH-80-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-80-02` | no shared modification identified in this contract | `NONE` | Lane-local adversarial proof; eligible for explicit human selection. |
 | `SBH-80-03` | provider business contracts only if a provider contract must change | `EXTERNALIZED` | Use existing provider evidence; stop if a shared change is required. |
 | `SBH-90-01` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 
@@ -2431,8 +2434,9 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-register state. `SBH-30-02`, `SBH-70-02`, and `SBH-80-01` are `CLOSED`. There
-are currently zero canonical `READY` implementation rows. The recorded
+register state. `SBH-30-02`, `SBH-70-02`, and `SBH-80-01` are `CLOSED`.
+Exactly one canonical `READY` implementation/proof row exists: `SBH-80-02`. The
+recorded
 `loop_eligible` values are retained as historical/register metadata and do not
 admit work.
 
@@ -2464,7 +2468,7 @@ admit work.
 | `SBH-60-02` | commercial availability | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-70-02` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-80-01` | independent lane-local | P1 | `CLOSED` | No |
-| `SBH-80-02` | payment-method proof | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-80-02` | payment-method proof | — | `READY` | Yes |
 | `SBH-80-03` | shared-boundary race proof | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-90-01` | billing safety | — | `BLOCKED_DEPENDENCY` | No |
 
@@ -2488,12 +2492,14 @@ SBH-70-02 = P1
 SBH-80-01 = P1
 ```
 
-`SBH-30-02`, `SBH-70-02`, and `SBH-80-01` are now `CLOSED`. There are currently
-zero canonical `READY` implementation rows. No next issue is authorized for
-selection by this reconciliation. Blocked rows retain their current states until
-a separate explicit register/admission assessment authorizes any transition. The
-P1 labels provide no severity ordering and do not alter the frozen dependency
-edges.
+`SBH-30-02`, `SBH-70-02`, and `SBH-80-01` are now `CLOSED`. `SBH-80-02` is the
+sole canonical `READY` row after explicit admission reconciliation. It is
+eligible for explicit human selection but is not automatically selected. No
+implementation or proof task may start until a human explicitly selects it and
+a bounded exact-base task contract is materialized. Blocked rows retain their
+current states until a separate explicit register/admission assessment authorizes
+any transition. The P1 labels provide no severity ordering and do not alter the
+frozen dependency edges.
 
 ---
 
@@ -3126,7 +3132,7 @@ passes.
 
 ---
 
-# 41. Current v0.1.12 Serial Verdict
+# 41. Current v0.1.13 Serial Verdict
 
 ```text
 SUBS lifecycle = READY
@@ -3134,23 +3140,21 @@ SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
 ```
 
+`SBH-80-02` is now the sole canonical `READY` row after explicit admission
+reconciliation at register v0.1.13. Its recorded `SBH-80-01` dependency is
+satisfied by the canonical closure of `SBH-80-01` (PR #41 / merge
+`50f0549b1f84acd18fc5bc1b6aa3d3724a2d1f25`). `SBH-80-02` is eligible for
+explicit human selection but is not automatically selected. No
+implementation/proof task may start until the human explicitly selects it and a
+bounded exact-base task contract is materialized from the current SUBS tip.
+
 `SBH-80-01` is `CLOSED` after successful implementation, exact-head
 verification, human merge, and exact post-merge verification. Successful PR #40
 merged at `562ccc40fd33a3e1530974e90087e70753d0a914`; exact-head required CI,
 fresh independent final review after corrections, exact post-merge verification,
 post-sync focused revocation suite (15/15), post-sync neighbouring suites
 (29/29), post-sync `mix check`, and post-sync `git diff --check` are recorded
-in the `SBH-80-01` completion provenance above. No downstream task is promoted
-by this reconciliation.
-
-There are currently zero canonical `READY` implementation rows. No next issue is
-authorized for selection by this reconciliation. A separate explicit assessment
-is required before another issue can become selectable. One bounded issue may be
-active at a time when a row is later admitted as `READY`. Each selected issue
-must use a current governance check, an exact `task_base_sha` from the current
-explicitly accepted SUBS tip, TDD/minimal implementation where required, focused
-verification, fresh independent review, repository gates, exact-head PR CI, and a
-human merge decision. The SUBS tip is refreshed before another issue is selected.
+in the `SBH-80-01` completion provenance above.
 
 `SBH-70-02` is `CLOSED` after exact post-merge verification. Successful PR #38
 merged at `0ab0e6bf94590073fcb168a37e4ada5bb180f326`; exact-head required CI,
@@ -3164,9 +3168,16 @@ independent review, exact post-merge verification, and post-sync `mix check`
 are recorded above. PR #33 remains closed historical evidence at HEAD
 `a03a4534d6373dd9a0ff99c32c95b30d62f918f8` and was superseded by PR #36.
 
-`SBH-80-02` and `SBH-80-03` remain `BLOCKED_DEPENDENCY`. Satisfying the
-recorded `SBH-80-01` dependency does not, by itself, authorize
-`BLOCKED_DEPENDENCY → READY` for any downstream row.
+`SBH-80-03` remains `BLOCKED_DEPENDENCY`. Only the `SBH-80-01` dependency within
+its frozen edge set is satisfied; `SBH-20-01`, `SBH-10-03`, and `SBH-10-04`
+remain unresolved. No other downstream row is promoted by this reconciliation.
+
+One bounded issue may be active at a time when a row is admitted as `READY`.
+Each selected issue must use a current governance check, an exact `task_base_sha`
+from the current explicitly accepted SUBS tip, TDD/minimal implementation where
+required, focused verification, fresh independent review, repository gates,
+exact-head PR CI, and a human merge decision. The SUBS tip is refreshed before
+another issue is selected.
 
 `SUB-ACT-04`, Batch 001, `ACTIVE_PARALLEL`, frozen batch bases, batch IDs,
 controller claims/counters, autonomous runtime, and controller CI-cycle
