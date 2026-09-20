@@ -88,6 +88,17 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
 
   defp stale_record_error?(_), do: false
 
+  defp identity_count! do
+    StoredPaymentMethod
+    |> Ash.Query.filter(
+      expr(
+        provider == :stripe and provider_customer_ref == "cus_sbh_80_01" and
+          provider_payment_method_ref == "pm_sbh_80_01"
+      )
+    )
+    |> Ash.count!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
   describe "legal transitions" do
     test "ACTIVE -> INACTIVE succeeds", %{user: user} do
       spm = create_spm!(user, %{status: :active})
@@ -207,19 +218,44 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
       assert active.id == spm.id
       assert active.status == :active
 
-      assert 1 ==
-               StoredPaymentMethod
-               |> Ash.Query.filter(
-                 expr(
-                   provider == :stripe and provider_customer_ref == "cus_sbh_80_01" and
-                     provider_payment_method_ref == "pm_sbh_80_01"
-                 )
-               )
-               |> Ash.count!(
-                 domain: Store.Subscriptions,
-                 authorize?: false,
-                 context: %{system?: true}
-               )
+      assert identity_count!() == 1
+    end
+
+    test "create_or_reuse revokes ACTIVE identity through upsert", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+
+      assert {:ok, result} = upsert_spm(user, :revoked)
+      assert result.id == spm.id
+      assert result.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+      assert identity_count!() == 1
+    end
+
+    test "create_or_reuse revokes INACTIVE identity through upsert", %{user: user} do
+      spm = create_spm!(user, %{status: :inactive})
+
+      assert {:ok, result} = upsert_spm(user, :revoked)
+      assert result.id == spm.id
+      assert result.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+      assert identity_count!() == 1
+    end
+
+    test "repeated create_or_reuse with REVOKED status cannot recreate identity", %{user: user} do
+      spm =
+        create_spm!(user, %{status: :active})
+        |> then(fn spm ->
+          {:ok, revoked} = upsert_spm(user, :revoked)
+          assert revoked.id == spm.id
+          revoked
+        end)
+
+      assert {:ok, again} = upsert_spm(user, :revoked)
+      assert again.id == spm.id
+      assert again.status == :revoked
+      assert Ash.Resource.get_metadata(again, :upsert_skipped) == true
+      assert reload_spm!(spm.id).status == :revoked
+      assert identity_count!() == 1
     end
   end
 
@@ -278,6 +314,192 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
       assert {:ok, result} = Task.await(upsert_task, 5_000)
       assert result.id == spm.id
       assert result.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+    end
+
+    test "revocation wins against stale mark_inactive writer", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+      stale = %{spm | status: :inactive}
+
+      {:ok, barrier} = Agent.start_link(fn -> %{phase: :waiting} end)
+
+      deactivate_task =
+        Task.async(fn ->
+          Agent.update(barrier, &Map.put(&1, :phase, :at_deactivate))
+
+          wait_until(fn ->
+            match?(%{release_deactivate?: true}, Agent.get(barrier, & &1))
+          end)
+
+          mark_inactive!(stale)
+        end)
+
+      wait_until(fn ->
+        match?(%{phase: :at_deactivate}, Agent.get(barrier, & &1))
+      end)
+
+      assert {:ok, _revoked} = mark_revoked!(spm)
+      Agent.update(barrier, &Map.put(&1, :release_deactivate?, true))
+
+      assert stale_record_error?(Task.await(deactivate_task, 5_000))
+      assert reload_spm!(spm.id).status == :revoked
+    end
+
+    test "revocation wins against stale upsert-inactive writer", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+
+      {:ok, barrier} = Agent.start_link(fn -> %{phase: :waiting} end)
+
+      upsert_task =
+        Task.async(fn ->
+          Agent.update(barrier, &Map.put(&1, :phase, :at_upsert))
+
+          wait_until(fn ->
+            match?(%{release_upsert?: true}, Agent.get(barrier, & &1))
+          end)
+
+          upsert_spm(user, :inactive)
+        end)
+
+      wait_until(fn ->
+        match?(%{phase: :at_upsert}, Agent.get(barrier, & &1))
+      end)
+
+      assert {:ok, _revoked} = mark_revoked!(spm)
+      Agent.update(barrier, &Map.put(&1, :release_upsert?, true))
+
+      assert {:ok, result} = Task.await(upsert_task, 5_000)
+      assert result.id == spm.id
+      assert result.status == :revoked
+      assert Ash.Resource.get_metadata(result, :upsert_skipped) == true
+      assert reload_spm!(spm.id).status == :revoked
+    end
+
+    test "upsert revocation wins against stale mark_active writer", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+      stale = %{spm | status: :active}
+
+      {:ok, barrier} = Agent.start_link(fn -> %{phase: :waiting} end)
+
+      revive_task =
+        Task.async(fn ->
+          Agent.update(barrier, &Map.put(&1, :phase, :at_revive))
+
+          wait_until(fn ->
+            match?(%{release_revive?: true}, Agent.get(barrier, & &1))
+          end)
+
+          mark_active!(stale)
+        end)
+
+      wait_until(fn ->
+        match?(%{phase: :at_revive}, Agent.get(barrier, & &1))
+      end)
+
+      assert {:ok, revoked} = upsert_spm(user, :revoked)
+      assert revoked.id == spm.id
+      assert revoked.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+      Agent.update(barrier, &Map.put(&1, :release_revive?, true))
+
+      assert stale_record_error?(Task.await(revive_task, 5_000))
+      assert reload_spm!(spm.id).status == :revoked
+    end
+
+    test "upsert revocation wins against stale mark_inactive writer", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+      stale = %{spm | status: :inactive}
+
+      {:ok, barrier} = Agent.start_link(fn -> %{phase: :waiting} end)
+
+      deactivate_task =
+        Task.async(fn ->
+          Agent.update(barrier, &Map.put(&1, :phase, :at_deactivate))
+
+          wait_until(fn ->
+            match?(%{release_deactivate?: true}, Agent.get(barrier, & &1))
+          end)
+
+          mark_inactive!(stale)
+        end)
+
+      wait_until(fn ->
+        match?(%{phase: :at_deactivate}, Agent.get(barrier, & &1))
+      end)
+
+      assert {:ok, revoked} = upsert_spm(user, :revoked)
+      assert revoked.id == spm.id
+      assert revoked.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+      Agent.update(barrier, &Map.put(&1, :release_deactivate?, true))
+
+      assert stale_record_error?(Task.await(deactivate_task, 5_000))
+      assert reload_spm!(spm.id).status == :revoked
+    end
+
+    test "upsert revocation wins against stale upsert-active writer", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+
+      {:ok, barrier} = Agent.start_link(fn -> %{phase: :waiting} end)
+
+      upsert_task =
+        Task.async(fn ->
+          Agent.update(barrier, &Map.put(&1, :phase, :at_upsert))
+
+          wait_until(fn ->
+            match?(%{release_upsert?: true}, Agent.get(barrier, & &1))
+          end)
+
+          upsert_spm(user, :active)
+        end)
+
+      wait_until(fn ->
+        match?(%{phase: :at_upsert}, Agent.get(barrier, & &1))
+      end)
+
+      assert {:ok, revoked} = upsert_spm(user, :revoked)
+      assert revoked.id == spm.id
+      assert revoked.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+      Agent.update(barrier, &Map.put(&1, :release_upsert?, true))
+
+      assert {:ok, result} = Task.await(upsert_task, 5_000)
+      assert result.id == spm.id
+      assert result.status == :revoked
+      assert Ash.Resource.get_metadata(result, :upsert_skipped) == true
+      assert reload_spm!(spm.id).status == :revoked
+    end
+
+    test "upsert revocation wins against stale upsert-inactive writer", %{user: user} do
+      spm = create_spm!(user, %{status: :active})
+
+      {:ok, barrier} = Agent.start_link(fn -> %{phase: :waiting} end)
+
+      upsert_task =
+        Task.async(fn ->
+          Agent.update(barrier, &Map.put(&1, :phase, :at_upsert))
+
+          wait_until(fn ->
+            match?(%{release_upsert?: true}, Agent.get(barrier, & &1))
+          end)
+
+          upsert_spm(user, :inactive)
+        end)
+
+      wait_until(fn ->
+        match?(%{phase: :at_upsert}, Agent.get(barrier, & &1))
+      end)
+
+      assert {:ok, revoked} = upsert_spm(user, :revoked)
+      assert revoked.id == spm.id
+      assert revoked.status == :revoked
+      assert reload_spm!(spm.id).status == :revoked
+      Agent.update(barrier, &Map.put(&1, :release_upsert?, true))
+
+      assert {:ok, result} = Task.await(upsert_task, 5_000)
+      assert result.id == spm.id
+      assert result.status == :revoked
+      assert Ash.Resource.get_metadata(result, :upsert_skipped) == true
       assert reload_spm!(spm.id).status == :revoked
     end
   end
