@@ -855,6 +855,8 @@ defmodule Store.Subscriptions.Facade do
   defp persist_updated_payment_method_tx(subscription, payment_intent) do
     with {:ok, stored_payment_method, stored_payment_method_notifications} <-
            maybe_upsert_stored_payment_method(subscription.user_id, payment_intent),
+         :ok <-
+           ensure_stored_payment_method_active_for_payment_method_update(stored_payment_method),
          {:ok, updated_subscription, subscription_notifications} <-
            update_subscription_payment_method_reference(
              subscription,
@@ -871,6 +873,19 @@ defmodule Store.Subscriptions.Facade do
       {:error, reason} ->
         Repo.rollback(Normalize.normalize(reason))
     end
+  end
+
+  defp ensure_stored_payment_method_active_for_payment_method_update(%StoredPaymentMethod{
+         status: :active
+       }),
+       do: :ok
+
+  defp ensure_stored_payment_method_active_for_payment_method_update(_stored_payment_method) do
+    {:error,
+     Error.new(
+       "PAYMENT_METHOD_REQUIRED",
+       "subscription cannot renew without an active stored payment method"
+     )}
   end
 
   defp update_subscription_payment_method_reference(
