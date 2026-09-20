@@ -875,14 +875,12 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp ensure_stored_payment_method_active_for_payment_method_update(nil), do: :ok
-
   defp ensure_stored_payment_method_active_for_payment_method_update(%StoredPaymentMethod{
          status: :active
        }),
        do: :ok
 
-  defp ensure_stored_payment_method_active_for_payment_method_update(%StoredPaymentMethod{}) do
+  defp ensure_stored_payment_method_active_for_payment_method_update(_stored_payment_method) do
     {:error,
      Error.new(
        "PAYMENT_METHOD_REQUIRED",

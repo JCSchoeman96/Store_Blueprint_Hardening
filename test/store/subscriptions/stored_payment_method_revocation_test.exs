@@ -427,6 +427,89 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
         args: %{"subscription_id" => past_due_subscription.id}
       )
     end
+
+    test "handle_payment_method_update_succeeded_for_system fails closed when stored payment method is absent" do
+      customer = SubscriptionsFixtures.create_customer!("sbh_80_01_pm_update_nil")
+      %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+      plan = SubscriptionsFixtures.create_subscription_plan!()
+      _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+      provider_customer_ref = "cus_sbh_80_01_pm_update_nil"
+      provider_payment_method_ref = "pm_sbh_80_01_pm_update_nil"
+
+      future_retry_at =
+        DateTime.add(DateTime.utc_now(), 86_400, :second) |> DateTime.truncate(:microsecond)
+
+      %{subscription: subscription} =
+        SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+          provider_customer_ref: provider_customer_ref,
+          provider_billing_ref: provider_payment_method_ref,
+          next_retry_at: future_retry_at
+        })
+
+      past_due_subscription =
+        subscription
+        |> Ash.Changeset.for_update(
+          :mark_past_due_transition,
+          %{
+            past_due_since_at: DateTime.add(DateTime.utc_now(), -3_600, :second),
+            billing_status_reason: "PAYMENT_METHOD_REQUIRED",
+            next_retry_at: future_retry_at
+          },
+          context: %{system?: true}
+        )
+        |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+      original_stored_payment_method_id = past_due_subscription.stored_payment_method_id
+
+      payment_intent =
+        PaymentIntent
+        |> Ash.Changeset.for_create(
+          :create_or_reuse,
+          %{
+            order_id: past_due_subscription.source_order_id,
+            amount_received_minor: plan.amount_minor,
+            currency: plan.currency,
+            provider: :stripe,
+            provider_customer_ref: provider_customer_ref,
+            provider_payment_method_ref: nil,
+            payment_intent_key: "sbh-80-01:pm-update-nil:#{past_due_subscription.id}",
+            purpose: :subscription_payment_method_update,
+            subscription_id: past_due_subscription.id
+          },
+          context: %{system?: true}
+        )
+        |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+      payment_intent =
+        payment_intent
+        |> Ash.Changeset.for_update(:submit, %{}, context: %{system?: true})
+        |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+        |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+        |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+      assert {:error, error} =
+               SubscriptionsFacade.handle_payment_method_update_succeeded_for_system(
+                 payment_intent.id
+               )
+
+      assert error.code == "PAYMENT_METHOD_REQUIRED"
+
+      reloaded_subscription = reload_subscription!(past_due_subscription.id)
+      assert reloaded_subscription.status == :past_due
+      assert reloaded_subscription.billing_status_reason == "PAYMENT_METHOD_REQUIRED"
+      assert reloaded_subscription.stored_payment_method_id == original_stored_payment_method_id
+
+      assert reloaded_subscription.retry_suppressed_at ==
+               past_due_subscription.retry_suppressed_at
+
+      assert reloaded_subscription.next_retry_at == future_retry_at
+
+      refute_enqueued(
+        worker: ProcessSubscriptionRenewalWorker,
+        args: %{"subscription_id" => past_due_subscription.id}
+      )
+    end
   end
 
   defp reload_subscription!(subscription_id) do
