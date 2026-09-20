@@ -740,12 +740,21 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
-  defp wait_until(predicate, attempts \\ 200) do
-    if predicate.() or attempts <= 0 do
+  defp wait_until(predicate, attempts \\ 200) when is_function(predicate, 0) and is_integer(attempts) do
+    do_wait_until(predicate, attempts)
+  end
+
+  defp do_wait_until(predicate, 0) do
+    assert predicate.(), "wait_until/2 timed out waiting for synchronization predicate"
+    :ok
+  end
+
+  defp do_wait_until(predicate, attempts) when attempts > 0 do
+    if predicate.() do
       :ok
     else
       Process.sleep(5)
-      wait_until(predicate, attempts - 1)
+      do_wait_until(predicate, attempts - 1)
     end
   end
 end
