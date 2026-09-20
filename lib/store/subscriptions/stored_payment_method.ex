@@ -88,18 +88,21 @@ defmodule Store.Subscriptions.StoredPaymentMethod do
       upsert?(true)
       upsert_identity(:unique_provider_customer_payment_method)
       upsert_fields([:status, :fingerprint])
+      upsert_condition(expr(status != :revoked))
       return_skipped_upsert?(true)
     end
 
     update :mark_active do
       require_atomic?(false)
       accept([])
+      change(filter(expr(status != :revoked)))
       change(set_attribute(:status, :active))
     end
 
     update :mark_inactive do
       require_atomic?(false)
       accept([])
+      change(filter(expr(status != :revoked)))
       change(set_attribute(:status, :inactive))
     end
 
