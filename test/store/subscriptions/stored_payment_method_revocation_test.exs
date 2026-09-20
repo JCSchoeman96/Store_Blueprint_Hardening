@@ -1,14 +1,16 @@
 defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
   use Store.DataCase, async: false
+  use Oban.Testing, repo: Store.DirectRepo
 
   import Ash.Expr
   require Ash.Query
 
   alias Store.Payments.PaymentIntent
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
-  alias Store.Subscriptions.StoredPaymentMethod
+  alias Store.Subscriptions.{StoredPaymentMethod, Subscription}
   alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
+  alias Store.Workers.ProcessSubscriptionRenewalWorker
 
   @provider_refs %{
     provider: :stripe,
@@ -174,7 +176,8 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
 
       assert {:ok, result} = upsert_spm(user, :active)
       assert result.id == spm.id
-      refute result.status == :active
+      assert result.status == :revoked
+      assert Ash.Resource.get_metadata(result, :upsert_skipped) == true
       assert reload_spm!(spm.id).status == :revoked
     end
 
@@ -188,7 +191,8 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
 
       assert {:ok, result} = upsert_spm(user, :inactive)
       assert result.id == spm.id
-      refute result.status == :inactive
+      assert result.status == :revoked
+      assert Ash.Resource.get_metadata(result, :upsert_skipped) == true
       assert reload_spm!(spm.id).status == :revoked
     end
 
@@ -273,7 +277,7 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
 
       assert {:ok, result} = Task.await(upsert_task, 5_000)
       assert result.id == spm.id
-      refute result.status == :active
+      assert result.status == :revoked
       assert reload_spm!(spm.id).status == :revoked
     end
   end
@@ -320,7 +324,7 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
       assert reloaded.status == :revoked
     end
 
-    test "handle_payment_method_update_succeeded_for_system cannot resurrect revoked stored payment method" do
+    test "handle_payment_method_update_succeeded_for_system fails closed for revoked stored payment method in past_due recovery" do
       customer = SubscriptionsFixtures.create_customer!("sbh_80_01_pm_update")
       %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
       plan = SubscriptionsFixtures.create_subscription_plan!()
@@ -329,13 +333,30 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
       provider_customer_ref = "cus_sbh_80_01_pm_update"
       provider_payment_method_ref = "pm_sbh_80_01_pm_update"
 
+      future_retry_at =
+        DateTime.add(DateTime.utc_now(), 86_400, :second) |> DateTime.truncate(:microsecond)
+
       %{subscription: subscription} =
         SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
           provider_customer_ref: provider_customer_ref,
-          provider_billing_ref: provider_payment_method_ref
+          provider_billing_ref: provider_payment_method_ref,
+          next_retry_at: future_retry_at
         })
 
-      spm_id = subscription.stored_payment_method_id
+      past_due_subscription =
+        subscription
+        |> Ash.Changeset.for_update(
+          :mark_past_due_transition,
+          %{
+            past_due_since_at: DateTime.add(DateTime.utc_now(), -3_600, :second),
+            billing_status_reason: "PAYMENT_METHOD_REQUIRED",
+            next_retry_at: future_retry_at
+          },
+          context: %{system?: true}
+        )
+        |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+      spm_id = past_due_subscription.stored_payment_method_id
 
       spm =
         StoredPaymentMethod
@@ -353,32 +374,35 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
         |> Ash.Changeset.for_create(
           :create_or_reuse,
           %{
-            order_id: subscription.source_order_id,
+            order_id: past_due_subscription.source_order_id,
             amount_received_minor: plan.amount_minor,
             currency: plan.currency,
             provider: :stripe,
             provider_customer_ref: provider_customer_ref,
             provider_payment_method_ref: provider_payment_method_ref,
-            payment_intent_key: "sbh-80-01:pm-update:#{subscription.id}",
+            payment_intent_key: "sbh-80-01:pm-update:#{past_due_subscription.id}",
             purpose: :subscription_payment_method_update,
-            subscription_id: subscription.id
+            subscription_id: past_due_subscription.id
           },
           context: %{system?: true}
         )
         |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
 
-      payment_intent
-      |> Ash.Changeset.for_update(:submit, %{}, context: %{system?: true})
-      |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-      |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-      |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+      payment_intent =
+        payment_intent
+        |> Ash.Changeset.for_update(:submit, %{}, context: %{system?: true})
+        |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+        |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+        |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
 
-      assert :ok =
+      assert {:error, error} =
                SubscriptionsFacade.handle_payment_method_update_succeeded_for_system(
                  payment_intent.id
                )
 
-      reloaded =
+      assert error.code == "PAYMENT_METHOD_REQUIRED"
+
+      reloaded_spm =
         StoredPaymentMethod
         |> Ash.Query.filter(expr(id == ^spm_id))
         |> Ash.read_one!(
@@ -387,8 +411,28 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
           context: %{system?: true}
         )
 
-      assert reloaded.status == :revoked
+      assert reloaded_spm.status == :revoked
+
+      reloaded_subscription = reload_subscription!(past_due_subscription.id)
+      assert reloaded_subscription.status == :past_due
+      assert reloaded_subscription.billing_status_reason == "PAYMENT_METHOD_REQUIRED"
+
+      assert reloaded_subscription.retry_suppressed_at ==
+               past_due_subscription.retry_suppressed_at
+
+      assert reloaded_subscription.next_retry_at == future_retry_at
+
+      refute_enqueued(
+        worker: ProcessSubscriptionRenewalWorker,
+        args: %{"subscription_id" => past_due_subscription.id}
+      )
     end
+  end
+
+  defp reload_subscription!(subscription_id) do
+    Subscription
+    |> Ash.Query.filter(expr(id == ^subscription_id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp wait_until(predicate, attempts \\ 200) do
