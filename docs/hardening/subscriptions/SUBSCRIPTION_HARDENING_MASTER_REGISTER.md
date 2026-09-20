@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.13
+**Version:** v0.1.14
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-20
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,7 +13,7 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes, or manufacture READY work.
 
-## Current authority boundary — v0.1.13
+## Current authority boundary — v0.1.14
 
 Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
 supersedes the autonomous SUBS execution model. SUBS lifecycle remains
@@ -1990,26 +1990,91 @@ infrastructure changes.
 
 ## SBH-80-02 — StoredPaymentMethod Transition-Graph Adversarial Proof
 
-**State:** `READY`.
-**Loop eligible:** Yes.
+**State:** `CLOSED`.
+**Loop eligible:** No.
 **Shared-authority status:** `NONE`.
+**Priority:** —.
 **Dependency:** `SBH-80-01` (satisfied by the canonical closure of `SBH-80-01` at
 register v0.1.12 / PR #41 / merge `50f0549b1f84acd18fc5bc1b6aa3d3724a2d1f25`).
 
-Prove that no write path bypasses terminal `REVOKED`. This is adversarial proof
-and regression coverage for `SBH-80-01`; it must not duplicate that item's
-implementation. The `SBH-80-01` suite is strong lifecycle implementation
-evidence, but it does not complete this independent proof obligation.
+Completed proof:
 
-Proposed branch:
+```text
+StoredPaymentMethod lifecycle remains:
+
+ACTIVE ↔ INACTIVE
+ACTIVE/INACTIVE → REVOKED
+REVOKED is terminal.
+
+The authorized status-write mechanisms at the task base were:
+- create_or_reuse / upsert
+- mark_active
+- mark_inactive
+- mark_revoked
+
+No additional raw SQL / Repo writer on stored_payment_methods was identified
+within the reviewed Subscription production surface.
+
+Adversarial proof confirmed:
+
+- upsert can legally transition ACTIVE → REVOKED;
+- upsert can legally transition INACTIVE → REVOKED;
+- repeated upsert REVOKED retains one durable identity;
+- mark_revoked defeats a delayed stale mark_inactive writer;
+- mark_revoked defeats delayed upsert INACTIVE;
+- upsert-to-REVOKED defeats stale mark_active;
+- upsert-to-REVOKED defeats stale mark_inactive;
+- upsert-to-REVOKED defeats delayed upsert ACTIVE;
+- upsert-to-REVOKED defeats delayed upsert INACTIVE.
+
+Each adversarial race asserts durable PostgreSQL state after the ordered writes.
+
+The existing SBH-80-01 lifecycle and facade proofs remain green.
+
+No production source change was required.
+```
+
+This closure does not prove renewal-vs-payment-method replacement/revocation
+ordering around provider checkpoint C. That remains `SBH-80-03`.
+
+Completed task branch:
 
 ```text
 subs-task/sbh-80-02-payment-method-transition-proof
 ```
 
-Do not add an AshStateMachine solely because an enum exists. Use one only if a
-later authorized implementation proves that it materially improves transition
-correctness and auditability.
+Completion provenance: task `SBH-80-02`; task base
+`b994e646d8a94c4f64198c95e43f42e0a782072c`; first fully green reviewed task
+HEAD `20b53e72b9f8c54e34fd2cd57eaec54b702b4cae` (focused StoredPaymentMethod
+revocation suite: 24 tests / 0 failures; neighbour StoredPaymentMethod suite:
+1 test / 0 failures; `mix check`: PASS; `git diff --check`: PASS; required PR CI:
+all five jobs PASS; fresh independent review: PASS WITH NON-BLOCKING
+CORRECTIONS); final PR #43 head `55343ce7c657cc489c1bd923a6bc2dd6b5fe62d4`
+(hardened concurrency test harness `wait_until/2` synchronization timeout to
+fail explicitly; exact-head CI at this head: `check_static` FAIL — `mix check`
+formatting compliance; `test_pr_strict`, `performance_smoke_required`,
+`performance_smoke_chaos_required`, and `dialyzer_required` SKIPPED); PR #43
+merged at `55343ce7c657cc489c1bd923a6bc2dd6b5fe62d4`; merge SHA
+`d37615fcb2096c1e7a9c7a650e668e0d73dd85fd`; formatting-only post-merge repair
+produced canonical SUBS tip `71eba2d321e75f266a5c4da52836de7f6cae4cf8` (delta
+from merged task behavior: formatting-only around the `wait_until/2` guard
+formatting; no automatic GitHub CI run on pushes to `hardening/subscriptions`);
+post-merge recovery verification at `71eba2d321e75f266a5c4da52836de7f6cae4cf8`:
+RECOVERED / VERIFIED (`git diff --check`: PASS; focused revocation suite: 24
+tests / 0 failures; neighbour StoredPaymentMethod suite: 1 test / 0 failures;
+`mix check`: PASS / 621 tests / 0 failures; strict test gate: PASS / 621 tests /
+0 failures; `mix check.types`: PASS / exit 0 / existing baseline warnings only;
+performance smoke: PASS / 12 tests / 0 failures; performance chaos smoke: PASS
+/ 12 tests / 0 failures / mobile_realistic profile; `git diff --exit-code`: PASS
+/ no generated or working-tree drift). Historical governance/process deviation:
+PR #43 merged despite failed final-head `check_static` at `55343ce7...`; current
+proof correctness is recovered/verified at `71eba2d...`; historical final-PR-head
+gate compliance remains a deviation and is not retroactively converted to PASS.
+
+This was genuinely lane-local because it proved the frozen StoredPaymentMethod
+terminal-state graph through adversarial regression coverage without production
+changes. It did not require migrations, Payments core, Orders core, Entitlements,
+provider-business-contract, or generic infrastructure changes.
 
 ## SBH-80-03 — Renewal vs Payment-Method Replacement / Revocation Race
 
@@ -2417,7 +2482,7 @@ fixed point, and this register changes no actual shared authority.
 | `SBH-60-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-70-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-80-01` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
-| `SBH-80-02` | no shared modification identified in this contract | `NONE` | Lane-local adversarial proof; eligible for explicit human selection. |
+| `SBH-80-02` | no shared modification identified in this contract | `NONE` | Completed lane-local adversarial proof; no further admission. |
 | `SBH-80-03` | provider business contracts only if a provider contract must change | `EXTERNALIZED` | Use existing provider evidence; stop if a shared change is required. |
 | `SBH-90-01` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 
@@ -2434,9 +2499,8 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-register state. `SBH-30-02`, `SBH-70-02`, and `SBH-80-01` are `CLOSED`.
-Exactly one canonical `READY` implementation/proof row exists: `SBH-80-02`. The
-recorded
+register state. `SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
+`CLOSED`. Zero canonical `READY` implementation/proof rows exist. The recorded
 `loop_eligible` values are retained as historical/register metadata and do not
 admit work.
 
@@ -2468,7 +2532,7 @@ admit work.
 | `SBH-60-02` | commercial availability | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-70-02` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-80-01` | independent lane-local | P1 | `CLOSED` | No |
-| `SBH-80-02` | payment-method proof | — | `READY` | Yes |
+| `SBH-80-02` | payment-method proof | — | `CLOSED` | No |
 | `SBH-80-03` | shared-boundary race proof | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-90-01` | billing safety | — | `BLOCKED_DEPENDENCY` | No |
 
@@ -2492,14 +2556,13 @@ SBH-70-02 = P1
 SBH-80-01 = P1
 ```
 
-`SBH-30-02`, `SBH-70-02`, and `SBH-80-01` are now `CLOSED`. `SBH-80-02` is the
-sole canonical `READY` row after explicit admission reconciliation. It is
-eligible for explicit human selection but is not automatically selected. No
-implementation or proof task may start until a human explicitly selects it and
-a bounded exact-base task contract is materialized. Blocked rows retain their
-current states until a separate explicit register/admission assessment authorizes
-any transition. The P1 labels provide no severity ordering and do not alter the
-frozen dependency edges.
+`SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are now `CLOSED`. Zero
+canonical `READY` implementation/proof rows exist. No implementation or proof
+task may start until a separate explicit register/admission assessment authorizes
+a transition to `READY` and a human explicitly selects the admitted row with a
+bounded exact-base task contract. Blocked rows retain their current states until
+that separate assessment authorizes any transition. The P1 labels provide no
+severity ordering and do not alter the frozen dependency edges.
 
 ---
 
@@ -3132,21 +3195,23 @@ passes.
 
 ---
 
-# 41. Current v0.1.13 Serial Verdict
+# 41. Current v0.1.14 Serial Verdict
 
 ```text
 SUBS lifecycle = READY
 SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
+current SUBS tip = 71eba2d321e75f266a5c4da52836de7f6cae4cf8
 ```
 
-`SBH-80-02` is now the sole canonical `READY` row after explicit admission
-reconciliation at register v0.1.13. Its recorded `SBH-80-01` dependency is
-satisfied by the canonical closure of `SBH-80-01` (PR #41 / merge
-`50f0549b1f84acd18fc5bc1b6aa3d3724a2d1f25`). `SBH-80-02` is eligible for
-explicit human selection but is not automatically selected. No
-implementation/proof task may start until the human explicitly selects it and a
-bounded exact-base task contract is materialized from the current SUBS tip.
+`SBH-80-02` is `CLOSED` after adversarial proof, merge, and post-merge recovery
+verification. Its proof correctness is recovered/verified at current canonical
+tip `71eba2d321e75f266a5c4da52836de7f6cae4cf8`. The final PR-head gate deviation
+at `55343ce7c657cc489c1bd923a6bc2dd6b5fe62d4` remains historical provenance and
+is not retroactively converted to PASS. There are zero canonical `READY`
+implementation/proof rows. No next issue is authorized by this closure
+reconciliation. A separate explicit admission assessment is required before
+another row can become `READY`.
 
 `SBH-80-01` is `CLOSED` after successful implementation, exact-head
 verification, human merge, and exact post-merge verification. Successful PR #40
@@ -3170,7 +3235,8 @@ are recorded above. PR #33 remains closed historical evidence at HEAD
 
 `SBH-80-03` remains `BLOCKED_DEPENDENCY`. Only the `SBH-80-01` dependency within
 its frozen edge set is satisfied; `SBH-20-01`, `SBH-10-03`, and `SBH-10-04`
-remain unresolved. No other downstream row is promoted by this reconciliation.
+remain unresolved. Closing `SBH-80-02` does not satisfy any missing `SBH-80-03`
+dependency. No other downstream row is promoted by this reconciliation.
 
 One bounded issue may be active at a time when a row is admitted as `READY`.
 Each selected issue must use a current governance check, an exact `task_base_sha`
