@@ -740,7 +740,8 @@ defmodule Store.Subscriptions.StoredPaymentMethodRevocationTest do
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
-  defp wait_until(predicate, attempts \\ 200) when is_function(predicate, 0) and is_integer(attempts) do
+  defp wait_until(predicate, attempts \\ 200)
+       when is_function(predicate, 0) and is_integer(attempts) do
     do_wait_until(predicate, attempts)
   end
 
