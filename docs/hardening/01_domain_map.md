@@ -38,7 +38,9 @@ order, callback arrival order, and local observation order do not decide a race.
 ```text
 status
 period boundaries
-current effective PlanRevision identity
+current effective PlanRevision identity for authoritative bound contracts;
+pre-PlanRevision legacy rows may temporarily have an explicitly unresolved
+binding only under the approved legacy compatibility law
 current variant and quantity where applicable
 stored payment-method binding
 cancellation intent
@@ -71,6 +73,51 @@ Subscription.current_plan_revision_id
     ↓ freezes one occurrence
 RenewalAttempt charged-contract evidence
 ```
+
+#### Legacy contract-binding compatibility
+
+A `Subscription` created before authoritative `PlanRevision` binding existed may
+temporarily lack `current_plan_revision_id` when its complete historical
+commercial contract cannot be proven from durable evidence. This is a legacy
+contract-binding compatibility condition, not a `Subscription` lifecycle state.
+It does not make `SubscriptionPlan` historical contract authority and does not
+permit missing fields to be reconstructed from current mutable Plan state,
+defaults, an arbitrary `EFFECTIVE` revision, provider state, or present
+`Subscription` status.
+
+An unresolved legacy binding must fail closed whenever an operation requires
+commercial truth that has not been independently proven. At minimum, it cannot
+start a new automatic renewal with a provider, create a new RenewalAttempt
+charged-contract binding, queue a contract change, perform commercial-policy-
+dependent rescheduling, or derive commercial/access policy from today's
+mutable `SubscriptionPlan`. No provider payment may start with fabricated
+contract values.
+
+Missing evidence alone does not mean `CANCELED`, `EXPIRED`, `SUSPENDED`, revoked
+access, forfeited funded coverage, or that today's Plan became the historical
+contract. An arbitrary PlanRevision is not a valid substitute.
+
+Once authoritative PlanRevision binding is available, every newly created
+`Subscription` must resolve and commit an authoritative `EFFECTIVE`
+PlanRevision at its governed creation boundary. If that binding cannot be
+established, creation fails closed; the compatibility path must not create new
+unresolved rows.
+
+An unresolved legacy row becomes normally contract-authoritative only after
+authoritative evidence establishes its complete commercial contract. Reconciliation
+must record its provenance and may not guess, apply defaults, choose the newest
+or any `EFFECTIVE` revision, or infer policy from provider state or status. If
+the contract remains ambiguous, the row stays unresolved until a separate owner
+or governance decision approves a disposition such as manual reconciliation,
+an explicit legacy compatibility contract, an accepted approximation, or another
+lawful outcome. This amendment approves none of those dispositions.
+
+The compatibility condition is transitional, not silent programme completion.
+Before final Subscription-hardening certification, every extant renewable
+Subscription must have an authoritative `PlanRevision` binding or an explicit,
+separately governed legacy disposition. This law freezes no schema mechanism,
+lifecycle value, sentinel revision, or new resource; later implementation must
+choose the simplest representation that enforces these invariants.
 
 ### ContractChange and the future target
 
@@ -484,6 +531,12 @@ Subscription
 + applicable grandfathering policy
 + renewal occurrence
 ```
+
+An unresolved legacy `Subscription` does not satisfy the bound-immutable-current-
+contract requirement merely because it is grandfathered. Grandfathering does not
+reconstruct missing commercial history. A new renewal operation requiring that
+contract must fail closed until authoritative reconciliation or another
+separately governed legacy disposition exists.
 
 New-sale eligibility controls new purchases. Change eligibility controls a queued
 ContractChange. Existing-renewal eligibility controls continuation of an extant
