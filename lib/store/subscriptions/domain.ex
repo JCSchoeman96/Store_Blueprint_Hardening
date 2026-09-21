@@ -7,6 +7,7 @@ defmodule Store.Subscriptions do
 
   resources do
     resource(Store.Subscriptions.SubscriptionPlan)
+    resource(Store.Subscriptions.PlanRevision)
     resource(Store.Subscriptions.VariantSubscriptionPlan)
     resource(Store.Subscriptions.StoredPaymentMethod)
     resource(Store.Subscriptions.Subscription)
