@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.14
+**Version:** v0.1.15
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
-**Verified:** 2026-09-20
+**Verified:** 2026-09-21
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -13,7 +13,7 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes, or manufacture READY work.
 
-## Current authority boundary — v0.1.14
+## Current authority boundary — v0.1.15
 
 Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
 supersedes the autonomous SUBS execution model. SUBS lifecycle remains
@@ -1204,10 +1204,12 @@ Legacy source finding: `SUB-HARD-00`.
 
 ## SBH-10-01 — Plan Revision / Approved Contract Foundation
 
-**Priority:** P1 / release blocker  
-**State:** `BLOCKED_SHARED_AUTHORITY` until migration and Ash snapshot authority is
-explicitly assigned.
-**Loop eligible:** No.
+**Priority:** —
+**State:** `READY`
+**Loop eligible:** Yes.
+**Shared authority:** `AUTHORITY_ASSIGNED` — human owner explicitly assigned
+migration and applicable Ash snapshot authority dated 2026-09-21 for the
+PlanRevision foundation surfaces named in this row only.
 
 Objective:
 
@@ -1222,14 +1224,37 @@ subs-task/sbh-10-01-plan-revision-foundation
 JC-219 fixes PlanRevision as the approved architecture. This row may not replace
 it with an alternative without a new governance decision.
 
-Shared-authority requirement:
+This row implements only the first foundation:
+
+```text
+SubscriptionPlan → PlanRevision
+```
+
+It must not implement downstream binding. Explicitly exclude:
+
+```text
+Subscription.current_plan_revision_id
+historical Subscription backfill
+existing Subscription contract binding
+RenewalAttempt charged-contract snapshot
+ContractChange
+renewal-vs-change races
+provider checkpoint-C work
+Orders
+Payments
+Entitlements core
+```
+
+Shared-authority assignment (task-specific; SBH-10-01 only):
 
 ```text
 priv/repo/migrations/**
-Ash snapshots where applicable
+applicable Ash resource snapshots for PlanRevision
 ```
 
-must be explicitly assigned.
+Human owner approval dated 2026-09-21 assigns this authority to `SBH-10-01`
+only. It does not assign migration/Ash-snapshot authority to `SBH-10-02`,
+`SBH-20-01`, `SBH-10-06`, `SBH-50-06`, or any other row.
 
 Performance/scaling:
 
@@ -2451,12 +2476,13 @@ EXTERNALIZED
 `AUTHORITY_ASSIGNED` means an explicit authority exists for the named shared
 surface. `BLOCKED_SHARED_AUTHORITY` means the task cannot proceed until that
 authority is assigned. `EXTERNALIZED` means the surface remains owned outside
-SUBS and the task must not modify it. No row is `AUTHORITY_ASSIGNED` at this
-fixed point, and this register changes no actual shared authority.
+SUBS and the task must not modify it. Only `SBH-10-01` is `AUTHORITY_ASSIGNED`
+at this fixed point; human owner approval dated 2026-09-21 applies
+task-specifically to that row only.
 
 | Row | Shared surface or boundary | Shared-authority status | Execution consequence |
 |---|---|---|---|
-| `SBH-10-01` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Not executable until assigned. |
+| `SBH-10-01` | PlanRevision migration and applicable Ash snapshot surfaces | `AUTHORITY_ASSIGNED` | Human owner explicitly assigned the migration/snapshot authority required by this row; eligible for explicit human selection under the serial admission rule. |
 | `SBH-10-02` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Historical binding cannot run without assigned migration authority. |
 | `SBH-20-01` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Version foundation cannot run without assigned migration authority. |
 | `SBH-10-06` | migrations, Ash snapshots | `BLOCKED_SHARED_AUTHORITY` | Future-target foundation remains blocked until assigned. |
@@ -2500,13 +2526,13 @@ Do not "helpfully" fix the neighbouring domain.
 
 Every implementation row has a frozen scope. `State` below is its current
 register state. `SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
-`CLOSED`. Zero canonical `READY` implementation/proof rows exist. The recorded
-`loop_eligible` values are retained as historical/register metadata and do not
-admit work.
+`CLOSED`. Exactly one canonical `READY` implementation/proof row exists:
+`SBH-10-01`. The recorded `loop_eligible` values remain register metadata;
+human selection is still required under the serial workflow.
 
 | ID | Class | Priority | State | Loop eligible |
 |---|---|---:|---|---:|
-| `SBH-10-01` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-01` | foundational spine | — | `READY` | Yes |
 | `SBH-10-02` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
 | `SBH-20-01` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
 | `SBH-10-06` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
@@ -2539,14 +2565,23 @@ admit work.
 An em dash in the Priority column means this reconciliation assigns no priority
 to that row. No other priority is inferred.
 
-`READY` here means the row is genuinely lane-local and has no identified shared
-modification in its current contract. It is eligible for explicit human
-selection, not automatic execution. Before implementation, the selected row
-must pass the current serial admission checks, receive an exact task contract,
-and branch from the current explicitly accepted SUBS tip. If task-level source
-inspection proves that a purported lane-local fix must change a shared write
-path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this register
-grants no authority to make that shared change.
+`READY` means the row has satisfied its frozen semantic prerequisites and any
+required external dependency/shared-authority conditions identified by its
+current contract.
+
+A `READY` row may have no shared modification, or it may have an explicitly
+`AUTHORITY_ASSIGNED` shared surface.
+
+`READY` makes the row eligible for explicit human selection only; it does not
+authorize automatic execution. Before implementation, the selected row must
+pass the current serial admission checks, receive a bounded exact-base task
+contract, and branch from the current explicitly accepted SUBS tip.
+
+If task-level inspection discovers an additional required shared modification
+that is not covered by the row's existing authority assignment, STOP and
+reclassify the task as `BLOCKED_SHARED_AUTHORITY` rather than expanding authority
+silently. Authority remains task-specific; this register grants no authority to
+make a shared change beyond what is explicitly assigned to that row.
 
 The recorded human-owner priority decision was:
 
@@ -2556,13 +2591,13 @@ SBH-70-02 = P1
 SBH-80-01 = P1
 ```
 
-`SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are now `CLOSED`. Zero
-canonical `READY` implementation/proof rows exist. No implementation or proof
-task may start until a separate explicit register/admission assessment authorizes
-a transition to `READY` and a human explicitly selects the admitted row with a
-bounded exact-base task contract. Blocked rows retain their current states until
-that separate assessment authorizes any transition. The P1 labels provide no
-severity ordering and do not alter the frozen dependency edges.
+`SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are now `CLOSED`.
+Exactly one canonical `READY` implementation/proof row exists: `SBH-10-01`. No
+production work may begin until the human explicitly selects `SBH-10-01` and a
+bounded exact-base task contract is materialized. No other downstream row is
+promoted by this admission reconciliation. Blocked rows retain their current
+states until a separate assessment authorizes any transition. The P1 labels
+provide no severity ordering and do not alter the frozen dependency edges.
 
 ---
 
@@ -3195,7 +3230,7 @@ passes.
 
 ---
 
-# 41. Current v0.1.14 Serial Verdict
+# 41. Current v0.1.15 Serial Verdict
 
 ```text
 SUBS lifecycle = READY
@@ -3203,14 +3238,19 @@ SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
 ```
 
+`SBH-10-01` is the sole canonical `READY` implementation row after explicit
+human assignment dated 2026-09-21 of its required PlanRevision migration/Ash-
+snapshot authority. Its priority remains unassigned (—). It is eligible for
+explicit human selection but is not automatically selected. No production work
+may begin until the human explicitly selects `SBH-10-01` and a bounded exact-
+base task contract is materialized. No other downstream row is promoted by this
+reconciliation.
+
 `SBH-80-02` is `CLOSED` after adversarial proof, merge, and post-merge recovery
 verification. Its proof correctness is recovered/verified at current canonical
 tip `71eba2d321e75f266a5c4da52836de7f6cae4cf8`. The final PR-head gate deviation
 at `55343ce7c657cc489c1bd923a6bc2dd6b5fe62d4` remains historical provenance and
-is not retroactively converted to PASS. There are zero canonical `READY`
-implementation/proof rows. No next issue is authorized by this closure
-reconciliation. A separate explicit admission assessment is required before
-another row can become `READY`.
+is not retroactively converted to PASS.
 
 `SBH-80-01` is `CLOSED` after successful implementation, exact-head
 verification, human merge, and exact post-merge verification. Successful PR #40
