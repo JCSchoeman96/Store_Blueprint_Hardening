@@ -3201,7 +3201,6 @@ passes.
 SUBS lifecycle = READY
 SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
-current SUBS tip = 71eba2d321e75f266a5c4da52836de7f6cae4cf8
 ```
 
 `SBH-80-02` is `CLOSED` after adversarial proof, merge, and post-merge recovery
