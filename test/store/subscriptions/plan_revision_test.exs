@@ -4,6 +4,7 @@ defmodule Store.Subscriptions.PlanRevisionTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Ash.Resource.Info
   alias Store.Subscriptions.{PlanRevision, Subscription}
   alias Store.SubscriptionsFixtures
 
@@ -42,43 +43,28 @@ defmodule Store.Subscriptions.PlanRevisionTest do
   end
 
   test "status cannot be supplied to create an effective or retired revision", %{plan: plan} do
-    assert {:error, error} =
-             PlanRevision
-             |> Ash.Changeset.for_create(
-               :create_draft,
-               Map.merge(@commercial_attrs, %{
-                 subscription_plan_id: plan.id,
-                 status: :effective
-               }),
-               context: %{system?: true}
-             )
-             |> Ash.create(
-               domain: Store.Subscriptions,
-               authorize?: false,
-               context: %{system?: true}
-             )
+    for status <- [:effective, :retired] do
+      assert {:error, error} =
+               PlanRevision
+               |> Ash.Changeset.for_create(
+                 :create_draft,
+                 Map.merge(@commercial_attrs, %{
+                   subscription_plan_id: plan.id,
+                   status: status
+                 }),
+                 context: %{system?: true}
+               )
+               |> Ash.create(
+                 domain: Store.Subscriptions,
+                 authorize?: false,
+                 context: %{system?: true}
+               )
 
-    assert Enum.any?(error.errors, fn err ->
-             match?(%Ash.Error.Changes.InvalidAttribute{field: :status}, err) or
-               match?(%Ash.Error.Changes.InvalidChanges{}, err)
-           end) or
-             reload_drafts_for_plan!(plan.id) == []
+      assert [%Ash.Error.Invalid.NoSuchInput{input: :status, action: :create_draft}] =
+               invalid_errors(error)
+    end
 
-    assert {:error, _} =
-             PlanRevision
-             |> Ash.Changeset.for_create(
-               :create_draft,
-               Map.merge(@commercial_attrs, %{
-                 subscription_plan_id: plan.id,
-                 status: :retired
-               }),
-               context: %{system?: true}
-             )
-             |> Ash.create(
-               domain: Store.Subscriptions,
-               authorize?: false,
-               context: %{system?: true}
-             )
+    assert reload_drafts_for_plan!(plan.id) == []
   end
 
   test "draft commercial edit succeeds and advances optimistic version", %{plan: plan} do
@@ -399,6 +385,8 @@ defmodule Store.Subscriptions.PlanRevisionTest do
   end
 
   test "no existing subscription is modified or bound as a side effect", %{plan: plan} do
+    refute subscription_has_plan_revision_binding_field?()
+
     customer = SubscriptionsFixtures.create_customer!("sbh_10_01_side_effect")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
@@ -414,7 +402,28 @@ defmodule Store.Subscriptions.PlanRevisionTest do
 
     after_snapshot = subscription_snapshot!(subscription.id)
     assert before == after_snapshot
-    refute Map.has_key?(before, :current_plan_revision_id)
+    refute subscription_has_plan_revision_binding_field?()
+  end
+
+  test "draft edit can clear optional entitlement kind and scope together", %{plan: plan} do
+    revision =
+      create_draft!(
+        plan,
+        Map.merge(@commercial_attrs, %{
+          entitlement_kind: :membership_access,
+          entitlement_scope_key: "premium"
+        })
+      )
+
+    cleared =
+      update_draft!(revision, %{entitlement_kind: nil, entitlement_scope_key: nil})
+
+    assert cleared.entitlement_kind == nil
+    assert cleared.entitlement_scope_key == nil
+
+    reloaded = reload_revision!(revision.id)
+    assert reloaded.entitlement_kind == nil
+    assert reloaded.entitlement_scope_key == nil
   end
 
   defp create_draft!(plan, attrs) do
@@ -508,6 +517,10 @@ defmodule Store.Subscriptions.PlanRevisionTest do
         match?(%Ash.Error.Changes.InvalidRelationship{}, err) or
         String.contains?(Exception.message(err), "foreign key")
     end)
+  end
+
+  defp subscription_has_plan_revision_binding_field? do
+    :current_plan_revision_id in Enum.map(Info.attributes(Subscription), & &1.name)
   end
 
   defp invalid_errors({:error, %Ash.Error.Invalid{errors: errors}}), do: errors

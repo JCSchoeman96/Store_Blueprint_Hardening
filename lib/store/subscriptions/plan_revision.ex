@@ -415,16 +415,22 @@ defmodule Store.Subscriptions.PlanRevision do
   end
 
   defp validate_entitlement(changeset, _context) do
-    entitlement_kind =
-      Ash.Changeset.get_attribute(changeset, :entitlement_kind) || changeset.data.entitlement_kind
-
-    entitlement_scope_key = Ash.Changeset.get_attribute(changeset, :entitlement_scope_key)
+    entitlement_kind = resolved_attribute(changeset, :entitlement_kind)
+    entitlement_scope_key = resolved_attribute(changeset, :entitlement_scope_key)
 
     if not is_nil(entitlement_kind) and not is_binary(entitlement_scope_key) do
       {:error,
        field: :entitlement_scope_key, message: "is required when entitlement_kind is present"}
     else
       :ok
+    end
+  end
+
+  defp resolved_attribute(changeset, attribute) do
+    if Ash.Changeset.changing_attribute?(changeset, attribute) do
+      Ash.Changeset.get_attribute(changeset, attribute)
+    else
+      Map.get(changeset.data || %{}, attribute)
     end
   end
 
