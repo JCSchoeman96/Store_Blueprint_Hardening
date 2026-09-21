@@ -2565,14 +2565,23 @@ human selection is still required under the serial workflow.
 An em dash in the Priority column means this reconciliation assigns no priority
 to that row. No other priority is inferred.
 
-`READY` here means the row is genuinely lane-local and has no identified shared
-modification in its current contract. It is eligible for explicit human
-selection, not automatic execution. Before implementation, the selected row
-must pass the current serial admission checks, receive an exact task contract,
-and branch from the current explicitly accepted SUBS tip. If task-level source
-inspection proves that a purported lane-local fix must change a shared write
-path, the task must stop and become `BLOCKED_SHARED_AUTHORITY`; this register
-grants no authority to make that shared change.
+`READY` means the row has satisfied its frozen semantic prerequisites and any
+required external dependency/shared-authority conditions identified by its
+current contract.
+
+A `READY` row may have no shared modification, or it may have an explicitly
+`AUTHORITY_ASSIGNED` shared surface.
+
+`READY` makes the row eligible for explicit human selection only; it does not
+authorize automatic execution. Before implementation, the selected row must
+pass the current serial admission checks, receive a bounded exact-base task
+contract, and branch from the current explicitly accepted SUBS tip.
+
+If task-level inspection discovers an additional required shared modification
+that is not covered by the row's existing authority assignment, STOP and
+reclassify the task as `BLOCKED_SHARED_AUTHORITY` rather than expanding authority
+silently. Authority remains task-specific; this register grants no authority to
+make a shared change beyond what is explicitly assigned to that row.
 
 The recorded human-owner priority decision was:
 
