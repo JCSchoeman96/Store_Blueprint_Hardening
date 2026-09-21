@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.16
+**Version:** v0.1.17
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-21
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,7 +13,7 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes, or manufacture READY work.
 
-## Current authority boundary — v0.1.16
+## Current authority boundary — v0.1.17
 
 Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
 supersedes the autonomous SUBS execution model. SUBS lifecycle remains
@@ -589,7 +589,9 @@ lifecycle authority for:
 ```text
 status
 period boundaries
-current effective PlanRevision identity
+current effective PlanRevision identity for authoritative bound contracts;
+pre-PlanRevision legacy rows may temporarily have an explicitly unresolved
+binding only under the approved legacy compatibility law
 current variant/quantity where applicable
 stored payment-method identity/reference
 cancellation intent
@@ -605,6 +607,10 @@ bound immutable PlanRevision
         +
 explicitly Subscription-owned aggregate state
 ```
+
+For a pre-PlanRevision legacy row whose complete contract is not provable, the
+binding portion is explicitly unresolved under the approved compatibility law;
+the row does not possess a fabricated revision or a current-Plan fallback.
 
 Compatibility snapshots may exist for migration, reads, or performance, but they are
 not competing commercial authorities. JC-219 does not add schema or change the
@@ -871,6 +877,39 @@ Existing Subscriptions may not receive invented history. Evidence precedence is:
 If material historical commercial meaning cannot be proven, the row or cohort must
 stop for an explicit compatibility/product decision. Today's mutable Plan must never
 be silently copied and presented as historical truth.
+
+### Owner-approved legacy binding compatibility amendment — 2026-09-21
+
+The owner-approved JC-219 amendment canonicalizes the compatibility boundary
+exposed by the SBH-10-02 historical-evidence assessment. A Subscription created
+before authoritative PlanRevision binding existed may temporarily lack
+`current_plan_revision_id` when its complete historical commercial contract
+cannot be proven from durable evidence. This is an explicitly unresolved legacy
+contract-binding condition, not a Subscription lifecycle state.
+
+The exception preserves the normal authority chain and does not make the mutable
+`SubscriptionPlan` historical truth. Missing values may not be supplied from the
+current Plan, defaults, an arbitrary or newest `EFFECTIVE` revision, provider
+state, or present Subscription status. The unresolved row must fail closed for
+any operation requiring unproven commercial truth, including new automatic
+renewal provider start, new RenewalAttempt charged-contract binding, queued
+contract change, commercial-policy-dependent rescheduling, and derivation of
+commercial/access policy from today's Plan. Missing evidence alone does not
+cancel, expire, suspend, revoke access, forfeit funded coverage, or authorize a
+provider payment.
+
+After authoritative PlanRevision binding capability is active, every newly
+created Subscription must resolve and commit an authoritative `EFFECTIVE`
+PlanRevision at its governed creation boundary. Binding failure fails closed and
+must not create another unresolved row. Reconciliation of a legacy row requires
+authoritative evidence for the complete contract and recorded provenance. An
+ambiguous row remains unresolved until a separate owner/governance decision
+approves a disposition; this amendment approves no particular disposition.
+
+The exception is transitional. Before final Subscription-hardening certification,
+every extant renewable Subscription must have an authoritative PlanRevision
+binding or an explicit, separately governed legacy disposition. This amendment
+freezes no schema mechanism, lifecycle value, sentinel revision, or new resource.
 
 ### JC-219 boundary and concurrency consequences
 
@@ -1398,22 +1437,87 @@ Performance/scaling (as implemented):
 authority is assigned.
 **Loop eligible:** No.
 
-Bind each existing Subscription to its exact authoritative commercial contract.
+The semantic dependency on `SBH-10-01` is satisfied, but this row remains
+`BLOCKED_SHARED_AUTHORITY / No`. No migration authority, Ash snapshot authority,
+implementation branch, or READY transition is assigned by this reconciliation.
 
-Proposed branch:
+### SBH-10-02 historical-evidence finding
+
+Assessment base:
 
 ```text
-subs-task/sbh-10-02-subscription-contract-binding
+25f5e0d20b7da2d4f476dcb47083348c416f2220
 ```
+
+The completed assessment found durable immutable evidence for:
+
+```text
+plan identity/key
+variant
+quantity
+amount
+currency
+interval unit
+interval count
+```
+
+The reviewed repository does not prove historical values for all legacy rows for:
+
+```text
+trial
+anchor mode/day
+billing timezone
+term policy
+retry policy
+grace policy
+access policy
+complete entitlement policy
+```
+
+No authoritative migration-target customer database was available during the
+assessment, so `ZERO_EXISTING_SUBSCRIPTIONS` was not proven. Current mutable
+`SubscriptionPlan` state remains unproven historical evidence.
+
+### Compatibility-aware SBH-10-02 contract
+
+The task must bind every Subscription whose exact complete authoritative
+commercial contract is provable. A pre-PlanRevision Subscription whose complete
+history is not provable may instead remain explicitly unresolved under the
+approved JC-219 compatibility law. It must fail closed for operations requiring
+unproven contract truth, including:
+
+```text
+new automatic renewal provider start
+new RenewalAttempt charged-contract binding
+new queued contract change
+commercial-policy-dependent rescheduling
+commercial/access-policy derivation from today's mutable SubscriptionPlan
+```
+
+The migration may not copy today's Plan, assume defaults, select an arbitrary or
+newest PlanRevision, infer policy from provider state or Subscription status, or
+silently bind an ambiguous row. Missing evidence alone does not cancel, expire,
+suspend, revoke access, or forfeit funded coverage. Any reconciliation must use
+authoritative evidence and record provenance. An unresolved row stays unresolved
+until a separate owner/governance decision approves a legacy disposition.
+
+Once binding capability is active, forward-created Subscriptions must resolve and
+commit an authoritative `EFFECTIVE` PlanRevision at their governed creation
+boundary or fail closed. The compatibility path cannot create new unresolved
+rows. No new Subscription lifecycle state or schema mechanism is prescribed here.
 
 Required:
 
-- deterministic historical backfill;
+- deterministic evidence classification;
+- exact binding where the complete contract is provable;
 - no invented contract history;
-- STOP where historical meaning cannot be proven;
-- explicit compatibility strategy;
+- explicit unresolved legacy compatibility where complete history is not provable;
+- fail closed for operations requiring unresolved contract truth;
+- mandatory forward binding after capability activation;
+- explicit reconciliation provenance;
 - required FK/query indexes;
-- no unrelated cross-domain change.
+- no unrelated cross-domain change;
+- STOP where implementation requires authority outside this task.
 
 This foundation remains non-executable while its migration-sensitive authority is
 unassigned, even though its semantic dependency is frozen.
@@ -3360,13 +3464,34 @@ passes.
 
 ---
 
-# 41. Current v0.1.16 Serial Verdict
+# 41. Current v0.1.17 Serial Verdict
 
 ```text
 SUBS lifecycle = READY
 SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
+canonical READY implementation/proof rows = 0
 ```
+
+The owner-approved JC-219 legacy binding compatibility amendment is canonical,
+with approval dated `2026-09-21`. It preserves immutable `PlanRevision` as
+commercial authority and forbids using current mutable `SubscriptionPlan` as
+historical fallback. A pre-PlanRevision Subscription whose complete historical
+contract cannot be proven may remain explicitly unresolved and must fail closed
+for operations requiring unproven contract truth. This compatibility condition
+is not a Subscription lifecycle state. Forward-created Subscriptions must bind
+an authoritative `EFFECTIVE` PlanRevision once that capability is active.
+
+`SBH-10-02` remains `BLOCKED_SHARED_AUTHORITY / No`. This reconciliation assigns
+no migration authority or Ash snapshot authority, does not select SBH-10-02, and
+does not promote any row to `READY`. A separate SBH-10-02 admission/shared-
+authority decision is required before implementation. The frozen dependency graph
+is unchanged: `SBH-10-02` still depends on `SBH-10-01`, whose semantic dependency
+remains satisfied while SBH-10-02's own shared authority is unresolved. The
+hardening matrix remains `SBH-10-01 = CLOSED / No`, `SBH-10-02 =
+BLOCKED_SHARED_AUTHORITY / No`, `SBH-20-01 = BLOCKED_SHARED_AUTHORITY / No`,
+`SBH-10-06 = BLOCKED_SHARED_AUTHORITY / No`, `SBH-60-01 = BLOCKED_DEPENDENCY /
+No`, and `SBH-90-01 = BLOCKED_DEPENDENCY / No`; no READY row is created.
 
 `SBH-10-01` is `CLOSED` after implementation of the JC-219 PlanRevision
 foundation, exact-head required CI, human merge, content-equivalent merge
