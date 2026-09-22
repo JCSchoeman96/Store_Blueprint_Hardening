@@ -167,6 +167,31 @@ git status -sb
 
 The result must show a clean worktree and no unauthorized migrations, IA semantic changes, SUBS commercial changes, or generic PLATFORM ownership changes.
 
+- [x] **Step 4: Resolve the strict test-environment type gate.**
+
+The first CI run reported unsuppressed Dialyzer findings in the S0-only checkout
+diagnostic helper because canonical `main` now runs `mix check.types` under
+`MIX_ENV=test`. Reproduce that failure before changing code, then keep the fix
+bounded to the helper: use the canonical `File.stream!/3` contract, make ETS
+side-effect returns explicit, remove unreachable fallback/error branches, and
+narrow the affected contracts to their inferred error shapes. Do not add broad
+ignore entries or touch InventoryAdmission behavior.
+
+Validation after the fix:
+
+```bash
+MIX_ENV=test mix check.types
+mix test test/store/perf/checkout_diagnostic_test.exs \
+  test/store/perf/observer_contract_test.exs \
+  test/store/perf/performance_smoke_test.exs \
+  test/store/orders/inventory_admission_state_test.exs \
+  test/store/orders/inventory_admission_redis_test.exs
+mix check
+mix dialyzer --format short
+```
+
+All commands must pass on the exact code candidate before publication.
+
 ### Task 5: Prepare independent activation review without self-activating S0
 
 **Files:**

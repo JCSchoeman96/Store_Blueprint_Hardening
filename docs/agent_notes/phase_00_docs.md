@@ -1544,7 +1544,7 @@ Still not authorized:
 - Accepted main source: `59dd41100593b207907c3a7ab4d77755cd80f929` (`origin/main`).
 - Merge base: `e498fdaa92b377d9fd8762a46b12e495535d113b`.
 - Reconciliation merge: `769e4075adbadd002d79d389d9077da726697eae`.
-- Exact code candidate validated: `92b6a79c3489dac8549374599ddd987684494164`.
+- Exact code candidate validated: `e97d67f0ba29f3cce88b110698fd457ba808c08a`.
 - Later commits on this branch are documentation-only validation records; the
   branch HEAD must be rechecked before publication.
 - This branch is an integration candidate only. Canonical S0 remains `BOOTSTRAPPED`,
@@ -1599,6 +1599,16 @@ Still not authorized:
 - Focused InventoryAdmission tests: PASS, 45 tests with 0 failures.
 - `mix dialyzer --format short`: PASS, 130 warnings skipped by the checked-in
   ignore file and 0 unsuppressed errors.
+- The first PR CI run (`35700384831`) exposed a strict `MIX_ENV=test
+  mix check.types` failure in the S0-only checkout diagnostic helper. The failure
+  was reproduced locally before changing code. The fix is limited to that helper:
+  canonical `File.stream!/3` argument order, explicit ETS side-effect returns,
+  removal of unreachable fallback/error branches, and contracts matching the
+  inferred error shapes. No ignore entries were added.
+- Remediated exact-head strict type gate: `MIX_ENV=test mix check.types` PASS,
+  130 reviewed warnings skipped and 0 unsuppressed errors.
+- Focused checkout/performance plus InventoryAdmission tests: PASS, 78 tests with
+  0 failures.
 - `git diff --check origin/hardening/s0-baseline...HEAD`: PASS.
 - Forbidden-path audit: PASS. The candidate changes no migrations,
   `lib/store/orders/inventory_admission/**`, or InventoryAdmission tests.
