@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `e16767e92ac22ca7a108f13677052c63bb13c3f2` (explicitly human-accepted; exact-head review `PASS`; PR #51 evidence only) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -242,7 +242,9 @@ Explicit exclusion:
 
 S0 is **not** the mandatory development parent of PLATFORM or SUBS.
 
-**Activation:** this registry does **not** authorize IA-03 or other S0 implementation. State remains `BOOTSTRAPPED` until an independent S0 activation gate accepts a development base and transitions the lane.
+**Activation:** this registry does **not** authorize IA-03 or other S0 implementation. The accepted development base is not implementation authority. S0 lifecycle remains `BOOTSTRAPPED`, and IA-03 remains **NOT AUTHORIZED**, pending a separate independent S0 activation/feasibility decision.
+
+The explicitly human-accepted S0 development base is `e16767e92ac22ca7a108f13677052c63bb13c3f2`. Independent exact-head review result: `PASS` (CI run `35707962997`; `performance_smoke_required` `PASS`). PR #51 remains open and unmerged as reconciliation/acceptance evidence only.
 
 ### PLATFORM
 
