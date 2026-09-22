@@ -2,10 +2,6 @@
 
 If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
-## WORKTREES
-Worktrees isolate execution; ownership rules prevent semantic duplication.
-One active authority per schema/resource lineage across all concurrent workstreams.
-
 ---
 
 ## BRANCHES, WORKTREES & PARALLEL WORK AUTHORITY (MANDATORY)
@@ -417,6 +413,12 @@ Parallel work requires all three.
 ## Phase Notes (Docs-first) (MUST)
 - Every phase must have: `docs/agent_notes/phase_XX_docs.md`
 - Must include: links consulted, decisions/pins, plan, performance review
+
+
+---
+
+## Workflow
+- ALWAYS create or update a PR, so that the work and implementation or info can be checked and reviewed
 
 ---
 

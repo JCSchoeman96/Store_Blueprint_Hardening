@@ -1609,9 +1609,10 @@ Still not authorized:
   130 reviewed warnings skipped and 0 unsuppressed errors.
 - Focused checkout/performance plus InventoryAdmission tests: PASS, 78 tests with
   0 failures.
-- Final PR CI run `35703573228` for the documentation-following candidate head
-  passed `check_static`, `test_pr_strict`, `performance_smoke_chaos_required`,
-  `performance_smoke_required`, and `dialyzer_required`.
+- PR CI run `35703573228` passed on candidate predecessor
+  `ceb2d007a184c07cc94c6c967c8496d409128b06`.
+- Final exact-head CI is review-time external evidence and must be verified
+  against the final candidate SHA after all source and document changes stop.
 - `git diff --check origin/hardening/s0-baseline...HEAD`: PASS.
 - Forbidden-path audit: PASS. The candidate changes no migrations,
   `lib/store/orders/inventory_admission/**`, or InventoryAdmission tests.
