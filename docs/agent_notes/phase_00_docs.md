@@ -1543,7 +1543,8 @@ Still not authorized:
 - S0 source: `9b0b26a68399149abdde7c96529fbc1951e22cac` (`origin/hardening/s0-baseline`).
 - Accepted main source: `59dd41100593b207907c3a7ab4d77755cd80f929` (`origin/main`).
 - Merge base: `e498fdaa92b377d9fd8762a46b12e495535d113b`.
-- Reconciliation candidate: `769e4075adbadd002d79d389d9077da726697eae`.
+- Reconciliation merge: `769e4075adbadd002d79d389d9077da726697eae`.
+- Exact validated candidate: `92b6a79c3489dac8549374599ddd987684494164`.
 - This branch is an integration candidate only. Canonical S0 remains `BOOTSTRAPPED`,
   has no accepted development base, and has no IA-03 implementation authority.
 
@@ -1587,3 +1588,16 @@ Still not authorized:
 - Telemetry and logging: only performance-harness observation code is reconciled;
   production telemetry ownership is unchanged.
 - No 100K or performance-certification claim is made by this candidate.
+
+### Validation record
+
+- `mix check`: PASS, 576 tests and 3 property tests with 0 failures; repository
+  checks, Credo, Sobelow, and docs generation completed. Sobelow emitted
+  low-confidence findings and exited successfully.
+- Focused InventoryAdmission tests: PASS, 45 tests with 0 failures.
+- `mix dialyzer --format short`: PASS, 130 warnings skipped by the checked-in
+  ignore file and 0 unsuppressed errors.
+- `git diff --check origin/hardening/s0-baseline...HEAD`: PASS.
+- Forbidden-path audit: PASS. The candidate changes no migrations,
+  `lib/store/orders/inventory_admission/**`, or InventoryAdmission tests.
+- Worktree: clean at the exact candidate SHA.

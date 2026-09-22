@@ -16,7 +16,7 @@
 - Modify: `docs/agent_notes/phase_00_docs.md` with the reconciliation record and validation evidence.
 - Modify: this plan only if source facts change during verification.
 
-- [ ] **Step 1: Record exact source SHAs.**
+- [x] **Step 1: Record exact source SHAs.**
 
 Run:
 
@@ -30,7 +30,7 @@ git status -sb
 
 Expected source SHAs are `59dd41100593b207907c3a7ab4d77755cd80f929` and `9b0b26a68399149abdde7c96529fbc1951e22cac`; the worktree must be clean before the merge.
 
-- [ ] **Step 2: Classify pre-merge overlap.**
+- [x] **Step 2: Classify pre-merge overlap.**
 
 Run:
 
@@ -43,7 +43,7 @@ comm -12 <(cut -f2 /tmp/s0-main-file-set.txt | sort) <(cut -f2 /tmp/s0-branch-fi
 
 Use the overlap list to anticipate conflicts. Do not edit files yet.
 
-- [ ] **Step 3: Confirm protected S0 boundaries.**
+- [x] **Step 3: Confirm protected S0 boundaries.**
 
 Run:
 
@@ -59,7 +59,7 @@ The merge must preserve the existing InventoryAdmission lifecycle and tests. Any
 - Modify: files reported by Git as merge conflicts, limited to accepted `origin/main` changes and the existing S0 baseline.
 - Do not modify: `lib/store/orders/inventory_admission/**`, its existing tests, migrations, SUBS commercial resources, or generic PLATFORM Redis infrastructure unless a conflict proves an unavoidable contradiction and review authorizes reopening the boundary.
 
-- [ ] **Step 1: Create the merge commit from exact refs.**
+- [x] **Step 1: Create the merge commit from exact refs.**
 
 Run:
 
@@ -69,7 +69,7 @@ git merge --no-ff --no-edit origin/main
 
 Expected result is either a clean merge or a conflict list. If Git reports a conflict in InventoryAdmission behavior, a migration, SUBS commercial truth, or generic PLATFORM infrastructure, stop before resolving it and record the path for review.
 
-- [ ] **Step 2: Resolve only mechanical conflicts.**
+- [x] **Step 2: Resolve only mechanical conflicts.**
 
 For each conflict, inspect both sides with:
 
@@ -86,7 +86,7 @@ git diff --cached --check
 git status --short
 ```
 
-- [ ] **Step 3: Verify no forbidden migration or IA authority change.**
+- [x] **Step 3: Verify no forbidden migration or IA authority change.**
 
 Run:
 
@@ -103,7 +103,7 @@ If a migration appears, or the diff changes `K_v`, Redis/PostgreSQL authority, d
 - Modify: `docs/agent_notes/phase_00_docs.md` with source SHAs, candidate SHA, review scope, and performance review.
 - Do not modify: canonical lifecycle state on this branch.
 
-- [ ] **Step 1: Record source and candidate SHAs.**
+- [x] **Step 1: Record source and candidate SHAs.**
 
 Run:
 
@@ -116,11 +116,11 @@ git show --stat --oneline --decorate HEAD
 
 The note must identify both source SHAs, the merge base, the candidate SHA, and that S0 remains `BOOTSTRAPPED` pending independent acceptance.
 
-- [ ] **Step 2: Add the required performance review.**
+- [x] **Step 2: Add the required performance review.**
 
 Cover hot paths affected by the merge, DB query count and N+1 risk, indexes, cache/TTL/invalidation impact, Oban uniqueness or idempotency impact, and telemetry/logging. State `no change` when applicable and link to the governing performance documents.
 
-- [ ] **Step 3: Commit the reconciliation record.**
+- [x] **Step 3: Commit the reconciliation record.**
 
 Run:
 
@@ -134,7 +134,7 @@ git commit -m "docs(s0): record baseline reconciliation candidate"
 **Files:**
 - No source changes are allowed while validation runs.
 
-- [ ] **Step 1: Run repository checks.**
+- [x] **Step 1: Run repository checks.**
 
 Run:
 
@@ -144,7 +144,7 @@ mix check
 
 Record the full exit status and failures. Do not claim activation readiness if this command fails.
 
-- [ ] **Step 2: Run InventoryAdmission tests and type checks.**
+- [x] **Step 2: Run InventoryAdmission tests and type checks.**
 
 Run:
 
@@ -155,7 +155,7 @@ mix dialyzer --format short
 
 These commands must pass on the exact candidate SHA. Historical CI evidence from earlier heads is not sufficient.
 
-- [ ] **Step 3: Check the final diff for forbidden changes.**
+- [x] **Step 3: Check the final diff for forbidden changes.**
 
 Run:
 
