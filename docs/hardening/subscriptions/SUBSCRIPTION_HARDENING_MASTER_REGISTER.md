@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.19
+**Version:** v0.1.20
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-22
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,7 +13,7 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes beyond an explicitly recorded task-specific grant, or manufacture READY work.
 
-## Current authority boundary — v0.1.19
+## Current authority boundary — v0.1.20
 
 Canonical `main` governance at `59dd41100593b207907c3a7ab4d77755cd80f929`
 supersedes the autonomous SUBS execution model. SUBS lifecycle remains
@@ -62,7 +62,34 @@ JC-219, JC-220, JC-221, JC-222, JC-223, and the existing frozen Subscription
 lifecycle and scheduling law remain canonical. Simplifying execution does not
 reopen or supersede them.
 
-## Current v0.1.19 admission: SBH-60-01
+## Current v0.1.20 closure: SBH-60-01
+
+Reconciliation base:
+
+```text
+3ee071cfd0daa927d0d3563771d2711bb0abb974
+```
+
+This is governance-only closure reconciliation. It changes no production code,
+migration, Ash snapshot, dependency file, Domain Law, or scheduling law.
+
+The human owner merge of successful PR `#53` at
+`3ee071cfd0daa927d0d3563771d2711bb0abb974` closes `SBH-60-01 — Canonical
+New-Sale / Change Eligibility`. `SBH-60-01` transitions from `READY` to
+`CLOSED` with `loop_eligible: No` unchanged.
+
+Zero canonical `READY` implementation/proof rows remain. No downstream row is
+promoted by this reconciliation. `SBH-10-02` and `SBH-10-06` remain
+`BLOCKED_SHARED_AUTHORITY / No`. The frozen JC-223 dependency edges are
+unchanged.
+
+Task-specific PlanRevision migration/Ash-snapshot authority assigned for
+`SBH-60-01` is completed provenance only. It creates no reusable migration or
+snapshot authority for any other row.
+
+## Historical v0.1.19 admission: SBH-60-01
+
+Historical admission provenance superseded by the v0.1.20 closure above.
 
 The human owner approved this admission and decomposition on `2026-09-22`.
 The approval covers:
@@ -1739,20 +1766,22 @@ The semantic dependency on `SBH-10-01` is satisfied, but this row remains
 `BLOCKED_SHARED_AUTHORITY / No`. No migration authority, Ash snapshot authority,
 implementation branch, or READY transition is assigned by this reconciliation.
 
-Forward-created Subscription binding also has a current capability prerequisite:
-canonical `EFFECTIVE` PlanRevision selection must be implemented and proven
-before forward-binding execution can run. If this row later receives migration
-authority before that capability exists, the required result is:
-
-```text
-required capability absent → STOP SBH-10-02 forward-binding execution
-```
+Forward-created Subscription binding requires canonical `EFFECTIVE` PlanRevision
+selection before forward-binding execution can run. That capability
+prerequisite is now satisfied by closed `SBH-60-01`, which implemented and
+proved `PlanRevision.get_effective_for_plan/2` with zero-`EFFECTIVE` fail-
+closed behavior, exact single-`EFFECTIVE` return, no `DRAFT`/`RETIRED`/incidental-
+order fallback, PostgreSQL partial unique enforcement of at most one `EFFECTIVE`
+revision per `SubscriptionPlan`, and competing-publication proof permitting only
+one committed `EFFECTIVE`. Satisfying that prerequisite does not assign migration
+authority, Ash snapshot authority, Checkout authority, Orders authority, or
+purchase-evidence authority to this row.
 
 This is a task-level capability requirement under the existing admission law, not
 a new frozen dependency edge. The JC-223 edge remains `SBH-10-02` depends on
 `SBH-10-01`.
 
-This v0.1.19 reconciliation assigns no Subscription-binding migration or
+This v0.1.20 closure reconciliation assigns no Subscription-binding migration or
 Ash-snapshot authority, Checkout authority, Orders authority, or purchase-
 evidence authority to SBH-10-02.
 
@@ -1863,8 +1892,8 @@ Migrations and Ash snapshots are likely required, so this row remains
 change race here; that belongs to `SBH-20-03`.
 
 This row receives no ContractChange migration or Ash-snapshot authority from
-v0.1.19. SBH-60-01 must not write temporary future-target revision state into
-`Subscription` to bypass this row.
+the v0.1.20 closure reconciliation. SBH-60-01 must not write temporary
+future-target revision state into `Subscription` to bypass this row.
 
 ---
 
@@ -2390,52 +2419,23 @@ Legacy source finding: `SUB-HARD-05`.
 ## SBH-60-01 — Canonical New-Sale / Change Eligibility
 
 **Priority:** —
-**State:** `READY`.
+**State:** `CLOSED`.
 **Loop eligible:** No.
 
-**Shared authority:** `AUTHORITY_ASSIGNED` for exactly:
+**Shared authority:** `AUTHORITY_ASSIGNED` — completed task-specific PlanRevision
+migration and corresponding `plan_revisions` Ash snapshot authority. The
+authority was used only for `SBH-60-01` and grants no further execution
+authority after closure.
+
+Completed capability:
 
 ```text
-PlanRevision migration: per-SubscriptionPlan EFFECTIVE uniqueness only
-corresponding plan_revisions Ash snapshot only
-```
-
-Task-specific authority is assigned for the SBH-60-01 selector foundation only.
-No reusable or downstream migration authority is created. This authority ends
-as execution authority when SBH-60-01 closes and remains only as completed
-provenance.
-
-Proposed branch:
-
-```text
-subs-task/sbh-60-01-plan-eligibility
-```
-
-Invariant:
-
-For one `SubscriptionPlan`:
-
-```text
-zero EFFECTIVE PlanRevisions
-→ selector reports unavailable / fails closed
-
-exactly one EFFECTIVE PlanRevision
-→ selector returns that exact immutable revision
-
-more than one EFFECTIVE PlanRevision
-→ prohibited by PostgreSQL durable authority
-```
-
-The selector must never substitute:
-
-```text
-DRAFT
-RETIRED
-newest row
-highest UUID
-latest inserted_at
-latest updated_at
-mutable SubscriptionPlan commercial values
+canonical PlanRevision.get_effective_for_plan/2 EFFECTIVE selector
+zero EFFECTIVE → fail closed
+exactly one EFFECTIVE → return that exact immutable revision
+DRAFT / RETIRED / incidental ordering are never fallbacks
+PostgreSQL partial unique index enforces at most one EFFECTIVE per SubscriptionPlan
+competing publication proof permits only one committed EFFECTIVE
 ```
 
 The selector foundation owns PlanRevision publication uniqueness, exact
@@ -2445,15 +2445,54 @@ Cart, Checkout, Orders, Subscription creation, or queued change callers already
 consume the selector. Those integrations remain downstream/shared-authority
 work.
 
-The later implementation must use PostgreSQL durable authority for simultaneous-
-EFFECTIVE exclusion. A read-then-publish check is insufficient. The expected
-simplest mechanism is a uniqueness constraint or index on `subscription_plan_id`
-where `status = 'effective'`; its name, migration filename, Ash identity, SQL,
-transaction API, and error shape remain implementation decisions.
+Completed task branch:
 
-If existing data has multiple EFFECTIVE revisions for one Plan, migration must
-stop without selecting a winner. No newest, oldest, timestamp, UUID, or
-arbitrary-row repair is allowed.
+```text
+subs-task/sbh-60-01-plan-eligibility
+```
+
+Completion provenance:
+
+```text
+task: SBH-60-01
+task base: b744069cc6135577882d7a134ddee14859b5ef31
+successful final task head: 248f7e2d365e99a8072b4b7dec5ffb5f99bc3de8
+successful PR: #53
+merge SHA: 3ee071cfd0daa927d0d3563771d2711bb0abb974
+```
+
+Exact final task head `248f7e2d365e99a8072b4b7dec5ffb5f99bc3de8` CI run
+`35704318935` — all five required jobs `PASS`:
+
+```text
+check_static: PASS
+test_pr_strict: PASS
+performance_smoke_required: PASS
+performance_smoke_chaos_required: PASS
+dialyzer_required: PASS
+```
+
+PR `#53` merge SHA `3ee071cfd0daa927d0d3563771d2711bb0abb974` is
+content-equivalent to successful final task head
+`248f7e2d365e99a8072b4b7dec5ffb5f99bc3de8` (zero file differences between
+those SHAs).
+
+Fresh independent final review of the successful final task head: `PASS`.
+
+Post-sync `mix check`: `648` tests, `3` properties, `0` failures.
+Post-sync `git diff --check`: `PASS`.
+
+Assigned shared-authority surfaces (completed):
+
+```text
+priv/repo/migrations/20260922080609_sbh_60_01_plan_revision_effective_uniqueness.exs
+priv/resource_snapshots/repo/plan_revisions/20260922080610.json
+```
+
+Task-specific PlanRevision migration/Ash-snapshot authority assigned for
+`SBH-60-01` selector foundation only. It does not assign migration or snapshot
+authority to `SBH-10-02`, `SBH-10-06`, `SBH-20-01`, `SBH-50-06`, or any other
+row. This completed record is no longer eligible for selection.
 
 The semantic dependency on `SBH-10-01` is satisfied. The frozen JC-223 edges
 remain unchanged. `SBH-10-02` and `SBH-10-06` retain their own
@@ -3082,11 +3121,9 @@ EXTERNALIZED
 `AUTHORITY_ASSIGNED` means an explicit authority exists for the named shared
 surface. `BLOCKED_SHARED_AUTHORITY` means the task cannot proceed until that
 authority is assigned. `EXTERNALIZED` means the surface remains owned outside
-SUBS and the task must not modify it. `SBH-10-01` retains `AUTHORITY_ASSIGNED`
-as completed task-specific provenance only. `SBH-60-01` has a separate,
-task-specific `AUTHORITY_ASSIGNED` grant for its PlanRevision selector
-foundation; no open reusable or downstream migration/snapshot authority grant
-exists.
+SUBS and the task must not modify it. `SBH-10-01` and `SBH-60-01` retain
+`AUTHORITY_ASSIGNED` as completed task-specific provenance only; no open
+reusable or downstream migration/snapshot authority grant exists.
 
 | Row | Shared surface or boundary | Shared-authority status | Execution consequence |
 |---|---|---|---|
@@ -3112,7 +3149,7 @@ exists.
 | `SBH-50-03` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-05` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
-| `SBH-60-01` | PlanRevision migration: per-SubscriptionPlan `EFFECTIVE` uniqueness only; corresponding `plan_revisions` Ash snapshot only | `AUTHORITY_ASSIGNED` | Task-specific authority assigned for SBH-60-01 selector foundation only. No reusable or downstream migration authority is created. |
+| `SBH-60-01` | PlanRevision migration: per-SubscriptionPlan `EFFECTIVE` uniqueness only; corresponding `plan_revisions` Ash snapshot only | `AUTHORITY_ASSIGNED` | Completed task-specific PlanRevision migration/snapshot authority. The authority was used only for `SBH-60-01` and grants no further execution authority after closure. |
 | `SBH-60-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-70-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-80-01` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
@@ -3133,11 +3170,11 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-register state. `SBH-10-01`, `SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and
-`SBH-80-02` are `CLOSED`. Exactly one canonical `READY` implementation/proof
-row exists, `SBH-60-01`. The recorded `loop_eligible` values remain register
-metadata; human selection is still required under the serial workflow when a
-row is admitted as `READY`.
+register state. `SBH-10-01`, `SBH-30-02`, `SBH-60-01`, `SBH-70-02`,
+`SBH-80-01`, and `SBH-80-02` are `CLOSED`. Zero canonical `READY`
+implementation/proof rows remain. The recorded `loop_eligible` values remain
+register metadata; human selection is still required under the serial workflow
+when a row is admitted as `READY`.
 
 | ID | Class | Priority | State | Loop eligible |
 |---|---|---:|---|---:|
@@ -3163,7 +3200,7 @@ row is admitted as `READY`.
 | `SBH-50-03` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-05` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-60-01` | commercial availability | — | `READY` | No |
+| `SBH-60-01` | commercial availability | — | `CLOSED` | No |
 | `SBH-60-02` | commercial availability | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-70-02` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-80-01` | independent lane-local | P1 | `CLOSED` | No |
@@ -3205,14 +3242,15 @@ SBH-70-02 = P1
 SBH-80-01 = P1
 ```
 
-`SBH-10-01`, `SBH-30-02`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` remain
-`CLOSED`. Exactly one canonical `READY` implementation/proof row exists:
-`SBH-60-01`. No production work is authorized by this reconciliation, and
-SBH-60-01 is not selected for implementation. No downstream row is promoted by
-this reconciliation. `SBH-10-02` and `SBH-10-06` remain
-`BLOCKED_SHARED_AUTHORITY / No`; their own migration, snapshot, binding, and
-future-target authority is unresolved. The P1 labels provide no severity
-ordering and do not alter the frozen dependency edges.
+`SBH-10-01`, `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and
+`SBH-80-02` remain `CLOSED`. Zero canonical `READY` implementation/proof rows
+remain. No production work is authorized by this closure reconciliation. A
+separate admission assessment is required before any row may be selected for
+implementation. No downstream row is promoted by this reconciliation.
+`SBH-10-02` and `SBH-10-06` remain `BLOCKED_SHARED_AUTHORITY / No`; their own
+migration, snapshot, binding, and future-target authority is unresolved. The P1
+labels provide no severity ordering and do not alter the frozen dependency
+edges.
 
 ---
 
@@ -3846,28 +3884,25 @@ passes.
 
 ---
 
-# 41. Current v0.1.19 Serial Verdict
+# 41. Current v0.1.20 Serial Verdict
 
 ```text
 SUBS lifecycle = READY
 SUBS execution policy = SERIAL / EXPLICIT HARDENING
 current authority = canonical main governance 59dd41100593b207907c3a7ab4d77755cd80f929
-canonical READY implementation/proof rows = 1
-sole READY row = SBH-60-01
+canonical READY implementation/proof rows = 0
 ```
 
 ```text
-SBH-60-01 = READY / No
-SBH-60-01 shared authority = AUTHORITY_ASSIGNED
+SBH-60-01 = CLOSED / No
+SBH-60-01 shared authority = AUTHORITY_ASSIGNED (completed provenance only)
 SBH-10-02 = BLOCKED_SHARED_AUTHORITY / No
 SBH-10-06 = BLOCKED_SHARED_AUTHORITY / No
-SBH-60-01 selected for implementation = NO
 ```
 
-The human owner approved the SBH-60-01 selector-foundation decomposition and
-task-specific PlanRevision migration/Ash-snapshot authority assignment on
-`2026-09-22`. This reconciliation records the admission only; it does not
-select SBH-60-01 for implementation.
+This v0.1.20 governance-only closure reconciliation records `SBH-60-01`
+completion at merge `3ee071cfd0daa927d0d3563771d2711bb0abb974` (PR `#53`). It
+does not select any next issue and promotes no downstream row.
 
 The v0.1.18 JC-219 Domain Law is unchanged. For one SubscriptionPlan, at most
 one PlanRevision may be `EFFECTIVE`; `DRAFT → EFFECTIVE → RETIRED` remains
@@ -3904,18 +3939,24 @@ PlanRevision once the selection capability is active.
 
 `SBH-10-02` remains `BLOCKED_SHARED_AUTHORITY / No`. It receives no
 Subscription-binding, Checkout, Orders, or purchase-evidence authority from
-this reconciliation. Its semantic dependency on `SBH-10-01` is satisfied, but
-its own migration and Ash-snapshot authority remains unresolved. Its existing
-forward-selector capability STOP remains current until SBH-60-01 is implemented
-and proven. `SBH-10-06` remains `BLOCKED_SHARED_AUTHORITY / No` and receives no
+this reconciliation. Its semantic dependency on `SBH-10-01` is satisfied, and
+its EFFECTIVE-selector capability prerequisite is satisfied by closed
+`SBH-60-01`, but its own migration and Ash-snapshot authority remains
+unresolved. `SBH-10-06` remains `BLOCKED_SHARED_AUTHORITY / No` and receives no
 ContractChange or future-target authority. The frozen JC-223 edges are
 unchanged.
 
-SBH-60-01 is `READY / No` with `AUTHORITY_ASSIGNED` limited to the PlanRevision
-one-EFFECTIVE-per-Plan migration and corresponding `plan_revisions` Ash
-snapshot. No Checkout, Orders, Subscription-binding, or ContractChange
-authority is assigned. The sole READY row is SBH-60-01. `READY` does not mean
-selected, implementation started, or automatic execution.
+`SBH-60-01` is `CLOSED / No` after implementation of the canonical
+`PlanRevision.get_effective_for_plan/2` EFFECTIVE selector, PostgreSQL partial
+unique enforcement, competing-publication proof, exact-head required CI, fresh
+independent final review, content-equivalent merge verification, and post-sync
+`mix check` / `git diff --check`. Successful final task head
+`248f7e2d365e99a8072b4b7dec5ffb5f99bc3de8`; PR `#53` merged as
+`3ee071cfd0daa927d0d3563771d2711bb0abb974` (CI run `35704318935`). Task-specific
+PlanRevision migration/Ash-snapshot authority is completed provenance only and
+grants no further execution authority. Zero canonical `READY`
+implementation/proof rows remain. A separate admission assessment is required
+before any next issue may be selected.
 
 `SBH-10-01` is `CLOSED` after implementation of the JC-219 PlanRevision
 foundation, exact-head required CI, human merge, content-equivalent merge
@@ -3924,8 +3965,9 @@ head was `de62b108015ebed1290b960efb6bdfb2e5c82baf`; PR `#46` merged as
 `945214761a736c66659b375c6005da470605828a`. All five required CI jobs passed on
 `de62b108...` before merge (CI run `35621281204`). The fresh independent review
 of the corrected final head occurred after merge; that review-order deviation
-remains historical provenance. SBH-60-01 is the sole canonical `READY` row in
-the current matrix. No implementation task is selected by this reconciliation.
+remains historical provenance. Zero canonical `READY` implementation/proof rows
+remain in the current matrix. No implementation task is selected by this
+reconciliation.
 
 `SBH-80-02` is `CLOSED` after adversarial proof, merge, and post-merge recovery
 verification. Its proof correctness is recovered/verified at current canonical
