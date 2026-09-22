@@ -22,6 +22,15 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
 
   @recordable_states [:raw_open, :running, :workload_complete, :workload_failed]
 
+  @type transition_error :: %{from: atom(), reason: :invalid_transition, to: atom()}
+
+  @type record_error :: %{
+          optional(:reason) => binary(),
+          optional(:state) => atom(),
+          kind: :instrumentation,
+          code: :event_record_failed | :evidence_buffer_overflow | :session_not_recordable
+        }
+
   @transitions %{
     configured: [:raw_open],
     raw_open: [:running],
@@ -261,7 +270,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     @type t :: %__MODULE__{}
   end
 
-  @spec transition_state(atom(), atom()) :: {:ok, atom()} | {:error, map()}
+  @spec transition_state(atom(), atom()) :: {:ok, atom()} | {:error, transition_error()}
   def transition_state(from, to) when is_atom(from) and is_atom(to) do
     if to in Map.get(@transitions, from, []) do
       {:ok, to}
@@ -327,22 +336,24 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     record(session, :phase, Map.put(data, :phase, to_string(phase)))
   end
 
-  @spec record_worker_sync(Session.t(), map()) :: {:ok, pos_integer()} | {:error, map()}
+  @spec record_worker_sync(Session.t(), map()) :: {:ok, pos_integer()} | {:error, record_error()}
   def record_worker_sync(session, data) when is_map(data), do: record(session, :worker_sync, data)
 
-  @spec record_inventory_subphase(Session.t(), map()) :: {:ok, pos_integer()} | {:error, map()}
+  @spec record_inventory_subphase(Session.t(), map()) ::
+          {:ok, pos_integer()} | {:error, record_error()}
   def record_inventory_subphase(session, data) when is_map(data),
     do: record(session, :inventory_subphase, data)
 
   @spec record_instrumentation_error(Session.t(), term()) :: :ok | {:error, map()}
   def record_instrumentation_error(%Session{} = session, reason) do
     if session.state in @recordable_states do
-      :ets.update_counter(
-        session.meta_table,
-        :instrumentation_errors,
-        {2, 1},
-        {:instrumentation_errors, 0}
-      )
+      _ =
+        :ets.update_counter(
+          session.meta_table,
+          :instrumentation_errors,
+          {2, 1},
+          {:instrumentation_errors, 0}
+        )
 
       case record(session, :instrumentation_error, %{code: error_code(reason)}) do
         {:ok, _sequence} -> :ok
@@ -385,7 +396,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   end
 
   @spec record_repo_query(Session.t(), map(), map()) ::
-          {:ok, pos_integer()} | {:error, map()}
+          {:ok, pos_integer()} | {:error, record_error()}
   def record_repo_query(%Session{} = session, measurements, metadata)
       when is_map(measurements) and is_map(metadata) do
     record(session, :repo_query, %{
@@ -402,7 +413,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   end
 
   @spec record_checkout_step(Session.t(), map(), map()) ::
-          {:ok, pos_integer()} | {:error, map()}
+          {:ok, pos_integer()} | {:error, record_error()}
   def record_checkout_step(%Session{} = session, measurements, metadata)
       when is_map(measurements) and is_map(metadata) do
     record(session, :checkout_step, %{
@@ -467,7 +478,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   end
 
   @spec record_observer_summary(Session.t(), map()) ::
-          {:ok, pos_integer()} | {:error, map()}
+          {:ok, pos_integer()} | {:error, record_error()}
   def record_observer_summary(session, summary) when is_map(summary) do
     record(session, :observer_summary, summary_without_backend_queries(summary))
   end
@@ -497,7 +508,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   @spec read_raw_events(String.t()) :: {:ok, [map()]} | {:error, term()}
   def read_raw_events(raw_path) when is_binary(raw_path) do
     raw_path
-    |> File.stream!([], :line)
+    |> File.stream!(:line, [])
     |> Enum.reduce_while({:ok, []}, fn line, {:ok, events} ->
       case Jason.decode(String.trim(line)) do
         {:ok, event} -> {:cont, {:ok, [event | events]}}
@@ -538,7 +549,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     }
 
     raw_path
-    |> File.stream!([], :line)
+    |> File.stream!(:line, [])
     |> Enum.reduce_while({:ok, initial}, fn line, {:ok, aggregate} ->
       case Jason.decode(String.trim(line)) do
         {:ok, event} -> {:cont, {:ok, aggregate_event(aggregate, event)}}
@@ -562,7 +573,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     max_events = max(input.worker_count * 10, 100)
 
     raw_path
-    |> File.stream!([], :line)
+    |> File.stream!(:line, [])
     |> Stream.map(&Jason.decode!(String.trim(&1)))
     |> Stream.filter(&(&1["event_type"] == "checkout_step"))
     |> Stream.take(max_events)
@@ -621,7 +632,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
         )
 
       {:error, reason} ->
-        safe_close(io)
+        _ = safe_close(io)
         {:error, artifact_open_error(raw_path, reason)}
     end
   end
@@ -648,8 +659,8 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
         )
 
       {:error, reason} ->
-        delete_tables(events_table, meta_table)
-        safe_close(io)
+        _ = delete_tables(events_table, meta_table)
+        _ = safe_close(io)
         {:error, artifact_open_error(raw_path, reason)}
     end
   end
@@ -679,8 +690,8 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
         transition_session(configured, :raw_open)
 
       {:error, reason} ->
-        delete_tables(events_table, meta_table)
-        safe_close(io)
+        _ = delete_tables(events_table, meta_table)
+        _ = safe_close(io)
         {:error, artifact_open_error(raw_path, reason)}
     end
   end
@@ -1182,17 +1193,19 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
   defp write_event_batch(_io, _events_table, _meta_table, _events, _dropped, ""), do: :ok
 
   defp write_event_batch(io, events_table, meta_table, events, dropped, lines) do
-    case IO.binwrite(io, lines) do
+    case :file.write(io, lines) do
       :ok ->
         Enum.each(events, fn {sequence, _event} -> :ets.delete(events_table, sequence) end)
-        :ets.update_counter(meta_table, :buffered, {2, -length(events)}, {:buffered, 0})
+        _ = :ets.update_counter(meta_table, :buffered, {2, -length(events)}, {:buffered, 0})
         :ok
 
       {:error, reason} ->
-        if dropped > 0,
-          do: :ets.update_counter(meta_table, :dropped, {2, dropped}, {:dropped, 0})
+        _ =
+          if dropped > 0 do
+            :ets.update_counter(meta_table, :dropped, {2, dropped}, {:dropped, 0})
+          end
 
-        :ets.insert(meta_table, {:writer_error, reason})
+        _ = :ets.insert(meta_table, {:writer_error, reason})
         {:error, reason}
     end
   end
@@ -1231,8 +1244,8 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
       update_max_observed(session.meta_table, buffered)
       {:ok, sequence}
     else
-      :ets.update_counter(session.meta_table, :buffered, {2, -1}, {:buffered, 0})
-      :ets.update_counter(session.meta_table, :dropped, {2, 1}, {:dropped, 0})
+      _ = :ets.update_counter(session.meta_table, :buffered, {2, -1}, {:buffered, 0})
+      _ = :ets.update_counter(session.meta_table, :dropped, {2, 1}, {:dropped, 0})
       {:error, %{kind: :instrumentation, code: :evidence_buffer_overflow}}
     end
   rescue
@@ -1283,7 +1296,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
       }
     }
 
-    case IO.binwrite(io, Jason.encode!(json_safe(header)) <> "\n") do
+    case :file.write(io, Jason.encode!(json_safe(header)) <> "\n") do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
     end
@@ -1336,7 +1349,6 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     Path.join(input.artifact_directory, "#{filename}.#{suffix}")
   end
 
-  defp safe_close(nil), do: :ok
   defp safe_close(io), do: File.close(io)
 
   defp delete_tables(events_table, meta_table) do
@@ -1387,21 +1399,8 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
     }
   end
 
-  defp normalize_workload(_payload, _input) do
-    %{
-      durations_ms: [],
-      errors: [],
-      completed_workers: 0,
-      successful_workers: 0,
-      governed_failures: 0,
-      unexpected_failures: 0,
-      db_errors: 0,
-      deadlocks: 0
-    }
-  end
-
   defp normalize_correctness(payload, workload, input) do
-    source = if is_map(payload), do: Map.get(payload, :correctness, %{}), else: %{}
+    source = Map.get(payload, :correctness, %{})
 
     %{
       expected_workers:
@@ -1824,7 +1823,7 @@ defmodule Store.PerformanceSmoke.CheckoutDiagnostic do
 
     try do
       path
-      |> File.stream!([], :line)
+      |> File.stream!(:line, [])
       |> Enum.reduce(initial, fn line, scan ->
         case Jason.decode(String.trim(line)) do
           {:ok, event} -> scan_raw_event(scan, event)
