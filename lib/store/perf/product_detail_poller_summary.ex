@@ -11,7 +11,7 @@ defmodule Store.Perf.ProductDetailPollerSummary do
 
     summary =
       input_path
-      |> File.stream!([], :line)
+      |> File.stream!(:line, [])
       |> Enum.map(&Jason.decode!/1)
       |> build_summary(opts, mode)
 

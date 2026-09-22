@@ -29,6 +29,7 @@ defmodule Store.Support.Redis do
   end
 
   @spec term_get(String.t()) :: {:ok, :miss | {:hit, term()}} | {:error, term()}
+  # sobelow_skip ["Misc.BinToTerm"]
   def term_get(relative_key) when is_binary(relative_key) do
     case command(["GET", key(relative_key)]) do
       {:ok, nil} ->

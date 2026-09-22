@@ -124,15 +124,15 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
             Discover your investment risk profile in under 5 minutes.
           </p>
         </header>
-        
-    <!-- Step indicator -->
+
+        <!-- Step indicator -->
         <ul class="steps steps-horizontal w-full">
           <li class={["step", step_class(@step, :questionnaire)]}>Questionnaire</li>
           <li class={["step", step_class(@step, :contact)]}>Your Details</li>
           <li class={["step", step_class(@step, :result)]}>Your Result</li>
         </ul>
-        
-    <!-- Step 1: Questionnaire -->
+
+        <!-- Step 1: Questionnaire -->
         <div :if={@step == :questionnaire} class="space-y-6">
           <.live_score_bar score={@live_score} category={@live_category} answers={@answers} />
 
@@ -175,8 +175,8 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
             </.button>
           </div>
         </div>
-        
-    <!-- Step 2: Contact Details -->
+
+        <!-- Step 2: Contact Details -->
         <div :if={@step == :contact} class="space-y-6">
           <.live_score_bar score={@live_score} category={@live_category} answers={@answers} />
 
@@ -300,8 +300,8 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
             </form>
           </div>
         </div>
-        
-    <!-- Step 3: Result -->
+
+        <!-- Step 3: Result -->
         <div :if={@step == :result} class="space-y-6">
           <div class="rounded-xl border border-base-300 bg-base-200/50 p-8 text-center space-y-6">
             <div>
@@ -318,8 +318,8 @@ defmodule StoreWeb.ToolsLive.RiskAppetite do
                 {@live_category}
               </span>
             </div>
-            
-    <!-- Score spectrum bar -->
+
+            <!-- Score spectrum bar -->
             <div class="w-full max-w-md mx-auto">
               <div class="relative h-4 rounded-full bg-gradient-to-r from-info via-warning to-error overflow-hidden">
                 <div

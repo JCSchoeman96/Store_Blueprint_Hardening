@@ -4,8 +4,6 @@ defmodule StoreWeb.Telemetry do
   use Supervisor
   import Telemetry.Metrics
 
-  @enable_ops_telemetry_poller Application.compile_env(:store, :enable_ops_telemetry_poller, true)
-
   def start_link(arg) do
     Supervisor.start_link(__MODULE__, arg, name: __MODULE__)
   end
@@ -414,7 +412,7 @@ defmodule StoreWeb.Telemetry do
   end
 
   defp periodic_measurements do
-    if @enable_ops_telemetry_poller do
+    if Application.get_env(:store, :enable_ops_telemetry_poller, true) do
       [{Store.Operations.TelemetryPoller, :emit_queue_metrics, []}]
     else
       []

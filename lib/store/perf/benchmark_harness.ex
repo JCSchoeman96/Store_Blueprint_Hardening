@@ -260,7 +260,7 @@ defmodule Store.Perf.BenchmarkHarness do
   def wait_for_endpoint! do
     deadline = System.monotonic_time(:millisecond) + @ready_timeout_ms
     url = benchmark_base_url() <> "/shop"
-    :inets.start()
+    _ = :inets.start()
 
     wait_until(deadline, fn ->
       case :httpc.request(:get, {String.to_charlist(url), []}, [timeout: 1_000], []) do

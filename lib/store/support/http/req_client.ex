@@ -26,7 +26,7 @@ defmodule Store.Support.HTTP.ReqClient do
     opts =
       opts
       |> Keyword.put_new(:receive_timeout, timeout)
-      |> Keyword.put_new(:connect_options, timeout: timeout)
+      |> put_connect_options(timeout)
       |> Keyword.put_new(:method, method)
       |> put_retry_policy(method)
 
@@ -41,6 +41,20 @@ defmodule Store.Support.HTTP.ReqClient do
   @spec post(String.t(), keyword()) :: {:ok, Req.Response.t()} | {:error, Exception.t()}
   def post(url, opts \\ []) when is_binary(url) and is_list(opts) do
     request(:post, Keyword.put(opts, :url, url))
+  end
+
+  defp put_connect_options(opts, timeout) do
+    case Keyword.get(opts, :finch) do
+      nil ->
+        Keyword.put_new(opts, :connect_options, timeout: timeout)
+
+      _finch ->
+        if Keyword.has_key?(opts, :connect_options) do
+          raise ArgumentError, "cannot set both :finch and :connect_options"
+        end
+
+        opts
+    end
   end
 
   # Default retries are enabled only for idempotent safe methods (GET/HEAD).

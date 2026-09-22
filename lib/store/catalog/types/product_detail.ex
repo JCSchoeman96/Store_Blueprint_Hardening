@@ -31,11 +31,11 @@ defmodule Store.Catalog.Types.ProductDetail do
 
   @type t :: %__MODULE__{
           product: Product.t(),
-          options: [Option.t()],
+          options: [Store.Catalog.Types.ProductDetail.Option.t()],
           selected: %{optional(String.t()) => String.t()},
-          resolution: Resolution.t(),
-          availability_matrix: [AvailabilityCell.t()],
-          subscription_plan_options: [PlanOption.t()],
+          resolution: Store.Catalog.Types.ProductDetail.Resolution.t(),
+          availability_matrix: [Store.Catalog.Types.ProductDetail.AvailabilityCell.t()],
+          subscription_plan_options: [Store.Catalog.Types.ProductDetail.PlanOption.t()],
           selected_subscription_plan_id: String.t() | nil,
           selected_subscription_plan_key: String.t() | nil,
           subscription_plan_required?: boolean()
