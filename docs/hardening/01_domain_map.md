@@ -1,6 +1,7 @@
 # Subscription domain and lifecycle map
 
-**Status:** Stage B governance freeze, JC-220 / JC-221 / JC-222
+**Status:** Stage B governance freeze, JC-219 v0.1.18 effective-revision
+selection amendment, JC-220 / JC-221 / JC-222
 **Scope:** Subscription domain law and architecture only
 **Implementation authority:** None
 **Canonical navigation:** `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
@@ -58,20 +59,59 @@ current aggregate, and re-evaluates its original intent.
 `SubscriptionPlan` is a mutable reusable offer and sellability surface. It is not
 historical contract truth.
 
-`PlanRevision` is the immutable effective commercial contract. An effective or
-retired revision remains truthful evidence even when it is no longer available for
-new sale or future change selection.
+`PlanRevision` is the commercial-contract resource. An `EFFECTIVE` or `RETIRED`
+revision is immutable. Its lifecycle is:
+
+```text
+DRAFT → EFFECTIVE → RETIRED
+```
+
+`DRAFT` is editable. `EFFECTIVE` is immutable. `RETIRED` is immutable and
+terminal, and `RETIRED → EFFECTIVE` is forbidden. An effective or retired
+revision remains truthful evidence even when it is no longer available for new
+sale or future change selection.
+
+For one `SubscriptionPlan`, at most one `PlanRevision` may be `EFFECTIVE` at a
+time. This is a required governance invariant and durable PostgreSQL business
+authority; implementation remains unauthorized. Competing publications must not
+both commit `EFFECTIVE`; a read-before-write check alone is insufficient.
+
+`EFFECTIVE` means the immutable `PlanRevision` currently eligible to participate
+in new-sale or newly queued contract-change selection for its
+`SubscriptionPlan`. It does not, by itself, make an offer sellable. Selection
+also requires an active `SubscriptionPlan`, a valid active
+`VariantSubscriptionPlan` attachment, and applicable Catalog/product/variant
+availability authority.
+
+A Plan may have zero `EFFECTIVE` revisions. That state means no authoritative
+commercial revision is available for new-sale or change selection, so selection
+fails closed. Selection must not fall back to a `RETIRED` or `DRAFT` revision,
+newest or timestamp-ordered data, a UUID ordering, a last returned row, or
+mutable `SubscriptionPlan` values. A `RETIRED` revision remains historical
+commercial evidence and may remain renewable for an already-bound Subscription
+where grandfathering law permits.
 
 The approved commercial authority chain is:
 
 ```text
 SubscriptionPlan
-    ↓ publishes
+    ↓ publishes over time
 PlanRevision
     ↓ binds
 Subscription.current_plan_revision_id
     ↓ freezes one occurrence
 RenewalAttempt charged-contract evidence
+```
+
+For new-sale and newly queued change selection, the relevant part of that chain
+is:
+
+```text
+SubscriptionPlan
+    ↓ publishes over time
+0..1 EFFECTIVE PlanRevision per Plan
+    ↓ exact current new-sale/change candidate
+Subscription or future ContractChange binds that exact revision
 ```
 
 #### Legacy contract-binding compatibility
@@ -543,6 +583,12 @@ ContractChange. Existing-renewal eligibility controls continuation of an extant
 contract. `PAST_DUE` and `SUSPENDED` may recover the same authorized occurrence;
 that is not a new sale. Terminal states cannot be revived by grandfathering.
 
+New-sale and newly queued change selection must resolve the exact currently
+eligible `EFFECTIVE` revision. A Plan with no `EFFECTIVE` revision fails closed;
+two `EFFECTIVE` revisions are a database-invariant violation and also fail
+closed. A `RETIRED` revision may remain authoritative for an existing bound
+Subscription, but it is not eligible for new selection.
+
 ## 12. Authority checkpoints and precedence
 
 The checkpoints are evidence boundaries, not a global "last checkpoint wins"
@@ -719,8 +765,12 @@ FAIL CLOSED
 RECONCILE
 ```
 
-JC-223 / SBH-00-05 is `CONTRACT_FROZEN / CANONICAL` after the bounded register
-change. It remains governance/review only. The separate main-governance registry
-refresh must be merged and independently verified before `SUB-ACT-04`. Production
-implementation, Batch 001, `ACTIVE_PARALLEL`, schema changes, migrations, and
-provider implementation remain unauthorized.
+The owner-approved JC-219 v0.1.18 effective-revision selection amendment and
+JC-223 / SBH-00-05 are `CONTRACT_FROZEN / CANONICAL`. They are governance
+authority and do not themselves grant production implementation, migration,
+schema, provider, or shared-boundary authority. Current SUBS implementation
+admission follows the canonical serial explicit-hardening policy in
+`origin/main`. `SUB-ACT-04`, Batch 001, and `ACTIVE_PARALLEL` are historical
+controller provenance and are not current implementation prerequisites.
+Shared, schema, and provider changes remain separately gated by task-specific
+authority.
