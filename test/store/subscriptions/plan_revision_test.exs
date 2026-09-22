@@ -1,6 +1,7 @@
 defmodule Store.Subscriptions.PlanRevisionTest do
   use Store.DataCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   import Ash.Expr
   require Ash.Query
 
@@ -86,6 +87,114 @@ defmodule Store.Subscriptions.PlanRevisionTest do
     assert published.status == :effective
     assert published.version == revision.version + 1
     assert reload_revision!(revision.id).status == :effective
+  end
+
+  test "effective selector fails closed when no revision is effective", %{plan: plan} do
+    draft = create_draft!(plan, @commercial_attrs)
+
+    assert {:error, error} = effective_for_plan(plan.id)
+    assert not_found_error?(error)
+
+    retired = retire!(publish!(draft))
+
+    assert retired.status == :retired
+    assert {:error, error} = effective_for_plan(plan.id)
+    assert not_found_error?(error)
+  end
+
+  test "effective selector returns the exact effective revision identity", %{plan: plan} do
+    _retired = retire!(publish!(create_draft!(plan, %{@commercial_attrs | amount_minor: 1_111})))
+    effective = publish!(create_draft!(plan, %{@commercial_attrs | amount_minor: 2_222}))
+    _draft = create_draft!(plan, %{@commercial_attrs | amount_minor: 3_333})
+
+    assert {:ok, selected} = effective_for_plan(plan.id)
+    assert selected.id == effective.id
+    assert selected.status == :effective
+  end
+
+  test "effective selector does not fall back to incidental historical order", %{plan: plan} do
+    _draft = create_draft!(plan, %{@commercial_attrs | amount_minor: 1_111})
+    _retired = retire!(publish!(create_draft!(plan, %{@commercial_attrs | amount_minor: 2_222})))
+    _newer_draft = create_draft!(plan, %{@commercial_attrs | amount_minor: 3_333})
+
+    assert {:error, error} = effective_for_plan(plan.id)
+    assert not_found_error?(error)
+  end
+
+  test "sequential second publication is rejected by the one-effective invariant", %{plan: plan} do
+    first = create_draft!(plan, %{@commercial_attrs | amount_minor: 1_111})
+    second = create_draft!(plan, %{@commercial_attrs | amount_minor: 2_222})
+
+    assert {:ok, published_first} = publish(first)
+    assert {:error, error} = publish(second)
+    assert effective_uniqueness_error?(error)
+
+    assert reload_revision!(published_first.id).status == :effective
+    assert reload_revision!(second.id).status == :draft
+    assert effective_count!(plan.id) == 1
+  end
+
+  test "different plans may each publish one effective revision", %{plan: plan} do
+    other_plan = SubscriptionsFixtures.create_subscription_plan!()
+    first = publish!(create_draft!(plan, @commercial_attrs))
+    second = publish!(create_draft!(other_plan, %{@commercial_attrs | amount_minor: 2_222}))
+
+    assert first.id != second.id
+    assert effective_count!(plan.id) == 1
+    assert effective_count!(other_plan.id) == 1
+    assert first.subscription_plan_id != second.subscription_plan_id
+  end
+
+  test "retirement releases the effective slot for a later publication", %{plan: plan} do
+    first = publish!(create_draft!(plan, %{@commercial_attrs | amount_minor: 1_111}))
+    retired = retire!(first)
+
+    assert {:error, error} = effective_for_plan(plan.id)
+    assert not_found_error?(error)
+
+    second = publish!(create_draft!(plan, %{@commercial_attrs | amount_minor: 2_222}))
+
+    assert {:ok, selected} = effective_for_plan(plan.id)
+    assert selected.id == second.id
+    assert reload_revision!(retired.id).status == :retired
+  end
+
+  test "competing publications on independent connections yield one winner", %{plan: _plan} do
+    {race_plan_id, first_id, second_id} = create_committed_race_fixture!()
+
+    try do
+      parent = self()
+
+      tasks =
+        Enum.map([first_id, second_id], fn revision_id ->
+          Task.async(fn ->
+            Sandbox.unboxed_run(Store.Repo, fn ->
+              send(parent, {:publication_ready, self()})
+
+              receive do
+                :publish ->
+                  revision = reload_revision!(revision_id)
+                  publish(revision)
+              end
+            end)
+          end)
+        end)
+
+      ready_pids =
+        Enum.map(tasks, fn _task ->
+          assert_receive {:publication_ready, pid}, 5_000
+          pid
+        end)
+
+      Enum.each(ready_pids, &send(&1, :publish))
+      results = Enum.map(tasks, &Task.await(&1, 15_000))
+
+      assert Enum.count(results, &match?({:ok, %PlanRevision{}}, &1)) == 1
+      assert Enum.count(results, &match?({:error, _}, &1)) == 1
+      assert effective_count_unboxed!(race_plan_id) == 1
+    after
+      delete_committed_race_fixture!(race_plan_id)
+    end
   end
 
   test "effective commercial edit is rejected", %{plan: plan} do
@@ -448,6 +557,12 @@ defmodule Store.Subscriptions.PlanRevisionTest do
     |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
+  defp publish(revision) do
+    revision
+    |> Ash.Changeset.for_update(:publish, %{}, context: %{system?: true})
+    |> Ash.update(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
   defp publish!(revision) do
     revision
     |> Ash.Changeset.for_update(:publish, %{}, context: %{system?: true})
@@ -470,6 +585,61 @@ defmodule Store.Subscriptions.PlanRevisionTest do
     PlanRevision
     |> Ash.Query.filter(expr(subscription_plan_id == ^plan_id and status == :draft))
     |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp effective_for_plan(plan_id) do
+    PlanRevision.get_effective_for_plan(plan_id,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp effective_count!(plan_id) do
+    PlanRevision
+    |> Ash.Query.filter(expr(subscription_plan_id == ^plan_id and status == :effective))
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    |> length()
+  end
+
+  defp effective_count_unboxed!(plan_id) do
+    Sandbox.unboxed_run(Store.Repo, fn ->
+      %{rows: [[count]]} =
+        Store.Repo.query!(
+          "SELECT count(*) FROM plan_revisions WHERE subscription_plan_id = $1 AND status = 'effective'",
+          [Ecto.UUID.dump!(plan_id)]
+        )
+
+      count
+    end)
+  end
+
+  defp create_committed_race_fixture! do
+    Sandbox.unboxed_run(Store.Repo, fn ->
+      unique = Ecto.UUID.generate()
+
+      plan =
+        SubscriptionsFixtures.create_subscription_plan!(%{
+          key: "SBH60RACE_#{unique}",
+          name: "SBH-60-01 race #{unique}"
+        })
+
+      first = create_draft!(plan, %{@commercial_attrs | amount_minor: 1_111})
+      second = create_draft!(plan, %{@commercial_attrs | amount_minor: 2_222})
+      {plan.id, first.id, second.id}
+    end)
+  end
+
+  defp delete_committed_race_fixture!(plan_id) do
+    Sandbox.unboxed_run(Store.Repo, fn ->
+      dumped_plan_id = Ecto.UUID.dump!(plan_id)
+
+      Store.Repo.query!(
+        "DELETE FROM plan_revisions WHERE subscription_plan_id = $1",
+        [dumped_plan_id]
+      )
+
+      Store.Repo.query!("DELETE FROM subscription_plans WHERE id = $1", [dumped_plan_id])
+    end)
   end
 
   defp subscription_snapshot!(id) do
@@ -526,4 +696,19 @@ defmodule Store.Subscriptions.PlanRevisionTest do
   defp invalid_errors({:error, %Ash.Error.Invalid{errors: errors}}), do: errors
   defp invalid_errors(%Ash.Error.Invalid{errors: errors}), do: errors
   defp invalid_errors(_), do: []
+
+  defp not_found_error?(%Ash.Error.Query.NotFound{}), do: true
+
+  defp not_found_error?(%Ash.Error.Invalid{errors: errors}),
+    do: Enum.any?(errors, &not_found_error?/1)
+
+  defp not_found_error?(error) when is_exception(error),
+    do: Exception.message(error) =~ "record not found"
+
+  defp not_found_error?(_error), do: false
+
+  defp effective_uniqueness_error?(error) do
+    inspect(error) =~ "plan_revisions_one_effective_per_plan_index" or
+      Exception.message(error) =~ "plan_revisions_one_effective_per_plan_index"
+  end
 end

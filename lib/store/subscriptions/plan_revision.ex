@@ -186,6 +186,21 @@ defmodule Store.Subscriptions.PlanRevision do
       primary?(true)
     end
 
+    read :get_effective_for_plan do
+      get?(true)
+
+      argument :subscription_plan_id, :uuid do
+        allow_nil?(false)
+      end
+
+      filter(
+        expr(
+          subscription_plan_id == ^arg(:subscription_plan_id) and
+            status == :effective
+        )
+      )
+    end
+
     create :create_draft do
       accept([:subscription_plan_id | @commercial_fields])
 
@@ -230,6 +245,14 @@ defmodule Store.Subscriptions.PlanRevision do
          target: :retired, state_attribute: :status, lock_attribute: :version}
       )
     end
+  end
+
+  code_interface do
+    define(
+      :get_effective_for_plan,
+      action: :get_effective_for_plan,
+      args: [:subscription_plan_id]
+    )
   end
 
   postgres do
@@ -304,6 +327,12 @@ defmodule Store.Subscriptions.PlanRevision do
 
     custom_indexes do
       index([:subscription_plan_id], name: "plan_revisions_subscription_plan_id_index")
+
+      index([:subscription_plan_id],
+        unique: true,
+        where: "status = 'effective'",
+        name: "plan_revisions_one_effective_per_plan_index"
+      )
     end
   end
 

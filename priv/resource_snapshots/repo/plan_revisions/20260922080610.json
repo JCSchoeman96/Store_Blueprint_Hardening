@@ -1,0 +1,500 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"uuid_generate_v7()\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"draft\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "status",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "1",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "version",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"month\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "interval_unit",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "1",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "interval_count",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"USD\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "currency",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "amount_minor",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "trial_days",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"start_anniversary\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "anchor_mode",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "anchor_day_of_month",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"Africa/Johannesburg\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "billing_timezone",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"until_canceled\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "term_mode",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "term_cycles",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "term_end_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"keep_during_grace\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "access_on_past_due",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"keep_until_period_end\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "access_on_cancel",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "7",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "grace_period_days",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "3",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "max_retry_attempts",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "[0, 24, 72]",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "retry_schedule_hours",
+      "type": [
+        "array",
+        "bigint"
+      ]
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "entitlement_kind",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "entitlement_scope_key",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "inserted_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "updated_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "plan_revisions_subscription_plan_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "subscription_plans"
+      },
+      "scale": null,
+      "size": null,
+      "source": "subscription_plan_id",
+      "type": "uuid"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [
+    {
+      "attribute": [
+        "status"
+      ],
+      "base_filter": null,
+      "check": "status IN ('draft', 'effective', 'retired')",
+      "name": "plan_revisions_status_value_check"
+    },
+    {
+      "attribute": [
+        "version"
+      ],
+      "base_filter": null,
+      "check": "version >= 1",
+      "name": "plan_revisions_version_check"
+    },
+    {
+      "attribute": [
+        "interval_unit"
+      ],
+      "base_filter": null,
+      "check": "interval_unit IN ('day', 'month', 'year')",
+      "name": "plan_revisions_interval_unit_value_check"
+    },
+    {
+      "attribute": [
+        "interval_count"
+      ],
+      "base_filter": null,
+      "check": "interval_count >= 1",
+      "name": "plan_revisions_interval_count_check"
+    },
+    {
+      "attribute": [
+        "amount_minor"
+      ],
+      "base_filter": null,
+      "check": "amount_minor >= 0",
+      "name": "plan_revisions_amount_minor_non_negative_check"
+    },
+    {
+      "attribute": [
+        "trial_days"
+      ],
+      "base_filter": null,
+      "check": "trial_days IS NULL OR trial_days >= 0",
+      "name": "plan_revisions_trial_days_non_negative_check"
+    },
+    {
+      "attribute": [
+        "anchor_mode"
+      ],
+      "base_filter": null,
+      "check": "anchor_mode IN ('start_anniversary', 'fixed_day_of_month')",
+      "name": "plan_revisions_anchor_mode_value_check"
+    },
+    {
+      "attribute": [
+        "anchor_day_of_month"
+      ],
+      "base_filter": null,
+      "check": "(anchor_mode <> 'fixed_day_of_month') OR (anchor_day_of_month >= 1 AND anchor_day_of_month <= 31)",
+      "name": "plan_revisions_anchor_day_requirement_check"
+    },
+    {
+      "attribute": [
+        "term_mode"
+      ],
+      "base_filter": null,
+      "check": "term_mode IN ('until_canceled', 'fixed_cycles', 'fixed_end_at')",
+      "name": "plan_revisions_term_mode_value_check"
+    },
+    {
+      "attribute": [
+        "term_cycles"
+      ],
+      "base_filter": null,
+      "check": "(term_mode <> 'fixed_cycles') OR (term_cycles IS NOT NULL AND term_cycles >= 1)",
+      "name": "plan_revisions_term_cycles_requirement_check"
+    },
+    {
+      "attribute": [
+        "term_end_at"
+      ],
+      "base_filter": null,
+      "check": "(term_mode <> 'fixed_end_at') OR (term_end_at IS NOT NULL)",
+      "name": "plan_revisions_term_end_requirement_check"
+    },
+    {
+      "attribute": [
+        "access_on_past_due"
+      ],
+      "base_filter": null,
+      "check": "access_on_past_due IN ('keep_during_grace', 'remove_immediately')",
+      "name": "plan_revisions_access_on_past_due_value_check"
+    },
+    {
+      "attribute": [
+        "access_on_cancel"
+      ],
+      "base_filter": null,
+      "check": "access_on_cancel IN ('keep_until_period_end', 'remove_immediately')",
+      "name": "plan_revisions_access_on_cancel_value_check"
+    },
+    {
+      "attribute": [
+        "grace_period_days"
+      ],
+      "base_filter": null,
+      "check": "grace_period_days >= 0",
+      "name": "plan_revisions_grace_period_days_check"
+    },
+    {
+      "attribute": [
+        "max_retry_attempts"
+      ],
+      "base_filter": null,
+      "check": "max_retry_attempts >= 0",
+      "name": "plan_revisions_max_retry_attempts_check"
+    }
+  ],
+  "create_table_options": null,
+  "custom_indexes": [
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "subscription_plan_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "subscription_plan_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "plan_revisions_subscription_plan_id_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "subscription_plan_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "subscription_plan_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "plan_revisions_one_effective_per_plan_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "status = 'effective'"
+    }
+  ],
+  "custom_statements": [],
+  "has_create_action": true,
+  "hash": "7F42662950AD895182555BBB0D8BA81424F6F3BDBA815E50F7471090E818FEEE",
+  "identities": [],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.Store.Repo",
+  "schema": null,
+  "table": "plan_revisions"
+}
