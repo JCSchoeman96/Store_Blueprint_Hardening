@@ -1526,3 +1526,64 @@ Still not authorized:
 - PUBSUB. No correctness authority.
 - STORE.REPO EFFECT. Zero.
 - 100K. No certification claim.
+
+## S0 baseline reconciliation candidate (2026-09-22)
+
+### Links consulted
+
+- [`AGENTS.md`](../../AGENTS.md)
+- [`docs/agent_rules/active_workstreams.md`](../agent_rules/active_workstreams.md)
+- [`docs/hardening/s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md)
+- [`docs/hardening/s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md)
+- [`docs/governance/performance_scaling.md`](../governance/performance_scaling.md)
+- [`docs/phases/phase_29_performance_architecture_optimizations.md`](../phases/phase_29_performance_architecture_optimizations.md)
+
+### Source and candidate SHAs
+
+- S0 source: `9b0b26a68399149abdde7c96529fbc1951e22cac` (`origin/hardening/s0-baseline`).
+- Accepted main source: `59dd41100593b207907c3a7ab4d77755cd80f929` (`origin/main`).
+- Merge base: `e498fdaa92b377d9fd8762a46b12e495535d113b`.
+- Reconciliation candidate: `769e4075adbadd002d79d389d9077da726697eae`.
+- This branch is an integration candidate only. Canonical S0 remains `BOOTSTRAPPED`,
+  has no accepted development base, and has no IA-03 implementation authority.
+
+### Decisions and pins
+
+- The merge used a dedicated branch, `integration/s0-baseline-reconciliation`,
+  from the published S0 source. The published S0 branch was not rebased or edited.
+- Canonical `main` was accepted for shared runtime, dependency, security, governance,
+  and performance-harness conflict resolution.
+- The three merge conflicts were limited to shared performance harness files:
+  `priv/repo/performance_smoke_test.exs`,
+  `test/store/perf/observer_contract_test.exs`, and
+  `test/support/performance_smoke_observer_contract.ex`.
+- No merge diff touched `priv/repo/migrations`,
+  `lib/store/orders/inventory_admission/**`, or the frozen InventoryAdmission
+  architecture record. Redis remains ephemeral coordination, PostgreSQL remains
+  durable inventory and reservation truth, and `K_v = 1` remains unchanged.
+- The merge does not accept a development base, transition the S0 lifecycle, or
+  authorize IA-03. Independent review and explicit human acceptance remain required.
+
+### Plan
+
+- Validate the exact candidate SHA with repository checks, focused InventoryAdmission
+  tests, Dialyzer, and a final forbidden-diff audit.
+- Record validation output and open a bounded review PR without merging it or changing
+  canonical lifecycle state.
+- Stop at the activation-review handoff. Do not begin IA-03 from this candidate.
+
+### Performance & Scaling Review
+
+- HOT: the reconciliation changes shared performance observer and Redis-pool smoke
+  harness inputs, but it does not change storefront, cart, checkout, webhook, or
+  InventoryAdmission business queries.
+- WARM: the accepted `main` harness adds/retains pool and lock-observation checks;
+  the merge introduces no new application query or N+1 path.
+- COLD: no migration, index, durable inventory write, cache invalidation, Oban
+  uniqueness rule, or Redis stock ledger change is present.
+- Query count and N+1 risk: unchanged for production code. The smoke observer remains
+  diagnostic and does not provide business correctness.
+- Caching and TTLs: unchanged. No ETS/Redis cache policy or invalidation path changed.
+- Telemetry and logging: only performance-harness observation code is reconciled;
+  production telemetry ownership is unchanged.
+- No 100K or performance-certification claim is made by this candidate.
