@@ -19,7 +19,7 @@ Do not treat transient SHAs below as permanent law; they are commissioning/statu
 - Point to pending PRs that affect ownership
 - Make independent activation of S0, PLATFORM, and SUBS legally possible after this governance is accepted
 
-This registry grants **no** implementation authority by itself. Each hardening lane requires a separate post-merge activation gate.
+This registry grants no implementation authority to unactivated lanes. The accepted PLATFORM activation and READY state are recorded below. S0 remains subject to its independent activation gate, and SUBS remains READY under its serial execution policy.
 
 ---
 
@@ -195,7 +195,7 @@ NO_EXECUTABLE_READY_WORK
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
 | `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `e16767e92ac22ca7a108f13677052c63bb13c3f2` (explicitly human-accepted; exact-head review `PASS`; PR #51 merged provenance) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
-| `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | Own accepted SHA (activation gate) | `origin/main` | `BOOTSTRAPPED` (parallel activation gate required) | Topology only until activated |
+| `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
 Temporary worktrees (governance / integration / review / task / remediation) may exist under names such as `Store_Blueprint_Hardening-governance-*`, `Store_Blueprint_Hardening-integration-*`, `Store_Blueprint_Hardening-review-*`, `Store_Blueprint_Hardening-task-*`, or `Store_Blueprint_Hardening-remediation-*`. They are disposable. Do **not** create a permanent integration worktree. Do **not** create a fifth programme lane.
@@ -274,7 +274,24 @@ Exception note: generic Redis infrastructure ≠ InventoryAdmission Redis busine
 
 PLATFORM may progress without S0 finishing, unless an exact task declares a validated external dependency.
 
-**Activation:** do not begin Platform implementation from this registry alone. State remains `BOOTSTRAPPED` until an independent PLATFORM activation gate runs. Do **not** fast-forward the platform branch from registry updates alone.
+**Activation:** the accepted PLATFORM development base is `cc605040bfc8ddd6868a62de20f52c905f999835`. PLATFORM lifecycle is `READY`, and PLATFORM implementation is authorized through explicit task admission.
+
+An advance of `origin/main` does not by itself invalidate the PLATFORM development base or stop an active PLATFORM task.
+
+At task admission, inspect current canonical governance and evaluate only task-relevant changes.
+
+A PLATFORM task stops for main movement only when the newer canonical state specifically changes or invalidates:
+
+- PLATFORM ownership or exclusions;
+- the task's required shared dependency;
+- shared runtime/configuration used by the task;
+- schema/migration authority;
+- the task's affected files or contracts; or
+- the accepted PLATFORM development base itself.
+
+Ordinary unrelated main movement is not a stop condition.
+
+Convergence with current canonical `main` is required before final integration. Do not fast-forward the platform branch merely to acquire unrelated registry updates.
 
 ### SUBS (Subscription Backbone)
 
@@ -595,7 +612,7 @@ AUTHORITY_MOVED
 Task-level blockers are normally **task** states.
 Do not demote an entire workstream merely because one task is blocked.
 
-`PR #8` itself did **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`. SUB-ACT-03 records only the separately evidenced SUBS transition to `READY`. S0 and PLATFORM remain independently `BOOTSTRAPPED`. The `ACTIVE_PARALLEL` reference is retained as historical state evidence and is not a current SUBS implementation prerequisite.
+`PR #8` itself did **not** transition S0, PLATFORM, or SUBS to `READY` or `ACTIVE_PARALLEL`. SUB-ACT-03 records only the separately evidenced SUBS transition to `READY`. S0 remains independently `BOOTSTRAPPED`; the current PLATFORM activation and accepted development base are recorded above. The `ACTIVE_PARALLEL` reference is retained as historical state evidence and is not a current SUBS implementation prerequisite.
 
 ---
 
@@ -661,14 +678,14 @@ After this parallel-topology governance is accepted:
 ```
 
 - S0 may run its independent activation gate.
-- PLATFORM may run its independent activation gate.
+- PLATFORM is `READY` under the accepted development base above and may accept explicitly bounded tasks.
 - SUBS remains `READY` as recorded by SUB-ACT-03 and uses the serial execution policy above.
 
 The SUBS gate in the topology diagram is the completed SUB-ACT-03 activation record, not a new autonomous implementation gate.
 
 No lane requires another lane to finish first unless its exact task declares a validated external dependency.
 
-`PR #8` did not run those gates. This SUB-ACT-03 record records only the completed SUBS gate sequence; it does not run or alter the S0 or PLATFORM gates.
+`PR #8` did not run the S0 or PLATFORM gates. This SUB-ACT-03 record records only the completed SUBS gate sequence; the current PLATFORM activation is recorded above, and S0 remains independently unactivated.
 
 ---
 
@@ -677,14 +694,14 @@ No lane requires another lane to finish first unless its exact task declares a v
 After this parallel-topology governance is accepted and verified:
 
 - S0 may run its independent activation gate.
-- PLATFORM may run its independent activation gate.
+- PLATFORM is `READY` under the accepted development base above and may begin explicitly admitted implementation tasks.
 - SUBS remains `READY` as recorded by SUB-ACT-03 and may begin a serial issue only after the admission rules above pass.
 
 No lane requires another lane to finish first unless its exact task declares a validated external dependency.
 
-Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS has completed the activation recorded by SUB-ACT-03 and remains `READY`; S0 and PLATFORM remain `BOOTSTRAPPED`.
+Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS has completed the activation recorded by SUB-ACT-03 and remains `READY`; S0 remains `BOOTSTRAPPED`; PLATFORM is `READY` under the activation record above.
 
-This section does **not** authorize starting activation gates from an unrelated task, and does **not** authorize IA, Platform, Security, or SBH production implementation from this file alone. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
+This section does **not** authorize starting an S0 activation gate from an unrelated task, and does **not** authorize IA, Security, or SBH production implementation from this file alone. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
 
 ---
 
@@ -775,11 +792,11 @@ When updating:
 - refresh lifecycle states, pending PRs, and ownership assignments here
 - record SHAs as status / candidate evidence only, never as frozen forever-law
 - do not claim a PR merged unless GitHub shows it merged
-- do not self-activate S0 or PLATFORM from a registry-only change; keep SUBS at `READY` as recorded by SUB-ACT-03 and require serial admission for new implementation
+- do not self-activate S0 from a registry-only change; the current PLATFORM activation and accepted development base are recorded above; keep SUBS at `READY` as recorded by SUB-ACT-03 and require serial admission for new implementation
 
 ### Current status / candidate development-base evidence (refresh when tips move)
 
-Not implementation authority. Not frozen activation pins. Refresh from origin before any activation gate.
+This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
 - `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
