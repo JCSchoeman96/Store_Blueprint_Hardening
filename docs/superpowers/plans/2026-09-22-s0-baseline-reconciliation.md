@@ -172,7 +172,7 @@ The result must show a clean worktree and no unauthorized migrations, IA semanti
 **Files:**
 - Modify: the reconciliation note only if validation produces new evidence.
 
-- [ ] **Step 1: Publish the bounded branch and open or update its PR.**
+- [x] **Step 1: Publish the bounded branch and open or update its PR.**
 
 Run:
 
@@ -183,10 +183,10 @@ gh pr create --base main --head integration/s0-baseline-reconciliation --title "
 
 If a PR already exists, update it instead of creating a duplicate.
 
-- [ ] **Step 2: State the activation boundary.**
+- [x] **Step 2: State the activation boundary.**
 
 The PR must say that it proposes a reconciled candidate and validation evidence only. It must not claim that S0 is activated, accept a development base, authorize IA-03, or edit canonical `main` governance. Those actions require independent review and explicit human acceptance.
 
-- [ ] **Step 3: Stop at the review handoff.**
+- [x] **Step 3: Stop at the review handoff.**
 
 After publishing the candidate and evidence, stop. Do not merge the PR, change `hardening/s0-baseline`, start IA-03, or alter canonical lifecycle state in this workstream.
