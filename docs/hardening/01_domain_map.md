@@ -766,8 +766,11 @@ RECONCILE
 ```
 
 The owner-approved JC-219 v0.1.18 effective-revision selection amendment and
-JC-223 / SBH-00-05 are `CONTRACT_FROZEN / CANONICAL` after the bounded register
-change. They remain governance/review only. The separate main-governance registry
-refresh must be merged and independently verified before `SUB-ACT-04`. Production
-implementation, Batch 001, `ACTIVE_PARALLEL`, schema changes, migrations, and
-provider implementation remain unauthorized.
+JC-223 / SBH-00-05 are `CONTRACT_FROZEN / CANONICAL`. They are governance
+authority and do not themselves grant production implementation, migration,
+schema, provider, or shared-boundary authority. Current SUBS implementation
+admission follows the canonical serial explicit-hardening policy in
+`origin/main`. `SUB-ACT-04`, Batch 001, and `ACTIVE_PARALLEL` are historical
+controller provenance and are not current implementation prerequisites.
+Shared, schema, and provider changes remain separately gated by task-specific
+authority.
