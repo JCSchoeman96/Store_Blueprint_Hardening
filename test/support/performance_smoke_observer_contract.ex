@@ -234,7 +234,7 @@ defmodule Store.PerformanceSmoke.ObserverContract do
       drain_elapsed_ms: drain.elapsed_ms,
       lock_wait_max_ratio: config.lock_wait_max_ratio,
       lock_wait_min_active_backends: config.lock_wait_min_active_backends,
-      expected_reservation_wait_max_ms: config.expected_reservation_wait_max_ms,
+      expected_reservation_wait_max_ms: Map.get(config, :expected_reservation_wait_max_ms, 250.0),
       pool_utilization_max_ratio: config.pool_utilization_max_ratio
     }
   end
@@ -342,7 +342,8 @@ defmodule Store.PerformanceSmoke.ObserverContract do
         Enum.count(samples, fn sample ->
           sample.expected_reservation_waiters > 0 and
             (not sample.expected_wait_duration_evidence? or
-               sample.expected_wait_duration_max_ms > config.expected_reservation_wait_max_ms)
+               sample.expected_wait_duration_max_ms >
+                 Map.get(config, :expected_reservation_wait_max_ms, 250.0))
         end),
       samples_over_unexpected_lock_threshold:
         count_ratio_threshold(samples, :unexpected_lock_wait_ratio, config),
@@ -374,7 +375,8 @@ defmodule Store.PerformanceSmoke.ObserverContract do
   defp bounded_expected_contention?(sample, config) do
     sample.expected_reservation_waiters > 0 and
       sample.expected_wait_duration_evidence? and
-      sample.expected_wait_duration_max_ms <= config.expected_reservation_wait_max_ms
+      sample.expected_wait_duration_max_ms <=
+        Map.get(config, :expected_reservation_wait_max_ms, 250.0)
   end
 
   defp drain_state(expected_scope, drain) do
