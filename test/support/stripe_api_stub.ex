@@ -3,11 +3,13 @@ defmodule Store.TestSupport.StripeAPIStub do
 
   import ExUnit.Assertions
 
+  require Logger
+
   alias Store.Perf.ChaosProfile
 
   @stub_name Store.Payments.Providers.Stripe
   @chaos_override_key :stripe_perf_chaos_override
-  @logical_chaos_key :stripe_logical_chaos_request_key
+  @logical_chaos_metadata_key :perf_chaos_logical_request_key
 
   def req_options, do: [plug: {Req.Test, Store.Payments.Providers.Stripe}]
 
@@ -29,13 +31,13 @@ defmodule Store.TestSupport.StripeAPIStub do
 
   def with_chaos_request_key(logical_key, fun)
       when is_binary(logical_key) and logical_key != "" and is_function(fun, 0) do
-    previous = Process.get(@logical_chaos_key)
-    Process.put(@logical_chaos_key, logical_key)
+    previous_metadata = Logger.metadata()
+    Logger.metadata(Keyword.put(previous_metadata, @logical_chaos_metadata_key, logical_key))
 
     try do
       fun.()
     after
-      restore_logical_chaos_key(previous)
+      Logger.reset_metadata(previous_metadata)
     end
   end
 
@@ -235,7 +237,7 @@ defmodule Store.TestSupport.StripeAPIStub do
   end
 
   defp resolve_chaos_request_key(endpoint, params) do
-    case Process.get(@logical_chaos_key) do
+    case Logger.metadata()[@logical_chaos_metadata_key] do
       logical_key when is_binary(logical_key) and logical_key != "" ->
         "#{endpoint}:#{logical_key}"
 
@@ -243,10 +245,6 @@ defmodule Store.TestSupport.StripeAPIStub do
         ChaosProfile.request_key(endpoint, params)
     end
   end
-
-  defp restore_logical_chaos_key(nil), do: Process.delete(@logical_chaos_key)
-
-  defp restore_logical_chaos_key(previous), do: Process.put(@logical_chaos_key, previous)
 
   defp restore_override(nil), do: Application.delete_env(:store, @chaos_override_key)
   defp restore_override(previous), do: Application.put_env(:store, @chaos_override_key, previous)

@@ -1,6 +1,9 @@
 defmodule Store.Perf.StripeAPIStubChaosKeyTest do
   use ExUnit.Case, async: true
 
+  require Logger
+
+  alias Store.Payments.ProviderTask
   alias Store.Perf.ChaosProfile
   alias Store.TestSupport.StripeAPIStub
 
@@ -14,6 +17,70 @@ defmodule Store.Perf.StripeAPIStubChaosKeyTest do
 
   defp fresh_uuid_like do
     Ash.UUIDv7.generate()
+  end
+
+  describe "ProviderTask process boundary" do
+    test "logical chaos key reaches the provider child spawned by ProviderTask.execute/2" do
+      params = volatile_params(fresh_uuid_like())
+      fallback_key = ChaosProfile.request_key("payment_intents", params)
+
+      assert {:ok, %{observed_key: observed_key}} =
+               StripeAPIStub.with_chaos_request_key("provider_fault_slow:7", fn ->
+                 ProviderTask.execute(
+                   fn ->
+                     {:ok,
+                      %{
+                        observed_key: StripeAPIStub.chaos_request_key("payment_intents", params)
+                      }}
+                   end,
+                   provider: :stripe,
+                   timeout_ms: 5_000
+                 )
+               end)
+
+      assert observed_key == "payment_intents:provider_fault_slow:7"
+      refute observed_key == fallback_key
+    end
+
+    test "concurrent ProviderTask executions preserve independent logical chaos keys" do
+      parent = self()
+      ref = make_ref()
+
+      for {logical_key, label} <- [
+            {"provider_fault_slow:1", :one},
+            {"provider_fault_slow:2", :two}
+          ] do
+        Task.start(fn ->
+          result =
+            StripeAPIStub.with_chaos_request_key(logical_key, fn ->
+              ProviderTask.execute(
+                fn ->
+                  params = volatile_params(fresh_uuid_like())
+
+                  {:ok,
+                   %{
+                     label: label,
+                     key: StripeAPIStub.chaos_request_key("payment_intents", params)
+                   }}
+                end,
+                provider: :stripe,
+                timeout_ms: 5_000
+              )
+            end)
+
+          send(parent, {ref, result})
+        end)
+      end
+
+      assert_receive {^ref, {:ok, %{label: :one, key: "payment_intents:provider_fault_slow:1"}}},
+                     5_000
+
+      assert_receive {^ref, {:ok, %{label: :two, key: "payment_intents:provider_fault_slow:2"}}},
+                     5_000
+
+      refute_received {^ref, {:ok, %{label: :one, key: "payment_intents:provider_fault_slow:2"}}}
+      refute_received {^ref, {:ok, %{label: :two, key: "payment_intents:provider_fault_slow:1"}}}
+    end
   end
 
   describe "with_chaos_request_key/2 request key resolution" do
@@ -98,8 +165,6 @@ defmodule Store.Perf.StripeAPIStubChaosKeyTest do
         |> Task.async_stream(
           fn {logical_key, label} ->
             StripeAPIStub.with_chaos_request_key(logical_key, fn ->
-              Process.sleep(20)
-
               key =
                 StripeAPIStub.chaos_request_key("payment_intents", volatile_params("volatile"))
 
