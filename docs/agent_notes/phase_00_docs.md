@@ -1544,7 +1544,9 @@ Still not authorized:
 - Accepted main source: `59dd41100593b207907c3a7ab4d77755cd80f929` (`origin/main`).
 - Merge base: `e498fdaa92b377d9fd8762a46b12e495535d113b`.
 - Reconciliation merge: `769e4075adbadd002d79d389d9077da726697eae`.
-- Exact validated candidate: `92b6a79c3489dac8549374599ddd987684494164`.
+- Exact code candidate validated: `92b6a79c3489dac8549374599ddd987684494164`.
+- Later commits on this branch are documentation-only validation records; the
+  branch HEAD must be rechecked before publication.
 - This branch is an integration candidate only. Canonical S0 remains `BOOTSTRAPPED`,
   has no accepted development base, and has no IA-03 implementation authority.
 
