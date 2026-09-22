@@ -1609,6 +1609,9 @@ Still not authorized:
   130 reviewed warnings skipped and 0 unsuppressed errors.
 - Focused checkout/performance plus InventoryAdmission tests: PASS, 78 tests with
   0 failures.
+- Final PR CI run `35703573228` for the documentation-following candidate head
+  passed `check_static`, `test_pr_strict`, `performance_smoke_chaos_required`,
+  `performance_smoke_required`, and `dialyzer_required`.
 - `git diff --check origin/hardening/s0-baseline...HEAD`: PASS.
 - Forbidden-path audit: PASS. The candidate changes no migrations,
   `lib/store/orders/inventory_admission/**`, or InventoryAdmission tests.
