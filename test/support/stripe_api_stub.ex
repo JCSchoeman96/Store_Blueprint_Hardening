@@ -7,6 +7,7 @@ defmodule Store.TestSupport.StripeAPIStub do
 
   @stub_name Store.Payments.Providers.Stripe
   @chaos_override_key :stripe_perf_chaos_override
+  @logical_chaos_key :stripe_logical_chaos_request_key
 
   def req_options, do: [plug: {Req.Test, Store.Payments.Providers.Stripe}]
 
@@ -24,6 +25,22 @@ defmodule Store.TestSupport.StripeAPIStub do
 
       respond_default(conn, params, endpoint)
     end)
+  end
+
+  def with_chaos_request_key(logical_key, fun)
+      when is_binary(logical_key) and logical_key != "" and is_function(fun, 0) do
+    previous = Process.get(@logical_chaos_key)
+    Process.put(@logical_chaos_key, logical_key)
+
+    try do
+      fun.()
+    after
+      restore_logical_chaos_key(previous)
+    end
+  end
+
+  def chaos_request_key(endpoint, params) when is_binary(endpoint) and is_map(params) do
+    resolve_chaos_request_key(endpoint, params)
   end
 
   def with_chaos_override(override, fun) when is_map(override) and is_function(fun, 0) do
@@ -169,7 +186,7 @@ defmodule Store.TestSupport.StripeAPIStub do
       |> ChaosProfile.normalize_profile()
 
     seed = Map.get(override, :seed, ChaosProfile.current_seed())
-    request_key = ChaosProfile.request_key(endpoint, params)
+    request_key = resolve_chaos_request_key(endpoint, params)
 
     case Map.get(override, :mode) do
       :slow ->
@@ -216,6 +233,20 @@ defmodule Store.TestSupport.StripeAPIStub do
       }
     })
   end
+
+  defp resolve_chaos_request_key(endpoint, params) do
+    case Process.get(@logical_chaos_key) do
+      logical_key when is_binary(logical_key) and logical_key != "" ->
+        "#{endpoint}:#{logical_key}"
+
+      _ ->
+        ChaosProfile.request_key(endpoint, params)
+    end
+  end
+
+  defp restore_logical_chaos_key(nil), do: Process.delete(@logical_chaos_key)
+
+  defp restore_logical_chaos_key(previous), do: Process.put(@logical_chaos_key, previous)
 
   defp restore_override(nil), do: Application.delete_env(:store, @chaos_override_key)
   defp restore_override(previous), do: Application.put_env(:store, @chaos_override_key, previous)

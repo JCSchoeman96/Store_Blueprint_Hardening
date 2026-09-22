@@ -1554,22 +1554,24 @@ defmodule Store.PerformanceSmokeTest do
           1..config.concurrency_users
           |> async_stream_with_stripe_stub(
             fn idx ->
-              token = Ash.UUIDv7.generate()
+              StripeAPIStub.with_chaos_request_key("checkout_concurrency:#{idx}", fn ->
+                token = Ash.UUIDv7.generate()
 
-              {result, elapsed_ms} =
-                timed(fn ->
-                  try do
-                    Fixtures.checkout_flow!(fixture, token, idx)
-                    :ok
-                  rescue
-                    e -> {:error, e}
-                  end
-                end)
+                {result, elapsed_ms} =
+                  timed(fn ->
+                    try do
+                      Fixtures.checkout_flow!(fixture, token, idx)
+                      :ok
+                    rescue
+                      e -> {:error, e}
+                    end
+                  end)
 
-              case result do
-                :ok -> {:ok, elapsed_ms}
-                {:error, reason} -> {:error, reason}
-              end
+                case result do
+                  :ok -> {:ok, elapsed_ms}
+                  {:error, reason} -> {:error, reason}
+                end
+              end)
             end,
             max_concurrency: config.concurrency_users,
             ordered: false,
@@ -2008,12 +2010,18 @@ defmodule Store.PerformanceSmokeTest do
               mode,
               fn ->
                 prepared_checkouts
+                |> Enum.with_index(1)
                 |> async_stream_with_stripe_stub(
-                  fn prepared ->
-                    Store.Payments.create_intent_for_order(
-                      prepared.actor,
-                      prepared.checkout_key,
-                      fixture.payment_input
+                  fn {prepared, ordinal} ->
+                    StripeAPIStub.with_chaos_request_key(
+                      "#{scenario_name}:#{ordinal}",
+                      fn ->
+                        Store.Payments.create_intent_for_order(
+                          prepared.actor,
+                          prepared.checkout_key,
+                          fixture.payment_input
+                        )
+                      end
                     )
                   end,
                   max_concurrency: config.provider_fault_users,
