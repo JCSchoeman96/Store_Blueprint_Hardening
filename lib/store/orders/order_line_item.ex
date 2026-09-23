@@ -71,6 +71,11 @@ defmodule Store.Orders.OrderLineItem do
       public?(true)
     end
 
+    attribute :subscription_plan_revision_id_snapshot, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :subscription_plan_key_snapshot, :string do
       allow_nil?(true)
       public?(true)
@@ -135,6 +140,13 @@ defmodule Store.Orders.OrderLineItem do
       public?(true)
       attribute_writable?(true)
     end
+
+    belongs_to :subscription_plan_revision_snapshot, Store.Subscriptions.PlanRevision do
+      source_attribute(:subscription_plan_revision_id_snapshot)
+      allow_nil?(true)
+      public?(true)
+      attribute_writable?(true)
+    end
   end
 
   identities do
@@ -184,6 +196,7 @@ defmodule Store.Orders.OrderLineItem do
         :variant_title_snapshot,
         :variant_id_snapshot,
         :subscription_plan_id_snapshot,
+        :subscription_plan_revision_id_snapshot,
         :subscription_plan_key_snapshot,
         :subscription_interval_unit_snapshot,
         :subscription_interval_count_snapshot,
@@ -202,6 +215,10 @@ defmodule Store.Orders.OrderLineItem do
     table("order_line_items")
     repo(Store.Repo)
 
+    references do
+      reference(:subscription_plan_revision_snapshot, on_delete: :restrict)
+    end
+
     custom_indexes do
       index([:order_id], name: "order_line_items_order_id_index")
       index([:tax_rate_id_snapshot], name: "order_line_items_tax_rate_id_snapshot_index")
@@ -209,6 +226,10 @@ defmodule Store.Orders.OrderLineItem do
 
       index([:subscription_plan_id_snapshot],
         name: "order_line_items_subscription_plan_id_snapshot_index"
+      )
+
+      index([:subscription_plan_revision_id_snapshot],
+        name: "order_line_items_subscription_plan_revision_id_snapshot_index"
       )
     end
   end

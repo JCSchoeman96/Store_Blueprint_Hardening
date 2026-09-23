@@ -11,6 +11,8 @@ defmodule Store.Subscriptions.Subscription do
     authorizers: [Ash.Policy.Authorizer],
     domain: Store.Subscriptions
 
+  @unresolved_contract_message "subscription commercial contract is unresolved"
+
   attributes do
     uuid_v7_primary_key(:id)
 
@@ -169,6 +171,11 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    attribute :current_plan_revision_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -176,6 +183,13 @@ defmodule Store.Subscriptions.Subscription do
   relationships do
     belongs_to :subscription_plan, Store.Subscriptions.SubscriptionPlan do
       allow_nil?(false)
+      attribute_writable?(true)
+      public?(true)
+    end
+
+    belongs_to :current_plan_revision, Store.Subscriptions.PlanRevision do
+      source_attribute(:current_plan_revision_id)
+      allow_nil?(true)
       attribute_writable?(true)
       public?(true)
     end
@@ -324,8 +338,17 @@ defmodule Store.Subscriptions.Subscription do
         :retry_suppressed_at,
         :stored_payment_method_id,
         :source_order_id,
-        :source_order_line_item_id
+        :source_order_line_item_id,
+        :current_plan_revision_id
       ])
+
+      validate(fn changeset, _context ->
+        if is_binary(Ash.Changeset.get_attribute(changeset, :current_plan_revision_id)) do
+          :ok
+        else
+          {:error, field: :current_plan_revision_id, message: @unresolved_contract_message}
+        end
+      end)
 
       upsert?(true)
       upsert_identity(:unique_source_order_line_item)
@@ -509,6 +532,10 @@ defmodule Store.Subscriptions.Subscription do
     table("subscriptions")
     repo(Store.Repo)
 
+    references do
+      reference(:current_plan_revision, on_delete: :restrict)
+    end
+
     custom_indexes do
       index([:user_id, :status], name: "subscriptions_user_id_status_index")
       index([:status, :next_renewal_at], name: "subscriptions_status_next_renewal_at_index")
@@ -516,6 +543,7 @@ defmodule Store.Subscriptions.Subscription do
       index([:provider, :provider_subscription_id], name: "subscriptions_provider_ref_index")
       index([:source_order_line_item_id], name: "subscriptions_source_order_line_item_id_index")
       index([:subscription_plan_id], name: "subscriptions_subscription_plan_id_index")
+      index([:current_plan_revision_id], name: "subscriptions_current_plan_revision_id_index")
       index([:variant_id], name: "subscriptions_variant_id_index")
       index([:pending_subscription_plan_id], name: "subscriptions_pending_plan_id_index")
       index([:pending_variant_id], name: "subscriptions_pending_variant_id_index")

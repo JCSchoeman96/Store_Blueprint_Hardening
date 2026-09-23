@@ -5,7 +5,6 @@ defmodule Store.Subscriptions.PlanRevisionTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Ash.Resource.Info
   alias Store.Subscriptions.{PlanRevision, Subscription}
   alias Store.SubscriptionsFixtures
 
@@ -493,25 +492,27 @@ defmodule Store.Subscriptions.PlanRevisionTest do
     assert fk_violation_error?(error)
   end
 
-  test "no existing subscription is modified or bound as a side effect", %{plan: plan} do
-    refute subscription_has_plan_revision_binding_field?()
-
+  test "unresolved legacy subscription remains unbound and unchanged as revisions churn", %{
+    plan: plan
+  } do
     customer = SubscriptionsFixtures.create_customer!("sbh_10_01_side_effect")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
 
-    %{subscription: subscription} =
+    %{subscription: subscription, revision: initial_revision} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan)
 
+    clear_plan_revision_binding!(subscription.id)
     before = subscription_snapshot!(subscription.id)
+    assert is_nil(before.current_plan_revision_id)
 
+    _retired_initial = retire!(initial_revision)
     revision = publish!(create_draft!(plan, @commercial_attrs))
     _retired = retire!(revision)
     _another = publish!(create_draft!(plan, %{@commercial_attrs | amount_minor: 4_321}))
 
     after_snapshot = subscription_snapshot!(subscription.id)
     assert before == after_snapshot
-    refute subscription_has_plan_revision_binding_field?()
   end
 
   test "draft edit can clear optional entitlement kind and scope together", %{plan: plan} do
@@ -655,8 +656,17 @@ defmodule Store.Subscriptions.PlanRevisionTest do
       :renewal_amount_minor,
       :renewal_currency,
       :quantity,
+      :current_plan_revision_id,
       :updated_at
     ])
+  end
+
+  defp clear_plan_revision_binding!(subscription_id) do
+    assert %{num_rows: 1} =
+             Store.Repo.query!(
+               "UPDATE subscriptions SET current_plan_revision_id = NULL WHERE id = $1",
+               [Ecto.UUID.dump!(subscription_id)]
+             )
   end
 
   defp stale_record_error?(error) do
@@ -687,10 +697,6 @@ defmodule Store.Subscriptions.PlanRevisionTest do
         match?(%Ash.Error.Changes.InvalidRelationship{}, err) or
         String.contains?(Exception.message(err), "foreign key")
     end)
-  end
-
-  defp subscription_has_plan_revision_binding_field? do
-    :current_plan_revision_id in Enum.map(Info.attributes(Subscription), & &1.name)
   end
 
   defp invalid_errors({:error, %Ash.Error.Invalid{errors: errors}}), do: errors
