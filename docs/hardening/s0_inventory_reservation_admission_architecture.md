@@ -187,6 +187,7 @@ durable record.
 | `REJECTED` | The durable attempt ended without a reservation, such as `OUT_OF_STOCK` or a bounded persistence failure. | No new reservation effect |
 | `EXPIRED` | A queue or admission lease reached its bounded deadline before settlement. | None unless a prior durable commit is found during recovery |
 | `ABANDONED` | The request was explicitly abandoned or its owner disappeared before `RESERVING` completed. | None unless a prior durable commit is found during recovery |
+| `UNRESOLVED` | Bounded recovery cannot prove the operation's trusted PRE or expected POST durable facts, required recovery evidence is unavailable at the bounded recovery deadline, or the trusted operation descriptor needed for attribution is unavailable. | No outcome is inferred. The operation stays fail closed behind an operational fence; affected capacity remains held or quarantined. |
 
 Validation, authorization, and ownership failures happen before an admission lifecycle
 is created. They do not create a fake `REJECTED` admission record.
@@ -210,14 +211,18 @@ current lease owner.
 | `ADMITTED -> EXPIRED` | The lease expires before the worker claims `RESERVING`. The gate reaper owns the transition. | Admission lease is finite. | Remove the lease and return the permit to the atomic gate after the safety check. | A late worker cannot use a stale fencing token. A replay may request admission again only after the terminal result is known and the durable identity is checked. |
 | `RESERVING -> COMPLETED` | PostgreSQL definitively committed and the operation returns its durable `InventoryReservation` identity. The reservation orchestrator owns the transition. | The admission-to-commit deadline applies. | Store the durable reservation identity in bounded metadata, then release the admission and global permits. | If release fails after commit, PostgreSQL remains authoritative. A reaper retries release, and a replay returns the same durable reservation. |
 | `RESERVING -> REJECTED` | PostgreSQL definitively rolled back or returned a governed reservation failure without a durable reservation. The reservation orchestrator owns the transition. | The known result must resolve before the admission-to-commit deadline. | Release the admission lease. Do not mutate `InventoryReservation` state for a failed reservation. | Rollback leaves PostgreSQL unchanged. A terminal rejection is replayed for the retention period; a new user operation must have a new logical identity. |
-| `RESERVING -> UNKNOWN_DB_OUTCOME` | The operation may have reached PostgreSQL, but commit or rollback cannot be established. The reservation orchestrator creates the recovery fence atomically. | The admission lease is not treated as proof of rollback. Recovery starts within the bounded recovery window. | Keep the logical request fenced. Do not release capacity for same-identity retry until the safety window and durable lookup complete. | A process or connection failure leaves the recovery fence to its bounded TTL. A replay returns `RECOVERING` rather than starting an unrestricted attempt. |
-| `UNKNOWN_DB_OUTCOME -> RECOVERING` | A recovery worker owns the current recovery fence and the transaction safety window has elapsed. | Recovery retry and backoff are bounded and have an absolute deadline. | Query PostgreSQL by `reservation_key`; do not use Redis state to decide the outcome. | A recovery-worker crash leaves the fence until TTL. Another worker may resume with the same logical identity. |
-| `RECOVERING -> COMPLETED` | The durable lookup finds the existing reservation. The recovery worker owns the transition. | The recovery deadline applies. | Return the durable reservation identity and release the fenced admission/global permits idempotently. | Replays return the same durable reservation. A stale release cannot affect a newer admission. |
-| `RECOVERING -> REJECTED` | The durable lookup confirms no reservation after the safety window and the bounded recovery policy resolves the request as rejected. The recovery worker owns the transition. The MVP does not automatically issue a second durable attempt from recovery. | The recovery deadline applies. | Mark the admission terminal and release its fenced capacity. No inventory mutation occurs. | A replay receives the same terminal or governed retryable result for the retention window. If retry is permitted later, it reuses the same `reservation_key` only after fence cleanup and re-enters the same gate. |
+| `RESERVING -> UNKNOWN_DB_OUTCOME` | The operation may have reached PostgreSQL, but commit or rollback cannot be established. The reservation orchestrator creates the recovery fence atomically. | The admission lease is not treated as proof of rollback. Recovery starts within the bounded recovery window. | Keep the logical request fenced. Do not release capacity for same-identity retry until the safety window and durable lookup complete. | A process or connection failure leaves the request in recovery. Fence TTL expiry alone does not release capacity; a replay returns `RECOVERING` or governed unresolved status. |
+| `UNKNOWN_DB_OUTCOME -> RECOVERING` | A recovery worker owns the current recovery fence and the transaction safety window has elapsed. | Recovery retry and backoff are bounded and have an absolute deadline. | Query PostgreSQL by `reservation_key`; do not use Redis state to decide the outcome. | A worker crash triggers bounded recovery retry under the same identity. TTL expiry signals reaping or escalation; if PRE/POST cannot be proven by the deadline, `UNRESOLVED` retains or quarantines the fence and affected capacity. |
+| `RECOVERING -> COMPLETED` | A consistent PostgreSQL snapshot matches the operation's expected POST facts. The recovery worker owns the transition. | The recovery deadline applies. | Return the durable reservation identity and release the fenced admission/global permits idempotently. | Replays return the same durable reservation. A stale release cannot affect a newer admission. |
+| `RECOVERING -> REJECTED` | A consistent PostgreSQL snapshot matches the operation's proven PRE facts, or an insert has no reservation row and its recorded inventory PRE facts still match after the safety window. The recovery worker owns the transition. The MVP does not automatically issue a second durable attempt from recovery. | The recovery deadline applies. | Mark the admission terminal and release its fenced capacity only after PRE/no-commit proof. No inventory mutation occurs. | A replay receives the same terminal or governed retryable result for the retention window. If retry is permitted later, it reuses the same `reservation_key` only after proven resolution and fence cleanup, and re-enters the same gate. |
+| `RECOVERING -> UNRESOLVED` | Durable state matches neither valid trusted PRE nor expected POST facts, required recovery evidence remains unavailable at the bounded deadline, or the trusted operation descriptor is unavailable. The pure lifecycle guard records failure to prove either state as `:neither_match`. The recovery worker and operations owner hold the existing recovery fence. | The bounded recovery deadline applies. | Retain or quarantine the fence and affected admission/global capacity. Do not release, retry, promote, or infer an outcome. | Replay returns governed unresolved status. Only separately governed operational resolution may leave this condition. |
 
-`COMPLETED`, `REJECTED`, `EXPIRED`, and `ABANDONED` are terminal. `UNKNOWN_DB_OUTCOME` and
-`RECOVERING` are non-terminal recovery states. Terminal metadata has bounded retention
-for replay and diagnostics, then expires. It is not inventory truth.
+`COMPLETED`, `REJECTED`, `EXPIRED`, `ABANDONED`, and `UNRESOLVED` are terminal admission
+states. `UNKNOWN_DB_OUTCOME` and `RECOVERING` are non-terminal recovery states.
+`UNRESOLVED` ends the automated lifecycle but keeps the operational fence and affected
+capacity held or quarantined. Terminal status does not mean that capacity is safe to
+release. Resolved terminal metadata has bounded retention for replay and diagnostics,
+then expires. Admission metadata is not inventory truth.
 
 ### Lease safety
 
@@ -243,16 +248,20 @@ If `T_db` expires before a known commit or known rollback is available, the oper
 stops waiting for a normal result and enters `UNKNOWN_DB_OUTCOME`. A bounded watchdog
 keeps both the variant occupancy and the global `B_total` occupancy fenced through the
 configured database safety window while recovery reconciles PostgreSQL. Promotion is
-allowed only after recovery resolves the durable outcome or the bounded database
-contract has established that the prior operation cannot still be running. A lease TTL
-alone is never sufficient evidence for promotion.
+allowed only after recovery proves the expected POST or PRE/no-commit facts and the
+bounded database contract establishes that the prior operation cannot still be running,
+or after separately governed operational resolution of `UNRESOLVED`. Establishing only
+that the prior operation has stopped does not resolve its durable outcome or permit
+capacity reuse. A lease TTL alone is never sufficient evidence for promotion.
 
 For an active `RESERVING` lease, expiry is a reaper signal, not an automatic delete or
 permit return. The reaper retains the variant and global fence, transitions the logical
 request into recovery, and promotes nothing for that variant until the recovery rule
-resolves it. If the finite recovery deadline is reached without a durable conclusion,
-the identity and affected capacity remain fail-closed for bounded operational escalation;
-expiry does not authorize an unrestricted retry.
+resolves it. If the finite recovery deadline is reached without proof of PRE or POST,
+the admission becomes `UNRESOLVED`. The identity and affected capacity remain fail
+closed behind a retained or quarantined fence. Expiry does not release capacity, authorize
+a retry or promotion, or establish a durable outcome. Only separately governed operational
+resolution may leave this condition.
 
 #### PostgreSQL outcome classification
 
@@ -268,13 +277,14 @@ The admission layer must classify the database result before releasing capacity:
   release the same logical request for an unrestricted retry, or report a successful
   reservation. It enters `UNKNOWN_DB_OUTCOME` and then `RECOVERING`.
 
-Recovery queries PostgreSQL by the existing server-derived `reservation_key`. If the
-reservation exists, recovery returns that durable result. If it does not exist after the
-bounded safety window, the MVP performs no automatic second durable attempt from the
-recovery worker; it resolves the request as a governed rejection, which may be marked
-retryable. A later retry, if permitted, reuses the same `reservation_key` only after the
-fence is cleaned and must acquire the same gate. Redis queue, lease, or recovery state
-never decides whether PostgreSQL committed.
+Recovery queries PostgreSQL by the server-derived `reservation_key` and compares the
+consistent durable snapshot with the trusted, operation-specific PRE and expected POST
+facts. A full POST match proves commit; a full PRE match proves rollback. For an insert,
+absence of the reservation row is insufficient unless the recorded inventory PRE facts
+also match. A neither-match snapshot, required evidence unavailable at the bounded
+deadline, or missing trusted descriptor resolves to `UNRESOLVED`. Retain or quarantine
+the fence and affected capacity. Do not infer commit or rollback, retry, or release
+capacity. Redis state never decides whether PostgreSQL committed.
 
 #### Recovery fence
 
@@ -282,15 +292,18 @@ An ambiguous outcome creates an ephemeral recovery fence for the same logical
 `order_id + variant_id` identity. The fence owner is the recovery worker holding the
 current admission token or a successor recovery token. Its TTL covers the bounded
 database safety window and recovery retry budget, with a finite absolute maximum. The
-owner uses bounded lookup retry and backoff, and terminal cleanup removes the fence after
-a confirmed durable result or governed rejection. If the owner crashes, the fence remains
-until TTL and another recovery worker may resume it. While the fence exists, a replay
-returns the recovery state and cannot start a second unrestricted durable attempt.
+owner uses bounded lookup retry and backoff. Cleanup removes the fence only after a full
+expected POST match or proven PRE/no-commit result. If the owner crashes, the fence remains
+until its bounded recovery window ends; another recovery worker may resume it under the
+same identity during that window. While recovery is open, replay returns its state and
+cannot start another unrestricted durable attempt.
 
-If the recovery fence reaches its finite absolute maximum without resolution, the system
-fails closed and raises an operational recovery condition rather than treating expiry as
-proof of rollback. A new durable attempt is not allowed until PostgreSQL truth and the
-affected capacity are explicitly reconciled.
+If the recovery fence reaches its finite absolute maximum without proof of PRE or POST,
+the lifecycle enters `UNRESOLVED` and raises an operational recovery condition. Retain or
+quarantine the fence and affected capacity. Fence TTL or ordinary cleanup does not
+release that capacity or prove rollback. A new durable attempt is not allowed until
+separately governed operational resolution reconciles PostgreSQL truth and the affected
+capacity.
 
 The fence prevents duplicate attempts only. It is not durable reservation truth and does
 not replace the unique PostgreSQL `reservation_key` identity.
@@ -373,8 +386,9 @@ logical structures:
   digest, lease token, owner epoch, queue sequence, and expiry. It contains no stock
   count. No second equivalent active-lease expiry index is required.
 - A recovery-fence record keyed by the logical request identity with a bounded TTL. It
-  blocks duplicate attempts during `UNKNOWN_DB_OUTCOME` and `RECOVERING`; it is not
-  inventory truth.
+  blocks duplicate attempts during `UNKNOWN_DB_OUTCOME`, `RECOVERING`, and
+  `UNRESOLVED`; it is not inventory truth. Expiry alone never releases unresolved
+  capacity.
 - A global active-permit counter or equivalent global lease index for `B_total`. It is
   needed because independent per-variant caps could still fill the database pool across
   many hot variants.
@@ -398,7 +412,7 @@ For the single-variant MVP, the conceptual admission guard is:
 ```text
 can_admit?(request) iff:
   server-owned request identity is valid
-  and the identity is not terminal, UNKNOWN_DB_OUTCOME, or RECOVERING
+  and the identity is not terminal, UNKNOWN_DB_OUTCOME, RECOVERING, or UNRESOLVED
   and the request owns or receives the next permitted queue position
   and the K_v = 1 variant permit is available
   and the B_total global reservation DB-entry permit is available
@@ -522,6 +536,10 @@ recovery state and cannot start a second unrestricted durable attempt. After dur
 settlement, the existing unique `reservation_key` returns the same
 `InventoryReservation` rather than creating a second row.
 
+A replay while `UNRESOLVED` returns governed unresolved status. It cannot claim success,
+infer rollback, start another durable attempt, or release the recovery fence or affected
+capacity. Only separately governed operational resolution may leave this condition.
+
 Redis is ephemeral. If it loses queue metadata, the safe response is to fail closed
 until the recovery fence and transaction safety window complete. A replay after recovery
 may create the same deterministic member again, but it cannot create a second durable
@@ -606,11 +624,11 @@ reconciliation requirement for every requested failure case.
 |---|---|---|---|
 | Redis unavailable | Do not admit new reservation work. Return bounded busy or retry behavior without entering `Repo.transaction`. Existing durable reservations remain queryable through PostgreSQL. | Gate client and operations team | PostgreSQL is unchanged. No manual inventory reconciliation. |
 | Redis response is partial or uncertain | Treat the coordination result as failed closed. Do not issue a second enqueue, permit, or release path until the same identity and token are reconciled. | Gate recovery and operations | Redis state cannot decide a PostgreSQL outcome; no inventory action is inferred. |
-| PostgreSQL unavailable | If rollback is known, release the lease and return a rejected infrastructure result. If commit or rollback is ambiguous, enter `UNKNOWN_DB_OUTCOME` and keep the recovery fence until the safety window and durable lookup complete. | Reservation orchestrator and recovery worker | PostgreSQL decides whether a reservation exists. No immediate unrestricted retry is allowed for an ambiguous outcome; a later retry uses the same durable identity and gate. |
+| PostgreSQL unavailable | If rollback is known, release the lease and return a rejected infrastructure result. If commit or rollback is ambiguous, enter `UNKNOWN_DB_OUTCOME` and then `RECOVERING`. If full PRE/POST proof remains unavailable at the deadline, mark `UNRESOLVED` and retain or quarantine affected capacity. | Reservation orchestrator and recovery worker | PostgreSQL decides whether a reservation exists. `UNRESOLVED` does not infer an outcome or release capacity; no new attempt starts before separately governed operational resolution and the same gate. |
 | App node dies while queued | The queue member expires or is abandoned. | Redis expiry worker | No database state exists. No manual work. |
 | App node dies while admitted | If the database operation did not begin, the lease expires after its bounded deadline. If it may have begun, create or retain the recovery fence and reconcile after the safety window. | Redis expiry and recovery worker | Query the durable request identity before reuse. No rollback is inferred from process death. |
 | App node dies after DB commit before release | The durable reservation remains. The lease is cleaned later with its fencing token. | Recovery worker | PostgreSQL reservation identity and unique key win. No duplicate effect; manual work is not expected. |
-| Redis lease expires while DB transaction is active | Keep the variant holder and its global budget occupancy fenced. Do not admit a same-variant replacement until the bounded database safety window and recovery check complete. | Gate recovery worker | PostgreSQL commit or rollback remains authoritative. Manual work is required only if bounded recovery cannot determine the durable outcome. |
+| Redis lease expires while DB transaction is active | Keep the variant holder and its global budget occupancy fenced. Do not admit a same-variant replacement until the bounded database safety window and recovery check complete. | Gate recovery worker | PostgreSQL commit or rollback remains authoritative. If bounded recovery cannot prove PRE or POST, mark `UNRESOLVED` and retain or quarantine capacity for operational resolution. |
 | Duplicate or replayed request | Return the existing queue, lease, terminal result, or durable reservation for the same logical identity. | Gate and reservation domain | Redis deduplicates the live admission; PostgreSQL unique identity prevents duplicate durable effect. No manual work. |
 | Queued client disconnects | Mark the queue member abandoned when the trusted owner detects it, or let its finite queue TTL expire. No request process remains blocked for queue lifetime. | Application owner and gate expiry | No database state exists. No manual work. |
 | Admitted client disconnects before DB entry | The lease remains bounded and is released or expires through the gate; a socket disconnect cannot forge a release or force a replacement. | Admission owner and gate expiry | No inventory effect is inferred. No manual work. |
@@ -654,9 +672,10 @@ InventoryReservationAdmission.RESERVING
 ```
 
 Admission `COMPLETED` must carry the durable reservation ID and the logical request key.
-Admission `REJECTED`, `EXPIRED`, and `ABANDONED` must not call a reservation transition
-or decrement a counter. `UNKNOWN_DB_OUTCOME` and `RECOVERING` must not start a second
-durable attempt until the recovery fence and `reservation_key` lookup resolve.
+Admission `REJECTED`, `EXPIRED`, `ABANDONED`, and `UNRESOLVED` must not call a reservation
+transition or decrement a counter. `UNKNOWN_DB_OUTCOME`, `RECOVERING`, and `UNRESOLVED`
+must not start a second durable attempt or release ambiguous capacity. The unresolved
+fence may leave only through separately governed operational resolution.
 
 The existing `active -> consumed`, `active -> expired`, and `active -> cancelled`
 transitions remain unchanged. Payment success, release, and expiry continue to use their
@@ -707,9 +726,11 @@ create an unbounded BEAM process mailbox.
 
 Queue entries have a finite queued-wait TTL. Active leases have a finite
 `L_admission` TTL and recovery fences have a finite recovery TTL with an absolute
-maximum. Terminal admission metadata also has bounded retention. The queued-expiry and
-active-lease indexes are cleaned by bounded Redis-side operations; cleanup never relies
-on scanning an entire FIFO queue.
+maximum. Recovery TTL expiry signals reaping or escalation; it does not release an
+unresolved fence or affected capacity. Unresolved capacity remains held or quarantined
+until separately governed operational resolution. Resolved terminal admission metadata
+has bounded retention. The queued-expiry and active-lease indexes are cleaned by bounded
+Redis-side operations; cleanup never relies on scanning an entire FIFO queue.
 
 The existing PostgreSQL transaction remains short and local. Provider I/O, analytics,
 notifications, and heavy side effects remain outside it.
