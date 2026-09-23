@@ -9,6 +9,7 @@ defmodule Store.SubscriptionsFixtures do
   alias Store.Payments.PaymentIntent
 
   alias Store.Subscriptions.{
+    PlanRevision,
     Scheduler,
     StoredPaymentMethod,
     Subscription,
@@ -18,6 +19,27 @@ defmodule Store.SubscriptionsFixtures do
   }
 
   alias Store.TestFixtures
+
+  @plan_revision_fields [
+    :interval_unit,
+    :interval_count,
+    :currency,
+    :amount_minor,
+    :trial_days,
+    :anchor_mode,
+    :anchor_day_of_month,
+    :billing_timezone,
+    :term_mode,
+    :term_cycles,
+    :term_end_at,
+    :access_on_past_due,
+    :access_on_cancel,
+    :grace_period_days,
+    :max_retry_attempts,
+    :retry_schedule_hours,
+    :entitlement_kind,
+    :entitlement_scope_key
+  ]
 
   @spec create_customer!(String.t()) :: map()
   def create_customer!(prefix \\ "phase26_sub_customer") do
@@ -116,7 +138,7 @@ defmodule Store.SubscriptionsFixtures do
           SubscriptionPlan.t(),
           map()
         ) ::
-          %{order: Order.t(), line_item: OrderLineItem.t()}
+          %{order: Order.t(), line_item: OrderLineItem.t(), revision: PlanRevision.t() | nil}
   def create_paid_order_with_subscription_line!(
         user_id,
         %Variant{} = variant,
@@ -125,9 +147,15 @@ defmodule Store.SubscriptionsFixtures do
       )
       when is_binary(user_id) and is_map(overrides) do
     order = create_paid_order!(user_id, Map.get(overrides, :currency, plan.currency))
-    line_item = create_subscription_order_line!(order, variant, plan, overrides)
-    _ = maybe_create_paid_payment_intent!(order, plan, overrides)
-    %{order: order, line_item: line_item}
+
+    revision =
+      if Map.get(overrides, :create_plan_revision?, true) do
+        ensure_plan_revision!(plan)
+      end
+
+    line_item = create_subscription_order_line!(order, variant, plan, revision, overrides)
+    _ = maybe_create_paid_payment_intent!(order, revision || plan, overrides)
+    %{order: order, line_item: line_item, revision: revision}
   end
 
   @spec create_subscription_fixture!(Ecto.UUID.t(), Variant.t(), SubscriptionPlan.t(), map()) ::
@@ -135,7 +163,8 @@ defmodule Store.SubscriptionsFixtures do
             subscription: Subscription.t(),
             item: SubscriptionItem.t(),
             order: Order.t(),
-            line_item: OrderLineItem.t()
+            line_item: OrderLineItem.t(),
+            revision: PlanRevision.t()
           }
   def create_subscription_fixture!(
         user_id,
@@ -144,82 +173,120 @@ defmodule Store.SubscriptionsFixtures do
         overrides \\ %{}
       )
       when is_binary(user_id) and is_map(overrides) do
-    %{order: order, line_item: line_item} =
+    %{order: order, line_item: line_item, revision: revision} =
       create_paid_order_with_subscription_line!(user_id, variant, plan, overrides)
 
-    started_at =
-      Map.get_lazy(overrides, :started_at, fn ->
-        DateTime.utc_now() |> DateTime.truncate(:microsecond)
-      end)
+    revision = ensure_forward_revision!(revision)
 
-    period = Scheduler.initial_period(started_at, plan)
+    started_at =
+      Map.get(overrides, :started_at, DateTime.utc_now() |> DateTime.truncate(:microsecond))
+
+    period = Scheduler.initial_period(started_at, revision)
     provider = Map.get(overrides, :provider, :stripe)
     stored_payment_method = maybe_create_stored_payment_method!(user_id, provider, overrides)
 
-    subscription_attrs =
-      %{
-        user_id: user_id,
-        subscription_plan_id: plan.id,
-        variant_id: variant.id,
-        status: Map.get(overrides, :status, :active),
-        provider: provider,
-        billing_mode: Map.get(overrides, :billing_mode, :merchant_managed),
-        quantity: Map.get(overrides, :quantity, 1),
-        renewal_amount_minor: Map.get(overrides, :renewal_amount_minor, plan.amount_minor),
-        renewal_currency: Map.get(overrides, :renewal_currency, plan.currency),
-        membership_key: Map.get(overrides, :membership_key, membership_key_for_plan(plan)),
-        started_at: period.current_period_start_at,
-        current_period_start_at: period.current_period_start_at,
-        current_period_end_at: period.current_period_end_at,
-        next_renewal_at: Map.get(overrides, :next_renewal_at, period.next_renewal_at),
-        pending_variant_id: Map.get(overrides, :pending_variant_id),
-        pending_subscription_plan_id: Map.get(overrides, :pending_subscription_plan_id),
-        pending_renewal_amount_minor: Map.get(overrides, :pending_renewal_amount_minor),
-        pending_renewal_currency: Map.get(overrides, :pending_renewal_currency),
-        change_effective_at: Map.get(overrides, :change_effective_at),
-        dunning_attempt_count: Map.get(overrides, :dunning_attempt_count, 0),
-        next_retry_at: Map.get(overrides, :next_retry_at),
-        retry_suppressed_at: Map.get(overrides, :retry_suppressed_at),
-        source_order_id: order.id,
-        source_order_line_item_id: line_item.id,
-        provider_customer_ref:
-          Map.get(overrides, :provider_customer_ref) ||
-            (stored_payment_method && stored_payment_method.provider_customer_ref),
-        provider_billing_ref:
-          Map.get(overrides, :provider_billing_ref) ||
-            (stored_payment_method && stored_payment_method.provider_payment_method_ref),
-        stored_payment_method_id:
-          Map.get(overrides, :stored_payment_method_id) ||
-            (stored_payment_method && stored_payment_method.id)
-      }
-
     subscription =
-      Subscription
-      |> Ash.Changeset.for_create(:create_from_order_line, subscription_attrs,
-        context: %{system?: true}
-      )
-      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+      create_fixture_subscription!(%{
+        user_id: user_id,
+        variant: variant,
+        plan: plan,
+        revision: revision,
+        order: order,
+        line_item: line_item,
+        period: period,
+        provider: provider,
+        stored_payment_method: stored_payment_method,
+        overrides: overrides
+      })
 
-    item =
-      SubscriptionItem
-      |> Ash.Changeset.for_create(
-        :create_from_order_line,
-        %{
-          subscription_id: subscription.id,
-          variant_id: variant.id,
-          quantity: 1,
-          plan_key_snapshot: plan.key,
-          amount_minor_snapshot: plan.amount_minor,
-          currency_snapshot: plan.currency,
-          interval_unit_snapshot: plan.interval_unit,
-          interval_count_snapshot: plan.interval_count,
-          source_order_line_item_id: line_item.id
-        },
-        context: %{system?: true}
-      )
-      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    item = create_fixture_subscription_item!(subscription, variant, plan, revision, line_item)
 
-    %{subscription: subscription, item: item, order: order, line_item: line_item}
+    %{
+      subscription: subscription,
+      item: item,
+      order: order,
+      line_item: line_item,
+      revision: revision
+    }
+  end
+
+  defp ensure_forward_revision!(nil),
+    do: raise("forward subscription fixture requires an effective plan revision")
+
+  defp ensure_forward_revision!(%PlanRevision{} = revision), do: revision
+
+  defp create_fixture_subscription!(%{
+         user_id: user_id,
+         variant: variant,
+         plan: plan,
+         revision: revision,
+         order: order,
+         line_item: line_item,
+         period: period,
+         provider: provider,
+         stored_payment_method: stored_payment_method,
+         overrides: overrides
+       }) do
+    attrs = %{
+      user_id: user_id,
+      subscription_plan_id: plan.id,
+      variant_id: variant.id,
+      status: Map.get(overrides, :status, :active),
+      provider: provider,
+      billing_mode: Map.get(overrides, :billing_mode, :merchant_managed),
+      quantity: Map.get(overrides, :quantity, 1),
+      renewal_amount_minor: Map.get(overrides, :renewal_amount_minor, revision.amount_minor),
+      renewal_currency: Map.get(overrides, :renewal_currency, revision.currency),
+      membership_key: Map.get(overrides, :membership_key, membership_key_for_plan(revision)),
+      started_at: period.current_period_start_at,
+      current_period_start_at: period.current_period_start_at,
+      current_period_end_at: period.current_period_end_at,
+      next_renewal_at: Map.get(overrides, :next_renewal_at, period.next_renewal_at),
+      pending_variant_id: Map.get(overrides, :pending_variant_id),
+      pending_subscription_plan_id: Map.get(overrides, :pending_subscription_plan_id),
+      pending_renewal_amount_minor: Map.get(overrides, :pending_renewal_amount_minor),
+      pending_renewal_currency: Map.get(overrides, :pending_renewal_currency),
+      change_effective_at: Map.get(overrides, :change_effective_at),
+      dunning_attempt_count: Map.get(overrides, :dunning_attempt_count, 0),
+      next_retry_at: Map.get(overrides, :next_retry_at),
+      retry_suppressed_at: Map.get(overrides, :retry_suppressed_at),
+      source_order_id: order.id,
+      source_order_line_item_id: line_item.id,
+      current_plan_revision_id: revision.id,
+      provider_customer_ref:
+        Map.get(overrides, :provider_customer_ref) ||
+          (stored_payment_method && stored_payment_method.provider_customer_ref),
+      provider_billing_ref:
+        Map.get(overrides, :provider_billing_ref) ||
+          (stored_payment_method && stored_payment_method.provider_payment_method_ref),
+      stored_payment_method_id:
+        Map.get(overrides, :stored_payment_method_id) ||
+          (stored_payment_method && stored_payment_method.id)
+    }
+
+    Subscription
+    |> Ash.Changeset.for_create(:create_from_order_line, attrs, context: %{system?: true})
+    |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp create_fixture_subscription_item!(subscription, variant, plan, revision, line_item) do
+    SubscriptionItem
+    |> Ash.Changeset.for_create(
+      :create_from_order_line,
+      %{
+        subscription_id: subscription.id,
+        variant_id: variant.id,
+        quantity: 1,
+        plan_key_snapshot: line_item.subscription_plan_key_snapshot || plan.key,
+        amount_minor_snapshot: revision.amount_minor,
+        currency_snapshot: revision.currency,
+        interval_unit_snapshot: revision.interval_unit,
+        interval_count_snapshot: revision.interval_count,
+        source_order_line_item_id: line_item.id
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp maybe_create_paid_payment_intent!(order, plan, overrides) do
@@ -282,10 +349,11 @@ defmodule Store.SubscriptionsFixtures do
     end)
   end
 
-  defp create_subscription_order_line!(order, variant, plan, overrides) do
+  defp create_subscription_order_line!(order, variant, plan, revision, overrides) do
     quantity = Map.get(overrides, :quantity, 1)
-    amount_minor = Map.get(overrides, :amount_minor, plan.amount_minor)
-    currency = String.upcase(Map.get(overrides, :currency, plan.currency))
+    commercial_contract = revision || plan
+    amount_minor = Map.get(overrides, :amount_minor, commercial_contract.amount_minor)
+    currency = String.upcase(Map.get(overrides, :currency, commercial_contract.currency))
     line_no = Map.get(overrides, :line_no, 1)
 
     OrderLineItem
@@ -301,9 +369,10 @@ defmodule Store.SubscriptionsFixtures do
       variant_title_snapshot: variant.title || "Default",
       variant_id_snapshot: variant.id,
       subscription_plan_id_snapshot: plan.id,
+      subscription_plan_revision_id_snapshot: revision && revision.id,
       subscription_plan_key_snapshot: plan.key,
-      subscription_interval_unit_snapshot: Atom.to_string(plan.interval_unit),
-      subscription_interval_count_snapshot: plan.interval_count,
+      subscription_interval_unit_snapshot: Atom.to_string(commercial_contract.interval_unit),
+      subscription_interval_count_snapshot: commercial_contract.interval_count,
       discount_allocated_minor: 0,
       net_line_total_minor: amount_minor * quantity,
       tax_category_snapshot: "STANDARD",
@@ -349,6 +418,36 @@ defmodule Store.SubscriptionsFixtures do
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
     |> List.first()
+  end
+
+  @spec create_plan_revision!(SubscriptionPlan.t(), map()) :: PlanRevision.t()
+  def create_plan_revision!(%SubscriptionPlan{} = plan, overrides \\ %{})
+      when is_map(overrides) do
+    attrs =
+      plan
+      |> Map.take(@plan_revision_fields)
+      |> Map.put(:subscription_plan_id, plan.id)
+      |> Map.merge(overrides)
+
+    revision =
+      PlanRevision
+      |> Ash.Changeset.for_create(:create_draft, attrs, context: %{system?: true})
+      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    revision
+    |> Ash.Changeset.for_update(:publish, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp ensure_plan_revision!(%SubscriptionPlan{} = plan) do
+    case PlanRevision.get_effective_for_plan(plan.id,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %PlanRevision{} = revision} -> revision
+      {:ok, nil} -> create_plan_revision!(plan)
+      {:error, _reason} -> create_plan_revision!(plan)
+    end
   end
 
   defp membership_key_for_plan(plan) do

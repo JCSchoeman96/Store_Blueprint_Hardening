@@ -24,7 +24,7 @@ defmodule Store.Checkout do
   alias Store.Shipping.QuoteHash
   alias Store.Shipping.Types.QuoteEvidence
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
-  alias Store.Subscriptions.{SubscriptionPlan, VariantSubscriptionPlan}
+  alias Store.Subscriptions.{PlanRevision, SubscriptionPlan, VariantSubscriptionPlan}
 
   alias Store.Repo
   alias Store.Support.AshNotifications
@@ -586,6 +586,7 @@ defmodule Store.Checkout do
          variants_by_id,
          products_by_id,
          plans_by_item_id,
+         revisions_by_plan_id,
          currency
        ) do
     lines =
@@ -596,7 +597,9 @@ defmodule Store.Checkout do
         variant = Map.fetch!(variants_by_id, item.variant_id)
         product = Map.fetch!(products_by_id, variant.product_id)
         plan = Map.get(plans_by_item_id, item.id)
-        unit_price_minor = line_unit_price_for_item(item, variant, plan)
+        revision = revision_for_plan(plan, revisions_by_plan_id)
+        commercial_contract = revision || plan
+        unit_price_minor = line_unit_price_for_item(item, variant, commercial_contract)
         line_total = unit_price_minor * item.qty
 
         %{
@@ -609,9 +612,12 @@ defmodule Store.Checkout do
           unit_price_minor: unit_price_minor,
           line_total_minor: line_total,
           subscription_plan_id_snapshot: plan && plan.id,
+          subscription_plan_revision_id_snapshot: revision && revision.id,
           subscription_plan_key_snapshot: plan && plan.key,
-          subscription_interval_unit_snapshot: plan && Atom.to_string(plan.interval_unit),
-          subscription_interval_count_snapshot: plan && plan.interval_count,
+          subscription_interval_unit_snapshot:
+            commercial_contract && Atom.to_string(commercial_contract.interval_unit),
+          subscription_interval_count_snapshot:
+            commercial_contract && commercial_contract.interval_count,
           discount_allocated_minor: 0,
           net_line_total_minor: line_total,
           tax_category_snapshot: "STANDARD",
@@ -700,8 +706,16 @@ defmodule Store.Checkout do
     {variants_by_id, products_by_id} = catalog_maps(locked_items)
     :ok = ensure_published_sellables!(locked_items, variants_by_id, products_by_id)
     plans_by_item_id = resolve_subscription_plans_for_items!(locked_items)
+    revisions_by_plan_id = resolve_subscription_revisions_for_plans!(plans_by_item_id)
 
-    currency = extract_single_currency!(locked_items, variants_by_id, plans_by_item_id)
+    currency =
+      extract_single_currency!(
+        locked_items,
+        variants_by_id,
+        plans_by_item_id,
+        revisions_by_plan_id
+      )
+
     shipping_weight_grams = shipping_weight_grams_for_items(locked_items, variants_by_id)
 
     shipping_quote_request =
@@ -719,6 +733,7 @@ defmodule Store.Checkout do
            variants_by_id,
            products_by_id,
            plans_by_item_id,
+           revisions_by_plan_id,
            currency
          ) do
       {:ok, snapshot, reservation_result} ->
@@ -752,6 +767,7 @@ defmodule Store.Checkout do
          variants_by_id,
          products_by_id,
          plans_by_item_id,
+         revisions_by_plan_id,
          currency
        ) do
     with {:ok, snapshot} <-
@@ -761,6 +777,7 @@ defmodule Store.Checkout do
              variants_by_id,
              products_by_id,
              plans_by_item_id,
+             revisions_by_plan_id,
              currency
            ),
          {:ok, reservation_result} <-
@@ -1445,14 +1462,20 @@ defmodule Store.Checkout do
     :ok
   end
 
-  defp extract_single_currency!(items, variants_by_id, plans_by_item_id) do
+  defp extract_single_currency!(
+         items,
+         variants_by_id,
+         plans_by_item_id,
+         revisions_by_plan_id \\ %{}
+       ) do
     currencies =
       items
       |> Enum.map(fn item ->
         line_currency_for_item(
           item,
           Map.get(variants_by_id, item.variant_id),
-          Map.get(plans_by_item_id, item.id)
+          revision_for_plan(Map.get(plans_by_item_id, item.id), revisions_by_plan_id) ||
+            Map.get(plans_by_item_id, item.id)
         )
       end)
       |> Enum.reject(&is_nil/1)
@@ -1734,6 +1757,40 @@ defmodule Store.Checkout do
         Repo.rollback(Normalize.normalize(reason))
     end
   end
+
+  defp resolve_subscription_revisions_for_plans!(plans_by_item_id)
+       when is_map(plans_by_item_id) do
+    plans_by_item_id
+    |> Map.values()
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.reduce_while(%{}, fn plan, acc ->
+      case PlanRevision.get_effective_for_plan(plan.id,
+             authorize?: false,
+             context: %{system?: true}
+           ) do
+        {:ok, %PlanRevision{} = revision} ->
+          {:cont, Map.put(acc, plan.id, revision)}
+
+        {:ok, nil} ->
+          {:halt,
+           Repo.rollback(
+             Error.new("VALIDATION_ERROR", "subscription plan has no effective revision")
+           )}
+
+        {:error, _reason} ->
+          {:halt,
+           Repo.rollback(
+             Error.new("VALIDATION_ERROR", "subscription plan has no effective revision")
+           )}
+      end
+    end)
+  end
+
+  defp revision_for_plan(%SubscriptionPlan{id: plan_id}, revisions_by_plan_id),
+    do: Map.get(revisions_by_plan_id, plan_id)
+
+  defp revision_for_plan(_plan, _revisions_by_plan_id), do: nil
 
   defp line_unit_price_for_item(_item, _variant, %{amount_minor: amount_minor})
        when is_integer(amount_minor),

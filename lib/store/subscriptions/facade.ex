@@ -35,6 +35,7 @@ defmodule Store.Subscriptions.Facade do
   }
 
   alias Store.Subscriptions.{
+    PlanRevision,
     RenewalAttempt,
     Scheduler,
     StoredPaymentMethod,
@@ -50,6 +51,7 @@ defmodule Store.Subscriptions.Facade do
   alias Store.Workers.ProcessSubscriptionRenewalWorker
 
   @default_due_limit 100
+  @unresolved_contract_message "subscription commercial contract is unresolved"
   @shipping_surge_percent_bps 2_000
   @shipping_surge_absolute_minor 5_000
   @payment_retry_reasons MapSet.new([
@@ -506,7 +508,8 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp queue_plan_change(subscription, target_plan_id, actor) do
-    with {:ok, plan} <- fetch_plan(target_plan_id),
+    with :ok <- ensure_subscription_contract_resolved(subscription),
+         {:ok, plan} <- fetch_plan(target_plan_id),
          {:ok, %Variant{} = variant} <-
            fetch_variant_for_renewal(effective_variant_id(subscription)),
          :ok <- ensure_variant_subscription_plan_active(variant.id, plan.id) do
@@ -527,7 +530,8 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp queue_variant_change(subscription, target_variant_id, actor) do
-    with {:ok, %Variant{} = variant} <- fetch_variant_for_renewal(target_variant_id),
+    with :ok <- ensure_subscription_contract_resolved(subscription),
+         {:ok, %Variant{} = variant} <- fetch_variant_for_renewal(target_variant_id),
          {:ok, plan} <- fetch_plan(effective_plan_id(subscription)),
          :ok <- ensure_variant_subscription_plan_active(variant.id, plan.id) do
       pricing = resolve_subscription_pricing(variant, plan)
@@ -1197,12 +1201,13 @@ defmodule Store.Subscriptions.Facade do
 
   defp reduce_subscription_line_item(order, line_item, payment_intent, stored_payment_method, acc) do
     case create_subscription_from_line(order, line_item, payment_intent, stored_payment_method) do
-      {:ok, :created, %{subscription: subscription, plan: plan}, line_notifications} ->
+      {:ok, :created, %{subscription: subscription, plan: _plan, revision: revision},
+       line_notifications} ->
         updated =
           %{
             created: acc.created + 1,
             skipped: acc.skipped,
-            entitlements: [{subscription, plan} | acc.entitlements],
+            entitlements: [{subscription, revision} | acc.entitlements],
             notifications: acc.notifications ++ line_notifications
           }
 
@@ -1336,8 +1341,18 @@ defmodule Store.Subscriptions.Facade do
   defp build_due_renewal_jobs(due_subscriptions, now) do
     Enum.reduce_while(due_subscriptions, {:ok, []}, fn subscription, {:ok, jobs} ->
       case due_job_for_subscription(subscription, now) do
-        {:ok, job} -> {:cont, {:ok, [job | jobs]}}
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:ok, job} ->
+          {:cont, {:ok, [job | jobs]}}
+
+        {:error,
+         %Error{
+           code: "VALIDATION_ERROR",
+           message: @unresolved_contract_message
+         }} ->
+          {:cont, {:ok, jobs}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
     end)
   end
@@ -1387,6 +1402,7 @@ defmodule Store.Subscriptions.Facade do
            fetch_renewal_attempt_by_order(order_id, renewal_attempt_id),
          {:ok, %Subscription{} = subscription} <-
            fetch_subscription_for_renewal(attempt.subscription_id),
+         :ok <- ensure_subscription_contract_resolved(subscription),
          {:ok, %Order{state: :paid}} <- fetch_paid_order(order_id),
          {:ok, plan} <- fetch_plan(effective_subscription_plan_id(subscription)),
          :ok <- ensure_matching_attempt_payment(order_id, attempt),
@@ -1430,7 +1446,8 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp due_renewal_key(%Subscription{} = subscription, now) do
-    with {:ok, plan} <- plan_for_subscription(subscription),
+    with :ok <- ensure_subscription_contract_resolved(subscription),
+         {:ok, plan} <- plan_for_subscription(subscription),
          {:ok, renewal_period} <- renewal_period(subscription, plan, now) do
       {:ok, Scheduler.renewal_key(subscription.id, renewal_period.current_period_end_at)}
     end
@@ -1504,7 +1521,8 @@ defmodule Store.Subscriptions.Facade do
     started_at = System.monotonic_time()
 
     result =
-      with {:ok, plan} <- fetch_plan(subscription.subscription_plan_id),
+      with :ok <- ensure_subscription_contract_resolved(subscription),
+           {:ok, plan} <- fetch_plan(subscription.subscription_plan_id),
            :continue <- maybe_expire_past_due(subscription, plan, now),
            {:ok, renewal_period} <- renewal_period(subscription, plan, now),
            renewal_key <-
@@ -1542,6 +1560,13 @@ defmodule Store.Subscriptions.Facade do
         :expired ->
           :ok
 
+        {:error,
+         %Error{
+           code: "VALIDATION_ERROR",
+           message: @unresolved_contract_message
+         } = error} ->
+          {:error, error}
+
         {:error, %Error{} = error} ->
           mark_subscription_past_due(subscription, error)
           {:error, error}
@@ -1553,6 +1578,18 @@ defmodule Store.Subscriptions.Facade do
 
     emit_subscription_renewal_attempt_telemetry(subscription, result, started_at)
     result
+  end
+
+  defp ensure_subscription_contract_resolved(%Subscription{current_plan_revision_id: id})
+       when is_binary(id),
+       do: :ok
+
+  defp ensure_subscription_contract_resolved(%Subscription{}) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       @unresolved_contract_message
+     )}
   end
 
   defp run_claimed_due_renewal(subscription, plan, renewal_period, attempt, now) do
@@ -1665,22 +1702,30 @@ defmodule Store.Subscriptions.Facade do
        ) do
     with {:ok, nil} <- fetch_subscription_by_source_line(line_item.id),
          {:ok, plan} <- fetch_plan(Map.get(line_item, :subscription_plan_id_snapshot)),
+         {:ok, revision} <-
+           fetch_plan_revision(Map.get(line_item, :subscription_plan_revision_id_snapshot)),
+         :ok <- ensure_revision_belongs_to_plan(revision, plan.id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          {:ok, provider_selection} <- resolve_provider_and_billing_mode(order, plan),
          period <-
-           Scheduler.initial_period(DateTime.utc_now() |> DateTime.truncate(:microsecond), plan),
+           Scheduler.initial_period(
+             DateTime.utc_now() |> DateTime.truncate(:microsecond),
+             revision
+           ),
          {:ok, subscription, subscription_notifications} <-
            create_subscription_record(
              order,
              line_item,
              plan,
+             revision,
              period,
              provider_selection,
              payment_intent,
              stored_payment_method
            ),
          {:ok, _item, item_notifications} <-
-           create_subscription_item_record(subscription, line_item, plan) do
-      {:ok, :created, %{subscription: subscription, plan: plan},
+           create_subscription_item_record(subscription, line_item, plan, revision) do
+      {:ok, :created, %{subscription: subscription, plan: plan, revision: revision},
        subscription_notifications ++ item_notifications}
     else
       {:ok, %Subscription{}} ->
@@ -1714,6 +1759,51 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp fetch_plan(_plan_id), do: {:error, Error.new("VALIDATION_ERROR", "plan_id must be a UUID")}
+
+  defp fetch_plan_revision(revision_id) when is_binary(revision_id) do
+    query = PlanRevision |> Ash.Query.filter(expr(id == ^revision_id))
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, [%PlanRevision{} = revision | _]} ->
+        {:ok, revision}
+
+      {:ok, []} ->
+        {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp fetch_plan_revision(_revision_id) do
+    {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+  end
+
+  defp ensure_revision_belongs_to_plan(
+         %PlanRevision{subscription_plan_id: subscription_plan_id},
+         subscription_plan_id
+       ),
+       do: :ok
+
+  defp ensure_revision_belongs_to_plan(_revision, _subscription_plan_id) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "purchased plan revision does not belong to the snapshotted subscription plan"
+     )}
+  end
+
+  defp ensure_revision_has_purchase_history(%PlanRevision{status: status})
+       when status in [:effective, :retired],
+       do: :ok
+
+  defp ensure_revision_has_purchase_history(%PlanRevision{}) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "purchased plan revision was never effective"
+     )}
+  end
 
   defp resolve_provider_and_billing_mode(%Order{} = order, _plan) do
     with {:ok, %PaymentIntent{} = payment_intent} <- fetch_succeeded_payment_intent(order.id),
@@ -1823,28 +1913,12 @@ defmodule Store.Subscriptions.Facade do
          order,
          line_item,
          plan,
+         revision,
          period,
          provider_selection,
          payment_intent,
          stored_payment_method
        ) do
-    pricing =
-      resolve_subscription_pricing(
-        %Variant{
-          price_minor: line_item.unit_price_minor,
-          currency_code: line_item.currency
-        },
-        plan
-      )
-
-    renewal_amount_minor =
-      line_item.net_line_total_minor ||
-        line_item.unit_price_minor || pricing.amount_minor
-
-    renewal_currency =
-      line_item.currency ||
-        pricing.currency
-
     attrs = %{
       user_id: order.user_id,
       subscription_plan_id: plan.id,
@@ -1853,9 +1927,9 @@ defmodule Store.Subscriptions.Facade do
       provider: provider_selection.provider,
       billing_mode: provider_selection.billing_mode,
       quantity: line_item.quantity,
-      renewal_amount_minor: renewal_amount_minor,
-      renewal_currency: String.upcase(renewal_currency),
-      membership_key: membership_key_for_plan(plan),
+      renewal_amount_minor: revision.amount_minor,
+      renewal_currency: String.upcase(revision.currency),
+      membership_key: membership_key_for_plan(revision),
       provider_customer_ref:
         payment_intent.provider_customer_ref ||
           (stored_payment_method && stored_payment_method.provider_customer_ref),
@@ -1870,7 +1944,8 @@ defmodule Store.Subscriptions.Facade do
       dunning_attempt_count: 0,
       next_retry_at: nil,
       source_order_id: order.id,
-      source_order_line_item_id: line_item.id
+      source_order_line_item_id: line_item.id,
+      current_plan_revision_id: revision.id
     }
 
     Subscription
@@ -1917,25 +1992,16 @@ defmodule Store.Subscriptions.Facade do
 
   defp maybe_upsert_stored_payment_method(_user_id, _payment_intent), do: {:ok, nil, []}
 
-  defp create_subscription_item_record(subscription, line_item, plan) do
-    pricing =
-      resolve_subscription_pricing(
-        %Variant{
-          price_minor: line_item.unit_price_minor,
-          currency_code: line_item.currency
-        },
-        plan
-      )
-
+  defp create_subscription_item_record(subscription, line_item, plan, revision) do
     attrs = %{
       subscription_id: subscription.id,
       variant_id: line_item.variant_id_snapshot,
       quantity: line_item.quantity,
-      plan_key_snapshot: plan.key,
-      amount_minor_snapshot: pricing.amount_minor,
-      currency_snapshot: pricing.currency,
-      interval_unit_snapshot: plan.interval_unit,
-      interval_count_snapshot: plan.interval_count,
+      plan_key_snapshot: line_item.subscription_plan_key_snapshot || plan.key,
+      amount_minor_snapshot: revision.amount_minor,
+      currency_snapshot: revision.currency,
+      interval_unit_snapshot: revision.interval_unit,
+      interval_count_snapshot: revision.interval_count,
       source_order_line_item_id: line_item.id
     }
 

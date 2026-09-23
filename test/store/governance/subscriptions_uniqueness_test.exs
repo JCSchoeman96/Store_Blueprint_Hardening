@@ -37,7 +37,8 @@ defmodule Store.Governance.SubscriptionsUniquenessTest do
       next_renewal_at: first.next_renewal_at,
       dunning_attempt_count: first.dunning_attempt_count,
       source_order_id: order.id,
-      source_order_line_item_id: line_item.id
+      source_order_line_item_id: line_item.id,
+      current_plan_revision_id: line_item.subscription_plan_revision_id_snapshot
     }
 
     assert {:ok, second} =
