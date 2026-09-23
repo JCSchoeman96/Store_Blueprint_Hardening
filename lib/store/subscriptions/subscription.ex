@@ -182,6 +182,11 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    attribute :current_contract_change_id, :uuid do
+      allow_nil?(true)
+      public?(false)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -198,6 +203,13 @@ defmodule Store.Subscriptions.Subscription do
       allow_nil?(true)
       attribute_writable?(true)
       public?(true)
+    end
+
+    belongs_to :current_contract_change, Store.Subscriptions.ContractChange do
+      source_attribute(:current_contract_change_id)
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(false)
     end
 
     belongs_to :variant, Store.Catalog.Variant do
@@ -420,15 +432,52 @@ defmodule Store.Subscriptions.Subscription do
     end
 
     update :cancel_at_period_end_transition do
+      public?(false)
       require_atomic?(false)
-      accept([])
+
+      accept([
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
+
       change(set_attribute(:cancel_at_period_end, true))
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
-    update :cancel_now_transition do
+    update :rescind_cancel_at_period_end_transition do
+      public?(false)
       require_atomic?(false)
-      accept([:canceled_reason])
+
+      accept([
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
+
+      change(set_attribute(:cancel_at_period_end, false))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
+    end
+
+    update :cancel_now_transition do
+      public?(false)
+      require_atomic?(false)
+
+      accept([
+        :canceled_reason,
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
 
       change(
         {Store.Support.Governance.TransitionState,
@@ -486,9 +535,11 @@ defmodule Store.Subscriptions.Subscription do
     end
 
     update :queue_change do
+      public?(false)
       require_atomic?(false)
 
       accept([
+        :current_contract_change_id,
         :pending_variant_id,
         :pending_subscription_plan_id,
         :pending_renewal_amount_minor,
@@ -553,6 +604,7 @@ defmodule Store.Subscriptions.Subscription do
 
     references do
       reference(:current_plan_revision, on_delete: :restrict)
+      reference(:current_contract_change, on_delete: :restrict)
     end
 
     custom_indexes do
@@ -563,6 +615,11 @@ defmodule Store.Subscriptions.Subscription do
       index([:source_order_line_item_id], name: "subscriptions_source_order_line_item_id_index")
       index([:subscription_plan_id], name: "subscriptions_subscription_plan_id_index")
       index([:current_plan_revision_id], name: "subscriptions_current_plan_revision_id_index")
+
+      index([:current_contract_change_id],
+        name: "subscriptions_current_contract_change_id_index"
+      )
+
       index([:variant_id], name: "subscriptions_variant_id_index")
       index([:pending_subscription_plan_id], name: "subscriptions_pending_plan_id_index")
       index([:pending_variant_id], name: "subscriptions_pending_variant_id_index")
@@ -583,7 +640,11 @@ defmodule Store.Subscriptions.Subscription do
       authorize_if(always())
     end
 
-    policy action([:cancel_at_period_end_transition, :cancel_now_transition]) do
+    policy action([
+             :cancel_at_period_end_transition,
+             :rescind_cancel_at_period_end_transition,
+             :cancel_now_transition
+           ]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

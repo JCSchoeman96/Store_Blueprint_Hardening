@@ -466,7 +466,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert inventory.stock_on_hand == 1
   end
 
-  test "reconcile_paid_subscription_renewal_for_system promotes pending locked pricing once" do
+  test "legacy pending projections cannot select a renewal contract" do
     customer = SubscriptionsFixtures.create_customer!("phase27_sub_reconcile")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     %{variant: upgraded_variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -490,47 +490,27 @@ defmodule Store.Subscriptions.FacadeTest do
         change_effective_at: now
       })
 
-    assert {:ok, :processed} =
+    attempts_before = Repo.aggregate(RenewalAttempt, :count, :id)
+    orders_before = Repo.aggregate(Order, :count, :id)
+    intents_before = Repo.aggregate(PaymentIntent, :count, :id)
+    StripeAPIStub.stub_unexpected!("legacy pending projections must fail closed")
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
 
-    attempt = fetch_latest_attempt!(subscription.id)
+    assert Repo.aggregate(RenewalAttempt, :count, :id) == attempts_before
+    assert Repo.aggregate(Order, :count, :id) == orders_before
+    assert Repo.aggregate(PaymentIntent, :count, :id) == intents_before
 
-    renewal_order =
-      Store.Orders.Order
-      |> Ash.Query.filter(expr(id == ^attempt.order_id))
-      |> Ash.read!(domain: Store.Orders, authorize?: false, context: %{system?: true})
-      |> List.first()
-
-    payment_intent =
-      Store.Payments.PaymentIntent
-      |> Ash.Query.filter(expr(id == ^attempt.payment_intent_id))
-      |> Ash.read!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-      |> List.first()
-
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    renewal_order
-    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
-
-    assert {:ok, :reconciled} =
-             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
-             )
-
-    renewed = fetch_subscription!(subscription.id)
-    assert renewed.subscription_plan_id == upgraded_plan.id
-    assert renewed.variant_id == upgraded_variant.id
-    assert renewed.renewal_amount_minor == upgraded_plan.amount_minor
-    assert renewed.renewal_currency == upgraded_plan.currency
-    assert renewed.pending_subscription_plan_id == nil
-    assert renewed.pending_variant_id == nil
-    assert renewed.pending_renewal_amount_minor == nil
-    assert renewed.pending_renewal_currency == nil
+    unresolved = fetch_subscription!(subscription.id)
+    assert unresolved.subscription_plan_id == plan.id
+    assert unresolved.variant_id == variant.id
+    assert unresolved.pending_subscription_plan_id == upgraded_plan.id
+    assert unresolved.pending_variant_id == upgraded_variant.id
+    assert unresolved.pending_renewal_amount_minor == upgraded_plan.amount_minor
+    assert unresolved.pending_renewal_currency == upgraded_plan.currency
   end
 
   test "run_due_renewals_for_system expires subscriptions past grace and revokes entitlements" do
@@ -638,7 +618,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert 0 == count_subscriptions_for_order_line(order.id)
   end
 
-  test "queue plan and variant changes recompute pending snapshots against the effective pair" do
+  test "queue plan and variant changes use the requested dimension and live dimensions" do
     customer = SubscriptionsFixtures.create_customer!("phase27_boundary_queue")
 
     %{product: product, variant: variant} =
@@ -664,6 +644,7 @@ defmodule Store.Subscriptions.FacadeTest do
 
     _current_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
     _target_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
+    _target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
 
     target_variant =
       create_variant_target!(product.id, %{
@@ -673,6 +654,9 @@ defmodule Store.Subscriptions.FacadeTest do
 
     _target_variant_attachment =
       SubscriptionsFixtures.attach_variant_plan!(target_variant.id, target_plan.id)
+
+    _target_variant_current_plan_attachment =
+      SubscriptionsFixtures.attach_variant_plan!(target_variant.id, current_plan.id)
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, current_plan, %{
@@ -712,9 +696,9 @@ defmodule Store.Subscriptions.FacadeTest do
              )
 
     assert queued_variant.pending_variant_id == target_variant.id
-    assert queued_variant.pending_subscription_plan_id == target_plan.id
-    assert queued_variant.pending_renewal_amount_minor == target_plan.amount_minor
-    assert queued_variant.pending_renewal_currency == target_plan.currency
+    assert queued_variant.pending_subscription_plan_id == nil
+    assert queued_variant.pending_renewal_amount_minor == current_plan.amount_minor
+    assert queued_variant.pending_renewal_currency == current_plan.currency
 
     {:ok, invalid_plan_input} =
       QueueSubscriptionPlanChangeInput.new(%{

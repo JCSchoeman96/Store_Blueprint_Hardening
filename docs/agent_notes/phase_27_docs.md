@@ -173,3 +173,55 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - Caching: PostgreSQL remains authoritative. This change adds no cache, TTL, invalidation, or stampede path.
 - Oban uniqueness and idempotency: renewal job and RenewalAttempt behavior is unchanged. The existing renewal key remains the idempotency anchor.
 - Telemetry and logging: no new telemetry or logging was added. Stale facade writes return `STALE_RECORD`; existing renewal telemetry remains unchanged.
+
+## SBH-10-06 — Durable ContractChange / Future-Target Foundation
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/governance/performance_scaling.md`
+- `docs/governance/subscription_scheduling_terms.md`
+- `docs/hardening/01_domain_map.md`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md` v0.1.24
+- `lib/store/subscriptions/plan_revision.ex`
+- `lib/store/subscriptions/subscription.ex`
+- `lib/store/subscriptions/facade.ex`
+- `test/store/subscriptions/optimistic_aggregate_version_test.exs`
+
+### Decisions / pins
+
+1. `ContractChange` stores the exact `PlanRevision`, complete target variant and quantity, target amount/currency, effective boundary, instruction kind, predecessor/superseded identities, lifecycle state, and deterministic `ordering_version`.
+2. `ordering_version` uses the next `Subscription.aggregate_version`. A PostgreSQL row lock checks the loaded version before the transaction changes a target; the Subscription action then performs the existing optimistic version update. The transaction supersedes the prior target, creates the new record, updates the current pointer, and writes compatibility projections together.
+3. Plan-only and variant-only instructions derive untouched dimensions from the live Subscription. Both resolve a new eligible revision through `PlanRevision.get_effective_for_plan`; target amount and currency come from that immutable revision.
+4. `RENEW_UNCHANGED` records the exact current live revision, even when it is retired, with the current Subscription's live variant, quantity, amount, and currency. It never reactivates an older ContractChange.
+5. Historical `pending_*` values receive no guessed ContractChange backfill. New queue operations write ContractChange first; renewal blocks both a current queued ContractChange and unresolved legacy pending projections before attempt/order/payment/provider work. Paid reconciliation also fails closed when a current ContractChange or unresolved legacy projection exists; SBH-10-05 still owns charged-contract application.
+6. Existing Subscription cancellation clears the current pointer and cancels an unbound queued target in the same transaction. Rescission writes a new `RENEW_UNCHANGED` instruction. No scheduled-cancellation redesign or RenewalAttempt binding is included.
+
+### Plan
+
+1. Add the focused red proofs for exact revision retention, fail-closed selection, supersession, dimension scoping, cancellation/rescission, pointer lookup, renewal and reconciliation guards, stale writers, and PostgreSQL queued-target uniqueness.
+2. Add the Subscription-owned `ContractChange` resource and domain registration. Generate the resource migration and Ash snapshot, plus the nullable Subscription pointer with `ON DELETE RESTRICT` and its task-specific snapshot in the same migration.
+3. Implement queue, supersede, cancel, current-target lookup, and rescission in one PostgreSQL transaction per mutation. Normalize stale Subscription versions to `STALE_RECORD`.
+4. Add the pre-provider renewal guard and paid-reconciliation guard without changing RenewalAttempt or Payments/Orders behavior.
+5. Run the focused Subscription suites, migration check, format check, and `mix check`; record exact results before opening the draft PR.
+
+### Performance & Scaling Review
+
+- Hot path: renewal checks current-target authority before creating a RenewalAttempt, order, payment intent, or provider request. A pointer or unresolved pending projection fails closed from the already-loaded Subscription row. When both are absent, an indexed queued-target lookup detects an orphaned/inconsistent current target before provider work. No cache is added.
+- Warm path: each queue command has a fixed read shape: one Subscription lookup, one plan lookup, one variant lookup, one active attachment lookup, and one exact EFFECTIVE revision lookup. Its transaction adds one aggregate row lock, up to one current-target lookup, one latest-instruction lookup, and two writes for the first target or three when superseding. Cancellation adds one row lock, up to one current-target lookup, and at most two writes. Predecessor lookup sorts by the unique `(subscription_id, ordering_version)` index. No loop or per-row N+1 load is required.
+- Cold path: the immutable ContractChange rows remain in PostgreSQL. Foreign keys restrict deletion of the Subscription, PlanRevision, Variant, or linked ContractChange history.
+- Indexes: unique `(subscription_id, ordering_version)`, a partial unique `(subscription_id)` for `status = 'queued'`, and lookup indexes for Subscription, target revision, target variant, and predecessor/superseded links.
+- Caching: no ETS/Redis cache, TTL, invalidation, or stampede path is added. PostgreSQL remains authoritative.
+- Oban: renewal job uniqueness and `RenewalAttempt` idempotency do not change. A queued future target prevents renewal work before Oban processing can initiate provider work.
+- Telemetry/logging: existing renewal telemetry remains in place. No new event is needed for the bounded target foundation.
+
+### Verification record
+
+- Baseline passed before production edits; see task execution record for exact counts and pre-existing warnings.
+- Baseline before production edits: facade 16/0, plan revision 27/0, SBH-10-02 binding 11/0, aggregate version 8/0, replay concurrency 1/0, and `mix check` 668/0. Migration generation check and `git diff --check` passed.
+- New focused ContractChange suite: 14 tests, 0 failures. It includes stale aggregate-version writers and two unboxed PostgreSQL writers competing for the partial unique current-target index.
+- Final focused suite set: 77 tests, 0 failures. Final `mix check`: 682 tests, 0 failures; Credo checked 5,606 functions with no issues, and security scan found no vulnerabilities.
+- `mix ash_postgres.generate_migrations --check`, `mix format --check-formatted`, and `git diff --check` passed.
+- Existing warnings: baseline Ecto reported an out-of-order historical migration between `20260902123000` and the already-present `20260923141654`; the final run names this task's newer migration `20260923202226` as already run. Test compilation reports unused optional defaults in two existing test helpers, and ExDoc reports hidden nested inventory-admission types referenced in docs. The baseline also emitted optional-dependency/compiler and DB-client warnings. No new warning was attributed to this task's source.
+- Migration paths: `priv/repo/migrations/20260923202226_sbh_10_06_contract_change_foundation.exs`, `priv/resource_snapshots/repo/contract_changes/20260923202227.json`, and `priv/resource_snapshots/repo/subscriptions/20260923202228.json`.
+- The task-specific Subscription pointer is nullable, restrict-on-delete, and has no data backfill. There is no ContractChange binding on RenewalAttempt. Renewal and paid reconciliation fail closed for current/orphan ContractChanges and unresolved legacy future projections.
