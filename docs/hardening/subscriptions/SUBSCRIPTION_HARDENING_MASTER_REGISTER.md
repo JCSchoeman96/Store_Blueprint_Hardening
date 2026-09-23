@@ -4278,7 +4278,7 @@ implementation authority or require runtime reconciliation for future issues.
 ```text
 SUBS lifecycle = READY
 SUBS execution policy = SERIAL / EXPLICIT HARDENING
-current authority = canonical hardening/subscriptions 09eb02b4a836a9db7156bdd5cc5e9fc722128d54
+current authority = canonical main governance ac1fd264de35522c010bdcc552b0ba22183cbca4
 canonical READY implementation/proof rows = 0
 ```
 
