@@ -2398,9 +2398,12 @@ closure above.
 
 ## SBH-10-06 — Durable ContractChange / Future-Target Foundation
 
-**State:** `BLOCKED_SHARED_AUTHORITY` until the required migration and Ash snapshot
-authority is explicitly assigned.
+**State:** `READY` under the bounded owner-approved v0.1.24 grant.
+**Shared-authority status:** `AUTHORITY_ASSIGNED` (current task-specific grant,
+non-reusable).
 **Loop eligible:** No.
+**Implementation selection:** Not selected. No implementation branch or
+`task_base_sha` is assigned, and implementation has not started.
 
 Create durable stable `ContractChange` identity and a versioned current future
 target. The conceptual lifecycle is:
@@ -2417,9 +2420,9 @@ The contract must guarantee:
 - no stale predecessor restoration occurs.
 
 Depends on `SBH-10-02` and is required before `SBH-10-03` and `SBH-20-03`.
-Migrations and Ash snapshots are likely required, so this row remains
-`BLOCKED_SHARED_AUTHORITY` until assigned. Do not implement the renewal-versus-
-change race here; that belongs to `SBH-20-03`.
+The bounded production and schema authority for this row is recorded in the
+current v0.1.24 transition above. Do not implement the renewal-versus-change
+race here; that belongs to `SBH-20-03`.
 
 This row receives no ContractChange migration or Ash-snapshot authority from
 the v0.1.20 closure reconciliation. SBH-60-01 must not write temporary
@@ -2504,12 +2507,13 @@ Legacy source finding: `SUB-HARD-01`.
 
 ## SBH-20-01 — Optimistic Aggregate-Version Foundation
 
-**State:** `READY` for explicit human selection only under the bounded
-v0.1.23 grant.
+**State:** `CLOSED`.
+**Shared-authority status:** `AUTHORITY_ASSIGNED` (completed provenance only).
 **Loop eligible:** No.
 
-**Implementation branch:** None assigned.
-**Implementation `task_base_sha`:** None assigned.
+The v0.1.23 admission did not select this issue or assign an implementation
+branch or `task_base_sha`. Implementation later completed under PR `#72`; its
+proof and closure record appear in the current v0.1.24 transition above.
 
 Requirements:
 
