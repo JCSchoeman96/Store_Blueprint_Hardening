@@ -263,9 +263,9 @@ Activation-feasibility guard: `PASS`.
 | `BASELINE_PINNED -> READY` | A completed independent S0 activation-feasibility review returns `PASS` for architecture, source compatibility, capable writers, concurrency/recovery, security/authority, performance/scaling feasibility, migration/data integrity, and shared-authority review. | S0 becomes eligible to accept separately reviewed and explicitly authorized implementation tasks. |
 
 Both guards were independently satisfied and are recorded here in order. This
-governance action does not skip `BASELINE_PINNED`. Canonical governance does not
-require `BASELINE_PINNED` to be committed separately, so this reviewed record
-establishes the resulting current state as `READY`.
+governance action does not skip `BASELINE_PINNED`. This reviewed S0-specific
+activation record records the ordered transition sequence and establishes the
+resulting current state as `READY`.
 
 Baseline provenance:
 
