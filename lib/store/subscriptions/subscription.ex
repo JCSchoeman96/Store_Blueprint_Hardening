@@ -27,6 +27,12 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    attribute :aggregate_version, :integer do
+      allow_nil?(false)
+      default(1)
+      public?(false)
+    end
+
     attribute :provider, Store.Payments.Types.Provider do
       allow_nil?(false)
       public?(true)
@@ -379,6 +385,7 @@ defmodule Store.Subscriptions.Subscription do
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
       change(set_attribute(:retry_suppressed_at, nil))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :mark_past_due_transition do
@@ -408,12 +415,15 @@ defmodule Store.Subscriptions.Subscription do
         {Store.Support.Governance.TransitionState,
          target: :past_due, state_attribute: :status, lock_attribute: nil}
       )
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :cancel_at_period_end_transition do
       require_atomic?(false)
       accept([])
       change(set_attribute(:cancel_at_period_end, true))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :cancel_now_transition do
@@ -436,6 +446,8 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
       end)
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :extend_period do
@@ -470,6 +482,7 @@ defmodule Store.Subscriptions.Subscription do
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
       change(set_attribute(:retry_suppressed_at, nil))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :queue_change do
@@ -484,6 +497,8 @@ defmodule Store.Subscriptions.Subscription do
         :next_retry_at,
         :retry_suppressed_at
       ])
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :mark_expired_transition do
@@ -504,6 +519,8 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
       end)
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :set_provider_billing_reference do
@@ -517,6 +534,8 @@ defmodule Store.Subscriptions.Subscription do
         :next_retry_at,
         :retry_suppressed_at
       ])
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
   end
 

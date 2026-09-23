@@ -22,6 +22,7 @@ defmodule Store.Subscriptions.Facade do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.Types.{QuoteEvidence, QuoteOption}
   alias Store.Subscriptions
+  alias Store.Subscriptions.Facade.StaleWrite
 
   alias Store.Subscriptions.Inputs.{
     QueueSubscriptionPlanChangeInput,
@@ -560,7 +561,7 @@ defmodule Store.Subscriptions.Facade do
              subscription
              |> Ash.Changeset.for_update(:queue_change, attrs)
              |> Ash.update(domain: Subscriptions, actor: actor)
-             |> normalize_result(),
+             |> normalize_subscription_update_result(subscription),
            :ok <-
              maybe_enqueue_immediate_collection_retry(
                updated_subscription,
@@ -909,7 +910,7 @@ defmodule Store.Subscriptions.Facade do
       context: %{system?: true},
       return_notifications?: true
     )
-    |> normalize_subscription_update_with_notifications()
+    |> normalize_subscription_update_with_notifications(subscription)
   end
 
   defp payment_method_reference_attrs(subscription, payment_intent, stored_payment_method) do
@@ -942,17 +943,21 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp normalize_subscription_update_with_notifications(
-         {:ok, updated_subscription, notifications}
+         {:ok, updated_subscription, notifications},
+         _subscription
        ) do
     {:ok, updated_subscription, notifications}
   end
 
-  defp normalize_subscription_update_with_notifications({:ok, updated_subscription}) do
+  defp normalize_subscription_update_with_notifications(
+         {:ok, updated_subscription},
+         _subscription
+       ) do
     {:ok, updated_subscription, []}
   end
 
-  defp normalize_subscription_update_with_notifications({:error, reason}) do
-    {:error, Normalize.normalize(reason)}
+  defp normalize_subscription_update_with_notifications({:error, reason}, subscription) do
+    normalize_subscription_update_result({:error, reason}, subscription)
   end
 
   defp maybe_enqueue_immediate_collection_retry(_subscription, false), do: :ok
@@ -1541,21 +1546,7 @@ defmodule Store.Subscriptions.Facade do
               {:error, reason}
           end
 
-        case result do
-          :ok ->
-            :ok
-
-          {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = error} ->
-            {:error, error}
-
-          {:error, %Error{} = error} ->
-            mark_subscription_past_due(subscription, plan, error, now)
-            {:error, error}
-
-          {:error, reason} ->
-            mark_subscription_past_due(subscription, plan, reason, now)
-            {:error, reason}
-        end
+        settle_claimed_due_renewal_result(subscription, plan, result, now)
       else
         :expired ->
           :ok
@@ -1567,17 +1558,49 @@ defmodule Store.Subscriptions.Facade do
          } = error} ->
           {:error, error}
 
-        {:error, %Error{} = error} ->
-          mark_subscription_past_due(subscription, error)
+        {:error, %Error{code: "STALE_RECORD"} = error} ->
           {:error, error}
 
         {:error, reason} ->
           mark_subscription_past_due(subscription, reason)
-          {:error, reason}
+          |> stale_result_or({:error, reason})
       end
 
     emit_subscription_renewal_attempt_telemetry(subscription, result, started_at)
     result
+  end
+
+  defp settle_claimed_due_renewal_result(_subscription, _plan, :ok, _now), do: :ok
+
+  defp settle_claimed_due_renewal_result(
+         _subscription,
+         _plan,
+         {:error, %Error{code: "STALE_RECORD"} = error},
+         _now
+       ),
+       do: {:error, error}
+
+  defp settle_claimed_due_renewal_result(
+         _subscription,
+         _plan,
+         {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = error},
+         _now
+       ),
+       do: {:error, error}
+
+  defp settle_claimed_due_renewal_result(
+         subscription,
+         plan,
+         {:error, %Error{} = error},
+         now
+       ) do
+    mark_subscription_past_due(subscription, plan, error, now)
+    |> stale_result_or({:error, error})
+  end
+
+  defp settle_claimed_due_renewal_result(subscription, plan, {:error, reason}, now) do
+    mark_subscription_past_due(subscription, plan, reason, now)
+    |> stale_result_or({:error, reason})
   end
 
   defp ensure_subscription_contract_resolved(%Subscription{current_plan_revision_id: id})
@@ -1614,6 +1637,9 @@ defmodule Store.Subscriptions.Facade do
            ) do
       :ok
     else
+      {:error, %Error{code: "STALE_RECORD"} = reason} ->
+        {:error, reason}
+
       {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = reason} ->
         _ = mark_attempt_failed(attempt, reason)
         {:error, reason}
@@ -1624,7 +1650,6 @@ defmodule Store.Subscriptions.Facade do
             :ok
 
           :ok ->
-            mark_subscription_past_due(subscription, plan, reason, now)
             {:error, reason}
         end
     end
@@ -2066,7 +2091,7 @@ defmodule Store.Subscriptions.Facade do
     subscription
     |> Ash.Changeset.for_update(:cancel_at_period_end_transition, %{})
     |> Ash.update(domain: Subscriptions, actor: actor)
-    |> normalize_result()
+    |> normalize_subscription_update_result(subscription)
   end
 
   defp run_cancel(subscription, :now, actor) do
@@ -2074,7 +2099,7 @@ defmodule Store.Subscriptions.Facade do
            subscription
            |> Ash.Changeset.for_update(:cancel_now_transition, %{canceled_reason: "user_request"})
            |> Ash.update(domain: Subscriptions, actor: actor)
-           |> normalize_result() do
+           |> normalize_subscription_update_result(subscription) do
       plan =
         case fetch_plan(subscription.subscription_plan_id) do
           {:ok, fetched_plan} -> fetched_plan
@@ -2892,14 +2917,20 @@ defmodule Store.Subscriptions.Facade do
         :requires_action ->
           _ = release_renewal_inventory(order)
           _ = mark_virtual_payment_intent_requires_action(payment_intent)
-          _ = mark_subscription_authentication_required(subscription, plan, now, charge_response)
+
+          subscription_update_result =
+            mark_subscription_authentication_required(subscription, plan, now, charge_response)
+
           _ = enqueue_payment_authentication_required_email(order, charge_response)
 
-          {:error,
-           Error.new(
-             "PAYMENT_AUTHENTICATION_REQUIRED",
-             "customer authentication is required to complete renewal"
-           )}
+          stale_result_or(
+            subscription_update_result,
+            {:error,
+             Error.new(
+               "PAYMENT_AUTHENTICATION_REQUIRED",
+               "customer authentication is required to complete renewal"
+             )}
+          )
 
         _ ->
           {:error, Error.new("PAYMENT_PROVIDER_DOWN", "unexpected recurring charge response")}
@@ -2974,8 +3005,11 @@ defmodule Store.Subscriptions.Facade do
       context: %{system?: true}
     )
     |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
-
-    charge_response
+    |> normalize_subscription_update_result(subscription)
+    |> case do
+      {:error, %Error{code: "STALE_RECORD"} = error} -> {:error, error}
+      _ -> charge_response
+    end
   end
 
   defp enqueue_payment_authentication_required_email(%Order{} = order, charge_response) do
@@ -3140,6 +3174,7 @@ defmodule Store.Subscriptions.Facade do
     subscription
     |> Ash.Changeset.for_update(:extend_period, attrs, context: %{system?: true})
     |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
+    |> normalize_subscription_update_result(subscription)
   end
 
   defp effective_subscription_plan_id(%Subscription{pending_subscription_plan_id: plan_id})
@@ -3192,7 +3227,7 @@ defmodule Store.Subscriptions.Facade do
         :expired
 
       {:error, reason} ->
-        {:error, Normalize.normalize(reason)}
+        normalize_subscription_update_result({:error, reason}, subscription)
     end
   end
 
@@ -3225,36 +3260,38 @@ defmodule Store.Subscriptions.Facade do
         :past_due
       end
 
-    if status == :expired do
-      _ = expire_past_due_subscription(subscription)
-      :ok
-    else
-      next_retry_at =
-        if retry_suppressed? do
-          nil
-        else
-          next_retry_at_or_nil(past_due_since_at, next_attempt_count - 1, plan)
-        end
+    next_retry_at =
+      if retry_suppressed? do
+        nil
+      else
+        next_retry_at_or_nil(past_due_since_at, next_attempt_count - 1, plan)
+      end
 
-      _ =
-        subscription
-        |> Ash.Changeset.for_update(
-          :mark_past_due_transition,
-          %{
-            billing_status_reason: message,
-            past_due_since_at: past_due_since_at,
-            dunning_attempt_count: next_attempt_count,
-            next_retry_at: next_retry_at,
-            retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
-          },
-          context: %{system?: true}
-        )
-        |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
-    end
+    attrs = %{
+      billing_status_reason: message,
+      past_due_since_at: past_due_since_at,
+      dunning_attempt_count: next_attempt_count,
+      next_retry_at: next_retry_at,
+      retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
+    }
+
+    result =
+      persist_subscription_dunning_update(subscription, status, attrs)
+      |> stale_result_or(:ok)
 
     emit_subscription_dunning_telemetry(subscription, status, next_attempt_count)
+    result
+  end
 
-    :ok
+  defp persist_subscription_dunning_update(subscription, :expired, _attrs) do
+    expire_past_due_subscription(subscription)
+  end
+
+  defp persist_subscription_dunning_update(subscription, _status, attrs) do
+    subscription
+    |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
+    |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
+    |> normalize_subscription_update_result(subscription)
   end
 
   defp next_retry_at_or_nil(reference_at, attempt_index, plan) do
@@ -3274,22 +3311,27 @@ defmodule Store.Subscriptions.Facade do
         other -> inspect(other)
       end
 
-    _ =
-      subscription
-      |> Ash.Changeset.for_update(
-        :mark_past_due_transition,
-        %{billing_status_reason: message},
-        context: %{system?: true}
-      )
-      |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
-
-    emit_subscription_dunning_telemetry(
-      subscription,
-      :past_due,
-      subscription.dunning_attempt_count || 0
+    subscription
+    |> Ash.Changeset.for_update(
+      :mark_past_due_transition,
+      %{billing_status_reason: message},
+      context: %{system?: true}
     )
+    |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
+    |> normalize_subscription_update_result(subscription)
+    |> case do
+      {:error, %Error{code: "STALE_RECORD"} = error} ->
+        {:error, error}
 
-    :ok
+      _ ->
+        emit_subscription_dunning_telemetry(
+          subscription,
+          :past_due,
+          subscription.dunning_attempt_count || 0
+        )
+
+        :ok
+    end
   end
 
   defp emit_subscription_tick_telemetry(started_at, due_count, result) do
@@ -3443,6 +3485,33 @@ defmodule Store.Subscriptions.Facade do
     end)
   end
 
-  defp normalize_result({:ok, _} = result), do: result
-  defp normalize_result({:error, reason}), do: {:error, Normalize.normalize(reason)}
+  defp normalize_subscription_update_result({:ok, _} = result, _subscription), do: result
+
+  defp normalize_subscription_update_result({:error, reason} = result, subscription) do
+    if StaleWrite.stale_record_error?(reason) do
+      _ = reload_subscription_after_stale_update(subscription.id)
+    end
+
+    StaleWrite.normalize_update_result(result)
+  end
+
+  defp stale_result_or({:error, %Error{code: "STALE_RECORD"} = error}, _fallback),
+    do: {:error, error}
+
+  defp stale_result_or(_result, fallback), do: fallback
+
+  defp reload_subscription_after_stale_update(subscription_id) do
+    query =
+      Subscription
+      |> Ash.Query.filter(expr(id == ^subscription_id))
+
+    case Ash.read_one(query,
+           domain: Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %Subscription{} = subscription} -> subscription
+      _ -> nil
+    end
+  end
 end
