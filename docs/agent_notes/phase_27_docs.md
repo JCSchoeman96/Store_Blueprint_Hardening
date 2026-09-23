@@ -140,3 +140,36 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - Remaining risk:
   - physical renewals add one shipping quote call plus one reservation call per processed subscription
   - due-tick scans for past-due subscriptions should use the new partial index on unsuppressed retries
+
+## SBH-20-01 — Optimistic Aggregate-Version Foundation
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/governance/performance_scaling.md`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
+- `lib/store/subscriptions/subscription.ex`
+- `lib/store/support/governance/transition_state.ex`
+- `priv/resource_snapshots/repo/subscriptions/20260923141655.json`
+
+### Decisions / pins
+
+1. `Subscription.aggregate_version` is durable metadata initialized to `1` for existing rows. It does not claim historical mutation counts.
+2. All eight material Subscription update actions invoke one Subscription-local change that delegates to Ash optimistic locking after action changes are known. It skips genuine attribute no-ops; `TransitionState` keeps its lock disabled so successful material writes increment once.
+3. Facade stale updates map structurally recognized Ash `StaleRecord` failures to the existing `STALE_RECORD` code and reload the current row. They return the conflict without replaying the old payload because resolving these stale commands would require later race policy.
+4. RenewalAttempt identity, claims, and race precedence remain unchanged.
+
+### Plan
+
+1. Add deterministic stale-writer, same-state, non-state, and two-writer tests before the resource change.
+2. Add the Subscription version field, shared action lock, generated migration, and snapshot.
+3. Normalize stale Subscription update errors locally and verify focused suites and project gates.
+
+### Performance & Scaling Review
+
+- Hot paths: renewal reconciliation, dunning updates, and payment-method reference updates use the Subscription write path. Account and admin management writes are warm.
+- Database query count and N+1 risk: successful writes retain one version-checked update. Facade conflicts add one primary-key reload; they load no relationships, so there is no N+1 path.
+- Indexes: the existing Subscription primary key supports version-checked updates and conflict reloads. No aggregate-version index is needed.
+- Caching: PostgreSQL remains authoritative. This change adds no cache, TTL, invalidation, or stampede path.
+- Oban uniqueness and idempotency: renewal job and RenewalAttempt behavior is unchanged. The existing renewal key remains the idempotency anchor.
+- Telemetry and logging: no new telemetry or logging was added. Stale facade writes return `STALE_RECORD`; existing renewal telemetry remains unchanged.
