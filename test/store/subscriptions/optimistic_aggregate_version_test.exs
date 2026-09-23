@@ -130,6 +130,55 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
              StaleWrite.normalize_update_result(stale_result)
   end
 
+  test "a stale locally unchanged write is checked against the durable version" do
+    subscription = create_subscription!()
+
+    assert {:ok, initialized} =
+             update_subscription(subscription, :set_provider_billing_reference, %{
+               provider_customer_ref: "cus_original",
+               provider_billing_ref: "pm_original"
+             })
+
+    writer_a = reload_subscription!(initialized.id)
+    writer_b = reload_subscription!(initialized.id)
+    initial_version = aggregate_version(writer_a)
+
+    original_refs = %{
+      provider_customer_ref: writer_b.provider_customer_ref,
+      provider_billing_ref: writer_b.provider_billing_ref
+    }
+
+    assert original_refs == %{
+             provider_customer_ref: "cus_original",
+             provider_billing_ref: "pm_original"
+           }
+
+    assert {:ok, winner} =
+             update_subscription(writer_a, :set_provider_billing_reference, %{
+               provider_customer_ref: "cus_winner",
+               provider_billing_ref: "pm_winner"
+             })
+
+    assert aggregate_version(winner) == initial_version + 1
+
+    # These values differ from PostgreSQL now, but look unchanged to writer_b.
+    assert writer_b.provider_customer_ref == original_refs.provider_customer_ref
+    assert writer_b.provider_billing_ref == original_refs.provider_billing_ref
+
+    stale_result =
+      update_subscription(writer_b, :set_provider_billing_reference, original_refs)
+
+    assert stale_record_error?(stale_result)
+
+    assert {:error, %Error{code: "STALE_RECORD"}} =
+             StaleWrite.normalize_update_result(stale_result)
+
+    authoritative = reload_subscription!(subscription.id)
+    assert authoritative.provider_customer_ref == "cus_winner"
+    assert authoritative.provider_billing_ref == "pm_winner"
+    assert aggregate_version(authoritative) == initial_version + 1
+  end
+
   test "every material Subscription action rejects a stale version and increments once" do
     actions = [
       {:activate_now, :pending},

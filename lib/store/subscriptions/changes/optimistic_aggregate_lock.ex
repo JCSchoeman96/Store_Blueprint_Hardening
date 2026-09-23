@@ -10,7 +10,10 @@ defmodule Store.Subscriptions.Changes.OptimisticAggregateLock do
     if Ash.Changeset.changing_attributes?(changeset) do
       OptimisticLock.change(changeset, [attribute: :aggregate_version], context)
     else
-      changeset
+      Ash.Changeset.filter(
+        changeset,
+        {:aggregate_version, [eq: Map.get(changeset.data, :aggregate_version)]}
+      )
     end
   end
 end
