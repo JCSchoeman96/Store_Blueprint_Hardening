@@ -477,17 +477,23 @@ defmodule Store.PerformanceSmoke.Reporter do
   def print_observer_table([]), do: :ok
 
   def print_observer_table(observers) do
-    IO.puts("\n| Observer | Peak Lock Wait Ratio | Peak Lock Waiters | Peak Pool Util | Result |")
-    IO.puts("| --- | --- | --- | --- | --- |")
+    IO.puts(
+      "\n| Observer | Peak Lock Wait Ratio | Peak Lock Waiters | Peak Pool Util | Samples | Active Samples | Coverage | Result |"
+    )
+
+    IO.puts("| --- | --- | --- | --- | --- | --- | --- | --- |")
 
     Enum.each(observers, fn observer ->
       lock_wait_ratio = observer[:peak_lock_wait_ratio] |> float_or_dash()
       lock_waiters = observer[:peak_lock_waiters] |> integer_or_dash()
       pool_utilization = observer[:peak_active_backend_utilization] |> float_or_dash()
+      sample_count = observer[:sample_count] |> integer_or_dash()
+      active_sample_count = observer[:active_sample_count] |> integer_or_dash()
+      coverage = observer[:coverage_status] || :unknown
       result = if observer[:pass], do: "PASS", else: "FAIL"
 
       IO.puts(
-        "| #{observer[:name]} | #{lock_wait_ratio} | #{lock_waiters} | #{pool_utilization} | #{result} |"
+        "| #{observer[:name]} | #{lock_wait_ratio} | #{lock_waiters} | #{pool_utilization} | #{sample_count} | #{active_sample_count} | #{coverage} | #{result} |"
       )
     end)
 
@@ -619,7 +625,7 @@ defmodule Store.PerformanceSmoke.Gate do
   @spec assert_observer_summary!(map()) :: :ok
   def assert_observer_summary!(summary) when is_map(summary) do
     assert summary.pass,
-           "observer gate failed for #{summary.name}: peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_lock_waiters=#{summary.peak_lock_waiters} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold}"
+           "observer gate failed for #{summary.name}: coverage_status=#{summary.coverage_status} failure_reason=#{summary.failure_reason} sample_interval_ms=#{summary.sample_interval_ms} active_sample_count=#{summary.active_sample_count} peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_lock_waiters=#{summary.peak_lock_waiters} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold}"
 
     :ok
   end
@@ -638,6 +644,8 @@ defmodule Store.PerformanceSmoke.Observer do
 
   alias Store.PerformanceSmoke.{Config, Reporter}
 
+  @max_observation_interval_ms 50
+
   @sample_query """
   SELECT
     COUNT(*) FILTER (WHERE state = 'active')::bigint AS active_backends,
@@ -650,9 +658,37 @@ defmodule Store.PerformanceSmoke.Observer do
 
   @spec capture(String.t(), Config.t(), (-> term())) :: {term(), map()}
   def capture(name, %Config{} = config, fun) when is_binary(name) and is_function(fun, 0) do
+    capture_with_sampler(name, config, fun, &sample/1)
+  end
+
+  @doc false
+  @spec capture_with_sampler(String.t(), Config.t(), (-> term()), (Config.t() -> map())) ::
+          {term(), map()}
+  def capture_with_sampler(name, %Config{} = config, fun, sampler)
+      when is_binary(name) and is_function(fun, 0) and is_function(sampler, 1) do
     parent = self()
     ref = make_ref()
-    {:ok, pid} = Task.start_link(fn -> sample_loop(parent, ref, config, []) end)
+
+    {:ok, pid} =
+      Task.start_link(fn ->
+        _baseline = sampler.(config)
+        send(parent, {:observer_ready, ref})
+
+        receive do
+          {:begin_observation, ^parent, ^ref} ->
+            send(parent, {:observer_started, ref})
+            sample_loop(parent, ref, config, sampler, [])
+        end
+      end)
+
+    receive do
+      {:observer_ready, ^ref} -> send(pid, {:begin_observation, parent, ref})
+    end
+
+    receive do
+      {:observer_started, ^ref} -> :ok
+    end
+
     result = fun.()
     send(pid, {:stop, parent, ref})
 
@@ -666,15 +702,15 @@ defmodule Store.PerformanceSmoke.Observer do
     {result, summary}
   end
 
-  defp sample_loop(parent, ref, config, acc) do
-    sample = sample(config)
+  defp sample_loop(parent, ref, config, sampler, acc) do
+    sample = sampler.(config)
 
     receive do
       {:stop, ^parent, ^ref} ->
         send(parent, {:observer_samples, ref, Enum.reverse([sample | acc])})
     after
-      config.observer_interval_ms ->
-        sample_loop(parent, ref, config, [sample | acc])
+      sample_interval_ms(config) ->
+        sample_loop(parent, ref, config, sampler, [sample | acc])
     end
   end
 
@@ -694,7 +730,9 @@ defmodule Store.PerformanceSmoke.Observer do
     }
   end
 
-  defp summarize(name, config, samples) do
+  @doc false
+  @spec summarize(String.t(), Config.t(), [map()]) :: map()
+  def summarize(name, config, samples) do
     samples_over_lock_threshold =
       Enum.count(samples, fn sample ->
         sample.active_backends >= config.lock_wait_min_active_backends and
@@ -707,16 +745,32 @@ defmodule Store.PerformanceSmoke.Observer do
       end)
 
     enforced = Config.observer_gate_enforced?(config)
+    active_sample_count = Enum.count(samples, &(&1.active_backends > 0))
+
+    coverage_status =
+      if length(samples) >= 2 and active_sample_count > 0,
+        do: :sufficient,
+        else: :insufficient
+
+    threshold_violation? = samples_over_lock_threshold > 0 or samples_over_pool_threshold > 0
+
+    failure_reason =
+      cond do
+        not enforced -> nil
+        threshold_violation? -> :threshold_violation
+        coverage_status == :insufficient -> :insufficient_coverage
+        true -> nil
+      end
 
     %{
       name: name,
-      pass:
-        if(enforced,
-          do: samples_over_lock_threshold == 0 and samples_over_pool_threshold == 0,
-          else: true
-        ),
+      pass: is_nil(failure_reason),
       enforced: enforced,
       sample_count: length(samples),
+      sample_interval_ms: sample_interval_ms(config),
+      active_sample_count: active_sample_count,
+      coverage_status: coverage_status,
+      failure_reason: failure_reason,
       peak_active_backends: peak_value(samples, :active_backends, 0),
       peak_lock_waiters: peak_value(samples, :lock_waiters, 0),
       peak_lock_wait_ratio: peak_value(samples, :lock_wait_ratio, 0.0),
@@ -738,7 +792,103 @@ defmodule Store.PerformanceSmoke.Observer do
   defp ratio(_numerator, 0), do: 0.0
   defp ratio(numerator, denominator), do: numerator / denominator
 
+  defp sample_interval_ms(config),
+    do: min(config.observer_interval_ms, @max_observation_interval_ms)
+
   defp parse_count(value) when is_integer(value), do: value
+end
+
+defmodule Store.PerformanceSmoke.ObserverEvidenceTest do
+  use ExUnit.Case, async: true
+
+  alias Store.PerformanceSmoke.{Config, Observer}
+
+  test "an idle-only observation fails closed and differs from a genuine pass" do
+    insufficient = Observer.summarize("observer_test", config(), [sample(0, 0)])
+    single_active_sample = Observer.summarize("observer_test", config(), [sample(2, 0)])
+    passing = Observer.summarize("observer_test", config(), [sample(2, 0), sample(0, 0)])
+
+    refute insufficient.pass
+    assert insufficient.coverage_status == :insufficient
+    assert insufficient.failure_reason == :insufficient_coverage
+    refute single_active_sample.pass
+    assert single_active_sample.coverage_status == :insufficient
+    assert single_active_sample.failure_reason == :insufficient_coverage
+    assert passing.pass
+    assert passing.coverage_status == :sufficient
+    assert is_nil(passing.failure_reason)
+  end
+
+  test "real lock and pool threshold violations still fail" do
+    summary = Observer.summarize("observer_test", config(), [sample(10, 2)])
+    pool_summary = Observer.summarize("observer_test", config(), [sample(20, 0)])
+
+    refute summary.pass
+    assert summary.failure_reason == :threshold_violation
+    assert summary.samples_over_lock_threshold == 1
+    refute pool_summary.pass
+    assert pool_summary.failure_reason == :threshold_violation
+    assert pool_summary.samples_over_pool_threshold == 1
+  end
+
+  test "an adequately observed passing workload passes" do
+    summary = Observer.summarize("observer_test", config(), [sample(2, 0), sample(0, 0)])
+
+    assert summary.pass
+    assert summary.active_sample_count == 1
+    assert summary.sample_count == 2
+    assert summary.coverage_status == :sufficient
+  end
+
+  test "capture waits for readiness and samples during the workload" do
+    parent = self()
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    config = %{config() | observer_interval_ms: 5}
+
+    sampler = fn _config ->
+      index = Agent.get_and_update(counter, fn value -> {value + 1, value + 1} end)
+      send(parent, {:observer_test_sample, index})
+      sample(if(index == 1, do: 0, else: 1), 0)
+    end
+
+    {result, summary} =
+      Observer.capture_with_sampler(
+        "observer_test",
+        config,
+        fn ->
+          assert_received {:observer_test_sample, 1}
+          assert_receive {:observer_test_sample, 2}
+          assert_receive {:observer_test_sample, 3}, 100
+          :workload_result
+        end,
+        sampler
+      )
+
+    assert result == :workload_result
+    assert summary.pass
+    assert summary.active_sample_count >= 1
+    assert summary.sample_interval_ms == 5
+    Agent.stop(counter)
+  end
+
+  defp config do
+    %Config{
+      profile: :ci_gate,
+      repo_pool_size: 20,
+      lock_wait_max_ratio: 0.10,
+      lock_wait_min_active_backends: 10,
+      pool_utilization_max_ratio: 0.95
+    }
+  end
+
+  defp sample(active_backends, lock_waiters) do
+    %{
+      active_backends: active_backends,
+      lock_waiters: lock_waiters,
+      lock_wait_ratio: if(active_backends == 0, do: 0.0, else: lock_waiters / active_backends),
+      active_backend_utilization: active_backends / 20
+    }
+  end
 end
 
 defmodule Store.PerformanceSmoke.ProviderFault do
