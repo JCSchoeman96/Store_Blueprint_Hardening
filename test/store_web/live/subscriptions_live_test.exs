@@ -53,6 +53,8 @@ defmodule StoreWeb.SubscriptionsLiveTest do
         amount_minor: 2_500
       })
 
+    SubscriptionsFixtures.create_plan_revision!(target_plan)
+
     _current_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
     _target_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
 

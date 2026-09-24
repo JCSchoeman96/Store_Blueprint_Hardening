@@ -7,6 +7,7 @@ defmodule Store.SubscriptionsFixtures do
   alias Store.Catalog.{Product, Variant}
   alias Store.Orders.{Order, OrderLineItem}
   alias Store.Payments.PaymentIntent
+  alias Store.Support.ID.OrderRef
 
   alias Store.Subscriptions.{
     PlanRevision,
@@ -48,7 +49,7 @@ defmodule Store.SubscriptionsFixtures do
 
   @spec create_subscription_sellable!(map()) :: %{product: Product.t(), variant: Variant.t()}
   def create_subscription_sellable!(overrides \\ %{}) when is_map(overrides) do
-    unique = System.unique_integer([:positive])
+    unique = fixture_token()
     publish? = Map.get(overrides, :published?, true)
 
     attrs =
@@ -88,7 +89,7 @@ defmodule Store.SubscriptionsFixtures do
 
   @spec create_subscription_plan!(map()) :: SubscriptionPlan.t()
   def create_subscription_plan!(overrides \\ %{}) when is_map(overrides) do
-    unique = System.unique_integer([:positive])
+    unique = fixture_token()
 
     attrs =
       %{
@@ -323,7 +324,7 @@ defmodule Store.SubscriptionsFixtures do
   end
 
   defp create_paid_order!(user_id, currency) do
-    order_ref = "ORDP26#{System.unique_integer([:positive])}"
+    order_ref = OrderRef.generate()
 
     order =
       Order
@@ -401,7 +402,7 @@ defmodule Store.SubscriptionsFixtures do
               Map.get(
                 overrides,
                 :stored_payment_method_fingerprint,
-                "fp_#{System.unique_integer([:positive])}"
+                "fp_#{fixture_token()}"
               )
           },
           context: %{system?: true}
@@ -411,6 +412,11 @@ defmodule Store.SubscriptionsFixtures do
       true ->
         nil
     end
+  end
+
+  defp fixture_token do
+    :crypto.strong_rand_bytes(10)
+    |> Base.encode16(case: :lower)
   end
 
   defp fetch_stored_payment_method!(id) do
