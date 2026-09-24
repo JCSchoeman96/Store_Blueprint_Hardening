@@ -15,9 +15,12 @@
 
 ## Current authority boundary — v0.1.25
 
-Canonical `main` governance at `ac1fd264de35522c010bdcc552b0ba22183cbca4`
-supersedes the autonomous SUBS execution model. SUBS lifecycle remains
-`READY`; its separate execution policy is **`SERIAL / EXPLICIT HARDENING`**:
+The v0.1.25 admission observed canonical `main` governance at
+`1fb29528e63a255cf86f1810d99b2372a55923cc`. The
+`SERIAL / EXPLICIT HARDENING` policy, established by governance amendment
+`ac1fd264de35522c010bdcc552b0ba22183cbca4`, supersedes the autonomous SUBS
+execution model. SUBS lifecycle remains `READY`; its separate execution policy
+is **`SERIAL / EXPLICIT HARDENING`**:
 
 ```text
 human selects one canonical READY issue
@@ -114,10 +117,18 @@ The grant covers only this Subscription-owned checkpoint-B foundation:
 Store.Subscriptions.RenewalAttempt
 minimum Store.Subscriptions.Facade orchestration required to perform the bind
 Store.Subscriptions.ContractChange only for QUEUED → BOUND_TO_RENEWAL
-Subscription aggregate/version inspection needed to bind against authoritative current truth
+Store.Subscriptions.Subscription only for aggregate-version-protected checkpoint-B consumption of the current target
 focused Subscription fixtures and tests
 one renewal_attempts migration and its corresponding Ash snapshot
 ```
+
+The authorized Subscription mutation is limited to verifying the expected
+`aggregate_version` and exact `current_contract_change_id`, clearing that
+pointer and its compatibility projections (`pending_variant_id`,
+`pending_subscription_plan_id`, `pending_renewal_amount_minor`,
+`pending_renewal_currency`, and `change_effective_at`), and performing the
+normal single `aggregate_version` increment. No unrelated Subscription
+mutation is authorized.
 
 The migration may add only the foreign keys, indexes, checks, and compatibility
 constraints needed for durable charged-contract evidence. The frozen occurrence
@@ -171,9 +182,10 @@ heuristic historical backfill
 ```
 
 `SBH-10-03` is `READY`, not selected. This amendment assigns no implementation
-branch or `task_base_sha`. After this governance PR merges and the human owner
-verifies its exact merge commit and tree, the accepted SUBS tip becomes the
-prospective `task_base_sha` for JC-228 / SBH-10-03. Only then may
+branch or `task_base_sha`. After this governance PR merges, independent
+post-merge verification must confirm its exact merge commit and tree. The
+accepted SUBS tip becomes the prospective `task_base_sha` for JC-228 / SBH-10-03.
+Only then may
 `subs-task/sbh-10-03-renewal-contract-snapshot` be created and implementation
 begin.
 
@@ -2598,11 +2610,18 @@ ContractChange has a new identity and cannot alter the bound occurrence.
 
 The task-specific production and schema authority is limited to the
 `RenewalAttempt`, minimum Subscription facade orchestration for this bind, that
-single ContractChange transition, current Subscription aggregate/version
-inspection required to bind authoritative truth, focused fixtures/tests, and
-one `renewal_attempts` migration with its corresponding Ash snapshot. Database
-constraints and indexes are limited to those needed for durable evidence. The
-current v0.1.25 transition above records the complete grant and exclusions.
+single ContractChange transition, and `Store.Subscriptions.Subscription` only
+for aggregate-version-protected checkpoint-B consumption of the current
+target. That write must verify the expected `aggregate_version` and exact
+`current_contract_change_id`, clear the pointer and its compatibility
+projections (`pending_variant_id`, `pending_subscription_plan_id`,
+`pending_renewal_amount_minor`, `pending_renewal_currency`, and
+`change_effective_at`), and perform the normal single aggregate-version
+increment. No unrelated Subscription mutation is authorized. The grant also
+covers focused fixtures/tests and one `renewal_attempts` migration with its
+corresponding Ash snapshot. Database constraints and indexes are limited to
+those needed for durable evidence. The current v0.1.25 transition above records
+the complete grant and exclusions.
 
 ---
 
@@ -3816,7 +3835,7 @@ surfaces.
 | `SBH-10-02` | Checkout exact-revision purchase boundary; immutable Orders PlanRevision purchase evidence plus task-specific `order_line_items` migration/Ash snapshot; Subscription PlanRevision binding plus task-specific `subscriptions` migration/Ash snapshot | `AUTHORITY_ASSIGNED` | Completed task-specific Checkout/Orders/Subscriptions purchase-binding authority. The authority was used only for `SBH-10-02` and grants no further execution authority after closure. |
 | `SBH-20-01` | `Store.Subscriptions.Subscription` aggregate-version attribute; limited `Store.Subscriptions.Facade` stale-write handling; one task-specific `subscriptions` migration and Ash snapshot; focused deterministic and regression proof | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.23 grant is non-reusable. |
 | `SBH-10-06` | Subscription-owned ContractChange, Subscription, Facade, and focused fixtures/tests; one `contract_changes` migration and Ash snapshot; one conditional `subscriptions` migration and Ash snapshot only if the current ContractChange pointer requires it | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.24 grant is non-reusable. |
-| `SBH-10-03` | Subscription-owned `RenewalAttempt`; minimum `Store.Subscriptions.Facade` orchestration for checkpoint-B bind; exact `ContractChange` `QUEUED → BOUND_TO_RENEWAL` transition; Subscription aggregate/version inspection for authoritative bind; focused fixtures/tests; one `renewal_attempts` migration and corresponding Ash snapshot; only necessary evidence FKs, indexes, checks, and compatibility constraints | `AUTHORITY_ASSIGNED` | `READY` under the bounded v0.1.25 grant, not selected. No implementation branch or `task_base_sha` is assigned before merge verification. The grant is non-reusable. |
+| `SBH-10-03` | Subscription-owned `RenewalAttempt`; minimum `Store.Subscriptions.Facade` orchestration for checkpoint-B bind; exact `ContractChange` `QUEUED → BOUND_TO_RENEWAL` transition; `Store.Subscriptions.Subscription` only for aggregate-version-protected checkpoint-B consumption of the current target (verify expected version and pointer, clear `current_contract_change_id` and compatibility projections, perform the normal single version increment); focused fixtures/tests; one `renewal_attempts` migration and corresponding Ash snapshot; only necessary evidence FKs, indexes, checks, and compatibility constraints | `AUTHORITY_ASSIGNED` | `READY` under the bounded v0.1.25 grant, not selected. No implementation branch or `task_base_sha` is assigned before independent post-merge verification. The grant is non-reusable. |
 | `SBH-10-04` | provider business contracts | `EXTERNALIZED` | Use the existing provider boundary; do not change provider business contracts. |
 | `SBH-10-05` | Payments core | `EXTERNALIZED` | Use payment evidence authority; do not change Payments core. |
 | `SBH-20-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
@@ -4862,7 +4881,7 @@ and is independently verified is required before implementation admission.
 ```text
 SUBS lifecycle = READY
 SUBS execution policy = SERIAL / EXPLICIT HARDENING
-current authority = canonical main governance ac1fd264de35522c010bdcc552b0ba22183cbca4
+governance authority observed for v0.1.25 admission = 1fb29528e63a255cf86f1810d99b2372a55923cc
 canonical READY implementation/proof rows = 1
 canonical READY row = SBH-10-03
 ```
@@ -4889,8 +4908,8 @@ satisfy the already-frozen prerequisites for `SBH-10-03`. No other row is
 promoted. `SBH-50-06` remains `BLOCKED_SHARED_AUTHORITY / No`.
 
 This amendment assigns no SBH-10-03 implementation branch or `task_base_sha`.
-After the governance PR merges and the human owner verifies its exact merge
-commit and tree, the accepted SUBS tip becomes the prospective `task_base_sha`
-for JC-228 / SBH-10-03. Only then may
+After the human merge decision, independent post-merge verification must
+confirm the exact merge commit and tree. The accepted SUBS tip then becomes the
+prospective `task_base_sha` for JC-228 / SBH-10-03. Only then may
 `subs-task/sbh-10-03-renewal-contract-snapshot` be created and implementation
 begin.
