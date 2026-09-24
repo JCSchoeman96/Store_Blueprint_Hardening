@@ -175,7 +175,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert Map.get(contract_a, :target_plan_revision_id) == revision_a.id
   end
 
-  test "a variant-only change starts from live plan dimensions, not its predecessor" do
+  test "a variant change preserves the queued plan and live quantity" do
     customer = SubscriptionsFixtures.create_customer!("sbh_10_06_dimension_scope")
     %{variant: live_variant} = SubscriptionsFixtures.create_subscription_sellable!()
     %{variant: future_variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -187,6 +187,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     end
 
     SubscriptionsFixtures.attach_variant_plan!(live_variant.id, future_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(future_variant.id, future_plan.id)
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, live_variant, live_plan, %{
@@ -202,11 +203,13 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
              queue_variant_change(customer, fetch_subscription!(subscription.id), future_variant)
 
     contract = fetch_contract_change!(Map.get(after_variant, :current_contract_change_id))
-    assert Map.get(contract, :target_plan_revision_id) == live_revision
-    assert Map.get(contract, :target_plan_revision_id) != future_revision.id
+    assert Map.get(contract, :target_plan_revision_id) == future_revision.id
+    assert Map.get(contract, :target_plan_revision_id) != live_revision
     assert Map.get(contract, :target_variant_id) == future_variant.id
     assert Map.get(contract, :target_quantity) == 3
-    assert Map.get(contract, :target_amount_minor) == 1_700
+    assert Map.get(contract, :target_amount_minor) == future_revision.amount_minor
+    assert Map.get(contract, :target_amount_minor) == 3_700
+    assert Map.get(contract, :target_currency) == future_revision.currency
     assert Map.get(contract, :instruction_kind) == :variant_change
 
     assert Map.get(contract, :predecessor_contract_change_id) ==
@@ -215,8 +218,51 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert Map.get(contract, :supersedes_contract_change_id) ==
              Map.get(after_plan, :current_contract_change_id)
 
-    assert after_variant.pending_subscription_plan_id == nil
+    assert after_variant.pending_subscription_plan_id == future_plan.id
     assert after_variant.pending_variant_id == future_variant.id
+  end
+
+  test "a plan change preserves the queued variant and live quantity" do
+    customer = SubscriptionsFixtures.create_customer!("sbh_10_06_plan_preserves_variant")
+    %{variant: live_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    %{variant: future_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    live_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 1_600})
+    future_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 3_600})
+
+    for variant <- [live_variant, future_variant], plan <- [live_plan, future_plan] do
+      SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    end
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, live_variant, live_plan, %{
+        quantity: 2
+      })
+
+    future_revision = SubscriptionsFixtures.create_plan_revision!(future_plan)
+
+    assert {:ok, after_variant} =
+             queue_variant_change(customer, subscription, future_variant)
+
+    variant_change = fetch_contract_change!(Map.get(after_variant, :current_contract_change_id))
+
+    assert Map.get(variant_change, :target_plan_revision_id) ==
+             subscription.current_plan_revision_id
+
+    assert Map.get(variant_change, :target_variant_id) == future_variant.id
+
+    assert {:ok, after_plan} =
+             queue_plan_change(customer, fetch_subscription!(subscription.id), future_plan)
+
+    contract = fetch_contract_change!(Map.get(after_plan, :current_contract_change_id))
+    assert Map.get(contract, :target_plan_revision_id) == future_revision.id
+    assert Map.get(contract, :target_variant_id) == future_variant.id
+    assert Map.get(contract, :target_quantity) == 2
+    assert Map.get(contract, :target_amount_minor) == future_revision.amount_minor
+    assert Map.get(contract, :target_currency) == future_revision.currency
+    assert Map.get(contract, :predecessor_contract_change_id) == variant_change.id
+    assert Map.get(fetch_contract_change!(variant_change.id), :status) == :superseded
+    assert after_plan.pending_subscription_plan_id == future_plan.id
+    assert after_plan.pending_variant_id == future_variant.id
   end
 
   test "cancellation and rescission create a new unchanged instruction without resurrection" do
@@ -462,6 +508,124 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert after_subscription.subscription_plan_id == current_plan.id
     assert Map.get(after_subscription, :current_contract_change_id) != nil
     assert fetch_attempt!(attempt.id).status == :processing
+  end
+
+  test "a succeeded reconciliation replay ignores a later ContractChange" do
+    customer = SubscriptionsFixtures.create_customer!("sbh_10_06_succeeded_replay")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    current_plan = SubscriptionsFixtures.create_subscription_plan!()
+    target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_700})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, current_plan, %{
+        provider_billing_ref: "pm_sbh_10_06_succeeded_replay",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    renewal_order = fetch_order!(attempt.order_id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    renewal_order
+    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
+               renewal_attempt_id: attempt.id
+             )
+
+    succeeded_attempt = fetch_attempt!(attempt.id)
+    assert succeeded_attempt.status == :succeeded
+
+    target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    assert {:ok, queued} =
+             queue_plan_change(customer, fetch_subscription!(subscription.id), target_plan)
+
+    contract_change_id = Map.get(queued, :current_contract_change_id)
+    contract_before_replay = fetch_contract_change!(contract_change_id)
+    subscription_before_replay = fetch_subscription!(subscription.id)
+
+    assert contract_before_replay.target_plan_revision_id == target_revision.id
+    assert contract_before_replay.status == :queued
+
+    assert {:ok, :noop} =
+             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
+               renewal_attempt_id: attempt.id
+             )
+
+    assert fetch_attempt!(attempt.id).status == :succeeded
+
+    subscription_after_replay = fetch_subscription!(subscription.id)
+
+    assert Map.take(subscription_after_replay, [
+             :current_period_start_at,
+             :current_period_end_at,
+             :next_renewal_at,
+             :subscription_plan_id,
+             :variant_id,
+             :renewal_amount_minor,
+             :renewal_currency,
+             :membership_key,
+             :aggregate_version,
+             :current_contract_change_id,
+             :pending_subscription_plan_id,
+             :pending_variant_id,
+             :pending_renewal_amount_minor,
+             :pending_renewal_currency,
+             :change_effective_at
+           ]) ==
+             Map.take(subscription_before_replay, [
+               :current_period_start_at,
+               :current_period_end_at,
+               :next_renewal_at,
+               :subscription_plan_id,
+               :variant_id,
+               :renewal_amount_minor,
+               :renewal_currency,
+               :membership_key,
+               :aggregate_version,
+               :current_contract_change_id,
+               :pending_subscription_plan_id,
+               :pending_variant_id,
+               :pending_renewal_amount_minor,
+               :pending_renewal_currency,
+               :change_effective_at
+             ])
+
+    contract_after_replay = fetch_contract_change!(contract_change_id)
+
+    assert Map.take(contract_after_replay, [
+             :id,
+             :status,
+             :ordering_version,
+             :target_plan_revision_id,
+             :target_variant_id,
+             :target_quantity,
+             :target_amount_minor,
+             :target_currency
+           ]) ==
+             Map.take(contract_before_replay, [
+               :id,
+               :status,
+               :ordering_version,
+               :target_plan_revision_id,
+               :target_variant_id,
+               :target_quantity,
+               :target_amount_minor,
+               :target_currency
+             ])
   end
 
   test "legacy pending projection cannot be promoted by paid reconciliation" do

@@ -21,6 +21,7 @@ defmodule Store.Subscriptions.FacadeTest do
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
+  alias Store.Subscriptions.ContractChange
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias Store.Subscriptions.{
@@ -644,7 +645,7 @@ defmodule Store.Subscriptions.FacadeTest do
 
     _current_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
     _target_attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
-    _target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
+    target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
 
     target_variant =
       create_variant_target!(product.id, %{
@@ -696,9 +697,17 @@ defmodule Store.Subscriptions.FacadeTest do
              )
 
     assert queued_variant.pending_variant_id == target_variant.id
-    assert queued_variant.pending_subscription_plan_id == nil
-    assert queued_variant.pending_renewal_amount_minor == current_plan.amount_minor
-    assert queued_variant.pending_renewal_currency == current_plan.currency
+    assert queued_variant.pending_subscription_plan_id == target_plan.id
+    assert queued_variant.pending_renewal_amount_minor == target_plan.amount_minor
+    assert queued_variant.pending_renewal_currency == target_plan.currency
+
+    contract_change =
+      ContractChange
+      |> Ash.Query.filter(expr(id == ^queued_variant.current_contract_change_id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert contract_change.target_plan_revision_id == target_revision.id
+    assert contract_change.target_variant_id == target_variant.id
 
     {:ok, invalid_plan_input} =
       QueueSubscriptionPlanChangeInput.new(%{
