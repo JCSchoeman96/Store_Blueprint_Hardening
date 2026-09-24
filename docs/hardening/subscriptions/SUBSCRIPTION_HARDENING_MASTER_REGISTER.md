@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.24
+**Version:** v0.1.25
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
-**Verified:** 2026-09-23
+**Verified:** 2026-09-24
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -13,11 +13,14 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes beyond an explicitly recorded task-specific grant, or manufacture READY work.
 
-## Current authority boundary — v0.1.24
+## Current authority boundary — v0.1.25
 
-Canonical `main` governance at `ac1fd264de35522c010bdcc552b0ba22183cbca4`
-supersedes the autonomous SUBS execution model. SUBS lifecycle remains
-`READY`; its separate execution policy is **`SERIAL / EXPLICIT HARDENING`**:
+The v0.1.25 admission observed canonical `main` governance at
+`1fb29528e63a255cf86f1810d99b2372a55923cc`. The
+`SERIAL / EXPLICIT HARDENING` policy, established by governance amendment
+`ac1fd264de35522c010bdcc552b0ba22183cbca4`, supersedes the autonomous SUBS
+execution model. SUBS lifecycle remains `READY`; its separate execution policy
+is **`SERIAL / EXPLICIT HARDENING`**:
 
 ```text
 human selects one canonical READY issue
@@ -62,7 +65,134 @@ JC-219, JC-220, JC-221, JC-222, JC-223, and the existing frozen Subscription
 lifecycle and scheduling law remain canonical. Simplifying execution does not
 reopen or supersede them.
 
-## Current v0.1.24 transition: SBH-20-01 closure and SBH-10-06 admission
+## Current v0.1.25 transition: SBH-10-06 closure and SBH-10-03 admission
+
+This is a governance-only transition based on SUBS authority
+`d39df761d8c83a1cede055506ba224b212e87038`. It records PR #74 closure,
+closes `SBH-10-06`, and admits `SBH-10-03` under a bounded task-specific grant.
+It changes no production code, tests, schema, migration, Ash snapshot, frozen
+Product/Architecture/Domain Law, or JC-223 dependency edge.
+
+Authority observed before this amendment:
+
+```text
+origin/main = 1fb29528e63a255cf86f1810d99b2372a55923cc
+origin/hardening/subscriptions = d39df761d8c83a1cede055506ba224b212e87038
+open PRs targeting hardening/subscriptions = 0
+```
+
+### PR #74 closure evidence
+
+```text
+implementation PR = #74
+certified implementation = d9791d97e9878b7523ca6ac8228241ee96f884f2
+exact-head CI = 35969741252
+merge commit = d39df761d8c83a1cede055506ba224b212e87038
+certified-head tree = 3313a4f2429bdf2f7b08795f6c2e44780b48bea4
+merge tree = 3313a4f2429bdf2f7b08795f6c2e44780b48bea4
+post-merge verification = PASS
+```
+
+`SBH-10-06` transitions:
+
+```text
+READY / AUTHORITY_ASSIGNED
+→
+CLOSED / AUTHORITY_ASSIGNED (completed provenance only)
+```
+
+`SBH-10-03` transitions:
+
+```text
+BLOCKED_DEPENDENCY / NONE
+→
+READY / AUTHORITY_ASSIGNED
+```
+
+### SBH-10-03 bounded task-specific grant
+
+The grant covers only this Subscription-owned checkpoint-B foundation:
+
+```text
+Store.Subscriptions.RenewalAttempt
+minimum Store.Subscriptions.Facade orchestration required to perform the bind
+Store.Subscriptions.ContractChange only for QUEUED → BOUND_TO_RENEWAL
+Store.Subscriptions.Subscription only for aggregate-version-protected checkpoint-B consumption of the current target
+focused Subscription fixtures and tests
+one renewal_attempts migration and its corresponding Ash snapshot
+```
+
+The authorized Subscription mutation is limited to verifying the expected
+`aggregate_version` and exact `current_contract_change_id`, clearing that
+pointer and its compatibility projections (`pending_variant_id`,
+`pending_subscription_plan_id`, `pending_renewal_amount_minor`,
+`pending_renewal_currency`, and `change_effective_at`), and performing the
+normal single `aggregate_version` increment. No unrelated Subscription
+mutation is authorized.
+
+The migration may add only the foreign keys, indexes, checks, and compatibility
+constraints needed for durable charged-contract evidence. The frozen occurrence
+evidence required by JC-219/JC-221 includes:
+
+```text
+subscription identity
+exact PlanRevision identity
+variant identity and quantity
+amount_minor and currency
+period_start_at and period_end_at
+nullable ContractChange identity
+the relevant Subscription aggregate version / evidence boundary
+commercial/access-policy snapshot or equivalent immutable evidence
+```
+
+The first winning renewal claim must bind the complete occurrence durably before
+provider/payment work. Existing rows receive no fabricated charged-contract
+history. Historical rows may remain compatibility-unbound where evidence cannot
+be proven. Once SBH-10-03 capability is active, the checkpoint-B and
+provider/payment boundary is:
+
+> Existing RenewalAttempts must not receive fabricated charged-contract history. Historical rows may remain compatibility-unbound where evidence cannot be proven. Once SBH-10-03 capability is active, a renewal may not cross checkpoint B or begin provider/payment work without a complete durable charged-contract binding.
+
+Binding a queued target must consume that exact target with the occurrence:
+
+> Binding a queued ContractChange transitions that exact ContractChange to `BOUND_TO_RENEWAL` and removes it as the Subscription's current unbound target atomically with the governed B-bound occurrence. Later ContractChanges receive new identity and cannot alter the bound occurrence.
+
+Retries reuse the bound occurrence and never resolve mutable Plan, pending
+projection, or later ContractChange state. This grant does not authorize
+`BOUND_TO_RENEWAL → APPLIED`; paid reconciliation remains separately gated.
+
+The JC-223 dependency graph is unchanged. Closing `SBH-10-06` satisfies only
+the existing final prerequisite for `SBH-10-03`; it adds no dependency edge and
+promotes no other row.
+
+The grant excludes:
+
+```text
+Orders core
+Payments core
+provider business contracts
+Entitlements core
+SBH-10-04 provider construction redesign
+SBH-10-05 paid reconciliation application
+SBH-20-02 / SBH-20-03 race implementation
+generic Support/error registry
+Redis / ETS / Cachex
+GenServer or distributed-lock authority
+heuristic historical backfill
+```
+
+`SBH-10-03` is `READY`, not selected. This amendment assigns no implementation
+branch or `task_base_sha`. After this governance PR merges, independent
+post-merge verification must confirm its exact merge commit and tree. The
+accepted SUBS tip becomes the prospective `task_base_sha` for JC-228 / SBH-10-03.
+Only then may
+`subs-task/sbh-10-03-renewal-contract-snapshot` be created and implementation
+begin.
+
+## Historical v0.1.24 transition: SBH-20-01 closure and SBH-10-06 admission
+
+This section preserves the v0.1.24 transition as point-in-time provenance. Its
+present-state effects are superseded by the v0.1.25 transition above.
 
 This is a governance-only transition. It changes no production code, tests,
 migrations, Ash snapshots, dependencies, Product Law, Architecture Law, Domain
@@ -270,7 +400,7 @@ PR merges and is independently verified before implementation admission.
 
 This section preserves the v0.1.22 closure reconciliation as a point-in-time
 record. The v0.1.23 admission below records the next point-in-time state; the
-current v0.1.24 transition above supersedes its present-state effects.
+current v0.1.25 transition above supersedes its present-state effects.
 
 Reconciliation base:
 
@@ -344,8 +474,8 @@ remained unchanged.
 ## Historical v0.1.23 admission: SBH-20-01
 
 This section preserves the v0.1.23 admission as historical provenance. The
-v0.1.24 transition above records SBH-20-01's later closure and supersedes this
-admission's current-state effects.
+historical v0.1.24 transition above records SBH-20-01's later closure. The
+current v0.1.25 transition supersedes this admission's present-state effects.
 
 Linear issue: `JC-231 — SBH-20-01 — Optimistic Aggregate-Version Foundation`.
 
@@ -2398,12 +2528,12 @@ closure above.
 
 ## SBH-10-06 — Durable ContractChange / Future-Target Foundation
 
-**State:** `READY` under the bounded owner-approved v0.1.24 grant.
-**Shared-authority status:** `AUTHORITY_ASSIGNED` (current task-specific grant,
-non-reusable).
+**State:** `CLOSED` after PR `#74`.
+**Shared-authority status:** `AUTHORITY_ASSIGNED` (completed provenance only).
 **Loop eligible:** No.
-**Implementation selection:** Not selected. No implementation branch or
-`task_base_sha` is assigned, and implementation has not started.
+
+Implementation closure evidence is recorded in the current v0.1.25 transition
+above. Its v0.1.24 task-specific grant is complete and non-reusable.
 
 Create durable stable `ContractChange` identity and a versioned current future
 target. The conceptual lifecycle is:
@@ -2421,7 +2551,7 @@ The contract must guarantee:
 
 Depends on `SBH-10-02` and is required before `SBH-10-03` and `SBH-20-03`.
 The bounded production and schema authority for this row is recorded in the
-current v0.1.24 transition above. Do not implement the renewal-versus-change
+historical v0.1.24 transition above. Do not implement the renewal-versus-change
 race here; that belongs to `SBH-20-03`.
 
 This row receives no ContractChange migration or Ash-snapshot authority from
@@ -2432,26 +2562,36 @@ future-target revision state into `Subscription` to bypass this row.
 
 ## SBH-10-03 — Immutable RenewalAttempt Charged-Contract Snapshot
 
-**State:** `BLOCKED_DEPENDENCY`.
+**State:** `READY` under the bounded owner-approved v0.1.25 grant.
+**Shared-authority status:** `AUTHORITY_ASSIGNED` (current task-specific grant,
+non-reusable).
 **Loop eligible:** No.
+**Implementation selection:** Not selected. No implementation branch or
+`task_base_sha` is assigned, and implementation has not started.
 
 Bind each renewal to the exact contract it attempts to purchase.
 
-Minimum candidate evidence:
+The immutable checkpoint-B occurrence evidence includes:
 
 ```text
 subscription_id
-expected Subscription aggregate/contract version
-commercial contract / plan revision id
+Subscription aggregate version / evidence boundary
+plan_revision_id
 variant_id
 quantity
 amount_minor
 currency
 period_start_at
 period_end_at
+contract_change_id (nullable)
+immutable commercial/access-policy snapshot or equivalent canonical serialized/versioned evidence
 ```
 
-Final fields come from `SBH-00-01`.
+These fields preserve the exact PlanRevision, variant, quantity, amount/currency,
+period, consumed ContractChange when present, and commercial/access policy for
+the charged occurrence. Existing rows may remain compatibility-unbound when
+their charged history cannot be proven; no heuristic or fabricated backfill is
+authorized.
 
 Proposed branch:
 
@@ -2461,7 +2601,27 @@ subs-task/sbh-10-03-renewal-contract-snapshot
 
 Invariant:
 
-> The RenewalAttempt contract becomes immutable before the external provider point-of-no-return.
+> The first winning renewal claim durably binds a complete charged contract at checkpoint B before any provider or payment work begins. Retries reuse that exact binding.
+
+The exact queued ContractChange, when present, transitions only
+`QUEUED → BOUND_TO_RENEWAL` in the same governed B-bound occurrence, and the
+Subscription's current unbound target is removed atomically. A later
+ContractChange has a new identity and cannot alter the bound occurrence.
+
+The task-specific production and schema authority is limited to the
+`RenewalAttempt`, minimum Subscription facade orchestration for this bind, that
+single ContractChange transition, and `Store.Subscriptions.Subscription` only
+for aggregate-version-protected checkpoint-B consumption of the current
+target. That write must verify the expected `aggregate_version` and exact
+`current_contract_change_id`, clear the pointer and its compatibility
+projections (`pending_variant_id`, `pending_subscription_plan_id`,
+`pending_renewal_amount_minor`, `pending_renewal_currency`, and
+`change_effective_at`), and perform the normal single aggregate-version
+increment. No unrelated Subscription mutation is authorized. The grant also
+covers focused fixtures/tests and one `renewal_attempts` migration with its
+corresponding Ash snapshot. Database constraints and indexes are limited to
+those needed for durable evidence. The current v0.1.25 transition above records
+the complete grant and exclusions.
 
 ---
 
@@ -2513,7 +2673,7 @@ Legacy source finding: `SUB-HARD-01`.
 
 The v0.1.23 admission did not select this issue or assign an implementation
 branch or `task_base_sha`. Implementation later completed under PR `#72`; its
-proof and closure record appear in the current v0.1.24 transition above.
+proof and closure record appear in the historical v0.1.24 transition above.
 
 Requirements:
 
@@ -3664,17 +3824,18 @@ shared surface. On a `CLOSED` row, it records completed task-specific
 provenance only and grants no further execution authority.
 `BLOCKED_SHARED_AUTHORITY` means the task cannot proceed until that authority is
 assigned. `EXTERNALIZED` means the surface remains owned outside SUBS and the
-task must not modify it. `SBH-10-01`, `SBH-60-01`, `SBH-10-02`, and `SBH-20-01`
-retain `AUTHORITY_ASSIGNED` as completed task-specific provenance only. No
-authority grant is reusable outside its named row and surfaces.
+task must not modify it. `SBH-10-01`, `SBH-60-01`, `SBH-10-02`, `SBH-20-01`,
+and `SBH-10-06` retain `AUTHORITY_ASSIGNED` as completed task-specific
+provenance only. No authority grant is reusable outside its named row and
+surfaces.
 
 | Row | Shared surface or boundary | Shared-authority status | Execution consequence |
 |---|---|---|---|
 | `SBH-10-01` | PlanRevision migration and applicable Ash snapshot surfaces | `AUTHORITY_ASSIGNED` | Completed task-specific PlanRevision migration/snapshot authority. The authority was used only for `SBH-10-01` and grants no further execution authority after closure. |
 | `SBH-10-02` | Checkout exact-revision purchase boundary; immutable Orders PlanRevision purchase evidence plus task-specific `order_line_items` migration/Ash snapshot; Subscription PlanRevision binding plus task-specific `subscriptions` migration/Ash snapshot | `AUTHORITY_ASSIGNED` | Completed task-specific Checkout/Orders/Subscriptions purchase-binding authority. The authority was used only for `SBH-10-02` and grants no further execution authority after closure. |
 | `SBH-20-01` | `Store.Subscriptions.Subscription` aggregate-version attribute; limited `Store.Subscriptions.Facade` stale-write handling; one task-specific `subscriptions` migration and Ash snapshot; focused deterministic and regression proof | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.23 grant is non-reusable. |
-| `SBH-10-06` | Subscription-owned ContractChange, Subscription, Facade, and focused fixtures/tests; one `contract_changes` migration and Ash snapshot; one conditional `subscriptions` migration and Ash snapshot only if the current ContractChange pointer requires it | `AUTHORITY_ASSIGNED` | `READY` for explicit human selection under the bounded v0.1.24 grant. The grant does not select implementation or assign its branch or `task_base_sha`. |
-| `SBH-10-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-10-06` | Subscription-owned ContractChange, Subscription, Facade, and focused fixtures/tests; one `contract_changes` migration and Ash snapshot; one conditional `subscriptions` migration and Ash snapshot only if the current ContractChange pointer requires it | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.24 grant is non-reusable. |
+| `SBH-10-03` | Subscription-owned `RenewalAttempt`; minimum `Store.Subscriptions.Facade` orchestration for checkpoint-B bind; exact `ContractChange` `QUEUED → BOUND_TO_RENEWAL` transition; `Store.Subscriptions.Subscription` only for aggregate-version-protected checkpoint-B consumption of the current target (verify expected version and pointer, clear `current_contract_change_id` and compatibility projections, perform the normal single version increment); focused fixtures/tests; one `renewal_attempts` migration and corresponding Ash snapshot; only necessary evidence FKs, indexes, checks, and compatibility constraints | `AUTHORITY_ASSIGNED` | `READY` under the bounded v0.1.25 grant, not selected. No implementation branch or `task_base_sha` is assigned before independent post-merge verification. The grant is non-reusable. |
 | `SBH-10-04` | provider business contracts | `EXTERNALIZED` | Use the existing provider boundary; do not change provider business contracts. |
 | `SBH-10-05` | Payments core | `EXTERNALIZED` | Use payment evidence authority; do not change Payments core. |
 | `SBH-20-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
@@ -3713,9 +3874,10 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-30-02`,
-`SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are `CLOSED`. The
-current `READY` implementation/proof row count is one, `SBH-10-06`. The recorded
+register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
+`SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
+`CLOSED`. The current `READY` implementation/proof row count is one,
+`SBH-10-03`. The recorded
 `loop_eligible` values remain register metadata; human selection is still
 required under the serial workflow before a `READY` row may enter
 implementation.
@@ -3725,8 +3887,8 @@ implementation.
 | `SBH-10-01` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-02` | foundational spine | — | `CLOSED` | No |
 | `SBH-20-01` | foundational spine | — | `CLOSED` | No |
-| `SBH-10-06` | foundational spine | — | `READY` | No |
-| `SBH-10-03` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-10-06` | foundational spine | — | `CLOSED` | No |
+| `SBH-10-03` | foundational spine | — | `READY` | No |
 | `SBH-10-04` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-10-05` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-02` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
@@ -3786,18 +3948,16 @@ SBH-70-02 = P1
 SBH-80-01 = P1
 ```
 
-`SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-30-02`, `SBH-60-01`,
-`SBH-70-02`, `SBH-80-01`, and `SBH-80-02` remain `CLOSED`. There is exactly
-one current canonical `READY` implementation/proof row: `SBH-10-06`. The
-v0.1.24 transition closes `SBH-20-01` and admits only `SBH-10-06` under its
-bounded task-specific grant. `SBH-50-06` remains
-`BLOCKED_SHARED_AUTHORITY / No`. `SBH-10-03` remains
-`BLOCKED_DEPENDENCY / No`: its frozen prerequisites are `SBH-10-02` +
-`SBH-20-01` + `SBH-10-06`, and `SBH-10-06` is `READY`, not `CLOSED`.
-`SBH-20-01` retains `AUTHORITY_ASSIGNED` as completed provenance only. The
-completed `SBH-10-02` authority remains provenance for its named
-Checkout/Orders/Subscriptions purchase-binding surfaces. The frozen
-dependency edges are unchanged. The P1 labels provide no severity ordering.
+`SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`, `SBH-30-02`,
+`SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` remain `CLOSED`. There
+is exactly one current canonical `READY` implementation/proof row:
+`SBH-10-03`. The v0.1.25 transition closes `SBH-10-06` as completed provenance
+and admits only `SBH-10-03` under its bounded task-specific grant.
+`SBH-50-06` remains `BLOCKED_SHARED_AUTHORITY / No`. The frozen prerequisites
+for `SBH-10-03` are `SBH-10-02` + `SBH-20-01` + `SBH-10-06`; all are closed.
+`SBH-20-01`, `SBH-10-02`, and `SBH-10-06` retain `AUTHORITY_ASSIGNED` as
+completed provenance only. The frozen dependency edges are unchanged. The P1
+labels provide no severity ordering.
 
 ---
 
@@ -4435,8 +4595,8 @@ passes.
 
 This section preserves the v0.1.21 serial verdict as a point-in-time record.
 The v0.1.22 and v0.1.23 verdicts in sections 42 and 43 record later historical
-states. The current v0.1.24 verdict in section 44 supersedes them for present
-admission.
+states. The historical v0.1.24 verdict in section 44 records its next state.
+The current v0.1.25 verdict in section 45 supersedes it for present admission.
 
 ```text
 SUBS lifecycle = READY
@@ -4592,8 +4752,9 @@ implementation authority or require runtime reconciliation for future issues.
 
 This section preserves the v0.1.22 serial verdict as a point-in-time record.
 Its zero READY-row count remains true for v0.1.22. The historical v0.1.23
-verdict in section 43 records the next state. The current v0.1.24 verdict in
-section 44 supersedes both for present admission.
+verdict in section 43 records the next state, followed by the historical
+v0.1.24 verdict in section 44. The current v0.1.25 verdict in section 45
+supersedes both for present admission.
 
 ```text
 SUBS lifecycle = READY
@@ -4632,7 +4793,8 @@ unsatisfied, so SBH-10-03 remains dependency-blocked.
 This section preserves the v0.1.23 serial verdict as a point-in-time record.
 At v0.1.23, `SBH-20-01` was `READY`, `SBH-10-06` was
 `BLOCKED_SHARED_AUTHORITY`, and `SBH-20-01` was the sole canonical READY row.
-The current v0.1.24 verdict in section 44 supersedes these present-state claims.
+The historical v0.1.24 verdict in section 44 records the next state. The
+current v0.1.25 verdict in section 45 supersedes these present-state claims.
 
 ```text
 SUBS lifecycle = READY
@@ -4674,7 +4836,10 @@ implementation branch or `task_base_sha` is assigned, and implementation has
 not started. A fresh canonical SUBS refresh and separate explicit human
 selection are required after this amendment merges.
 
-# 44. Current v0.1.24 Serial Verdict
+# 44. Historical v0.1.24 Serial Verdict
+
+This section preserves the v0.1.24 serial verdict as point-in-time provenance.
+The current v0.1.25 serial verdict in section 45 records the present admission.
 
 ```text
 SUBS lifecycle = READY
@@ -4710,3 +4875,41 @@ row is READY, `SBH-10-06`.
 branch or implementation `task_base_sha` is assigned, and implementation has
 not started. A fresh canonical SUBS refresh after this governance PR merges
 and is independently verified is required before implementation admission.
+
+# 45. Current v0.1.25 Serial Verdict
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+governance authority observed for v0.1.25 admission = 1fb29528e63a255cf86f1810d99b2372a55923cc
+canonical READY implementation/proof rows = 1
+canonical READY row = SBH-10-03
+```
+
+```text
+SBH-10-02 = CLOSED / No
+SBH-20-01 = CLOSED / No
+SBH-20-01 shared authority = AUTHORITY_ASSIGNED (completed provenance only)
+SBH-10-06 = CLOSED / No
+SBH-10-06 shared authority = AUTHORITY_ASSIGNED (completed provenance only)
+SBH-10-03 = READY / No
+SBH-10-03 shared authority = AUTHORITY_ASSIGNED (current bounded task-specific grant)
+SBH-50-06 = BLOCKED_SHARED_AUTHORITY / No
+```
+
+The v0.1.25 governance-only transition records PR #74's exact merge and tree
+evidence, closes completed `SBH-10-06`, and admits `SBH-10-03` under the
+bounded grant recorded above. `SBH-10-06` retains its task-specific authority
+as completed provenance only. `SBH-10-03` is the only current canonical READY
+row and is not selected for implementation.
+
+The JC-223 graph is unchanged. `SBH-10-02`, `SBH-20-01`, and `SBH-10-06`
+satisfy the already-frozen prerequisites for `SBH-10-03`. No other row is
+promoted. `SBH-50-06` remains `BLOCKED_SHARED_AUTHORITY / No`.
+
+This amendment assigns no SBH-10-03 implementation branch or `task_base_sha`.
+After the human merge decision, independent post-merge verification must
+confirm the exact merge commit and tree. The accepted SUBS tip then becomes the
+prospective `task_base_sha` for JC-228 / SBH-10-03. Only then may
+`subs-task/sbh-10-03-renewal-contract-snapshot` be created and implementation
+begin.
