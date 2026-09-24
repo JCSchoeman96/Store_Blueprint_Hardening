@@ -175,51 +175,77 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert Map.get(contract_a, :target_plan_revision_id) == revision_a.id
   end
 
-  test "a variant change preserves the queued plan and live quantity" do
+  test "a variant change composes from ContractChange when pending projections drift" do
     customer = SubscriptionsFixtures.create_customer!("sbh_10_06_dimension_scope")
     %{variant: live_variant} = SubscriptionsFixtures.create_subscription_sellable!()
     %{variant: future_variant} = SubscriptionsFixtures.create_subscription_sellable!()
     live_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 1_700})
     future_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 3_700})
+    drift_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 9_700})
 
-    for variant <- [live_variant, future_variant] do
-      SubscriptionsFixtures.attach_variant_plan!(variant.id, live_plan.id)
+    for variant <- [live_variant, future_variant], plan <- [live_plan, future_plan, drift_plan] do
+      SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
     end
-
-    SubscriptionsFixtures.attach_variant_plan!(live_variant.id, future_plan.id)
-    SubscriptionsFixtures.attach_variant_plan!(future_variant.id, future_plan.id)
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, live_variant, live_plan, %{
         quantity: 3
       })
 
-    live_revision = Map.get(subscription, :current_plan_revision_id)
     future_revision = SubscriptionsFixtures.create_plan_revision!(future_plan)
+    SubscriptionsFixtures.create_plan_revision!(drift_plan)
 
     assert {:ok, after_plan} = queue_plan_change(customer, subscription, future_plan)
 
+    first_contract_change =
+      fetch_contract_change!(Map.get(after_plan, :current_contract_change_id))
+
+    corrupted_effective_at = DateTime.add(first_contract_change.effective_at, 7 * 86_400, :second)
+
+    Store.Repo.query!(
+      "UPDATE subscriptions SET pending_subscription_plan_id = $2, pending_variant_id = $3, pending_renewal_amount_minor = $4, pending_renewal_currency = $5, change_effective_at = $6 WHERE id = $1",
+      [
+        Ecto.UUID.dump!(subscription.id),
+        Ecto.UUID.dump!(drift_plan.id),
+        Ecto.UUID.dump!(live_variant.id),
+        99_999,
+        "EUR",
+        corrupted_effective_at
+      ]
+    )
+
+    drifted_subscription = fetch_subscription!(subscription.id)
+    assert drifted_subscription.pending_subscription_plan_id == drift_plan.id
+    assert drifted_subscription.pending_variant_id == live_variant.id
+    assert drifted_subscription.pending_renewal_amount_minor == 99_999
+    assert drifted_subscription.pending_renewal_currency == "EUR"
+    assert drifted_subscription.change_effective_at == corrupted_effective_at
+
     assert {:ok, after_variant} =
-             queue_variant_change(customer, fetch_subscription!(subscription.id), future_variant)
+             queue_variant_change(customer, drifted_subscription, future_variant)
 
     contract = fetch_contract_change!(Map.get(after_variant, :current_contract_change_id))
     assert Map.get(contract, :target_plan_revision_id) == future_revision.id
-    assert Map.get(contract, :target_plan_revision_id) != live_revision
     assert Map.get(contract, :target_variant_id) == future_variant.id
     assert Map.get(contract, :target_quantity) == 3
     assert Map.get(contract, :target_amount_minor) == future_revision.amount_minor
     assert Map.get(contract, :target_amount_minor) == 3_700
     assert Map.get(contract, :target_currency) == future_revision.currency
     assert Map.get(contract, :instruction_kind) == :variant_change
+    assert Map.get(contract, :effective_at) == first_contract_change.effective_at
+    assert Map.get(fetch_contract_change!(first_contract_change.id), :status) == :superseded
 
     assert Map.get(contract, :predecessor_contract_change_id) ==
-             Map.get(after_plan, :current_contract_change_id)
+             first_contract_change.id
 
     assert Map.get(contract, :supersedes_contract_change_id) ==
-             Map.get(after_plan, :current_contract_change_id)
+             first_contract_change.id
 
     assert after_variant.pending_subscription_plan_id == future_plan.id
     assert after_variant.pending_variant_id == future_variant.id
+    assert after_variant.pending_renewal_amount_minor == future_revision.amount_minor
+    assert after_variant.pending_renewal_currency == future_revision.currency
+    assert after_variant.change_effective_at == first_contract_change.effective_at
   end
 
   test "a plan change preserves the queued variant and live quantity" do
