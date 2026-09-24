@@ -442,7 +442,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert current_contract_change(subscription.id) == nil
   end
 
-  test "a queued ContractChange blocks renewal before attempt or provider work" do
+  test "an orphaned queued ContractChange fails closed before attempt or provider work" do
     customer = SubscriptionsFixtures.create_customer!("sbh_10_06_renewal_guard")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     current_plan = SubscriptionsFixtures.create_subscription_plan!()
@@ -461,22 +461,15 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert {:ok, _queued} = queue_plan_change(customer, subscription, target_plan)
     clear_legacy_projection!(subscription.id)
 
-    attempts_before = count_rows("renewal_attempts", subscription.id)
-    orders_before = Store.Repo.aggregate(Order, :count, :id)
-    intents_before = Store.Repo.aggregate(PaymentIntent, :count, :id)
-    StripeAPIStub.stub_unexpected!("queued ContractChange must not start provider work")
-
-    assert {:error, %Error{code: "VALIDATION_ERROR"}} =
-             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
-
-    assert count_rows("renewal_attempts", subscription.id) == attempts_before
-    assert Store.Repo.aggregate(Order, :count, :id) == orders_before
-    assert Store.Repo.aggregate(PaymentIntent, :count, :id) == intents_before
-
     Store.Repo.query!(
       "UPDATE subscriptions SET current_contract_change_id = NULL WHERE id = $1",
       [Ecto.UUID.dump!(subscription.id)]
     )
+
+    attempts_before = count_rows("renewal_attempts", subscription.id)
+    orders_before = Store.Repo.aggregate(Order, :count, :id)
+    intents_before = Store.Repo.aggregate(PaymentIntent, :count, :id)
+    StripeAPIStub.stub_unexpected!("queued ContractChange must not start provider work")
 
     assert {:error, %Error{code: "VALIDATION_ERROR"}} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)

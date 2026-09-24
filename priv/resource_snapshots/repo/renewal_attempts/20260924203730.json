@@ -1,0 +1,450 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"uuid_generate_v7()\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "period_start_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "period_end_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_attempts_plan_revision_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "plan_revisions"
+      },
+      "scale": null,
+      "size": null,
+      "source": "plan_revision_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "variant_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "quantity",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "amount_minor",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "currency",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_attempts_contract_change_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "contract_changes"
+      },
+      "scale": null,
+      "size": null,
+      "source": "contract_change_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "expected_subscription_version",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "charged_contract_version",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "charged_contract_snapshot",
+      "type": "map"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "renewal_key",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"pending\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "status",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "order_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "payment_intent_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "failure_code",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "failure_message",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "1",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "attempt_no",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "inserted_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "updated_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_attempts_subscription_id_fkey",
+        "on_delete": null,
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "subscriptions"
+      },
+      "scale": null,
+      "size": null,
+      "source": "subscription_id",
+      "type": "uuid"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [
+    {
+      "attribute": [
+        "charged_contract_version"
+      ],
+      "base_filter": null,
+      "check": "  (\n    charged_contract_version IS NULL\n    AND plan_revision_id IS NULL\n    AND variant_id IS NULL\n    AND quantity IS NULL\n    AND amount_minor IS NULL\n    AND currency IS NULL\n    AND contract_change_id IS NULL\n    AND expected_subscription_version IS NULL\n    AND charged_contract_snapshot IS NULL\n  ) OR (\n    charged_contract_version = 1\n    AND plan_revision_id IS NOT NULL\n    AND variant_id IS NOT NULL\n    AND quantity IS NOT NULL AND quantity > 0\n    AND amount_minor IS NOT NULL AND amount_minor >= 0\n    AND currency IS NOT NULL AND currency ~ '^[A-Z]{3}$'\n    AND expected_subscription_version IS NOT NULL\n      AND expected_subscription_version > 0\n    AND charged_contract_snapshot IS NOT NULL\n      AND jsonb_typeof(charged_contract_snapshot) = 'object'\n      AND charged_contract_snapshot ?& ARRAY[\n        'version', 'subscription_plan_key',\n        'interval_unit', 'interval_count', 'trial_days', 'anchor_mode',\n        'anchor_day_of_month', 'billing_timezone', 'term_mode', 'term_cycles',\n        'term_end_at', 'access_on_past_due', 'access_on_cancel',\n        'grace_period_days', 'max_retry_attempts', 'retry_schedule_hours',\n        'entitlement_kind', 'entitlement_scope_key'\n      ]\n      AND jsonb_typeof(charged_contract_snapshot->'version') = 'number'\n      AND charged_contract_snapshot->>'version' = '1'\n      AND jsonb_typeof(charged_contract_snapshot->'subscription_plan_key') = 'string'\n      AND jsonb_typeof(charged_contract_snapshot->'interval_unit') = 'string'\n      AND charged_contract_snapshot->>'interval_unit' IN ('day', 'month', 'year')\n      AND jsonb_typeof(charged_contract_snapshot->'interval_count') = 'number'\n      AND (charged_contract_snapshot->>'interval_count')::numeric > 0\n      AND (charged_contract_snapshot->>'interval_count')::numeric =\n        trunc((charged_contract_snapshot->>'interval_count')::numeric)\n      AND (\n        jsonb_typeof(charged_contract_snapshot->'trial_days') = 'null'\n        OR (\n          jsonb_typeof(charged_contract_snapshot->'trial_days') = 'number'\n          AND (charged_contract_snapshot->>'trial_days')::numeric >= 0\n          AND (charged_contract_snapshot->>'trial_days')::numeric =\n            trunc((charged_contract_snapshot->>'trial_days')::numeric)\n        )\n      )\n      AND jsonb_typeof(charged_contract_snapshot->'anchor_mode') = 'string'\n      AND charged_contract_snapshot->>'anchor_mode'\n        IN ('start_anniversary', 'fixed_day_of_month')\n      AND jsonb_typeof(charged_contract_snapshot->'billing_timezone') = 'string'\n      AND charged_contract_snapshot->>'billing_timezone' <> ''\n      AND jsonb_typeof(charged_contract_snapshot->'term_mode') = 'string'\n      AND charged_contract_snapshot->>'term_mode'\n        IN ('until_canceled', 'fixed_cycles', 'fixed_end_at')\n      AND (\n        jsonb_typeof(charged_contract_snapshot->'anchor_day_of_month') = 'null'\n        OR (\n          jsonb_typeof(charged_contract_snapshot->'anchor_day_of_month') = 'number'\n          AND (charged_contract_snapshot->>'anchor_day_of_month')::numeric BETWEEN 1 AND 31\n          AND (charged_contract_snapshot->>'anchor_day_of_month')::numeric =\n            trunc((charged_contract_snapshot->>'anchor_day_of_month')::numeric)\n        )\n      )\n      AND (\n        jsonb_typeof(charged_contract_snapshot->'term_cycles') = 'null'\n        OR (\n          jsonb_typeof(charged_contract_snapshot->'term_cycles') = 'number'\n          AND (charged_contract_snapshot->>'term_cycles')::numeric > 0\n          AND (charged_contract_snapshot->>'term_cycles')::numeric =\n            trunc((charged_contract_snapshot->>'term_cycles')::numeric)\n        )\n      )\n      AND (\n        jsonb_typeof(charged_contract_snapshot->'term_end_at') = 'null'\n        OR jsonb_typeof(charged_contract_snapshot->'term_end_at') = 'string'\n      )\n      AND (\n        charged_contract_snapshot->>'term_mode' <> 'fixed_cycles'\n        OR jsonb_typeof(charged_contract_snapshot->'term_cycles') = 'number'\n      )\n      AND (\n        charged_contract_snapshot->>'term_mode' <> 'fixed_end_at'\n        OR jsonb_typeof(charged_contract_snapshot->'term_end_at') = 'string'\n      )\n      AND jsonb_typeof(charged_contract_snapshot->'access_on_past_due') = 'string'\n      AND charged_contract_snapshot->>'access_on_past_due'\n        IN ('keep_during_grace', 'remove_immediately')\n      AND jsonb_typeof(charged_contract_snapshot->'access_on_cancel') = 'string'\n      AND charged_contract_snapshot->>'access_on_cancel'\n        IN ('keep_until_period_end', 'remove_immediately')\n      AND jsonb_typeof(charged_contract_snapshot->'grace_period_days') = 'number'\n      AND (charged_contract_snapshot->>'grace_period_days')::numeric >= 0\n      AND (charged_contract_snapshot->>'grace_period_days')::numeric =\n        trunc((charged_contract_snapshot->>'grace_period_days')::numeric)\n      AND jsonb_typeof(charged_contract_snapshot->'max_retry_attempts') = 'number'\n      AND (charged_contract_snapshot->>'max_retry_attempts')::numeric >= 0\n      AND (charged_contract_snapshot->>'max_retry_attempts')::numeric =\n        trunc((charged_contract_snapshot->>'max_retry_attempts')::numeric)\n      AND jsonb_typeof(charged_contract_snapshot->'retry_schedule_hours') = 'array'\n      AND NOT jsonb_path_exists(\n        charged_contract_snapshot,\n        '$.retry_schedule_hours[*] ? (@.type() != \"number\" || @ < 0 || @ != @.floor())'\n      )\n      AND (\n        charged_contract_snapshot->'entitlement_kind' = 'null'::jsonb\n        OR charged_contract_snapshot->>'entitlement_kind'\n          IN ('membership_access', 'digital_library', 'discount_tier')\n      )\n      AND (\n        charged_contract_snapshot->'entitlement_scope_key' = 'null'::jsonb\n        OR jsonb_typeof(charged_contract_snapshot->'entitlement_scope_key') = 'string'\n      )\n  )\n",
+      "name": "renewal_attempts_charged_contract_completeness_check"
+    }
+  ],
+  "create_table_options": null,
+  "custom_indexes": [
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "subscription_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "subscription_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_attempts_subscription_id_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "inserted_at"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "inserted_at"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_attempts_inserted_at_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "status",
+        "inserted_at"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "status"
+        },
+        {
+          "type": "atom",
+          "value": "inserted_at"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_attempts_status_inserted_at_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    }
+  ],
+  "custom_statements": [],
+  "has_create_action": true,
+  "hash": "0B40104A57D585A884192A4113AF0E61485CB70F0EA09EF6AA3C2358EA3C389D",
+  "identities": [
+    {
+      "all_tenants?": false,
+      "base_filter": null,
+      "index_name": "renewal_attempts_unique_subscription_renewal_key_index",
+      "keys": [
+        {
+          "type": "atom",
+          "value": "subscription_id"
+        },
+        {
+          "type": "atom",
+          "value": "renewal_key"
+        }
+      ],
+      "name": "unique_subscription_renewal_key",
+      "nils_distinct?": true,
+      "where": null
+    }
+  ],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.Store.Repo",
+  "schema": null,
+  "table": "renewal_attempts"
+}

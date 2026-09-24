@@ -552,6 +552,22 @@ defmodule Store.Subscriptions.Subscription do
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
+    update :consume_contract_change_for_renewal do
+      public?(false)
+      require_atomic?(false)
+
+      accept([
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
+    end
+
     update :mark_expired_transition do
       require_atomic?(false)
       accept([:canceled_reason])
@@ -669,7 +685,8 @@ defmodule Store.Subscriptions.Subscription do
              :mark_past_due_transition,
              :extend_period,
              :mark_expired_transition,
-             :set_provider_billing_reference
+             :set_provider_billing_reference,
+             :consume_contract_change_for_renewal
            ]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
