@@ -569,8 +569,15 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - PR #78 remains `OPEN / DRAFT`, head
   `08b28937c001b4f35350bcf5de6fdd052fc7a4c3`, exact parent, exact-head CI
   `36144853740` success.
+- At this note's reviewed head, governance PR #79 is `OPEN / DRAFT` at
+  `3eb280a944979061cdd3dc26d5aadd5cb745cb0d`, with exact parent
+  `0016237646f9fddfc2364680b8cc9ddeb7c10655`. Exact-head CI run
+  `36155890705`, attempt 2, passed all five required jobs. Attempt 1's standard
+  performance smoke observer exceeded its Store.Repo pool-utilization cap for
+  two samples; latency and query targets passed, chaos smoke passed, and the
+  rerun passed. Independent review found no remaining substantive conflict.
 - Governance amendment paths are the master register, inventory reservations,
   checkout interlocks, payment provider contract, subscription domain map,
   lifecycle registry, and this Phase 27 note (seven paths). No runtime or
   schema path changes.
-- Governance PR head, CI, merge, and post-merge verification remain pending.
+- Governance PR merge and post-merge verification remain pending.
