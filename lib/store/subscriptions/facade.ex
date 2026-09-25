@@ -3544,6 +3544,7 @@ defmodule Store.Subscriptions.Facade do
       {:ok,
        %{
          plan: plan,
+         plan_revision_id: attempt.plan_revision_id,
          variant: variant,
          variant_id: attempt.variant_id,
          quantity: attempt.quantity,
@@ -3573,16 +3574,25 @@ defmodule Store.Subscriptions.Facade do
            ),
          {:ok, order} <-
            prepare_renewal_order(order, subscription, effective_contract, renewal_period, now),
+         {:ok, payment_terms} <- renewal_order_payment_terms(order, effective_contract),
          {:ok, payment_intent_result} <-
            Store.Payments.create_or_reuse_payment_intent(
              %{
                order_id: order.id,
-               amount_received_minor: renewal_order_total_minor(order, effective_contract),
-               currency: effective_contract.currency,
+               amount_received_minor: payment_terms.amount_minor,
+               currency: payment_terms.currency,
                provider: subscription.provider,
                payment_intent_key: renewal_payment_intent_key(attempt.renewal_key)
              },
              context: %{system?: true}
+           ),
+         :ok <-
+           ensure_renewal_payment_intent_matches(
+             payment_intent_result.payment_intent,
+             order,
+             subscription,
+             attempt,
+             payment_terms
            ),
          {:ok, payment_intent} <-
            maybe_submit_virtual_payment_intent(payment_intent_result.payment_intent),
@@ -3600,6 +3610,73 @@ defmodule Store.Subscriptions.Facade do
          %Order{} = order,
          %Subscription{} = subscription,
          %{physical?: true} = effective_contract,
+         renewal_period,
+         now
+       ) do
+    with {:ok, snapshot} <- write_virtual_renewal_snapshot(order, effective_contract),
+         :ok <- ensure_renewal_snapshot_matches(snapshot, effective_contract) do
+      prepare_physical_renewal_order(
+        order,
+        subscription,
+        effective_contract,
+        renewal_period,
+        now
+      )
+    end
+  end
+
+  defp prepare_renewal_order(
+         %Order{} = order,
+         %Subscription{} = _subscription,
+         effective_contract,
+         _renewal_period,
+         _now
+       ) do
+    with {:ok, snapshot} <- write_virtual_renewal_snapshot(order, effective_contract),
+         :ok <- ensure_renewal_snapshot_matches(snapshot, effective_contract) do
+      finalize_virtual_renewal_order(order, effective_contract)
+    end
+  end
+
+  defp prepare_physical_renewal_order(
+         %Order{totals_finalized_at: %DateTime{}} = order,
+         _subscription,
+         effective_contract,
+         renewal_period,
+         now
+       ) do
+    with :ok <- ensure_physical_renewal_totals_match(order, effective_contract),
+         {:ok, _reservation_result} <-
+           reserve_renewal_inventory(order, effective_contract, renewal_period, now) do
+      {:ok, order}
+    end
+  end
+
+  defp prepare_physical_renewal_order(
+         %Order{} = order,
+         _subscription,
+         effective_contract,
+         renewal_period,
+         now
+       )
+       when not is_nil(order.shipping_rate_id) or not is_nil(order.tax_as_of) do
+    with {:ok, _reservation_result} <-
+           reserve_renewal_inventory(order, effective_contract, renewal_period, now) do
+      case finalize_physical_renewal_order(order, effective_contract) do
+        {:ok, prepared_order} ->
+          {:ok, prepared_order}
+
+        {:error, reason} ->
+          _ = release_renewal_inventory(order)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp prepare_physical_renewal_order(
+         %Order{} = order,
+         %Subscription{} = subscription,
+         effective_contract,
          renewal_period,
          now
        ) do
@@ -3621,22 +3698,6 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp prepare_renewal_order(
-         %Order{} = order,
-         %Subscription{} = _subscription,
-         effective_contract,
-         _renewal_period,
-         _now
-       ) do
-    case write_virtual_renewal_snapshot(order, effective_contract) do
-      {:ok, _snapshot} ->
-        finalize_renewal_order(order, effective_contract, nil)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   defp prepare_reserved_physical_renewal_order(
          %Order{} = order,
          effective_contract,
@@ -3644,13 +3705,27 @@ defmodule Store.Subscriptions.Facade do
        ) do
     quote_evidence = QuoteEvidence.from_quote_option(quote_option)
 
-    with {:ok, _snapshot} <- write_virtual_renewal_snapshot(order, effective_contract),
-         {:ok, order} <- persist_renewal_quote_evidence(order, quote_evidence),
+    with {:ok, order} <- persist_renewal_quote_evidence(order, quote_evidence),
          {:ok, quote_output} <-
            evaluate_physical_renewal_quote_output(order, effective_contract, quote_option),
-         {:ok, _shipping_snapshot} <- Orders.write_tax_shipping_snapshot(order.id, quote_output) do
-      finalize_renewal_order(order, effective_contract, quote_output)
+         {:ok, %{order: snapshot_order, idempotent?: idempotent?}} <-
+           Orders.write_tax_shipping_snapshot(order.id, quote_output),
+         :ok <-
+           ensure_new_physical_snapshot_matches_output(
+             snapshot_order,
+             quote_output,
+             idempotent?
+           ) do
+      finalize_physical_renewal_order(snapshot_order, effective_contract)
     end
+  end
+
+  defp persist_renewal_quote_evidence(
+         %Order{} = order,
+         %QuoteEvidence{} = _quote_evidence
+       )
+       when not is_nil(order.shipping_rate_id) or not is_nil(order.tax_as_of) do
+    {:ok, order}
   end
 
   defp persist_renewal_quote_evidence(%Order{} = order, %QuoteEvidence{} = quote_evidence) do
@@ -3740,6 +3815,7 @@ defmodule Store.Subscriptions.Facade do
           discount_allocated_minor: 0,
           net_line_total_minor: line_total_minor,
           subscription_plan_id_snapshot: effective_contract.plan.id,
+          subscription_plan_revision_id_snapshot: effective_contract.plan_revision_id,
           subscription_plan_key_snapshot: effective_contract.plan.key,
           subscription_interval_unit_snapshot:
             effective_contract.plan.interval_unit |> Atom.to_string(),
@@ -3753,6 +3829,254 @@ defmodule Store.Subscriptions.Facade do
       ],
       applied_adjustments: []
     }
+  end
+
+  defp ensure_renewal_snapshot_matches(
+         %{line_items: [line_item], adjustments: []},
+         effective_contract
+       ) do
+    if renewal_line_matches_contract?(line_item, effective_contract) do
+      :ok
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp ensure_renewal_snapshot_matches(_snapshot, _effective_contract),
+    do: renewal_evidence_mismatch()
+
+  defp renewal_line_matches_contract?(line_item, effective_contract) do
+    renewal_line_matches_amount?(line_item, effective_contract) and
+      renewal_line_matches_variant?(line_item, effective_contract) and
+      renewal_line_matches_plan?(line_item, effective_contract)
+  end
+
+  defp renewal_line_matches_amount?(line_item, effective_contract) do
+    expected_total = effective_contract.amount_minor * effective_contract.quantity
+
+    line_item.line_no == 1 and line_item.quantity == effective_contract.quantity and
+      line_item.unit_price_minor == effective_contract.amount_minor and
+      line_item.currency == effective_contract.currency and
+      line_item.line_total_minor == expected_total and
+      line_item.net_line_total_minor == expected_total and
+      line_item.discount_allocated_minor == 0
+  end
+
+  defp renewal_line_matches_variant?(line_item, effective_contract) do
+    line_item.variant_id_snapshot == effective_contract.variant_id
+  end
+
+  defp renewal_line_matches_plan?(line_item, effective_contract) do
+    plan = effective_contract.plan
+
+    line_item.subscription_plan_id_snapshot == plan.id and
+      line_item.subscription_plan_revision_id_snapshot == effective_contract.plan_revision_id and
+      line_item.subscription_plan_key_snapshot == plan.key and
+      line_item.subscription_interval_unit_snapshot == Atom.to_string(plan.interval_unit) and
+      line_item.subscription_interval_count_snapshot == plan.interval_count
+  end
+
+  defp finalize_virtual_renewal_order(
+         %Order{totals_finalized_at: nil} = order,
+         effective_contract
+       ) do
+    finalize_renewal_order(order, effective_contract, nil)
+  end
+
+  defp finalize_virtual_renewal_order(%Order{} = order, effective_contract) do
+    expected_total = effective_contract.amount_minor * effective_contract.quantity
+
+    if order.currency_code == effective_contract.currency and
+         order.items_subtotal_minor == expected_total and
+         order.shipping_total_minor == 0 and order.shipping_cost_minor_effective == 0 and
+         order.tax_total_minor == 0 and order.grand_total_minor == expected_total do
+      {:ok, order}
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp ensure_new_physical_snapshot_matches_output(_order, _output, true), do: :ok
+
+  defp ensure_new_physical_snapshot_matches_output(
+         %Order{} = order,
+         %TaxShippingContract.Output{} = output,
+         false
+       ) do
+    if physical_order_currency_matches?(order, output.currency) do
+      ensure_new_physical_snapshot_fields_match_output(order, output)
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp ensure_new_physical_snapshot_matches_output(_order, _output, _idempotent?),
+    do: renewal_evidence_mismatch()
+
+  defp ensure_new_physical_snapshot_fields_match_output(
+         %Order{} = order,
+         %TaxShippingContract.Output{} = output
+       ) do
+    if shipping_quote_fields_match?(order, output) and
+         shipping_adjustment_fields_match?(order, output) and
+         shipping_destination_tax_fields_match?(order, output) do
+      :ok
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp shipping_quote_fields_match?(order, output) do
+    order.shipping_quote_currency_code == output.currency and
+      order.shipping_quote_amount_minor == output.shipping_cost_minor_original and
+      order.shipping_method_code == output.selected_shipping_rate_code and
+      order.shipping_rate_id == output.selected_shipping_rate_id and
+      order.shipping_rate_code == output.selected_shipping_rate_code and
+      order.shipping_cost_minor_original == output.shipping_cost_minor_original
+  end
+
+  defp shipping_adjustment_fields_match?(order, output) do
+    order.shipping_cost_minor_effective == output.shipping_cost_minor_effective and
+      order.free_shipping_applied == output.free_shipping_applied and
+      order.free_shipping_reason == output.free_shipping_reason and
+      order.shipping_tax_minor == output.shipping_tax_minor and
+      order.tax_total_minor == output.tax_total_minor
+  end
+
+  defp shipping_destination_tax_fields_match?(order, output) do
+    order.shipping_country_code == output.destination_country_code and
+      order.shipping_region_code == output.destination_region_code and
+      order.shipping_postal_code == output.destination_postal_code and
+      order.tax_as_of == output.tax_as_of
+  end
+
+  defp finalize_physical_renewal_order(%Order{} = order, effective_contract) do
+    with :ok <- ensure_physical_shipping_tax_evidence(order, effective_contract) do
+      finalize_or_verify_physical_order(order, effective_contract)
+    end
+  end
+
+  defp finalize_or_verify_physical_order(
+         %Order{totals_finalized_at: nil} = order,
+         effective_contract
+       ) do
+    subtotal_minor = effective_contract.amount_minor * effective_contract.quantity
+
+    finalize_renewal_order(order, effective_contract, %{
+      currency: effective_contract.currency,
+      subtotal_minor: subtotal_minor,
+      shipping_cost_minor_effective: order.shipping_cost_minor_effective,
+      order_total_minor:
+        subtotal_minor + order.shipping_cost_minor_effective + order.tax_total_minor
+    })
+  end
+
+  defp finalize_or_verify_physical_order(%Order{} = order, effective_contract) do
+    case ensure_physical_renewal_totals_match(order, effective_contract) do
+      :ok -> {:ok, order}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_physical_renewal_totals_match(%Order{} = order, effective_contract) do
+    case ensure_physical_shipping_tax_evidence(order, effective_contract) do
+      :ok -> ensure_renewal_order_totals_match(order, effective_contract)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_physical_shipping_tax_evidence(%Order{} = order, effective_contract) do
+    if physical_order_currency_matches?(order, effective_contract.currency) and
+         physical_shipping_evidence_complete?(order, effective_contract.currency) do
+      :ok
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp physical_shipping_evidence_complete?(order, currency) do
+    has_shipping_identity?(order) and has_shipping_amounts?(order) and
+      has_shipping_tax_context?(order, currency)
+  end
+
+  defp has_shipping_identity?(order) do
+    is_binary(order.shipping_rate_id) and is_binary(order.shipping_rate_code) and
+      is_binary(order.shipping_method_code) and is_binary(order.shipping_quote_hash) and
+      order.shipping_rate_code == order.shipping_method_code
+  end
+
+  defp has_shipping_amounts?(order) do
+    is_integer(order.shipping_quote_amount_minor) and order.shipping_quote_amount_minor >= 0 and
+      is_integer(order.shipping_cost_minor_original) and order.shipping_cost_minor_original >= 0 and
+      is_integer(order.shipping_cost_minor_effective) and
+      order.shipping_cost_minor_effective >= 0
+  end
+
+  defp has_shipping_tax_context?(order, currency) do
+    is_integer(order.shipping_tax_minor) and order.shipping_tax_minor >= 0 and
+      is_integer(order.tax_total_minor) and order.tax_total_minor >= order.shipping_tax_minor and
+      order.shipping_quote_currency_code == currency and
+      order.shipping_quote_amount_minor == order.shipping_cost_minor_original and
+      not is_nil(order.tax_as_of) and is_binary(order.shipping_country_code)
+  end
+
+  defp physical_order_currency_matches?(%Order{} = order, currency) do
+    order.currency_code == currency or
+      (is_nil(order.currency_code) and is_nil(order.totals_finalized_at))
+  end
+
+  defp ensure_renewal_order_totals_match(%Order{} = order, effective_contract) do
+    expected_subtotal = effective_contract.amount_minor * effective_contract.quantity
+
+    expected_total =
+      expected_subtotal + order.shipping_total_minor + order.tax_total_minor
+
+    if not is_nil(order.totals_finalized_at) and
+         order.currency_code == effective_contract.currency and
+         order.items_subtotal_minor == expected_subtotal and
+         order.shipping_total_minor == order.shipping_cost_minor_effective and
+         order.grand_total_minor == expected_total do
+      :ok
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp renewal_order_payment_terms(%Order{} = order, effective_contract) do
+    with :ok <- ensure_renewal_order_totals_match(order, effective_contract) do
+      {:ok, %{amount_minor: order.grand_total_minor, currency: order.currency_code}}
+    end
+  end
+
+  defp ensure_renewal_payment_intent_matches(
+         %PaymentIntent{} = payment_intent,
+         %Order{} = order,
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt,
+         %{amount_minor: amount_minor, currency: currency}
+       ) do
+    expected_key = renewal_payment_intent_key(attempt.renewal_key)
+    expected_provider = Providers.normalize_provider(subscription.provider)
+    payment_intent_provider = Providers.normalize_provider(payment_intent.provider)
+
+    if payment_intent.payment_intent_key == expected_key and
+         payment_intent.order_id == order.id and
+         payment_intent.amount_received_minor == amount_minor and
+         payment_intent.currency == currency and
+         payment_intent_provider == expected_provider and
+         (is_nil(attempt.payment_intent_id) or payment_intent.id == attempt.payment_intent_id) do
+      :ok
+    else
+      renewal_evidence_mismatch()
+    end
+  end
+
+  defp renewal_evidence_mismatch do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "renewal Order or PaymentIntent evidence does not match the bound contract"
+     )}
   end
 
   defp finalize_renewal_order(%Order{} = order, effective_contract, nil) do
@@ -3786,14 +4110,6 @@ defmodule Store.Subscriptions.Facade do
       context: %{system?: true}
     )
     |> Ash.update(domain: Store.Orders, authorize?: false, context: %{system?: true})
-  end
-
-  defp renewal_order_total_minor(%Order{} = order, effective_contract) do
-    if is_integer(order.grand_total_minor) and order.grand_total_minor >= 0 do
-      order.grand_total_minor
-    else
-      effective_contract.amount_minor * effective_contract.quantity
-    end
   end
 
   defp fetch_subscription_shipping_profile(%Subscription{} = subscription) do

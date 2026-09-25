@@ -422,3 +422,117 @@ Implement the Phase 27 variable-subscription spine without violating the existin
   `3caf13361f53285c8f21300eee2e1f40d5989d3b`.
 - PR #76 closure evidence is recorded above. The governance amendment's exact
   head, CI, merge, and post-merge verification are pending the serial PR gates.
+
+## SBH-10-04 — renewal initiation uses bound contract
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/governance/immutable_snapshots.md`
+- `docs/governance/pricing_determinism.md`
+- `docs/governance/tax_shipping.md`
+- `docs/governance/payment_provider_contract.md`
+- `docs/governance/performance_scaling.md`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
+- [SBH-10-03 implementation PR #76](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/76)
+
+### Decisions / pins
+
+1. The task branch is `subs-task/sbh-10-04-bound-renewal-initiation`. Its parent
+   is the exact admitted `task_base_sha`
+   `0016237646f9fddfc2364680b8cc9ddeb7c10655`; no rebase was performed.
+2. Renewal line construction and verification use the charged RenewalAttempt
+   amount, currency, quantity, variant identity, exact PlanRevision, and the
+   occurrence's versioned cadence snapshot. New renewal lines persist the exact
+   PlanRevision in the existing
+   `subscription_plan_revision_id_snapshot` field.
+3. Facade orchestration validates the immutable Order line returned by the
+   existing snapshot writer before payment work. Reused line evidence must
+   match the attempt. Conflicting evidence fails with the existing
+   `VALIDATION_ERROR` path and is not rewritten.
+4. Finalized virtual payable totals must equal the attempt amount times
+   quantity. Physical renewals keep the recurring line bound to the attempt;
+   the provider total must reconcile to the line plus the finalized Order's
+   durable shipping and tax evidence. Shipping and tax are not described as
+   frozen at checkpoint B.
+5. A returned PaymentIntent must match the deterministic renewal key, Order,
+   finalized amount, currency, selected provider, and any PaymentIntent ID
+   already recorded by the attempt before provider submission. The current
+   payment-method check and provider idempotency key remain unchanged.
+6. No Orders, Payments, provider, RenewalAttempt, migration, or Ash snapshot
+   file changed. Compatibility-unbound attempts continue to fail closed under
+   the SBH-10-03 binding guard.
+
+### Plan
+
+1. Verify the worktree starts at the admitted base and preserve the existing
+   facade-to-Orders, facade-to-Payments, and facade-to-provider contracts.
+2. Validate returned or reused Order line evidence against occurrence A before
+   preparing payment terms.
+3. Validate the returned PaymentIntent against the Order and attempt before
+   calling the provider.
+4. Add focused virtual, mutable-state, mismatch, PaymentIntent-reuse, and
+   physical-total proofs, then run the required renewal and repository gates.
+
+### Performance & Scaling Review
+
+- Hot path: one renewal occurrence after checkpoint B through Order, payment,
+  and provider initiation. The new validation adds no per-line or per-target
+  lookup loop.
+- Warm/cold paths: new and reused virtual Orders validate the rows returned by
+  `Orders.write_priced_snapshot`. PaymentIntent validation uses the struct
+  returned by Payments. Finalized physical Orders use their persisted
+  shipping/tax totals instead of a fresh quote to redefine the payable total.
+- Database queries and N+1 risk: the unchanged live renewal baseline was 45
+  queries. The new focused query capture also measured 45 queries. No new
+  lookup query or per-item query was added on the normal path.
+- Indexes: none added. Existing renewal-key and PaymentIntent key uniqueness
+  continue to support occurrence idempotency.
+- Caching: no ETS, Redis, or Cachex cache, TTL, invalidation, or stampede
+  behavior was added.
+- Oban uniqueness and idempotency: the existing renewal occurrence key and
+  worker uniqueness behavior are unchanged. Provider idempotency remains keyed
+  by the same renewal key.
+- Telemetry and logging: existing telemetry remains unchanged. The charged
+  contract snapshot is not logged.
+
+### Verification record
+
+- Task base: `0016237646f9fddfc2364680b8cc9ddeb7c10655`.
+- Changed paths: `lib/store/subscriptions/facade.ex`,
+  `test/store/subscriptions/facade_test.exs`,
+  `test/store/subscriptions/sbh_10_04_bound_renewal_initiation_test.exs`, and
+  `docs/agent_notes/phase_27_docs.md`.
+- Focused renewal group: 69 tests, 0 failures. The new SBH-10-04 file contains
+  5 tests, including amount, currency, Order, provider, and recorded intent
+  identity mismatch cases.
+- Full `mix check`: 702 tests, 0 failures; strict Credo reported no findings.
+- `mix ash_postgres.generate_migrations --check`, formatting, and
+  `git diff --check` passed. No generated migration or Ash snapshot was
+  produced.
+- Exact-head PR CI results are recorded in the PR evidence after the required
+  jobs finish.
+
+### Scope blocker found during review
+
+- Physical retry cannot reuse a previously finalized renewal Order through the
+  current Orders boundary. Facade preparation calls
+  `Orders.reserve_inventory_for_checkout/3` for that Order again. That API
+  inserts a new reservation row under the deterministic Order/variant key,
+  which is unique. A provider failure releases the existing reservation as
+  `:cancelled`, and the existing Orders operations do not reopen that row or
+  issue a replacement key for the same Order.
+- This was reproduced by repeating physical preparation for an existing
+  renewal Order, which returned `RESERVATION_CONFLICT`. The existing physical
+  provider-failure test confirms that the normal failure path leaves the
+  reservation `:cancelled`.
+- A safe retry needs Orders-side reservation reuse or renewal behavior. The
+  SBH-10-04 admission forbids an Orders contract change and says to stop when
+  correct physical handling needs one. Keep this branch unmerged and return
+  the authority gap to governance. The candidate checks below do not close
+  SBH-10-04 until that authority is assigned or governance narrows the retry
+  requirement.
+- Current mutable Catalog weight is not treated as A-bound evidence here.
+  Weight affects separately governed physical shipping inputs, while the
+  recurring line amount, currency, quantity, and variant identity remain
+  derived from the charged attempt as required by this task.

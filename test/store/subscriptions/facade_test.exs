@@ -15,7 +15,7 @@ defmodule Store.Subscriptions.FacadeTest do
   alias Store.Comms.EmailOutbox
   alias Store.Entitlements.EntitlementGrant
   alias Store.Entitlements.Facade, as: EntitlementsFacade
-  alias Store.Orders.{InventoryReservation, Order}
+  alias Store.Orders.{InventoryReservation, Order, OrderLineItem}
   alias Store.Payments.PaymentIntent
   alias Store.Pricing.TaxRate
   alias Store.Shipping.Facade, as: ShippingFacade
@@ -293,6 +293,15 @@ defmodule Store.Subscriptions.FacadeTest do
         live_amount_minor: 450
       })
 
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      assert params["amount"] == "2550"
+      assert params["currency"] == "usd"
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, Jason.encode!(StripeAPIStub.payment_intent_response(params)))
+    end)
+
     assert {:ok, :processed} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
@@ -304,9 +313,39 @@ defmodule Store.Subscriptions.FacadeTest do
 
     assert renewal_order.shipping_method_code == "GROUND"
     assert renewal_order.shipping_quote_amount_minor == 450
+    assert renewal_order.currency_code == attempt.currency
+    assert renewal_order.items_subtotal_minor == attempt.amount_minor * attempt.quantity
     assert renewal_order.shipping_total_minor == 450
-    assert renewal_order.grand_total_minor == 2_550
+    assert renewal_order.shipping_total_minor == renewal_order.shipping_cost_minor_effective
+    assert renewal_order.tax_total_minor >= renewal_order.shipping_tax_minor
+
+    assert renewal_order.grand_total_minor ==
+             renewal_order.items_subtotal_minor + renewal_order.shipping_total_minor +
+               renewal_order.tax_total_minor
+
     assert renewal_payment_intent.amount_received_minor == 2_550
+    assert renewal_payment_intent.amount_received_minor == renewal_order.grand_total_minor
+    assert renewal_payment_intent.currency == renewal_order.currency_code
+
+    [renewal_line] =
+      OrderLineItem
+      |> Ash.Query.filter(expr(order_id == ^renewal_order.id))
+      |> Ash.read!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    assert renewal_line.variant_id_snapshot == attempt.variant_id
+    assert renewal_line.quantity == attempt.quantity
+    assert renewal_line.unit_price_minor == attempt.amount_minor
+    assert renewal_line.currency == attempt.currency
+    assert renewal_line.line_total_minor == attempt.amount_minor * attempt.quantity
+    assert renewal_line.net_line_total_minor == attempt.amount_minor * attempt.quantity
+    assert renewal_line.subscription_plan_id_snapshot == subscription.subscription_plan_id
+    assert renewal_line.subscription_plan_revision_id_snapshot == attempt.plan_revision_id
+
+    assert renewal_line.subscription_interval_unit_snapshot ==
+             attempt.charged_contract_snapshot["interval_unit"]
+
+    assert renewal_line.subscription_interval_count_snapshot ==
+             attempt.charged_contract_snapshot["interval_count"]
 
     reservation = fetch_reservation!(renewal_order.id, variant.id)
     assert reservation.state == :active
