@@ -317,3 +317,108 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - Drift/format: `mix ash_postgres.generate_migrations --check`, `mix format --check-formatted`, and `git diff --check` passed.
 - Changed implementation paths: `lib/store/subscriptions/renewal_attempt.ex`, `lib/store/subscriptions/contract_change.ex`, `lib/store/subscriptions/subscription.ex`, `lib/store/subscriptions/facade.ex`, `priv/repo/migrations/20260924203729_sbh_10_03_renewal_contract_snapshot.exs`, `priv/resource_snapshots/repo/renewal_attempts/20260924203730.json`, `test/store/subscriptions/sbh_10_03_renewal_contract_snapshot_test.exs`, and the orphan-target expectation in `test/store/subscriptions/sbh_10_06_contract_change_test.exs`.
 - Warnings during the full gate were the pre-existing out-of-order `20260902123000` migration, unused optional test helper defaults, hidden nested inventory-admission types referenced by ExDoc, and an intermittent Postgrex client disconnect log. They did not fail the gate.
+
+## SBH-10-03 closure and JC-229 / SBH-10-04 admission — v0.1.26 governance
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/governance/idempotency.md`
+- `docs/governance/immutable_snapshots.md`
+- `docs/governance/payment_provider_contract.md`
+- `docs/governance/performance_scaling.md`
+- `docs/governance/subscription_scheduling_terms.md`
+- `docs/hardening/01_domain_map.md`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
+- [Implementation PR #76](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/76)
+- [Exact-head CI run 36100025589](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/36100025589)
+
+### Decisions / pins
+
+1. The v0.1.26 amendment re-verified live `main` at
+   `1fb29528e63a255cf86f1810d99b2372a55923cc` and live
+   `hardening/subscriptions` at `3caf13361f53285c8f21300eee2e1f40d5989d3b`.
+   It starts from that exact SUBS base and changes no production code, tests,
+   migrations, Ash snapshots, dependencies, or JC-223 graph edges.
+2. SBH-10-03 closes from `READY / AUTHORITY_ASSIGNED` to
+   `CLOSED / AUTHORITY_ASSIGNED` as completed provenance only. Its
+   task-specific RenewalAttempt migration, Ash snapshot, Subscription, and
+   ContractChange authority is exhausted and non-reusable.
+3. Closure evidence is PR #76, certified implementation
+   `fc6772f31757d3f8b5cc2774ae5ecdeb299cd783`, exact-head CI run
+   `36100025589`, merge commit `3caf13361f53285c8f21300eee2e1f40d5989d3b`,
+   matching certified-head and merge trees
+   `e2355abe3508694b83fb7e0180d10b09b86fbed3`, and post-merge verification
+   PASS.
+4. JC-229 remains SBH-10-04 — Renewal Initiation Uses Bound Contract.
+   SBH-10-04 transitions from `BLOCKED_DEPENDENCY / EXTERNALIZED` to
+   `READY / EXTERNALIZED` because the frozen `SBH-10-03` dependency is
+   closed. It is the only canonical READY implementation/proof row.
+5. SBH-10-04 may read the bound `RenewalAttempt`, orchestrate initiation
+   through `Store.Subscriptions.Facade`, and use focused Subscription
+   fixtures/tests. Existing Orders and Payments public/system boundaries may
+   be used only as already exposed. The existing provider boundary remains
+   externalized. No migration or Ash snapshot authority is assigned.
+6. After checkpoint B, provider initiation must use the bound attempt or
+   durable artifacts created from that binding. The implementation must prove
+   occurrence A remains authoritative after mutable Subscription and legally
+   mutable Plan/catalog state changes, a later ContractChange becomes current,
+   and retries reuse A's existing Order and PaymentIntent.
+7. The proof must preserve A's variant, quantity, amount, currency,
+   PlanRevision and plan identity, and purchased period. Provider request
+   amount, currency, and occurrence identifiers must trace to A's durable
+   evidence. Compatibility-unbound attempts cannot start provider work, and
+   no mutable `pending_*` field is provider commercial authority.
+8. The existing PR #76 handoff through `effective_renewal_contract/1`,
+   bound Order pricing snapshots, PaymentIntent values, persisted provider
+   charge values, and retry identities is a partial implementation seam. It
+   does not itself close SBH-10-04.
+9. Stop and return to governance if correctness needs provider contract
+   changes, Payments or Orders core changes, Entitlements core, migrations,
+   Ash snapshots, generic Support/error infrastructure, Redis/ETS/Cachex,
+   GenServer or distributed locks, or SBH-10-05 paid reconciliation semantics.
+10. This amendment assigns no implementation branch or
+    `task_base_sha`. Only after independent review, exact-head CI, human
+    merge, and independent post-merge commit/tree verification may a separate
+    explicit implementation admission assign
+    `subs-task/sbh-10-04-bound-renewal-initiation` and its exact base.
+
+### Plan
+
+1. Update the master register's current prose, shared-authority register,
+   issue-state matrix, and latest serial verdict. Preserve the earlier
+   v0.1.25 verdict as historical evidence.
+2. Record the same closure evidence, bounded SBH-10-04 contract, and performance
+   review in this phase note.
+3. Review the diff for documentation-only paths and confirm the dependency
+   table itself remains unchanged.
+4. Create the governance PR from the exact base. Leave merge and post-merge
+   verification to the required independent and human gates.
+
+### Performance & Scaling Review
+
+- Hot path: renewal provider initiation remains a hot path. This governance
+  amendment makes no runtime change.
+- Warm/cold paths: existing focused Subscription fixtures cover SBH-10-03
+  attempt and identity reuse. SBH-10-04 must add its own post-checkpoint-B
+  provider-initiation proof. This documentation change adds no runtime reads
+  or writes.
+- Database queries and N+1 risk: this change adds zero queries. The future task
+  must record the post-checkpoint query count and show that mutable current
+  Subscription/Plan state does not add per-item lookups.
+- Indexes: this change assigns no migration or index authority.
+- Caching: PostgreSQL remains the binding authority. This grant adds no
+  ETS/Redis/Cachex cache, TTL, invalidation, or stampede behavior.
+- Oban uniqueness and idempotency: retain the existing RenewalAttempt,
+  Order, PaymentIntent, renewal-key, and worker uniqueness behavior. Retries
+  must reuse the same occurrence identities.
+- Telemetry and logging: add no instrumentation through this governance
+  grant. The future task must trace provider amount, currency, and occurrence
+  identifiers to durable A evidence without logging policy snapshot contents.
+
+### Verification record
+
+- Exact amendment base checked as
+  `3caf13361f53285c8f21300eee2e1f40d5989d3b`.
+- PR #76 closure evidence is recorded above. The governance amendment's exact
+  head, CI, merge, and post-merge verification are pending the serial PR gates.
