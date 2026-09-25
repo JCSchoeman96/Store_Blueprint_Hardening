@@ -659,8 +659,21 @@ node-local mutexes, global GenServers, and worker serialization are not authorit
 ### Renewal identity
 
 One Subscription and billing boundary have one durable logical renewal identity.
-Duplicate claims reuse the existing RenewalAttempt. Retries reuse its B-bound
-contract and provider idempotency identity.
+Duplicate claims reuse the existing RenewalAttempt. Every collection attempt
+under that occurrence reuses its B-bound commercial contract and Order, but a
+sequential dunning collection after authoritative terminal non-success requires
+its own durable collection-attempt identity, PaymentIntent identity, and
+provider idempotency identity. An ambiguous transport/provider outcome replays
+the same collection attempt and its keys. `requires_action` or unknown status
+does not authorize a new attempt. The occurrence `renewal_key` is not the key
+for every sequential provider collection.
+
+The inspected runtime still reuses the occurrence-level PaymentIntent and
+Stripe idempotency key, and its `requires_action` path releases the physical
+reservation. Those behaviors are recorded in the lifecycle registry. The
+v0.1.27 master-register amendment defines the blocked target and does not
+authorize implementation; the JC-223 dependency graph and SBH-10-05
+reconciliation semantics remain unchanged.
 
 ### Payment and callback apply-once
 
@@ -689,9 +702,13 @@ durable access-effect obligations
 
 If B exists and C definitely did not occur, resume the same occurrence with the
 same bound contract. If C may have occurred but the outcome is unknown, do not
-issue a second non-idempotent collection. Reuse the provider idempotency identity
-where guaranteed and/or query the provider before deciding whether another request
-is safe.
+issue a second non-idempotent collection. Reuse the idempotency identity for the
+same durable collection attempt where guaranteed and/or query the provider
+before deciding whether another request is safe. A pre-submission fence may
+release a physical hold, but it does not create a new collection identity;
+resume with the same attempt and keys. A new collection identity is permitted
+only after final provider/payment non-success is durably verified and dunning
+policy permits another attempt.
 
 If D exists but local application crashed, replay local application idempotently.
 If access execution crashed, re-derive the current source target and converge the

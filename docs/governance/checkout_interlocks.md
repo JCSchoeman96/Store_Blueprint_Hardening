@@ -52,6 +52,36 @@ Behavior (MUST):
 - Only one PaymentIntent may be in submitted state per order at a time:
   - additional attempts must either reuse the same intent (provider-dependent) or create a new intent after failing/cancelling the previous one.
 
+### 3.3 Subscription renewal collection attempts
+
+For a renewal only, the occurrence-level `renewal_key` identifies the one
+RenewalAttempt and Order. It is not the identity of every provider collection
+against that occurrence. A durable collection-attempt record is created before
+PaymentIntent or provider work and has a UUIDv7 `collection_attempt_id` plus a
+monotonic attempt number scoped to the RenewalAttempt.
+
+The target local PaymentIntent key is
+`renewal-collection:<collection_attempt_id>`. It is distinct for each
+collection attempt against the same Order and is reused only for replay of
+that same collection. The target provider idempotency key is also
+`renewal-collection:<collection_attempt_id>`; it is stable for ambiguous
+transport/provider replay. A pre-submission dispatch fence may release a
+reservation hold after proving no worker can submit, but recovery remains on
+the same collection attempt and keys. A new key and PaymentIntent are allowed
+only after verified provider/payment evidence proves final financial
+non-success and dunning policy permits another attempt. An ambiguous result,
+`requires_action`, local timeout, or local cancellation after submission does
+not allow a new collection key.
+
+The occurrence's initial `RenewalAttempt.payment_intent_id` remains pinned to
+the first PaymentIntent. Later PaymentIntents are linked to their own durable
+collection-attempt record. One PaymentIntent may be in flight per Order as
+required above. This renewal-specific target does not change generic checkout
+key derivation or authorize Payments/provider implementation changes; their
+owners must confirm the key and linkage contract before implementation. The
+v0.1.27 Subscription register records this as a blocked target, not runtime
+behavior.
+
 ## 4) State interlocks (MUST)
 ### 4.1 Order state transition to paid
 Order transitions to paid only when:

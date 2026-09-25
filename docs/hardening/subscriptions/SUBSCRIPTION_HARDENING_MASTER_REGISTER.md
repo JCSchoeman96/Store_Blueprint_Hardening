@@ -1,6 +1,6 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.26
+**Version:** v0.1.27
 **Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
 **Verified:** 2026-09-25
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,13 +13,32 @@
 >
 > This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes beyond an explicitly recorded task-specific grant, or manufacture READY work.
 
-## Current authority boundary
+## Historical authority observed at the v0.1.27 amendment base
 
-Before this v0.1.26 amendment, the live authority tips were re-verified:
+The values below are provenance only, not current authority. They record the
+exact pre-amendment state. The current v0.1.27 transition that follows
+supersedes SBH-10-04's READY state and does not authorize further work on PR
+#78.
+
+Before this v0.1.27 amendment, the live authority tips were re-verified:
 
 ```text
 main = 1fb29528e63a255cf86f1810d99b2372a55923cc
-hardening/subscriptions = 3caf13361f53285c8f21300eee2e1f40d5989d3b
+hardening/subscriptions = 0016237646f9fddfc2364680b8cc9ddeb7c10655
+hardening/subscriptions amendment base = 0016237646f9fddfc2364680b8cc9ddeb7c10655
+canonical READY implementation/proof rows = 1
+SBH-10-04 implementation PR = #78, OPEN / DRAFT
+SBH-10-04 implementation head = 08b28937c001b4f35350bcf5de6fdd052fc7a4c3
+SBH-10-04 exact-head CI = 36144853740, SUCCESS
+```
+
+```text
+SBH-10-03 = CLOSED / No
+SBH-10-03 shared authority = AUTHORITY_ASSIGNED (completed provenance only)
+SBH-10-04 = READY / No
+SBH-10-04 shared authority = EXTERNALIZED (existing provider boundary only)
+SBH-10-05 = BLOCKED_DEPENDENCY / No
+SBH-50-06 = BLOCKED_SHARED_AUTHORITY / No
 ```
 
 The v0.1.25 admission had observed canonical `main` governance at
@@ -72,7 +91,145 @@ JC-219, JC-220, JC-221, JC-222, JC-223, and the existing frozen Subscription
 lifecycle and scheduling law remain canonical. Simplifying execution does not
 reopen or supersede them.
 
-## Current v0.1.26 transition: SBH-10-03 closure and SBH-10-04 admission
+## Current v0.1.27 transition: JC-229 / SBH-10-04 blocked for shared authority
+
+This governance-only amendment starts from the exact accepted SUBS tip
+`0016237646f9fddfc2364680b8cc9ddeb7c10655`. It records the retry and
+collection-attempt authority gap found while implementing SBH-10-04. It changes
+no production code, tests, migrations, Ash snapshots, or JC-223 dependency edge.
+
+SBH-10-04 transitions from `READY / EXTERNALIZED` to
+`BLOCKED_SHARED_AUTHORITY / BLOCKED_SHARED_AUTHORITY`. No implementation/proof
+row is currently READY. SBH-10-05 remains `BLOCKED_DEPENDENCY`; its frozen edge
+from SBH-10-03 and SBH-10-04 is unchanged.
+
+PR #78 remains open and draft. Its exact head
+`08b28937c001b4f35350bcf5de6fdd052fc7a4c3` has parent
+`0016237646f9fddfc2364680b8cc9ddeb7c10655` and passed exact-head CI run
+`36144853740`. The run reports 702 tests with zero failures and all five
+required jobs passing. The four changed paths are the Subscription Facade, its
+focused tests, the SBH-10-04 test file, and the Phase 27 evidence note. This is
+partial implementation and proof evidence only. It does not close SBH-10-04 or
+authorize a merge.
+
+The accepted commercial occurrence remains one immutable RenewalAttempt and one
+renewal Order. Dunning collection is separate and sequential. A future
+authorized implementation must persist distinct collection attempts under
+that same occurrence and Order. It must not change the bound commercial
+contract or create a replacement Order.
+
+An ambiguous provider or transport outcome retries the same collection attempt,
+PaymentIntent, and provider idempotency identity. A new collection attempt is
+allowed only after durable provider/payment evidence proves terminal financial
+non-success for the preceding attempt and the existing dunning policy permits
+another attempt. `requires_action` and an unknown outcome remain unresolved.
+They do not permit a new collection attempt.
+
+Only one collection attempt for an occurrence may be nonterminal at a time.
+Its active physical reservation generation, if any, is the only active
+generation on the occurrence's Order and must belong to that attempt.
+
+Before submission, an atomic dispatch fence may prove that provider submission
+never began and no worker can still begin it. The attempt may release its
+physical hold after that proof, but it remains the same nonterminal collection
+attempt and must keep the same `collection_attempt_id`, PaymentIntent key, and
+provider key when resumed. `not_submitted` records the dispatch outcome; it is
+not a financial decline, a completed collection attempt, or authority to
+create a new collection identity. A local timeout, local `cancelled` flag, or
+expired hold is not such a fence.
+
+Each collection attempt must have a stable durable identity, a distinct local
+PaymentIntent identity, and a distinct provider idempotency identity. The
+occurrence `renewal_key` remains occurrence metadata. Provider evidence must
+carry both the occurrence identity and collection-attempt identity. The
+`RenewalAttempt.payment_intent_id`, when already set, remains pinned to its
+original PaymentIntent. A later PaymentIntent must be linked through its own
+durable collection-attempt record, never by replacing that pointer.
+
+The target identity is a durable UUIDv7 `collection_attempt_id` plus a
+monotonically increasing attempt number scoped to the RenewalAttempt. Persist
+the record before PaymentIntent or provider work. Derive the local key as
+`renewal-collection:<collection_attempt_id>` and the provider idempotency key
+as `renewal-collection:<collection_attempt_id>`. Both are stable for transport
+replay of that attempt and distinct for a later attempt. The existing
+Payments/provider owners must confirm these identities fit their boundaries
+before implementation; this target does not grant their implementation
+authority.
+
+Outcome mapping is explicit: a `prepared` attempt or PaymentIntent `created`
+has no provider outcome yet. A dispatch fence may mark that dispatch
+`not_submitted` and release the hold; resumption uses the same collection
+attempt and keys. If the current Payments boundary cannot reuse the same
+PaymentIntent identity after a local pre-submission cancel, stop for Payments
+owner review rather than create a new collection identity. A submitted intent
+with timeout, transport error, 5xx, or otherwise unknown result is
+`outcome_unknown` and replays the same collection attempt and keys.
+`requires_action` remains unresolved on that same attempt. Verified
+PaymentIntent `succeeded` closes that collection as success and forbids a later
+collection for the occurrence. Order payment application and Subscription
+reconciliation remain under their existing authorities.
+Verified `failed` is terminal financial non-success only when durable provider
+evidence establishes a final decline or equivalent final failure. A
+`provider_cancelled`/expired outcome is terminal only when durable provider
+evidence proves that the submitted intent cannot later succeed. A local
+`cancelled` state after submission is not proof of provider cancellation.
+Only verified terminal financial non-success permits a new collection
+identity for another dunning collection, subject to current policy. Local TTL
+and authentication deadlines may initiate cancellation and reconciliation but
+do not establish a terminal financial outcome.
+
+Physical renewals require a new reservation generation for each collection
+attempt. The current Orders identity permits only one reservation row per
+`order_id + variant_id`, and terminal reservations cannot return to active. A
+future Orders design must keep old terminal rows, use an attempt-specific
+reservation identity, allow at most one active generation for an occurrence
+and variant, and consume only the generation linked to the successful
+collection attempt. A definitive decline or provider-confirmed cancellation
+releases that generation. A `requires_action` or ambiguous outcome keeps the
+hold active and blocks dunning. A local timeout or reservation TTL alone does
+not prove financial non-success. At an authentication deadline, the system may
+request cancellation of the same PaymentIntent. It may release the hold only
+after provider/payment evidence proves terminal non-success. If the result stays
+unknown, keep the hold unresolved and stop further collection pending
+reconciliation or manual action.
+
+For a prepared attempt with no PaymentIntent or a `created` PaymentIntent, TTL
+cleanup must retain the hold while a worker can still submit. A durable
+pre-submission dispatch fence may release it; if that same collection attempt
+resumes, it uses a new reservation generation but retains its original
+collection and PaymentIntent/provider identities.
+
+The current lifecycle registry records that renewal failure handling releases
+the reservation for both failed and `requires_action` outcomes. That is the
+observed runtime behavior, not this target contract; the release on
+`requires_action` is a known unsafe gap. The governance amendment does not
+change runtime behavior.
+
+The frozen S0 InventoryAdmission architecture uses the same
+`order_id + variant_id` identity for admission, fencing, and recovery. The
+future Orders design must reconcile that contract with collection-attempt
+generations before implementation. This amendment does not revise S0-ARCH-01
+or authorize changes to Orders, InventoryAdmission, Redis admission, Payments
+core, or provider contracts.
+
+The existing Payments boundary may be used for a new PaymentIntent only if its
+current contract supports a distinct deterministic key for each collection
+attempt on the same Order after the prior intent reaches terminal non-success.
+If Payments core changes are required, obtain separate Payments authority
+before implementation. The provider boundary requires a collection-specific
+idempotency identity, so provider contract authority must also be resolved
+before implementation.
+
+This amendment assigns no implementation branch or `task_base_sha`, no Orders,
+Payments, InventoryAdmission, migration, Ash-snapshot, or provider authority,
+and no change to SBH-10-05's paid-application semantics. SBH-10-04 may be
+re-admitted only after the required owner decisions and shared authority are
+recorded in a later canonical amendment. PR #78 remains draft evidence; it is
+not eligible to merge under the previous bounded task contract.
+
+## Historical v0.1.26 transition: SBH-10-03 closure and SBH-10-04 admission
+
+The v0.1.27 transition above supersedes this section's current-state effects.
 
 This governance-only amendment uses the exact hardening/subscriptions base
 `3caf13361f53285c8f21300eee2e1f40d5989d3b`. It records completed SBH-10-03
@@ -2695,36 +2852,129 @@ the complete grant and exclusions.
 ## SBH-10-04 — Renewal Initiation Uses Bound Contract
 
 **Linear issue:** JC-229.
-**State:** `READY`.
-**Shared-authority status:** `EXTERNALIZED` (existing provider boundary only).
+**State:** `BLOCKED_SHARED_AUTHORITY`.
+**Shared-authority status:** `BLOCKED_SHARED_AUTHORITY`.
 **Loop eligible:** No.
-**Implementation selection:** Not selected. This governance amendment assigns
-no implementation branch or `task_base_sha`.
+**Implementation selection:** Previously selected. Work stopped at PR #78,
+which remains open and draft as partial implementation evidence. This
+amendment assigns no implementation branch or `task_base_sha`.
 
 Invariant:
 
 > Once a RenewalAttempt contract is frozen, provider-payment construction must use that evidence rather than re-resolving mutable current or pending Subscription or Plan state.
 
-### Bounded implementation authority
+### Blocked collection-attempt contract
 
-SBH-10-04 may use:
+The v0.1.26 implementation grant is superseded. No further code work may
+proceed under its existing-boundary assumptions. A later admission must retain
+these rules:
 
-- `Store.Subscriptions.RenewalAttempt` as read-only charged-contract authority.
-- `Store.Subscriptions.Facade` for Subscription-owned renewal-initiation
-  orchestration.
-- Focused Subscription fixtures and tests.
-- Existing Orders and Payments public/system boundaries, only as already
-  exposed.
-- The existing provider boundary exactly as currently defined.
+1. One bound `RenewalAttempt` and its single `order_id` represent one immutable
+   commercial occurrence. A dunning retry does not create a replacement Order
+   or change the occurrence contract.
+2. The system records each collection attempt durably before creating or
+   submitting its PaymentIntent. Each record identifies the RenewalAttempt,
+   the same Order, its stable collection-attempt ID, its distinct PaymentIntent,
+   its distinct deterministic PaymentIntent key, its provider idempotency key,
+   and its durable outcome.
+3. Replaying an attempt after a timeout, transport error, provider 5xx, or
+   otherwise ambiguous outcome reuses that same collection-attempt record,
+   PaymentIntent, and provider idempotency key. Ambiguity is not financial
+   non-success.
+4. A new collection attempt is permitted only after durable provider/payment
+   evidence proves terminal financial non-success for the preceding attempt
+   and the current dunning policy permits another collection. A local timeout,
+   process crash, or failed network request is not that evidence.
+   A succeeded PaymentIntent closes that collection as success and cannot be
+   submitted again or followed by a new collection attempt for the occurrence.
+5. `requires_action` stays on the same collection attempt and PaymentIntent.
+   It does not release a physical hold or permit a new attempt. At the bounded
+   authentication deadline, the system may request cancellation of that same
+   PaymentIntent. It releases the hold only after provider/payment evidence
+   proves terminal non-success. If the result remains unknown, collection
+   stops and the hold remains unresolved for reconciliation or manual action.
+6. `RenewalAttempt.payment_intent_id`, when set, remains pinned to the original
+   PaymentIntent and is never overwritten. A later collection uses its own
+   durable child record and cannot silently replace that pointer.
+7. The occurrence `renewal_key` remains the occurrence identity and provider
+   metadata. Each collection attempt has a different provider idempotency
+   identity that remains stable across replays. Provider evidence carries the
+   occurrence key, collection-attempt ID, RenewalAttempt ID, Order ID, local
+   PaymentIntent ID, and Subscription ID.
+8. A physical collection attempt reserves a new generation for the same
+   occurrence, Order, and variant. The previous reservation row stays
+   terminal. At most one generation for that occurrence and variant may be
+   active. A successful collection consumes only its linked generation. A
+   failed or provider-confirmed cancelled attempt releases only its own
+   generation. Failure to reserve stock prevents provider work.
+9. A local reservation TTL cannot release a hold for a prepared collection
+   with no PaymentIntent, a `created` PaymentIntent, or a submitted,
+   `requires_action`, or outcome-unknown PaymentIntent while a worker may still
+   submit or a charge may still succeed. A pre-submission dispatch fence may
+   release a hold but recovery keeps the same collection identity and keys. A
+   submitted attempt's deadline may start provider cancellation and
+   reconciliation. Neither TTL nor deadline alone proves payment cannot
+   succeed.
+10. Payment construction uses the bound A commercial contract and the same
+    durable Order for each collection attempt. Virtual totals remain derived
+    from A. Physical recurring base line remains A-bound; additional payable
+    amounts trace to the durable finalized Order shipping and tax evidence.
+11. Revalidate the current stored payment method and use the existing provider
+    selection immediately before provider work. Do not freeze the stored
+    method at checkpoint B. The full payment-method change and revocation race
+    remains in SBH-80-03.
+12. SBH-10-05 remains the paid-application authority. This amendment does not
+    change its transitions or frozen dependency edge. The current path's
+    ability to apply a later collection PaymentIntent while retaining the
+    original RenewalAttempt pointer and Order has not been proven. Do not
+    change SBH-10-05 here; if its existing boundary cannot support that
+    association, stop and return to governance before re-admission.
 
-No migration or Ash snapshot authority is assigned. The shared-authority
-register remains `EXTERNALIZED` for the provider boundary: use that existing
-boundary and do not change provider business contracts. Orders core, Payments
-core, and Entitlements core remain outside this grant.
+Catalog `weight_grams` and descriptive fields are not RenewalAttempt evidence.
+This amendment does not declare them frozen at checkpoint B and adds no such
+fields to RenewalAttempt. They may inform separately governed fulfillment,
+shipping, and tax handling at Order finalization. They cannot change A's
+variant identity, quantity, recurring unit amount, or currency. The finalized
+Order must retain its shipping and tax evidence for retries. If inspection
+shows a mutable Catalog field can redefine A's recurring base line and no
+existing A evidence can recover that value, stop and return to governance.
 
-After checkpoint B, the commercial occurrence used for provider initiation
-must come from the bound RenewalAttempt or durable artifacts already created
-from that same binding.
+### Shared authority required before re-admission
+
+- Subscription authority for a durable collection-attempt record, its state
+  and monotonic identity, focused tests, a migration, and the corresponding
+  Ash snapshot.
+- Orders authority for attempt-specific reservation generations, terminal
+  release, expiry coordination with payment state, and consumption of only the
+  reservation linked to a successful collection.
+- InventoryAdmission owner review and an accepted contract for attempt-specific
+  queue identity, leases, recovery fences, and durable lookup. Frozen S0-ARCH-01
+  and `INV-ADM-004` currently use `order_id + variant_id`; this amendment does
+  not revise or implement that design.
+- Provider authority for distinct collection-attempt idempotency keys and
+  collection-attempt metadata. The occurrence `renewal_key` must not be reused
+  as the key for every dunning collection.
+- Verify that the current Payments boundary can create and reuse a distinct
+  deterministic PaymentIntent for each sequential collection against the same
+  Order after the preceding intent is terminal. If Payments core changes are
+  needed, obtain separate Payments authority.
+- Prove that the unchanged SBH-10-05 payment-success/reconciliation path can
+  associate a later collection PaymentIntent with the same RenewalAttempt and
+  original Order without replacing `RenewalAttempt.payment_intent_id` or
+  changing reconciliation semantics. If it cannot, stop for a separate
+  authority decision; this amendment changes neither SBH-10-05 nor its edge.
+- The current payment-success path consumes physical reservations through the
+  Order boundary. Preserve one nonterminal collection attempt per occurrence
+  and ensure all active generations for its renewal Order belong to that
+  attempt. If Orders and Payments cannot enforce this relation, obtain their
+  authority to carry and validate the collection-attempt identity at payment
+  success. Order identity alone is not collection-attempt proof.
+
+No Subscription collection-record, Orders, InventoryAdmission, Payments,
+migration, Ash-snapshot, or provider authority is assigned by this amendment.
+These are blockers, not implied grants. No compatibility-unbound RenewalAttempt
+may reach provider work, and no historical collection record may be fabricated
+from mutable state.
 
 ### Existing implementation seam from PR #76
 
@@ -2741,20 +2991,39 @@ SBH-10-03 already introduced a minimum downstream handoff:
 - PaymentIntent amount and currency come from the resulting renewal Order and
   bound currency.
 - Provider charge amount and currency come from the persisted PaymentIntent.
-- Retries reuse the existing RenewalAttempt, Order, and PaymentIntent
-  identities.
+- Retries reuse the same RenewalAttempt and Order. PR #78 attempted to harden
+  reuse of the existing Order and PaymentIntent evidence.
 
-This existing partial implementation does not close SBH-10-04. The task must
-independently prove and harden the full path.
+This seam remains useful but does not define a safe new dunning collection
+attempt after a definitive decline.
+
+### PR #78 partial implementation evidence
+
+PR #78 head `08b28937c001b4f35350bcf5de6fdd052fc7a4c3` is one commit on the
+exact task base `0016237646f9fddfc2364680b8cc9ddeb7c10655`. It changes only
+`lib/store/subscriptions/facade.ex`,
+`test/store/subscriptions/facade_test.exs`,
+`test/store/subscriptions/sbh_10_04_bound_renewal_initiation_test.exs`, and
+`docs/agent_notes/phase_27_docs.md`. Exact-head CI run `36144853740` passed all
+five required jobs. Its logs report 702 tests and zero failures, with
+migration-drift and static gates passing. PR #78 remains open and draft. This
+is partial proof for Order snapshot verification, PlanRevision evidence,
+PaymentIntent consistency, and physical payable-total tracing. It does not
+prove a real provider-decline PaymentIntent cycle, a later collection identity,
+or the physical reservation lifecycle described above.
 
 ### Required proof direction
 
-The implementation contract must prove all of the following:
+After the missing authority is resolved, the implementation contract must prove
+all of the following:
 
 1. Checkpoint B binds occurrence A.
 2. Mutable Subscription commercial state changes after B.
-3. Mutable SubscriptionPlan or catalog data changes after B where the test may
-   legally change it.
+3. Mutable SubscriptionPlan pricing/cadence and legally mutable Catalog
+   price/currency/descriptive data may change after B without changing A's
+   recurring line. Do not mutate `weight_grams` as a commercial immutability
+   test; treat fulfillment, shipping, and tax inputs under their separate
+   governing evidence unless a source law makes them B-bound.
 4. A later ContractChange may become current for a later billing boundary.
 5. Retry and provider initiation for occurrence A still use A's exact variant,
    quantity, amount, currency, PlanRevision and plan identity, and purchased
@@ -2766,15 +3035,34 @@ The implementation contract must prove all of the following:
    durable evidence for A.
 9. Provider work cannot start for a compatibility-unbound RenewalAttempt.
 10. No mutable pending_* field becomes provider commercial authority.
+11. A real provider decline makes the first PaymentIntent terminal and a later
+    authorized dunning collection uses a distinct durable collection attempt,
+    PaymentIntent key, and provider idempotency key.
+12. An ambiguous provider outcome replays the same collection attempt and
+    idempotency identity, and never starts a second charge attempt.
+13. `requires_action` keeps the same PaymentIntent and physical reservation
+    until success or provider-confirmed terminal non-success. Local expiry alone
+    cannot release the hold.
+14. A physical retry uses a new reservation generation without reactivating an
+    old `cancelled` row, and payment consumes only the successful generation.
+15. The current Payments boundary either supports the required distinct
+    PaymentIntent identity without Payments core changes, or a separate
+    Payments authority is recorded before implementation.
+16. Provider metadata identifies both the immutable occurrence and the exact
+    collection attempt. SBH-10-05 continues to apply success only through its
+    existing authority and the RenewalAttempt's original Order.
+17. The current stored payment method and provider selection are revalidated
+    immediately before provider work. The proof does not claim that Catalog
+    weight or descriptive fields were bound at B, and it does not let them
+    redefine A's recurring base line.
 
 ### Stop conditions
 
-Stop and return to governance to reclassify shared authority if correctness
-requires changing provider business contracts, Payments core resources or
-contracts, Orders core resources or contracts, Entitlements core, migrations,
-Ash snapshots, generic Support/error infrastructure, Redis, ETS, Cachex,
-GenServer or distributed locks, or paid reconciliation/application semantics
-owned by SBH-10-05.
+Do not proceed until the shared-authority blockers above are resolved and a
+later amendment re-admits the issue. Do not change Entitlements core, generic
+Support/error infrastructure, or SBH-10-05 paid-application semantics under
+this task. If those changes become necessary, stop for a separate authority
+decision.
 
 ---
 
@@ -3972,7 +4260,7 @@ surfaces.
 | `SBH-20-01` | `Store.Subscriptions.Subscription` aggregate-version attribute; limited `Store.Subscriptions.Facade` stale-write handling; one task-specific `subscriptions` migration and Ash snapshot; focused deterministic and regression proof | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.23 grant is non-reusable. |
 | `SBH-10-06` | Subscription-owned ContractChange, Subscription, Facade, and focused fixtures/tests; one `contract_changes` migration and Ash snapshot; one conditional `subscriptions` migration and Ash snapshot only if the current ContractChange pointer requires it | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.24 grant is non-reusable. |
 | `SBH-10-03` | Subscription-owned `RenewalAttempt`; minimum `Store.Subscriptions.Facade` orchestration for checkpoint-B bind; exact `ContractChange` `QUEUED → BOUND_TO_RENEWAL` transition; `Store.Subscriptions.Subscription` only for aggregate-version-protected checkpoint-B consumption of the current target; focused fixtures/tests; one `renewal_attempts` migration and corresponding Ash snapshot | `AUTHORITY_ASSIGNED` | `CLOSED`; completed v0.1.25 task-specific migration, Ash-snapshot, Subscription, and ContractChange authority is exhausted and non-reusable. |
-| `SBH-10-04` | Existing provider boundary only; Subscription-owned RenewalAttempt and Facade scope is defined in the current bounded issue contract | `EXTERNALIZED` | Use the existing provider boundary exactly as defined. Do not change provider business contracts. No shared provider authority is assigned. |
+| `SBH-10-04` | Durable Subscription collection-attempt record; Orders reservation generations; S0 InventoryAdmission identity and recovery contract; provider collection-attempt idempotency; Payments boundary capability review | `BLOCKED_SHARED_AUTHORITY` | Stop implementation. The old grant does not cover collection attempts or retries after terminal PaymentIntent failure. Obtain each owning-domain decision and record a new bounded admission before code. PR #78 remains open and draft as partial proof only. |
 | `SBH-10-05` | Payments core | `EXTERNALIZED` | Use payment evidence authority; do not change Payments core. |
 | `SBH-20-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-20-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
@@ -4013,7 +4301,7 @@ Every implementation row has a frozen scope. `State` below is its current
 register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
 `SBH-10-03`, `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and
 `SBH-80-02` are `CLOSED`. The current `READY` implementation/proof row
-count is one, `SBH-10-04`. The recorded
+count is zero. The recorded
 `loop_eligible` values remain register metadata; human selection is still
 required under the serial workflow before a `READY` row may enter
 implementation.
@@ -4025,7 +4313,7 @@ implementation.
 | `SBH-20-01` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-06` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-03` | foundational spine | — | `CLOSED` | No |
-| `SBH-10-04` | foundational spine | — | `READY` | No |
+| `SBH-10-04` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
 | `SBH-10-05` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-02` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-03` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
@@ -4086,11 +4374,9 @@ SBH-80-01 = P1
 
 `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`, `SBH-10-03`,
 `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
-`CLOSED`. There is exactly one current canonical `READY`
-implementation/proof row: `SBH-10-04`. The v0.1.26 transition records
-SBH-10-03's closure as completed provenance and admits JC-229 / SBH-10-04
-after its frozen SBH-10-03 prerequisite closes. SBH-10-05 remains
-`BLOCKED_DEPENDENCY / No`, and SBH-50-06 remains
+`CLOSED`. There are zero current canonical `READY` implementation/proof rows.
+The v0.1.27 transition blocks JC-229 / SBH-10-04 pending shared authority.
+SBH-10-05 remains `BLOCKED_DEPENDENCY / No`, and SBH-50-06 remains
 `BLOCKED_SHARED_AUTHORITY / No`. The JC-223 dependency edges are unchanged.
 The P1 labels provide no severity ordering.
 
@@ -5052,7 +5338,10 @@ then became the prospective `task_base_sha` for JC-228 / SBH-10-03. Only then co
 `subs-task/sbh-10-03-renewal-contract-snapshot` be created and implementation
 begin.
 
-# 46. Current v0.1.26 Serial Verdict
+# 46. Historical v0.1.26 Serial Verdict
+
+The current-state effects in this section are superseded by the v0.1.27
+transition in section 47.
 
 ```text
 SUBS lifecycle = READY
@@ -5082,3 +5371,35 @@ The JC-223 dependency graph is unchanged. `SBH-10-05` remains
 or `task_base_sha`. The next task base can be assigned only through a separate
 explicit implementation admission after independent review, exact-head CI,
 human merge, and independent post-merge commit/tree verification.
+
+# 47. Current v0.1.27 Serial Verdict
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+hardening/subscriptions amendment base = 0016237646f9fddfc2364680b8cc9ddeb7c10655
+canonical READY implementation/proof rows = 0
+```
+
+```text
+SBH-10-03 = CLOSED / No
+SBH-10-03 shared authority = AUTHORITY_ASSIGNED (completed provenance only)
+SBH-10-04 = BLOCKED_SHARED_AUTHORITY / No
+SBH-10-04 shared authority = BLOCKED_SHARED_AUTHORITY
+SBH-10-05 = BLOCKED_DEPENDENCY / No
+SBH-50-06 = BLOCKED_SHARED_AUTHORITY / No
+```
+
+The v0.1.27 governance-only amendment records PR #78 head
+`08b28937c001b4f35350bcf5de6fdd052fc7a4c3` as partial implementation and
+proof evidence. Its parent is the exact admitted base
+`0016237646f9fddfc2364680b8cc9ddeb7c10655`. PR #78 remains open and draft;
+its passing exact-head CI does not close the issue or authorize merge.
+
+The JC-223 dependency graph is unchanged. `SBH-10-05` remains
+`BLOCKED_DEPENDENCY`; its paid-application semantics remain unchanged. No
+implementation branch or task base is assigned. SBH-10-04 requires a later
+canonical amendment after Subscription collection-attempt evidence, Orders
+reservation-generation semantics, InventoryAdmission identity/recovery, and
+provider collection idempotency authority are resolved. Payments core remains
+unchanged unless a separate authority decision is made.
