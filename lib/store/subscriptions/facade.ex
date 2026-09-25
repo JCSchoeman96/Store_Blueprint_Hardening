@@ -2115,9 +2115,16 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp ensure_paid_reconciliation_contract(
-         %Subscription{},
-         %RenewalAttempt{charged_contract_version: 1, contract_change_id: id}
-       )
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt
+       ) do
+    with :ok <- ensure_complete_bound_renewal_attempt(attempt),
+         :ok <- ensure_paid_reconciliation_has_no_bound_target(attempt) do
+      ensure_no_future_target_for_renewal(subscription)
+    end
+  end
+
+  defp ensure_paid_reconciliation_has_no_bound_target(%RenewalAttempt{contract_change_id: id})
        when is_binary(id) do
     {:error,
      Error.new(
@@ -2126,12 +2133,7 @@ defmodule Store.Subscriptions.Facade do
      )}
   end
 
-  defp ensure_paid_reconciliation_contract(
-         %Subscription{} = subscription,
-         %RenewalAttempt{}
-       ) do
-    ensure_no_future_target_for_renewal(subscription)
-  end
+  defp ensure_paid_reconciliation_has_no_bound_target(%RenewalAttempt{}), do: :ok
 
   defp legacy_future_projection?(%Subscription{} = subscription) do
     is_binary(subscription.pending_subscription_plan_id) or
@@ -2928,7 +2930,7 @@ defmodule Store.Subscriptions.Facade do
          %Subscription{} = subscription,
          %ContractChange{} = target
        ) do
-    with :ok <- ensure_current_target_version(subscription, target),
+    with :ok <- ensure_current_target_boundary(subscription, target),
          {:ok, %PlanRevision{} = revision} <- fetch_plan_revision(target.target_plan_revision_id),
          :ok <- ensure_contract_change_price_matches(target, revision),
          :ok <-
@@ -2951,14 +2953,11 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp ensure_current_target_version(
-         %Subscription{aggregate_version: expected_version, current_period_end_at: boundary},
-         %ContractChange{
-           ordering_version: ordering_version,
-           effective_at: effective_at
-         }
+  defp ensure_current_target_boundary(
+         %Subscription{current_period_end_at: boundary},
+         %ContractChange{effective_at: effective_at}
        ) do
-    if ordering_version == expected_version and effective_at == boundary do
+    if effective_at == boundary do
       :ok
     else
       {:error, inconsistent_current_contract_change_error()}

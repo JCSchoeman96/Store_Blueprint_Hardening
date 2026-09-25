@@ -15,7 +15,11 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     Subscription
   }
 
-  alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
+  alias Store.Subscriptions.Inputs.{
+    QueueSubscriptionPlanChangeInput,
+    QueueSubscriptionVariantChangeInput
+  }
+
   alias Store.SubscriptionsFixtures
   alias Store.Support.Telemetry.RepoStats
   alias Store.TestSupport.StripeAPIStub
@@ -24,9 +28,10 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     StripeAPIStub.setup_default(context)
   end
 
-  test "queued renewal binds and charges its exact target before consuming the pointer" do
+  test "queued plan and variant renewal binds after an unrelated subscription update" do
     customer = SubscriptionsFixtures.create_customer!("sbh_10_03_queued_target")
-    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    %{variant: live_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    %{variant: target_variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
     live_plan =
       SubscriptionsFixtures.create_subscription_plan!(%{
@@ -44,23 +49,66 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
         currency: "EUR"
       })
 
-    SubscriptionsFixtures.attach_variant_plan!(variant.id, live_plan.id)
-    SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
+    for variant <- [live_variant, target_variant], plan <- [live_plan, target_plan] do
+      SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    end
+
     target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     %{subscription: subscription} =
-      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, live_plan, %{
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, live_variant, live_plan, %{
         started_at: DateTime.add(now, -86_410, :second),
         next_renewal_at: DateTime.add(now, -10, :second),
         quantity: 2,
         provider_billing_ref: "pm_sbh_10_03_target"
       })
 
-    assert {:ok, queued} = queue_plan_change(customer, subscription, target_plan)
+    assert {:ok, queued_plan} = queue_plan_change(customer, subscription, target_plan)
+
+    assert {:ok, queued} =
+             queue_variant_change(customer, queued_plan, target_variant)
+
     contract_change_id = queued.current_contract_change_id
-    clear_legacy_projection!(subscription.id)
+    queued_contract_change = fetch_contract_change!(contract_change_id)
+
+    assert queued_contract_change.status == :queued
+    assert queued_contract_change.target_plan_revision_id == target_revision.id
+    assert queued_contract_change.target_variant_id == target_variant.id
+    assert queued_contract_change.target_quantity == 2
+    assert queued_contract_change.target_amount_minor == 4_700
+    assert queued_contract_change.target_currency == "EUR"
+
+    assert queued.pending_subscription_plan_id == target_plan.id
+    assert queued.pending_variant_id == target_variant.id
+    assert queued.pending_renewal_amount_minor == 4_700
+    assert queued.pending_renewal_currency == "EUR"
+    assert queued.change_effective_at == queued.current_period_end_at
+    assert queued_contract_change.ordering_version == queued.aggregate_version
+
+    assert {:ok, _updated_subscription} =
+             queued
+             |> Ash.Changeset.for_update(
+               :set_provider_billing_reference,
+               %{provider_billing_ref: "pm_sbh_10_03_target_after_queue"},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
     before_consumption = fetch_subscription!(subscription.id)
+
+    assert before_consumption.current_contract_change_id == contract_change_id
+    assert before_consumption.aggregate_version == queued.aggregate_version + 1
+    assert queued_contract_change.ordering_version != before_consumption.aggregate_version
+    assert before_consumption.pending_subscription_plan_id == target_plan.id
+    assert before_consumption.pending_variant_id == target_variant.id
+    assert before_consumption.pending_renewal_amount_minor == 4_700
+    assert before_consumption.pending_renewal_currency == "EUR"
+    assert before_consumption.change_effective_at == before_consumption.current_period_end_at
 
     expected_period =
       Scheduler.next_period(before_consumption.current_period_end_at, target_revision)
@@ -75,6 +123,10 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       assert bound_attempt.charged_contract_version == 1
       assert bound_attempt.plan_revision_id == target_revision.id
       assert bound_attempt.contract_change_id == contract_change_id
+      assert bound_attempt.variant_id == target_variant.id
+      assert bound_attempt.quantity == 2
+      assert bound_attempt.amount_minor == 4_700
+      assert bound_attempt.currency == "EUR"
       assert bound_change.status == :bound_to_renewal
       assert bound_subscription.current_contract_change_id == nil
       assert bound_subscription.pending_variant_id == nil
@@ -99,7 +151,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
 
     assert attempt.charged_contract_version == 1
     assert attempt.plan_revision_id == target_revision.id
-    assert attempt.variant_id == variant.id
+    assert attempt.variant_id == target_variant.id
     assert attempt.quantity == 2
     assert attempt.amount_minor == 4_700
     assert attempt.currency == "EUR"
@@ -147,7 +199,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     assert payment_intent.amount_received_minor == 9_400
 
     later_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 8_900})
-    SubscriptionsFixtures.attach_variant_plan!(variant.id, later_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(live_variant.id, later_plan.id)
     later_revision = SubscriptionsFixtures.create_plan_revision!(later_plan)
     assert {:ok, later_target} = queue_plan_change(customer, after_consumption, later_plan)
 
@@ -421,6 +473,109 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     assert Store.Repo.aggregate(PaymentIntent, :count, :id) == intents_before
   end
 
+  test "a historical unbound attempt with paid evidence cannot enter reconciliation" do
+    %{subscription: subscription, now: now} =
+      create_due_live_fixture!("sbh_10_03_unbound_paid_reconciliation")
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    attempt = fetch_attempt_for_subscription!(subscription.id)
+    order = fetch_order!(attempt.order_id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    order
+    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    clear_renewal_attempt_binding!(attempt.id)
+
+    historical_attempt = fetch_attempt!(attempt.id)
+    paid_order = fetch_order!(order.id)
+    succeeded_payment_intent = fetch_payment_intent!(payment_intent.id)
+    before_subscription = fetch_subscription!(subscription.id)
+
+    assert historical_attempt.charged_contract_version == nil
+    assert paid_order.state == :paid
+    assert succeeded_payment_intent.state == :succeeded
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             Facade.reconcile_paid_subscription_renewal_for_system(order.id,
+               renewal_attempt_id: attempt.id
+             )
+
+    attempt_after_reconciliation = fetch_attempt!(attempt.id)
+    subscription_after_reconciliation = fetch_subscription!(subscription.id)
+
+    assert Map.take(attempt_after_reconciliation, [
+             :charged_contract_version,
+             :plan_revision_id,
+             :variant_id,
+             :quantity,
+             :amount_minor,
+             :currency,
+             :contract_change_id,
+             :expected_subscription_version,
+             :charged_contract_snapshot,
+             :status,
+             :updated_at
+           ]) ==
+             Map.take(historical_attempt, [
+               :charged_contract_version,
+               :plan_revision_id,
+               :variant_id,
+               :quantity,
+               :amount_minor,
+               :currency,
+               :contract_change_id,
+               :expected_subscription_version,
+               :charged_contract_snapshot,
+               :status,
+               :updated_at
+             ])
+
+    assert Map.take(subscription_after_reconciliation, [
+             :current_period_start_at,
+             :current_period_end_at,
+             :next_renewal_at,
+             :current_plan_revision_id,
+             :subscription_plan_id,
+             :variant_id,
+             :quantity,
+             :renewal_amount_minor,
+             :renewal_currency,
+             :aggregate_version,
+             :current_contract_change_id,
+             :pending_subscription_plan_id,
+             :pending_variant_id,
+             :pending_renewal_amount_minor,
+             :pending_renewal_currency,
+             :change_effective_at
+           ]) ==
+             Map.take(before_subscription, [
+               :current_period_start_at,
+               :current_period_end_at,
+               :next_renewal_at,
+               :current_plan_revision_id,
+               :subscription_plan_id,
+               :variant_id,
+               :quantity,
+               :renewal_amount_minor,
+               :renewal_currency,
+               :aggregate_version,
+               :current_contract_change_id,
+               :pending_subscription_plan_id,
+               :pending_variant_id,
+               :pending_renewal_amount_minor,
+               :pending_renewal_currency,
+               :change_effective_at
+             ])
+  end
+
   test "the database rejects partial binding evidence without a discriminator" do
     %{subscription: subscription, revision: revision} =
       create_due_live_fixture!("sbh_10_03_partial_evidence")
@@ -663,18 +818,32 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     Facade.queue_subscription_plan_change_for_user(actor, subscription.id, input)
   end
 
-  defp clear_legacy_projection!(subscription_id) do
+  defp queue_variant_change(actor, subscription, variant) do
+    {:ok, input} =
+      QueueSubscriptionVariantChangeInput.new(%{
+        "subscription_id" => subscription.id,
+        "variant_id" => variant.id
+      })
+
+    Facade.queue_subscription_variant_change_for_user(actor, subscription.id, input)
+  end
+
+  defp clear_renewal_attempt_binding!(attempt_id) do
     Store.Repo.query!(
       """
-      UPDATE subscriptions
-      SET pending_variant_id = NULL,
-          pending_subscription_plan_id = NULL,
-          pending_renewal_amount_minor = NULL,
-          pending_renewal_currency = NULL,
-          change_effective_at = NULL
+      UPDATE renewal_attempts
+      SET plan_revision_id = NULL,
+          variant_id = NULL,
+          quantity = NULL,
+          amount_minor = NULL,
+          currency = NULL,
+          contract_change_id = NULL,
+          expected_subscription_version = NULL,
+          charged_contract_version = NULL,
+          charged_contract_snapshot = NULL
       WHERE id = $1
       """,
-      [Ecto.UUID.dump!(subscription_id)]
+      [Ecto.UUID.dump!(attempt_id)]
     )
   end
 

@@ -286,13 +286,15 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - The new `charged_contract_version` discriminator distinguishes null-only historical compatibility rows from a complete version 1 binding. There is no historical backfill.
 - Charged amount/currency are stored once in the dedicated RenewalAttempt fields: unchanged renewals use the Subscription's locked live price, while queued target prices must match their exact PlanRevision. The versioned policy map snapshots cadence, term, retry, access, and entitlement semantics without duplicating price evidence.
 - A new queued-target bind records the pre-consumption aggregate version, writes the attempt and transitions/clears the exact queued target in one database transaction. The target path increments the Subscription once; the no-target path does not write the Subscription.
+- `ContractChange.ordering_version` records the aggregate version at instruction ordering time. A later authorized Subscription update may advance `aggregate_version` while preserving that current target, so B verifies the locked expected aggregate version, exact current pointer, queued ownership/status, and effective boundary without equating the two version fields.
 - A previously bound attempt is validated and reused before inspecting a later ContractChange or rebuilding evidence. An unbound compatibility attempt fails closed.
 - Past-due retry expiry uses the already-bound attempt's captured grace policy; an unbound historical row cannot reach retry processing.
-- The normal renewal flow reconstructs its existing in-memory checkout contract from the bound attempt after commit. ContractChange-bound paid reconciliation stops at the SBH-10-05 boundary; the existing succeeded-attempt replay short circuit remains first.
+- The normal renewal flow reconstructs its existing in-memory checkout contract from the bound attempt after commit. Nonterminal paid reconciliation requires a complete B binding; ContractChange-bound attempts still stop at the SBH-10-05 boundary, and the succeeded-attempt replay short circuit remains first.
+- The queued renewal regression composes a future plan with a different future variant, verifies the populated compatibility projections, then applies a legitimate provider-reference aggregate update before B. It proves B binds that exact target against the newer aggregate version and clears all five projections in the single target-consumption increment.
 
 ### Implementation plan
 
-1. Add focused red tests for target cadence/pricing, atomic consumption, reuse, corrupt evidence, stale consumers, and reconciliation boundaries.
+1. Add focused red tests for target cadence/pricing and variant, populated projections, atomic consumption, reuse, corrupt evidence, stale consumers, and paid reconciliation boundaries.
 2. Add nullable charged-contract evidence and one completeness constraint to RenewalAttempt; generate one RenewalAttempt migration and its snapshot.
 3. Add the private queued-only ContractChange transition and exact Subscription target-consumption action.
 4. Bind/reuse the occurrence in the facade before claim, order, payment-intent, or provider work, and derive the purchased period from the selected exact PlanRevision.
@@ -309,8 +311,8 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 
 ### Implementation verification record
 
-- Focused command: `mix test test/store/subscriptions/sbh_10_03_renewal_contract_snapshot_test.exs test/store/subscriptions/sbh_10_06_contract_change_test.exs test/store/subscriptions/sbh_10_02_contract_binding_test.exs test/store/subscriptions/renewal_attempt_monotonicity_test.exs test/store/subscriptions/replay_concurrency_test.exs test/store/subscriptions/facade_test.exs` — 63 tests, 0 failures.
-- Full required gate: `mix check` — exit 0; 696 tests, 0 failures; Credo checked 5,678 modules/functions with no issues. Documentation generation completed.
+- Focused command: `mix test test/store/subscriptions/sbh_10_03_renewal_contract_snapshot_test.exs test/store/subscriptions/sbh_10_06_contract_change_test.exs test/store/subscriptions/sbh_10_02_contract_binding_test.exs test/store/subscriptions/renewal_attempt_monotonicity_test.exs test/store/subscriptions/replay_concurrency_test.exs test/store/subscriptions/facade_test.exs` — 64 tests, 0 failures.
+- Full required gate: `mix check` — exit 0; 697 tests, 0 failures; Credo checked 5,680 modules/functions with no issues. Documentation generation completed.
 - Migration: a fresh `MIX_ENV=test` database created and migrated successfully, including `20260924203729_sbh_10_03_renewal_contract_snapshot.exs`.
 - Drift/format: `mix ash_postgres.generate_migrations --check`, `mix format --check-formatted`, and `git diff --check` passed.
 - Changed implementation paths: `lib/store/subscriptions/renewal_attempt.ex`, `lib/store/subscriptions/contract_change.ex`, `lib/store/subscriptions/subscription.ex`, `lib/store/subscriptions/facade.ex`, `priv/repo/migrations/20260924203729_sbh_10_03_renewal_contract_snapshot.exs`, `priv/resource_snapshots/repo/renewal_attempts/20260924203730.json`, `test/store/subscriptions/sbh_10_03_renewal_contract_snapshot_test.exs`, and the orphan-target expectation in `test/store/subscriptions/sbh_10_06_contract_change_test.exs`.
