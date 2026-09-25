@@ -335,9 +335,11 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 
 ### Decisions / pins
 
-1. The governance amendment starts from the exact `hardening/subscriptions`
-   base `3caf13361f53285c8f21300eee2e1f40d5989d3b`. It changes no production
-   code, tests, migrations, Ash snapshots, dependencies, or JC-223 graph edges.
+1. The v0.1.26 amendment re-verified live `main` at
+   `1fb29528e63a255cf86f1810d99b2372a55923cc` and live
+   `hardening/subscriptions` at `3caf13361f53285c8f21300eee2e1f40d5989d3b`.
+   It starts from that exact SUBS base and changes no production code, tests,
+   migrations, Ash snapshots, dependencies, or JC-223 graph edges.
 2. SBH-10-03 closes from `READY / AUTHORITY_ASSIGNED` to
    `CLOSED / AUTHORITY_ASSIGNED` as completed provenance only. Its
    task-specific RenewalAttempt migration, Ash snapshot, Subscription, and

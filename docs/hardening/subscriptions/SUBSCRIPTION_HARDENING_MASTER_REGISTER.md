@@ -15,7 +15,14 @@
 
 ## Current authority boundary
 
-The v0.1.25 admission observed canonical `main` governance at
+Before this v0.1.26 amendment, the live authority tips were re-verified:
+
+```text
+main = 1fb29528e63a255cf86f1810d99b2372a55923cc
+hardening/subscriptions = 3caf13361f53285c8f21300eee2e1f40d5989d3b
+```
+
+The v0.1.25 admission had observed canonical `main` governance at
 `1fb29528e63a255cf86f1810d99b2372a55923cc`. The
 `SERIAL / EXPLICIT HARDENING` policy, established by governance amendment
 `ac1fd264de35522c010bdcc552b0ba22183cbca4`, supersedes the autonomous SUBS
