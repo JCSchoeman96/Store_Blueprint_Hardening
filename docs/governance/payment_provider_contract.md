@@ -1,7 +1,7 @@
 # Payment Provider Integration Contract (Authoritative)
 
 **Status:** Governance law (mandatory for any payment provider integration)  
-**Last updated:** 2026-02-27
+**Last updated:** 2026-09-26
 
 This document defines the non-negotiable contract for integrating **any** payment provider (PayFast/Yoco/Stripe/etc.) into the Store Blueprint.
 
@@ -133,6 +133,37 @@ Key derivation examples:
   - `refund:{refund_id}`
 
 **Law:** the idempotency key must be stable across retries.
+
+### 4.1 Renewal collection identity
+
+For the later, separately admitted SBH-10-04 implementation, a renewal provider request must carry:
+
+- `renewal_key` as occurrence metadata;
+- `collection_attempt_id`;
+- `renewal_attempt_id`;
+- `order_id`;
+- `local_intent_id`;
+- `subscription_id`.
+
+Its provider idempotency key is:
+
+```text
+renewal-collection:<collection_attempt_id>
+```
+
+An ambiguous replay uses the same collection ID and key. A later collection receives a new ID and key only after verified terminal financial non-success and approval under the existing dunning policy. The provider must receive amount and currency from the durable local PaymentIntent for that collection. `renewal_key` remains occurrence metadata and is not reused as the key for sequential collections.
+
+This is a bounded renewal adapter/contract extension. For create and webhook identity handling, provider modules remain limited to payload construction, signature verification, and canonical normalization. Status retrieval and cancellation are authorized only by §4.2. This section does not change unrelated provider behavior. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
+
+### 4.2 Renewal collection status recovery and cancellation
+
+The later SBH-10-04 implementation may extend `Store.Payments.Providers.Behaviour`, the `Store.Payments.Providers` wrapper, the typed Payments facade, and supported provider adapters with `retrieve_renewal_collection_intent` and `cancel_renewal_collection_intent` operations. These operations address only the exact PaymentIntent linked to one durable `collection_attempt_id`; they do not create general PaymentIntent retrieve/cancel APIs.
+
+Status retrieval accepts `collection_attempt_id`, `local_intent_id`, and the exact `provider_payment_id` when available. If the provider response was lost before the ID was stored, an adapter may use an exact provider-supported lookup bound to both collection and local intent IDs. Zero or multiple matches, mismatched identity, unknown status, unsupported lookup, timeout, transport failure, or provider 5xx return an ambiguous result. Replaying the provider create key is not proof of current status.
+
+Adapters normalize authenticated provider responses into a canonical collection status bound to the exact provider object and its local correlation metadata. Payments/Subscriptions validate the returned IDs, amount, and currency before updating collection or PaymentIntent evidence. Cancellation targets only that exact provider object; its request or acknowledgement is not terminal evidence. On retry, retrieve status before repeating cancellation. If the provider requires an idempotency key for cancellation, derive a stable operation key from the collection ID; keep it separate from the create key `renewal-collection:<collection_attempt_id>`. Retrieve status again or accept a verified canonical webhook before classifying terminal financial non-success.
+
+The existing local authentication deadline may trigger bounded status retrieval and a cancellation request for a `requires_action` renewal collection. The deadline, local PaymentIntent state, timeout, or cancel acknowledgement cannot release inventory or permit a new collection. After bounded automatic reconciliation is exhausted, preserve the unresolved collection and active hold and escalate for operator review. Only adapters that can safely identify and verify these exact operations may support them; unsupported adapters fail closed. Provider modules retain no Repo/Ash access, Oban enqueue, or business-state transitions. These renewal-only operations do not change generic checkout or dunning policy.
 
 ---
 

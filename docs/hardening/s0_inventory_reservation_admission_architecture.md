@@ -2,8 +2,16 @@
 
 Status: FROZEN. This document records the accepted architecture decision and does
 not itself authorize implementation. IA-01 and IA-02 are complete and frozen.
-S0-IA-AUTH-03 separately authorizes IA-03 only. S0-IA-AUTH-03R1 corrects only the
-IA-03 Redis support file boundary for typed `status` and `abandon` primitives.
+The historical S0-IA-AUTH-03 record documented the prior bounded IA-03
+authorization. S0-IA-AUTH-03R1 corrected only that record's Redis support file
+boundary for typed `status` and `abandon` primitives.
+
+Current execution authority is governed by canonical `active_workstreams.md`, not
+those historical records. Current IA-03 execution status: `NOT AUTHORIZED`. Before a
+fresh bounded IA-03 task-admission decision, reconcile the then-current `origin/main`
+into `hardening/s0-baseline`, validate the integration, obtain exact-head CI, and
+complete a fresh independent post-integration review. The task-admission decision
+must follow that reconciliation.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1007,9 +1015,10 @@ Only an accepted capacity review may change the derived permit budget.
 
 No implementation may begin until this design is independently reviewed and accepted.
 The design has now been independently accepted and is frozen. That acceptance does
-not authorize the implementation plan. S0-IA-AUTH-03 is the separate, bounded
-authorization for IA-03 only, corrected by S0-IA-AUTH-03R1 for the minimum typed
-Redis `status`/`abandon` support boundary. IA-01 and IA-02 are complete and frozen.
+not authorize the implementation plan. The historical S0-IA-AUTH-03 record
+documented separate, bounded IA-03 authorization, as corrected by S0-IA-AUTH-03R1
+for the minimum typed Redis `status`/`abandon` support boundary. That record does not
+grant current execution authority. IA-01 and IA-02 are complete and frozen.
 
 The acceptance review must specifically confirm:
 
@@ -1037,7 +1046,7 @@ The acceptance review must specifically confirm:
 IMPLEMENTATION STATUS:
 IA-01 COMPLETE / FROZEN
 IA-02 COMPLETE / FROZEN
-AUTHORIZED FOR IA-03 ONLY
+IA-03 NOT AUTHORIZED
 
 IA-01 COMPLETION RECORD:
 - Initial implementation: `7fd2e88fec286d9e216c865d26ef28b1a8c69438`
@@ -1070,11 +1079,11 @@ IA-02 COMPLETION RECORD:
   fail-closed Redis behavior; no Redis stock authority; no `Store.Repo`/PostgreSQL
   mutation; no IA-03+ behavior.
 
-AUTHORIZATION BOUNDARY:
-The IA-03 authorization covers only the internal caller-independent admission
-orchestration listed in the implementation-plan gate (frozen plan DL-01), plus the
-S0-IA-AUTH-03R1 minimum typed Redis support required by that orchestration. Future
-IA-03 coding may touch only:
+HISTORICAL AUTHORIZATION BOUNDARY (S0-IA-AUTH-03 / R1):
+The historical IA-03 authorization covered only the internal caller-independent
+admission orchestration listed in the implementation-plan gate (frozen plan DL-01),
+plus the S0-IA-AUTH-03R1 minimum typed Redis support required by that orchestration.
+Its historical coding boundary listed these files:
 
 ```text
 lib/store/orders/inventory_admission.ex
@@ -1083,19 +1092,49 @@ test/store/orders/inventory_admission_test.exs
 test/store/orders/inventory_admission_redis_test.exs
 ```
 
-The Redis-file allowance is strictly limited to typed Redis primitives for
-`status` and `abandon` (`QUEUED -> ABANDONED` under
+Under that historical boundary, the Redis-file allowance was limited to typed Redis
+primitives for `status` and `abandon` (`QUEUED -> ABANDONED` under
 `trusted_pre_reservation_abandonment`). Status must not create, enqueue, or admit.
 Abandon must not invent atomic next-head promotion; frozen `abandon_queued` removes
 only queued membership and marks `ABANDONED`, and next-head promotion remains the
-already-authorized `promote_next`/`promote_queued` path.
+`promote_next`/`promote_queued` path described in that record.
 
-It does not authorize IA-04 or later, PostgreSQL reservation execution, recovery,
-workers, checkout, shared lifecycle fences, lease renewal/release machinery, DL-02
-telemetry/rate-limit expansion, configuration beyond IA-03 needs, or certification.
+That historical authorization did not include IA-04 or later, PostgreSQL reservation
+execution, recovery, workers, checkout, shared lifecycle fences, lease
+renewal/release machinery, DL-02 telemetry/rate-limit expansion, configuration
+beyond IA-03 needs, or certification.
 Section 16 describes the future MVP and remains a frozen design, not the current
 IA-03 coding boundary.
 
-NEXT:
-Independently review/merge S0-IA-AUTH-03R1, then supply a separate IA-03 coding
-prompt. Completion of IA-03 does not authorize IA-04 or any later slice.
+HISTORICAL NEXT-STEP NOTE:
+The original sequence called for independent review/merge of S0-IA-AUTH-03R1 and then
+a separate IA-03 coding prompt. Current canonical governance supersedes that note:
+main-to-S0 reconciliation and a fresh bounded task-admission decision are required
+before IA-03 implementation. Completion of IA-03 does not authorize IA-04 or any
+later slice.
+
+## 19. Approved bounded amendment for SBH-10-04
+
+This addendum amends S0-ARCH-01 only to admit server-derived reservation generations for physical subscription renewals. In the base architecture, generic checkout uses `order_id + variant_id` as its logical identity and recovery-fence identity. For a physical renewal generation, the full server-derived `reservation_key` is the logical durable-operation and recovery-fence identity. `INV-ADM-004` continues to require at most one durable effect per logical identity: the generic key remains one `(order_id, variant_id)` pair, while each renewal generation has its own exact key. `K_v` still serializes entrants by variant and `B_total` still bounds total database entrants. All other lease, PostgreSQL, ambiguity, recovery, and fail-closed requirements remain in force. This section grants no runtime implementation authority by itself.
+
+The renewal contract requires the exact key through a server-owned typed request, operation descriptor, Lease, recovery fence, and PostgreSQL lookup. It does not authorize adding caller-supplied keys to the existing generic request. The S0 implementation plan still freezes the IA-01 `Request`, `Operation`, and `Lease` contracts and forbids reopening them. Before SBH-10-04 can be marked `READY`, a separate S0 governance/task admission must authorize the minimum new typed renewal path and the exact-key propagation/recovery changes to those contracts. That S0 admission must preserve the generic path and the invariants below. If the S0 authority cannot be granted without weakening those invariants, stop and return to governance.
+
+Generic checkout continues to derive:
+
+```text
+order:<order_id>:sku:<variant_id>
+```
+
+The renewal-specific server path may derive a generation key in this form:
+
+```text
+order:<order_id>:sku:<variant_id>:renewal_collection:<collection_attempt_id>:generation:<reservation_generation_id>
+```
+
+The collection and generation IDs are trusted server identities. Generic request construction still rejects caller-supplied reservation keys. The renewal-specific typed path must carry the exact generation key through request identity, request fingerprint, operation descriptor, Lease value, Redis recovery metadata, and PostgreSQL recovery. The Lease may also retain the identity digest used for coordination.
+
+The full reservation key is the logical durable-operation identity. Redis continues to gate by variant for `K_v = 1` and keeps the existing global `B_total` limit. Redis remains a coordination and recovery-fencing layer. It cannot establish stock availability, reservation existence, or commit outcome.
+
+PostgreSQL remains the sole durable reservation authority. Recovery must query by the exact generation key and compare the operation's trusted PRE/POST facts. An ambiguous database outcome retains the existing recovery fence. Lease expiry, Redis loss, a local timeout, or missing evidence cannot authorize another durable mutation. The [cross-domain authority amendment](../governance/sbh_10_04_cross_domain_authority_amendment.md) assigns the separate Orders migration for historical generations and the partial unique active-row index.
+
+This addendum does not change `K_v`, `B_total`, Redis structures outside the exact-key metadata needed by the request, the generic reservation key, or the PostgreSQL stock check. It does not authorize unrelated InventoryAdmission stages. At the canonical main base, the full PostgreSQL recovery service and worker remain planned work. The later SBH-10-04 re-admission must verify their current source compatibility and must obtain any separate S0 task authority needed to implement missing recovery stages.
