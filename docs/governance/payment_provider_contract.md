@@ -1,7 +1,7 @@
 # Payment Provider Integration Contract (Authoritative)
 
 **Status:** Governance law (mandatory for any payment provider integration)  
-**Last updated:** 2026-02-27
+**Last updated:** 2026-09-26
 
 This document defines the non-negotiable contract for integrating **any** payment provider (PayFast/Yoco/Stripe/etc.) into the Store Blueprint.
 
@@ -133,6 +133,60 @@ Key derivation examples:
   - `refund:{refund_id}`
 
 **Law:** the idempotency key must be stable across retries.
+
+### Blocked Subscription renewal collection target (v0.1.27)
+
+This section records a blocked future target, not effective provider law. It
+does not amend the general retry law above or authorize provider, Payments, or
+Subscription implementation. The current contract remains in force until the
+Subscription, provider, and Payments owners explicitly approve the
+renewal-specific identity and evidence model and a later task receives
+implementation authority.
+
+Under that target, each future-authorized renewal collection attempt would have
+a durable UUIDv7 `collection_attempt_id`. Any collection ordinal would have a
+separate durable meaning and would not reuse or reinterpret the existing
+`RenewalAttempt.attempt_no` without a later explicit authority decision. The
+occurrence `renewal_key` would remain metadata and Oban occurrence identity;
+it would not identify every sequential dunning collection.
+
+The proposed provider key is:
+
+```text
+renewal-collection:<collection_attempt_id>
+```
+
+Every retry of that same ambiguous provider request would reuse this key. A
+pre-submission dispatch fence could release a reservation hold after proving no
+worker can submit, while recovery would retain the same collection attempt,
+PaymentIntent, and provider key. A new provider key would be allowed only for
+a new durable collection attempt after verified provider/payment evidence
+proves final financial non-success and dunning policy permits another
+collection. A timeout, transport failure, provider 5xx, `requires_action`,
+local expiry, or local cancellation after submission would remain unresolved
+and reuse the same attempt and key. Only verified canonical provider success
+attributed to the exact collection attempt would close its collection
+eligibility. Order payment application would proceed through the
+PaymentApplication boundary; any approved extension would consume only the
+reservation generation linked to that attempt, then SBH-10-05 would reconcile
+under its existing authority. A local PaymentIntent `succeeded` state or
+synchronous provider response alone would not apply paid or inventory effects.
+
+Under an approved target, the provider request would carry both occurrence and
+collection identities:
+`renewal_key`, `collection_attempt_id`, `renewal_attempt_id`, `order_id`,
+`local_intent_id`, and `subscription_id`. The amount and currency would come
+from the validated durable PaymentIntent for that collection attempt. The
+Subscription Facade would revalidate the current payment method and selected
+provider immediately before provider work; neither would be frozen at
+checkpoint B.
+
+The inspected Stripe renewal adapter currently sends `renewal_key` as its
+provider idempotency key. The blocked target identifies that as insufficient
+for a new collection after an authoritative decline. It does not authorize
+changing provider modules or contracts; provider-owner approval and a later
+implementation grant are required. No legacy collection identity or key may
+be inferred from mutable state or fabricated for an existing PaymentIntent.
 
 ---
 

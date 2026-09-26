@@ -31,10 +31,11 @@ Implement the Phase 27 variable-subscription spine without violating the existin
    - open checkout drafts tied to pending-payment orders for the same user and membership plan
 7. Subscription management remains inline on the existing account/admin detail routes; no dedicated manage routes are introduced.
 8. Stripe payment-method updates use inline SetupIntent + Elements, not hosted Checkout redirect.
-9. Physical renewals are now charge-safe:
+9. Observed physical-renewal runtime behavior, not a frozen retry contract:
    - catalog and variant-plan blockers are retry-suppressed hard failures
    - inventory is reserved before Stripe and explicitly released on known failure paths
-   - shipping is re-quoted live, but large quote drift is blocked by a surge circuit breaker
+   - renewal preparation re-quotes shipping and writes the quote to the Order; quote drift is blocked by a surge circuit breaker
+   - shipping and tax are not declared bound at checkpoint B. Under the blocked v0.1.27 target, retries after Order finalization must use the same durable Order shipping/tax evidence for payable totals rather than re-quote or rewrite it.
 
 ## PLAN
 
@@ -422,3 +423,178 @@ Implement the Phase 27 variable-subscription spine without violating the existin
   `3caf13361f53285c8f21300eee2e1f40d5989d3b`.
 - PR #76 closure evidence is recorded above. The governance amendment's exact
   head, CI, merge, and post-merge verification are pending the serial PR gates.
+
+## SBH-10-04 collection-attempt authority blocker — v0.1.27 governance
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/governance/inventory_reservations.md`
+- `docs/governance/idempotency.md`
+- `docs/governance/checkout_interlocks.md`
+- `docs/governance/payment_provider_contract.md`
+- `docs/governance/subscription_scheduling_terms.md`
+- `docs/governance/tax_shipping.md`
+- `lib/store/subscriptions/facade.ex`
+- `docs/hardening/01_domain_map.md`
+- `docs/hardening/02_lifecycle_registry.md`
+- `docs/hardening/s0_inventory_reservation_admission_architecture.md`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
+- [PR #78](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/78)
+- [Exact-head CI run 36144853740](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/36144853740)
+
+### Decisions / pins
+
+1. The amendment starts from the exact accepted SUBS tip
+   `0016237646f9fddfc2364680b8cc9ddeb7c10655`. Remote `main` was verified at
+   `1fb29528e63a255cf86f1810d99b2372a55923cc`, and
+   `hardening/subscriptions` matched the exact base.
+2. JC-229 / SBH-10-04 moves from `READY / EXTERNALIZED` to
+   `BLOCKED_SHARED_AUTHORITY`. No canonical implementation/proof row is READY.
+   The JC-223 dependency graph is unchanged. SBH-10-05 stays
+   `BLOCKED_DEPENDENCY`, and its paid-application semantics remain unchanged.
+   This v0.1.27 amendment also replaces one frozen Stage B renewal rule: a new
+   collection after verified terminal financial non-success receives distinct
+   collection, PaymentIntent, and provider idempotency identities. All other
+   frozen Stage B law remains unchanged.
+3. One bound RenewalAttempt and one Order remain the commercial occurrence.
+   The blocked Subscription target uses sequential collection identities,
+   PaymentIntents, and provider idempotency keys against that same occurrence.
+   A replacement Order cannot be used for a dunning retry.
+4. Under the blocked target, ambiguous provider outcomes replay the same
+   collection attempt, PaymentIntent, and provider key. A new collection
+   attempt would require durable evidence of terminal provider/payment
+   non-success and an eligible dunning decision. `requires_action` stays on
+   the same attempt and PaymentIntent. A local `cancelled` or expired state
+   after possible submission is not terminal proof.
+5. The proposed physical collection target uses a reservation generation per
+   collection attempt, but it does not supersede current inventory law. Until
+   the InventoryAdmission owner approves and records the required amendment,
+   the current one-row identity, terminal lifecycle, TTL, and S0-ARCH-01 rules
+   remain authoritative. Any future target would keep a hold through a
+   prepared attempt that a worker could submit, `requires_action`, or an
+   unknown provider result. A local TTL alone would not release it. A
+   pre-submission `not_submitted` dispatch would require a durable fence.
+6. `docs/governance/inventory_reservations.md` records that blocked target.
+   Frozen S0-ARCH-01 still uses `order_id + variant_id` for admission and
+   recovery. Its owner must approve an amendment before that identity or
+   recovery contract can be superseded.
+7. No Orders, InventoryAdmission, Payments, provider, migration, Ash snapshot,
+   or Subscription collection-record implementation authority is assigned.
+   The checkout, inventory, and provider sections record future targets only.
+   Current cross-domain contracts remain in force until their owners approve
+   changes. The previous SBH-10-04 implementation grant is superseded and
+   cannot support more code.
+8. PR #78 remains open and draft. Head
+   `08b28937c001b4f35350bcf5de6fdd052fc7a4c3` is one commit on exact
+   `task_base_sha` `0016237646f9fddfc2364680b8cc9ddeb7c10655`. Its four changed
+   paths are `docs/agent_notes/phase_27_docs.md`,
+   `lib/store/subscriptions/facade.ex`,
+   `test/store/subscriptions/facade_test.exs`, and
+   `test/store/subscriptions/sbh_10_04_bound_renewal_initiation_test.exs`.
+   The focused renewal group ran 69 tests with zero failures; the new
+   SBH-10-04 file contains five tests. `mix check` ran 702 tests with zero
+   failures and strict Credo reported no findings. Migration drift and
+   formatting checks passed. Exact-head CI run `36144853740` passed all five
+   required jobs: `check_static`, `test_pr_strict`,
+   `performance_smoke_required`, `performance_smoke_chaos_required`, and
+   `dialyzer_required`. One unchanged virtual-renewal measurement was 45
+   queries before and after; the new checks use returned Order rows and
+   PaymentIntent structs without per-line lookups. This is partial evidence
+   for Order snapshot verification, PlanRevision evidence, PaymentIntent
+   consistency, and physical total tracing. It does not prove a real decline
+   and later collection attempt.
+9. This amendment changes no production code, tests, migration, Ash snapshot,
+   Orders/Payments source contract, or provider implementation. It amends one
+   frozen Stage B renewal identity/recovery rule, records blocked targets for
+   later owner review, and leaves implementation blocked. The JC-223
+   dependency graph is unchanged.
+10. Current Catalog weight and descriptive fields are not checkpoint-B
+    RenewalAttempt evidence. This amendment does not declare them B-bound or
+    add them to the RenewalAttempt snapshot. They remain separate fulfillment,
+    shipping, and tax inputs under their governing policy; the durable Order
+    must retain finalized evidence. They cannot change A's recurring base
+    variant, quantity, unit amount, or currency. If a mutable Catalog field can
+    redefine that base and no A evidence recovers it, stop and return to
+    governance.
+11. Revalidate the current stored payment method and provider selection before
+    provider work. The payment-method change and revocation race remains in
+    SBH-80-03 and is not absorbed into this amendment.
+12. The currently observed renewal PI key and Stripe provider key both reuse
+   `renewal_key`; the blocked v0.1.27 target uses a durable
+   `collection_attempt_id` for each later collection identity. The current
+   `requires_action` path releases the physical reservation; this remains an
+   unmodified runtime safety gap.
+13. Every PaymentIntent must be durably attributable to its exact collection
+   attempt and RenewalAttempt occurrence, and successful reconciliation must
+   identify the exact successful evidence without ambiguity or destructive
+   history rewriting. The meaning of the legacy single
+   `RenewalAttempt.payment_intent_id` remains unresolved for a later explicit
+   Subscription, Payments, and SBH-10-05 authority decision. The collection
+   ordinal is separate from the existing `RenewalAttempt.attempt_no` failure
+   and dunning counter.
+
+### Plan
+
+1. Update the master register's current status, SBH-10-04 authority requirements,
+   and latest serial verdict while preserving v0.1.26 as historical evidence.
+2. Record the physical collection hold target and InventoryAdmission gate in
+   `docs/governance/inventory_reservations.md`.
+3. Align renewal key targets in checkout/provider interlocks and distinguish
+   the blocked target from current runtime observations in the domain map and
+   lifecycle registry.
+4. Review the exact-base diff for docs-only paths and verify that the JC-223
+   dependency table is unchanged. Reconcile the bounded Stage B amendment and
+   keep all unapproved cross-domain targets explicitly blocked.
+5. Keep PR #78 draft and unmerged. Complete independent review, exact-head CI,
+   and human merge gates before any new implementation admission.
+
+### Performance & Scaling Review
+
+- Hot path: renewal initiation and physical inventory reservation remain hot.
+  This governance change adds no runtime behavior.
+- Warm/cold paths: no runtime path, query, or worker changed. Future
+  implementation must measure the same renewal query baseline and include
+  provider decline, ambiguous outcome, authentication, and re-reservation
+  cases.
+- Database queries and N+1 risk: this amendment adds zero database queries.
+  Future collection lookup must stay constant work per occurrence and avoid
+  per-line or per-reservation target lookups.
+- Indexes: this amendment assigns no index or migration authority. A future
+  reservation-generation identity needs Orders and InventoryAdmission owner
+  review before schema design.
+- Caching: no Redis or cache behavior changes. S0-ARCH-01 remains authoritative;
+  any future owner-approved amendment must preserve PostgreSQL as inventory
+  truth and carry the generation through admission and recovery.
+- Oban uniqueness and idempotency: occurrence scheduling remains keyed by the
+  existing renewal occurrence. Provider transport retries use one stable key
+  per collection attempt. A later collection uses a different durable
+  collection identity. No worker uniqueness changes are authorized here.
+- Hold resolution: unknown or authentication-required collection outcomes may
+  retain physical stock holds until provider reconciliation; future work must
+  measure the impact of prolonged holds and report unresolved-hold age.
+- Telemetry and logging: this amendment adds no instrumentation. Future work
+  must expose unresolved collection/hold age without logging payment method or
+  provider secrets.
+
+### Verification record
+
+- Accepted amendment base: `0016237646f9fddfc2364680b8cc9ddeb7c10655`.
+- Observed `origin/main`:
+  `1fb29528e63a255cf86f1810d99b2372a55923cc`.
+- PR #78 remains `OPEN / DRAFT`, head
+  `08b28937c001b4f35350bcf5de6fdd052fc7a4c3`, with exact parent and passing
+  exact-head CI run `36144853740`.
+- PR #79 remains `OPEN / DRAFT` against the accepted amendment base. Its
+  current exact head and exact-head CI run are recorded in the live PR
+  description at [PR #79](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/79)
+  after CI completes for the corrected head. The description is the
+  current-head provenance record so this committed note does not embed a
+  self-invalidating hash or run ID.
+- The independent review reported material governance conflicts and requested
+  the corrections recorded in this note. Independent review of the corrected
+  head is pending; no PASS is claimed.
+- The changed paths remain the master register, inventory reservations,
+  checkout interlocks, payment provider contract, subscription domain map,
+  lifecycle registry, and this Phase 27 note. No runtime or schema path changes.
+- Governance PR merge and post-merge verification remain pending.

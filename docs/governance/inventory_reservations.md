@@ -109,3 +109,134 @@ If you need a different model (soft oversell, no reservations, etc.):
 - Then implement
 
 No doc update = no behavior change.
+
+## 11) Subscription renewal collection holds (blocked target)
+
+A renewal occurrence keeps one immutable `RenewalAttempt` and one Order. A later
+dunning collection is a new collection attempt for that same occurrence and
+Order. This section records a proposed reservation target only. It does not
+amend effective inventory law or authorize Orders or InventoryAdmission
+implementation.
+
+Until the owner responsible for S0-ARCH-01 and InventoryAdmission explicitly
+approves and records an amendment, sections 3, 5, 6, and 7 remain authoritative,
+including the current one-row `(order_id, variant_id)` identity, terminal
+reservation lifecycle, and automatic TTL-release rules. S0-ARCH-01 and
+`INV-ADM-004` also remain authoritative. Adoption of the target below would
+require that owner's explicit amendment or supersession of those identity,
+lifecycle, and TTL rules. No behavior changes while that decision is pending.
+
+The blocked target applies only to future renewal collection generations. If
+approved, it would leave generic checkout reservation identity and lifecycle
+unchanged. A renewal hold could be released before provider submission only
+after the durable dispatch fence below proved no worker could submit.
+Approval would require an explicit override of the current
+`(order_id, variant_id)` identity and automatic TTL release only for physical
+renewal collection generations. Generic checkout would remain under its
+existing reservation rules.
+
+### Reservation generations
+
+- A physical collection attempt receives a durable reservation generation tied
+  to its `collection_attempt_id`, occurrence, Order, variant, and quantity.
+- Its durable reservation identity must include the stable collection-attempt
+  identity. A later dunning attempt creates a new row and key. It never
+  reactivates or rewrites an `expired`, `cancelled`, or `consumed` row.
+- At most one reservation generation for the same occurrence and variant may
+  be active. A new generation must pass the normal PostgreSQL stock check. If
+  stock is unavailable, do not call the provider.
+- Only one collection attempt for the occurrence may be nonterminal at a time.
+  Every active reservation generation on its Order must belong to that same
+  collection attempt.
+- After verified canonical provider success is attributed to the exact
+  collection attempt, the PaymentApplication boundary would consume only the
+  active reservation generation linked to that attempt. It would not consume
+  a different generation merely because the Order ID matches.
+- This collection identity does not change the generic checkout identity law.
+  Any Orders implementation must retain checkout's existing
+  `order_id + variant_id` idempotency behavior.
+
+### Collection outcomes and holds
+
+- A durable collection attempt in `prepared` state with no PaymentIntent, or
+  with a `created` PaymentIntent, has no provider outcome yet. Its hold remains
+  active while any worker can still submit it. A durable dispatch fence may
+  prove the request never began and prevent future submission; only then may
+  cleanup release the hold. Record `not_submitted` for that dispatch, but keep
+  the same nonterminal collection attempt and identities for any resumption.
+  This is not financial non-success and does not permit a new collection ID.
+- A provider or transport replay with an ambiguous outcome reuses the same
+  collection attempt, PaymentIntent, and provider idempotency identity. Keep
+  that attempt's physical hold active. Ambiguity does not permit another
+  collection attempt.
+- Only verified canonical provider success attributed to the exact collection
+  attempt closes its collection eligibility. Under an approved target, the
+  PaymentApplication boundary would mark the Order paid and consume only the
+  reservation generation linked to that attempt; SBH-10-05 would then
+  reconcile under its existing authority. A local PaymentIntent `succeeded`
+  state or synchronous provider response alone would not consume inventory.
+- A PaymentIntent `failed` result is terminal financial non-success only when
+  durable verified provider/payment evidence establishes a final decline or
+  equivalent final failure. A provider-confirmed cancellation or expiry is
+  also terminal only when it proves that the submitted intent cannot later
+  succeed. The system may then cancel and release that attempt's reservation
+  generation. A later dunning attempt may create a new generation only if the
+  current dunning policy permits it.
+- A local `cancelled` state does not prove provider cancellation for an intent
+  whose submission may have started. Local cancellation is sufficient only
+  behind the durable pre-submission fence above. Local expiry and an
+  authentication deadline are not financial outcomes.
+- `requires_action` remains on the same PaymentIntent and collection attempt.
+  Keep its reservation active while authentication or provider status remains
+  unresolved. Do not release the hold when the customer-action deadline or
+  local reservation TTL passes.
+- At the authentication deadline, the system may request cancellation of the
+  same PaymentIntent and reconcile that request. Release the hold only after
+  durable provider/payment evidence proves terminal non-success. If the result
+  remains unknown, retain the hold and stop further collection until
+  reconciliation or manual action resolves it.
+- The generic reservation TTL cleanup must not release an active generation
+  linked to a prepared attempt with no PaymentIntent, a `created` PaymentIntent,
+  or a submitted, `requires_action`, or outcome-unknown PaymentIntent while a
+  worker could still submit or a charge could still succeed. TTL may start a
+  durable dispatch fence for a pre-submission attempt, or trigger provider
+  cancellation and reconciliation for a submitted attempt. Release follows
+  only after the corresponding fence or verified terminal provider/payment
+  evidence; TTL itself is not proof that a charge cannot still succeed. If a
+  pre-submission hold is released and that same collection attempt resumes, it
+  requires a new reservation generation linked to the same
+  `collection_attempt_id`. If the Orders boundary cannot represent that safely,
+  stop for Orders owner review.
+
+The inspected current renewal failure path releases the reservation when a
+PaymentIntent enters `requires_action`. That behavior conflicts with this target
+and is a known runtime gap. This governance amendment does not change it or
+authorize an Orders/Payments/provider fix. No implementation may treat the
+current path as evidence that authentication-required payment cannot later
+succeed.
+
+### InventoryAdmission reconciliation gate
+
+The frozen S0-ARCH-01 and `INV-ADM-004` contracts currently use
+`order_id + variant_id` for admission, queue identity, fencing, recovery, and
+the durable reservation lookup. They do not support multiple reservation
+generations for one Order and variant. Before implementation, the Inventory
+Admission owner must approve a bounded extension that carries the same stable
+`collection_attempt_id` through queue identity, lease and recovery fencing,
+PostgreSQL lookup, and reservation uniqueness. The extension must preserve
+PostgreSQL as inventory truth, serialize active generations for the occurrence
+and variant, and keep ambiguous database outcomes fenced until durable state is
+known.
+
+The current payment-success path consumes reservations through the Order
+boundary. The one-active-collection rule must make every active generation for
+that renewal Order belong to the PaymentIntent that can succeed. If the current
+Orders and Payments boundaries cannot enforce that relation, obtain their
+owners' authority to carry and validate the collection-attempt identity through
+payment success. Order identity alone is not proof of collection-attempt
+identity.
+
+No current subscription task may change the frozen InventoryAdmission design,
+reservation schema, Orders APIs, Redis gate, or cleanup behavior under this
+section alone. A separate owner-approved authority grant and implementation
+plan are required.

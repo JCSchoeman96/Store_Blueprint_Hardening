@@ -52,6 +52,47 @@ Behavior (MUST):
 - Only one PaymentIntent may be in submitted state per order at a time:
   - additional attempts must either reuse the same intent (provider-dependent) or create a new intent after failing/cancelling the previous one.
 
+### 3.3 Blocked Subscription renewal collection target (v0.1.27)
+
+This section records a future renewal target only. It does not amend the
+effective PaymentIntent rules in sections 3.1–3.2, authorize runtime behavior,
+or assign Payments, provider, Orders, InventoryAdmission, or Subscription
+implementation authority. Those owners must explicitly approve any change to
+their contracts before this target can become effective. SBH-10-04 remains
+blocked pending those decisions.
+
+Under the target, the occurrence-level `renewal_key` would identify the one
+RenewalAttempt and Order, not every provider collection against that
+occurrence. A durable collection-attempt record would be created before
+PaymentIntent or provider work and would have a UUIDv7
+`collection_attempt_id`. Any monotonic collection ordinal would have a
+separate durable meaning and would not reuse or reinterpret the existing
+`RenewalAttempt.attempt_no` without a later explicit authority decision.
+
+The target local PaymentIntent key is
+`renewal-collection:<collection_attempt_id>`. It would be distinct for each
+collection attempt against the same Order and reused only for replay of that
+same collection. The target provider idempotency key is also
+`renewal-collection:<collection_attempt_id>`; it would remain stable for
+ambiguous transport/provider replay. A pre-submission dispatch fence could
+release a reservation hold after proving no worker can submit, but recovery
+would remain on the same collection attempt and keys. A new key and
+PaymentIntent would be allowed only after verified provider/payment evidence
+proves final financial non-success and dunning policy permits another attempt.
+An ambiguous result, `requires_action`, local timeout, or local cancellation
+after submission would not allow a new collection key.
+
+Every PaymentIntent would need durable attribution to its exact collection
+attempt and RenewalAttempt occurrence. Successful reconciliation would need to
+identify the exact successful collection evidence without ambiguity or
+destructive history rewriting. The meaning of the legacy single
+`RenewalAttempt.payment_intent_id` remains unresolved for a later explicit
+Subscription, Payments, and SBH-10-05 authority decision. One PaymentIntent
+may be in flight per Order as required above. The target does not change
+generic checkout key derivation. The v0.1.27 Subscription register records
+this as a blocked target, not current runtime behavior or effective
+cross-domain law.
+
 ## 4) State interlocks (MUST)
 ### 4.1 Order state transition to paid
 Order transitions to paid only when:

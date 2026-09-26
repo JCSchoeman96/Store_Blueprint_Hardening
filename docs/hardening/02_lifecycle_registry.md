@@ -330,6 +330,20 @@ The resource starts in `created` and has `version` optimistic locking. Canonical
 | `submitted -> failed` or `requires_action -> failed` | Verified canonical failure such as Stripe payment failure, charge failure, setup failure, or a synchronous renewal decline. | `mark_failed`; renewal path also releases reservations and records RenewalAttempt/Subscription dunning state. | Receipt/provider-event/payment-attempt identities; local state action is replay-safe for already failed. | `maybe_mark_payment_intent_failed` returns no-op for `failed` and no-op for states outside failed-transitionable states. Normal initial-payment failure does not call Order `mark_payment_failed` in the observed path. | Yes |
 | `created|submitted|requires_action -> cancelled` | Stripe `setup_intent.canceled` is normalized as failure but special-cased to local cancellation; explicit system/admin cancel action is also present. | `cancel`. | Already cancelled is a no-op in canonical processing. | No transition from succeeded/failed; same-target replay is no-op. | Yes |
 
+The `renewal:<renewal_key>` PaymentIntent identity and renewal reservation
+release on `requires_action` above are observed current runtime behavior. The
+release on `requires_action` is a known safety gap because authentication may
+still succeed and payment application expects an active reservation. The
+current Stripe renewal adapter also uses the occurrence `renewal_key` as its
+outbound idempotency key. The blocked v0.1.27 target proposes distinct
+collection-attempt, PaymentIntent, and provider idempotency identities after
+verified terminal non-success; an ambiguous replay would keep the same
+identities and a `requires_action` hold would stay active. This proposal does
+not change current cross-domain law or runtime behavior. See the canonical
+blocked contract in the
+[Subscription Hardening Master Register](subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md).
+This registry remains descriptive.
+
 ### Provider and webhook handling
 
 The implemented provider is Stripe. Its adapter verifies the raw body and `stripe-signature`, normalizes provider payloads into `CanonicalReceipt`, and maps event types in [`lib/store/payments/providers/stripe.ex`](../../lib/store/payments/providers/stripe.ex). PayFast, Paystack, Yoco, and Peach Payments are resolver-known but operational methods return not-implemented/disabled errors; their capability maps do not prove lifecycle support.

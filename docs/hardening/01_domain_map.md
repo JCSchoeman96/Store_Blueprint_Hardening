@@ -1,15 +1,21 @@
 # Subscription domain and lifecycle map
 
-**Status:** Stage B governance freeze, JC-219 v0.1.18 effective-revision
-selection amendment, JC-220 / JC-221 / JC-222
+**Status:** Stage B governance freeze, including the bounded v0.1.27 amendment
+to renewal collection identity and recovery; JC-219 v0.1.18 effective-revision
+selection amendment; JC-220 / JC-221 / JC-222
 **Scope:** Subscription domain law and architecture only
 **Implementation authority:** None
 **Canonical navigation:** `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 
-This document is the canonical Subscription domain, lifecycle, and race map. It
-freezes the owner-approved Stage B law without authorizing source code, schema,
-migration, provider, Payments, Orders, Entitlements, infrastructure, rollout, or
-Batch 001 work.
+This document is the canonical Subscription domain, lifecycle, and race map.
+The owner-approved Stage B law remains frozen except for the bounded v0.1.27
+amendment to renewal collection identity and recovery in section 14, recorded
+in section 47 of the master register. That amendment replaces only the prior
+rule that one provider idempotency identity covered every collection for an
+occurrence. All unrelated Stage B law and the JC-223 dependency graph remain
+unchanged. This document does not authorize source code, schema, migration,
+provider, Payments, Orders, Entitlements, infrastructure, rollout, or Batch
+001 work.
 
 ## 1. Domain purpose
 
@@ -659,8 +665,36 @@ node-local mutexes, global GenServers, and worker serialization are not authorit
 ### Renewal identity
 
 One Subscription and billing boundary have one durable logical renewal identity.
-Duplicate claims reuse the existing RenewalAttempt. Retries reuse its B-bound
-contract and provider idempotency identity.
+Duplicate claims reuse the existing RenewalAttempt. Every collection under
+that occurrence uses its B-bound commercial contract and Order. The bounded
+v0.1.27 amendment replaces the former occurrence-wide provider idempotency
+identity rule: after verified terminal financial non-success, a later
+authorized dunning collection requires its own durable collection-attempt,
+PaymentIntent, and provider idempotency identities. An ambiguous
+transport/provider outcome replays the same collection attempt and its keys.
+`requires_action` or unknown status does not authorize a new attempt. The
+occurrence `renewal_key` is not the key for every sequential provider
+collection.
+
+Any collection-attempt ordinal must have a separate durable meaning from
+`RenewalAttempt.attempt_no`. It must not reuse or reinterpret that existing
+failure/dunning counter without a later explicit authority decision. Every
+PaymentIntent must be durably attributable to its exact collection attempt and
+RenewalAttempt occurrence. Successful reconciliation must identify the exact
+successful collection evidence without ambiguity or destructive history
+rewriting. The meaning of the legacy single
+`RenewalAttempt.payment_intent_id` field remains for a later explicit
+Subscription, Payments, and SBH-10-05 authority decision.
+
+The inspected runtime still reuses the occurrence-level PaymentIntent and
+Stripe idempotency key, and its `requires_action` path releases the physical
+reservation. Those behaviors are recorded in the lifecycle registry. The
+v0.1.27 master-register amendment records a blocked target and changes the one
+Stage B identity rule described above. It does not authorize implementation or
+change the JC-223 dependency graph, unrelated Stage B law, or SBH-10-05
+reconciliation semantics. This is a Subscription-side target only; current
+Provider, Payments, Orders, and Inventory contracts remain in force until
+their owners approve changes.
 
 ### Payment and callback apply-once
 
@@ -689,9 +723,13 @@ durable access-effect obligations
 
 If B exists and C definitely did not occur, resume the same occurrence with the
 same bound contract. If C may have occurred but the outcome is unknown, do not
-issue a second non-idempotent collection. Reuse the provider idempotency identity
-where guaranteed and/or query the provider before deciding whether another request
-is safe.
+issue a second non-idempotent collection. Reuse the idempotency identity for the
+same durable collection attempt where guaranteed and/or query the provider
+before deciding whether another request is safe. A pre-submission fence may
+release a physical hold, but it does not create a new collection identity;
+resume with the same attempt and keys. A new collection identity is permitted
+only after final provider/payment non-success is durably verified and dunning
+policy permits another attempt.
 
 If D exists but local application crashed, replay local application idempotently.
 If access execution crashed, re-derive the current source target and converge the
