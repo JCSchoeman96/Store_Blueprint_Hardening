@@ -734,8 +734,9 @@ Implement the Phase 27 variable-subscription spine without violating the existin
   current `hardening/subscriptions` tip at this amendment base.
 - PR #78 remains `OPEN / DRAFT` for blocked SBH-10-04 and is unrelated to this
   admission.
-- Governance PR review, exact-head CI, human merge, and independent
-  post-merge commit/tree verification remain pending.
+- [PR #82](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/82)
+  is the live record for exact-head CI and review status. Human merge and
+  independent post-merge commit/tree verification remain pending.
 - The intended changed paths are this note and
   `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`.
   No production code, tests, migration, Ash snapshot, dependency, worker, or
