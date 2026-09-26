@@ -1641,8 +1641,9 @@ Still not authorized:
 
 1. Merge the reviewed canonical governance amendment to `main`.
 2. Verify the exact merge commit and tree independently.
-3. Re-admit SBH-10-04 in a separate SUBS governance change against the then-current accepted SUBS tip, after current source compatibility checks.
-4. Assign a new implementation task base only after that re-admission merges and receives post-merge verification.
+3. Complete a separate S0 governance/task admission for the typed renewal-key and exact-key recovery path, including any S0-scoped implementation required by that admission; pass its required review, merge, and independent post-merge commit/tree verification.
+4. Only after the S0 admission merges and verifies, re-admit SBH-10-04 in a separate SUBS governance change against the then-current accepted SUBS tip and recheck current source compatibility. The SUBS amendment must not mark SBH-10-04 `READY` from PR #80 alone.
+5. Assign a new implementation task base only after the SUBS re-admission merges and receives independent post-merge verification.
 
 ### Performance & Scaling Review
 

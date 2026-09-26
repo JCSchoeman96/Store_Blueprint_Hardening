@@ -165,17 +165,18 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 
 1. Merge the governance PR to canonical `main`.
 2. Verify the exact merge commit and tree independently.
-3. Create a separate SUBS governance re-admission amendment against the then-current accepted tip and recheck current source compatibility.
-4. Assign a new SBH-10-04 task base only after that amendment merges and receives independent post-merge verification.
+3. Complete a separate S0 governance/task admission for the typed renewal-key and exact-key recovery path, including any S0-scoped implementation required by that admission; pass its required review, merge, and independent post-merge commit/tree verification.
+4. Only after the S0 admission merges and verifies, create the separate SUBS governance re-admission amendment against the then-current accepted tip and recheck current source compatibility. The SUBS amendment must not mark SBH-10-04 `READY` from the governance PR alone.
+5. Assign a new SBH-10-04 task base only after that SUBS amendment merges and receives independent post-merge verification.
 
 ### Performance & Scaling Review
 
-- **Hot:** Renewal collection creation, physical inventory holds, payment dispatch, webhooks, and paid application. This docs-only change adds no production query. The later implementation must measure each path's query count and N+1 risk.
+- **Hot:** Renewal collection creation, physical inventory holds, payment dispatch, provider status/cancel reconciliation, webhooks, and paid application. This docs-only change adds no production query. The later implementation must measure each path's query count and N+1 risk.
 - **Warm:** No cache is added. PostgreSQL remains inventory authority; Redis remains bounded admission coordination. Generic checkout TTL and stock invalidation remain unchanged; unresolved renewal generations bypass generic TTL cleanup until exact release evidence exists. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
-- **Cold:** Provider and database ambiguity need bounded reconciliation with fail-closed behavior. Collection workers reuse the durable collection ID on retry.
+- **Cold:** Provider and database ambiguity use bounded reconciliation; exhaustion leaves the collection unresolved, keeps the hold active, and requires operator review. Collection workers reuse the durable collection ID on retry.
 - **Indexes:** The task-specific Orders migration adds one active generation partial index while retaining the globally unique `reservation_key`. Subscription indexes enforce unique collection ordinal, a unique nullable `payment_intent_id` association, and at most one unresolved collection per RenewalAttempt.
-- **Oban and idempotency:** Existing occurrence scheduling remains keyed by subscription and `renewal_key`; each collection execution uses its durable collection ID and collection-derived provider key.
-- **Telemetry and logging:** Record dispatch state, verified outcome, collection ID, local intent ID, reservation key, recovery result, and PaymentApplication result as separate observations.
+- **Oban and idempotency:** Existing occurrence scheduling remains keyed by subscription and `renewal_key`; collection reconciliation jobs are unique by collection ID and dispatch epoch, and each provider operation targets the same collection PaymentIntent.
+- **Telemetry and logging:** Record dispatch epoch, fenced-through epoch, fence result, provider reconcile/cancel result, verified outcome, collection ID, local intent ID, reservation key, recovery result, and PaymentApplication result separately.
 
 ### Verification
 
