@@ -1633,7 +1633,8 @@ Still not authorized:
 - Canonical governance base: `1fb29528e63a255cf86f1810d99b2372a55923cc`.
 - Accepted SUBS evidence: `c66fb843beeb25e4943ceb6119b1ed7de3999964`.
 - Generic checkout keeps `order:<order_id>:sku:<variant_id>`, `K_v = 1`, the global `B_total` budget, and PostgreSQL as stock and reservation authority.
-- The renewal path may carry a server-derived generation key through InventoryAdmission request identity, operation descriptors, Lease values, Redis recovery metadata, and PostgreSQL recovery by the exact key.
+- The S0 architecture contract requires a server-derived generation key through request identity, operation descriptors, Lease values, Redis recovery metadata, and PostgreSQL recovery by that exact key.
+- The frozen IA-01 implementation plan still blocks changes to the existing `Request`, `Operation`, and `Lease` contracts. A separate S0 governance/task admission for the minimum typed renewal path and exact-key recovery is required before SBH-10-04 can be marked `READY`.
 - The amendment grants no generic InventoryAdmission redesign and does not certify the recovery service or worker as implemented at the canonical base.
 
 ### Plan
@@ -1646,7 +1647,7 @@ Still not authorized:
 ### Performance & Scaling Review
 
 - **Hot:** Future renewal reservations and payment success remain hot paths. This governance work adds no production query. The implementation review must measure request, lease, recovery, and exact-generation query counts and state N+1 risk.
-- **Warm:** No cache is added. Redis coordinates bounded admission only; PostgreSQL remains authoritative. Existing TTL and stock invalidation rules stay in force. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
+- **Warm:** No cache is added. Redis coordinates bounded admission only; PostgreSQL remains authoritative. Generic checkout TTL and stock invalidation rules stay in force; unresolved renewal generations bypass generic TTL cleanup until evidence permits exact release. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
 - **Cold:** Ambiguous database outcomes must reconcile by exact `reservation_key` under the existing bounded recovery fence. No 100,000-user certification is claimed.
 - **Indexes:** Keep global `reservation_key` uniqueness and the `inventory_items.variant_id` index. The authorized Orders change supplies the partial unique active `(order_id, variant_id)` index.
 - **Idempotency and telemetry:** A generation key identifies one durable reservation mutation. The implementation must keep Oban and provider identities collection-specific and record exact recovery outcomes separately from Redis lease state.

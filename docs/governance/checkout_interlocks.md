@@ -68,6 +68,8 @@ The collection must durably link the exact PaymentIntent. The existing `PaymentA
 
 Before physical renewal success reaches reservation consumption, the renewal path must prove the exact local PaymentIntent-to-collection relationship and the exact expected active reservation-key set. It then uses the exact-key Orders consume operation within the paid-Order transaction. If an order-level PaymentApplication already exists, the renewal path verifies that its `payment_intent_id` matches the successful intent before treating the result as a replay. This validation stays outside generic checkout semantics.
 
+The current generic payment-success path consumes reservations by Order. An admitted renewal success path must not invoke that order-wide consume operation. Payments must use a renewal-specific paid transaction that preserves the PaymentApplication apply-once insert and exact-intent replay check while consuming only the validated collection's exact reservation keys through Orders. Virtual renewals skip reservation consumption. Generic checkout continues to use its current order-wide path.
+
 ## 4) State interlocks (MUST)
 ### 4.1 Order state transition to paid
 Order transitions to paid only when:

@@ -31,10 +31,11 @@ Implement the Phase 27 variable-subscription spine without violating the existin
    - open checkout drafts tied to pending-payment orders for the same user and membership plan
 7. Subscription management remains inline on the existing account/admin detail routes; no dedicated manage routes are introduced.
 8. Stripe payment-method updates use inline SetupIntent + Elements, not hosted Checkout redirect.
-9. Physical renewals are now charge-safe:
+9. Current physical renewal behavior has bounded safety gaps for sequential collections:
    - catalog and variant-plan blockers are retry-suppressed hard failures
-   - inventory is reserved before Stripe and explicitly released on known failure paths
-   - shipping is re-quoted live, but large quote drift is blocked by a surge circuit breaker
+   - inventory is reserved before Stripe, but the current `requires_action` path releases the hold while the payment can still succeed
+   - the current retry path can re-quote shipping and rewrite totals; a surge circuit breaker limits drift but does not replace reuse of finalized Order totals
+   - the SBH-10-04 amendment records the future correction; this governance change does not alter runtime behavior
 
 ## PLAN
 
@@ -170,9 +171,9 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 ### Performance & Scaling Review
 
 - **Hot:** Renewal collection creation, physical inventory holds, payment dispatch, webhooks, and paid application. This docs-only change adds no production query. The later implementation must measure each path's query count and N+1 risk.
-- **Warm:** No cache or TTL policy changes. PostgreSQL remains inventory authority; Redis remains bounded admission coordination. Existing stock invalidation remains after committed reservation changes. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
+- **Warm:** No cache is added. PostgreSQL remains inventory authority; Redis remains bounded admission coordination. Generic checkout TTL and stock invalidation remain unchanged; unresolved renewal generations bypass generic TTL cleanup until exact release evidence exists. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
 - **Cold:** Provider and database ambiguity need bounded reconciliation with fail-closed behavior. Collection workers reuse the durable collection ID on retry.
-- **Indexes:** The task-specific Orders migration adds one active generation partial index while retaining the globally unique `reservation_key`. Subscription indexes enforce unique collection ordinal and at most one unresolved collection per RenewalAttempt.
+- **Indexes:** The task-specific Orders migration adds one active generation partial index while retaining the globally unique `reservation_key`. Subscription indexes enforce unique collection ordinal, a unique nullable `payment_intent_id` association, and at most one unresolved collection per RenewalAttempt.
 - **Oban and idempotency:** Existing occurrence scheduling remains keyed by subscription and `renewal_key`; each collection execution uses its durable collection ID and collection-derived provider key.
 - **Telemetry and logging:** Record dispatch state, verified outcome, collection ID, local intent ID, reservation key, recovery result, and PaymentApplication result as separate observations.
 

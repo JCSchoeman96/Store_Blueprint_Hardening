@@ -1104,6 +1104,8 @@ prompt. Completion of IA-03 does not authorize IA-04 or any later slice.
 
 This addendum amends S0-ARCH-01 only to admit server-derived reservation generations for physical subscription renewals. In the base architecture, generic checkout uses `order_id + variant_id` as its logical identity and recovery-fence identity. For a physical renewal generation, the full server-derived `reservation_key` is the logical durable-operation and recovery-fence identity. `INV-ADM-004` continues to require at most one durable effect per logical identity: the generic key remains one `(order_id, variant_id)` pair, while each renewal generation has its own exact key. `K_v` still serializes entrants by variant and `B_total` still bounds total database entrants. All other lease, PostgreSQL, ambiguity, recovery, and fail-closed requirements remain in force. This section grants no runtime implementation authority by itself.
 
+The renewal contract requires the exact key through a server-owned typed request, operation descriptor, Lease, recovery fence, and PostgreSQL lookup. It does not authorize adding caller-supplied keys to the existing generic request. The S0 implementation plan still freezes the IA-01 `Request`, `Operation`, and `Lease` contracts and forbids reopening them. Before SBH-10-04 can be marked `READY`, a separate S0 governance/task admission must authorize the minimum new typed renewal path and the exact-key propagation/recovery changes to those contracts. That S0 admission must preserve the generic path and the invariants below. If the S0 authority cannot be granted without weakening those invariants, stop and return to governance.
+
 Generic checkout continues to derive:
 
 ```text
