@@ -316,9 +316,9 @@ review both passed.
 
 Resulting state: S0 remains `READY`; IA-03 remains `NOT AUTHORIZED`.
 
-Next lifecycle step: `RECONCILED -> ELIGIBLE_FOR_TASK_ADMISSION`. This permits only a
-fresh bounded task-admission review. It does not authorize IA-03 or SBH-10-04
-implementation.
+Task-admission status: the reconciliation prerequisite is satisfied. S0 remains
+`READY`, and a fresh bounded task-admission review may now occur. IA-03 remains
+`NOT AUTHORIZED`; this does not authorize IA-03 or SBH-10-04 implementation.
 
 The narrow governance PR that records this completed PR #83 reconciliation changes
 authority/status documentation only. It adds no runtime, dependency, schema, migration,
