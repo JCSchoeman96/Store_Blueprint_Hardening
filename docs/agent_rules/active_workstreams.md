@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `e16767e92ac22ca7a108f13677052c63bb13c3f2` (explicitly human-accepted; exact-head review `PASS`; PR #51 merged provenance) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `b40832ee8f955f294cec8c5193aa2c61a02e75b9` (replacement base; PR #71) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -253,6 +253,9 @@ Prior state: `BOOTSTRAPPED`.
 
 Accepted S0 development base: `e16767e92ac22ca7a108f13677052c63bb13c3f2`.
 
+This records the original S0 activation baseline. It remains historical provenance;
+it is not the current S0 development base after PR #71.
+
 Baseline guard: `PASS`.
 
 Activation-feasibility guard: `PASS`.
@@ -278,10 +281,34 @@ Baseline provenance:
 
 Resulting current state: `READY`.
 
-The persistent S0 branch remains at its existing tip until a separately authorized
-alignment task. `READY` does not mean `ACTIVE_PARALLEL`, `VALIDATED`, or
-`READY_FOR_INTEGRATION`. Convergence with current `main` remains a later integration
-obligation.
+At activation, the persistent S0 branch remained at its prior tip pending a separate
+alignment task. PR #71 later advanced it to the replacement development base recorded
+below. `READY` does not mean `ACTIVE_PARALLEL`, `VALIDATED`, or `READY_FOR_INTEGRATION`.
+Convergence with current `main` remains a later integration obligation.
+
+### Current S0 replacement development base
+
+Current S0 development base: `b40832ee8f955f294cec8c5193aa2c61a02e75b9`.
+
+Provenance:
+
+- PR #71 candidate HEAD: `458d9592113bb99713c1ee41b510999fc3d4e469`; independent candidate certification: `PASS`.
+- Exact-head CI run `35870593599`: `PASS`; all five required jobs passed.
+- PR #71 merged into `hardening/s0-baseline` as `b40832ee8f955f294cec8c5193aa2c61a02e75b9`.
+- Candidate and merge commit have identical tree `61b240c552358dbf7c09a633b89495f40f900af4`.
+- Independent post-merge review: `PASS`.
+
+### S0 main-to-branch reconciliation gate
+
+PR #80 added an accepted InventoryAdmission architecture amendment for
+renewal-generation admission to canonical `main`. Before any new S0 implementation
+or fresh IA-03 task-admission decision, integrate the then-current `origin/main` into
+`hardening/s0-baseline` through a dedicated integration branch and worktree. Validate
+the integrated tree, obtain exact-head CI, and complete a fresh independent
+post-integration review. This is a task-admission blocker, not a lifecycle change.
+S0 remains `READY`; IA-03 remains `NOT AUTHORIZED`. The integration grants no
+implementation authority, including for SBH-10-04 or InventoryAdmission. A fresh
+bounded IA-03 task-admission decision is still required after reconciliation.
 
 ### PLATFORM
 
@@ -836,7 +863,7 @@ When updating:
 This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
 - `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
-- `origin/hardening/s0-baseline` = `9b0b26a68399149abdde7c96529fbc1951e22cac` (current branch tip after governance cleanup propagation)
+- `origin/hardening/s0-baseline` = `b40832ee8f955f294cec8c5193aa2c61a02e75b9` (current fetched persistent S0 tip after PR #71)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
 - `origin/hardening/subscriptions` = `80d44613dc45a26ecb34a8eb6cbad8cce1e4f0c1` (verified PR #31 v0.1.8 runtime-transition merge; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
