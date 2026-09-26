@@ -1,7 +1,7 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.27
-**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with one bounded v0.1.27 Stage B renewal identity/recovery amendment
+**Version:** v0.1.28
+**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment and v0.1.28 SBH-50-06 admission
 **Verified:** 2026-09-26
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -11,14 +11,14 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze with the bounded v0.1.27 renewal identity and recovery amendment, the unchanged JC-223 dependency graph and hardening matrix, and historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes beyond an explicitly recorded task-specific grant, or manufacture READY work.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, and the v0.1.28 SBH-50-06 task-specific admission. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
 The values below are provenance only, not current authority. They record the
-exact pre-amendment state. The current v0.1.27 transition that follows
-supersedes SBH-10-04's READY state and does not authorize further work on PR
-#78.
+exact pre-amendment state. The historical v0.1.27 transition that follows
+superseded SBH-10-04's READY state. Section 48 records the current v0.1.28
+state and authority.
 
 Before this v0.1.27 amendment, the live authority tips were re-verified:
 
@@ -99,7 +99,10 @@ byte-for-byte unchanged. This amendment changes only the Subscription-side
 future target; effective Provider, Payments, Orders, and Inventory contracts
 remain in force until their owners approve changes.
 
-## Current v0.1.27 transition: JC-229 / SBH-10-04 blocked for shared authority
+## Historical v0.1.27 transition: JC-229 / SBH-10-04 blocked for shared authority
+
+The current-state effects in this section are superseded by the v0.1.28
+transition in section 48.
 
 This governance-only amendment starts from the exact accepted SUBS tip
 `0016237646f9fddfc2364680b8cc9ddeb7c10655`. It records the retry and
@@ -108,10 +111,10 @@ the bounded Stage B renewal identity/recovery amendment described above. It
 changes no production code, tests, migrations, Ash snapshots, or JC-223
 dependency edge.
 
-SBH-10-04 transitions from `READY / EXTERNALIZED` to
+SBH-10-04 transitioned from `READY / EXTERNALIZED` to
 `BLOCKED_SHARED_AUTHORITY / BLOCKED_SHARED_AUTHORITY`. No implementation/proof
-row is currently READY. SBH-10-05 remains `BLOCKED_DEPENDENCY`; its frozen edge
-from SBH-10-03 and SBH-10-04 is unchanged.
+row was READY at v0.1.27. SBH-10-05 remained `BLOCKED_DEPENDENCY`; its frozen
+edge from SBH-10-03 and SBH-10-04 is unchanged.
 
 PR #78 remains open and draft. Its exact head
 `08b28937c001b4f35350bcf5de6fdd052fc7a4c3` has parent
@@ -3469,11 +3472,59 @@ Do not embed arbitrary Entitlements side effects directly inside unrelated Subsc
 
 ## SBH-50-06 — Durable AccessEffect Obligation Foundation
 
-**State:** `BLOCKED_SHARED_AUTHORITY` until required migration and Ash snapshot
-authority is assigned.
+**State:** `READY`.
+**Shared authority:** `AUTHORITY_ASSIGNED` for the bounded SBH-50-06 grant below.
 **Loop eligible:** No.
 
-Freeze durable, source-specific access-effect convergence:
+The v0.1.28 governance amendment changes only this row:
+
+```text
+BLOCKED_SHARED_AUTHORITY / BLOCKED_SHARED_AUTHORITY
+→ READY / AUTHORITY_ASSIGNED
+```
+
+The frozen JC-223 dependency graph is unchanged. SBH-50-06 depends on
+`SBH-10-02` and `SBH-20-01`, and remains a prerequisite for
+`SBH-50-02` through `SBH-50-05`, `SBH-30-04`, and `SBH-40-02`.
+
+### Granted implementation authority
+
+This authority applies only to SBH-50-06 and expires when the row closes. The
+later implementation may:
+
+- create one Subscription-owned durable resource named
+  `Store.Subscriptions.AccessEffect`;
+- add a task-local AccessEffect status/value type if needed and register the
+  resource in `Store.Subscriptions`;
+- add bounded `Store.Subscriptions.Facade` functions to create or reuse an
+  obligation and perform its allowed transitions;
+- add focused Subscription fixtures and tests;
+- add one PostgreSQL migration for the AccessEffect table and indexes, plus its
+  corresponding Ash/Postgres resource snapshot; and
+- record Phase 27 implementation evidence.
+
+No authority is granted for another migration or snapshot. This grant cannot be
+reused by `SBH-50-02` through `SBH-50-05`.
+
+### Ownership and authority boundary
+
+`AccessEffect` is durable Subscription evidence that a Subscription target
+requires downstream convergence. It is not an `EntitlementGrant` and cannot
+become authority over actual granted access:
+
+```text
+Subscription / AccessEffect = desired Commerce access target and obligation
+Store.Entitlements = actual entitlement/grant authority
+```
+
+No `Store.Entitlements` production file, resource, value, cache behavior,
+migration, snapshot, grant/revoke action, or facade may change. Do not add an
+Entitlements `:suspended` state. If the durable foundation requires an
+Entitlements-core change, stop and return to governance.
+
+### Frozen lifecycle and interpretation
+
+Preserve the JC-222 graph exactly:
 
 ```text
 REQUIRED → PENDING → APPLIED
@@ -3481,16 +3532,87 @@ PENDING → FAILED_RETRYABLE → PENDING
 PENDING → SUPERSEDED
 ```
 
-The obligation must be idempotent, carry the latest target and version, and
-prevent stale effects from restoring obsolete rights. It must leave Subscription
-truth untouched, and independent sources must remain independent. It depends on
-`SBH-10-02` and `SBH-20-01`, and is required before `SBH-50-02` through
-`SBH-50-05`, `SBH-30-04`, and `SBH-40-02`.
+`REQUIRED` means Subscription truth established a target that must converge.
+`PENDING` means the obligation is eligible for downstream execution.
+`FAILED_RETRYABLE` means execution did not converge and a later retry remains
+permitted. `APPLIED` means the exact obligation target was confirmed through a
+later governed execution path. `SUPERSEDED` means a newer authoritative target
+exists and this obligation must never restore obsolete access.
 
-Migrations and Ash snapshots are likely shared. Do not invent an Entitlements
-`:suspended` state. If Entitlements core must change, this row remains
-`BLOCKED_SHARED_AUTHORITY` until that authority is explicitly assigned. This task
-does not change actual shared authorities.
+`APPLIED` and `SUPERSEDED` are terminal for that obligation identity. Do not add
+`PROCESSING`, `SUSPENDED`, `CANCELED`, or generic event-sourcing states.
+
+### Source version and immutable target evidence
+
+Each obligation belongs to one Subscription and records the source Subscription
+identity plus the authoritative source version captured at the access-changing
+source commit. The Subscription aggregate version may provide that provenance,
+but it is not the current access-target version. A later provider, payment-method,
+or operational write may advance the aggregate version without changing access.
+Order current targets from durable AccessEffect targets for that Subscription.
+Do not require `effect.source_version == subscription.aggregate_version` to
+recognize the current target.
+
+Persist enough immutable evidence for a later executor to know the requested
+target without reading mutable `SubscriptionPlan` state:
+
+- desired access disposition;
+- applicable entitlement kind and scope when access is granted or retained;
+- any required validity boundary;
+- exact Subscription contract and PlanRevision provenance used to derive the
+  target;
+- source version; and
+- a deterministic target fingerprint or equivalent conflict identity.
+
+### Idempotency, ordering, and supersession
+
+The same Subscription source version and canonical target must reuse one
+durable AccessEffect identity. The same source version with materially different
+target evidence fails closed. A database uniqueness constraint must enforce the
+chosen Subscription/source-version identity rule; application-side existence
+checks alone are insufficient.
+
+Concurrent replays must converge on one row. Concurrent targets at different
+versions must preserve the newer target through database uniqueness and
+transactional locking or compare-and-swap. A stale writer cannot replace a
+newer payload. Current-target lookup must use a bounded index on Subscription
+and source ordering, without scanning all historical obligations. Once a newer
+target exists, an older nonterminal obligation cannot be promoted as current.
+
+When the older obligation is `REQUIRED` or `FAILED_RETRYABLE`, preserve the
+frozen graph by moving it through `PENDING` to `SUPERSEDED` atomically. No
+external Entitlements operation may occur between those transitions. Do not add
+direct `REQUIRED → SUPERSEDED` or `FAILED_RETRYABLE → SUPERSEDED` transitions.
+
+### Proof boundary and exclusions
+
+SBH-50-06 proves that the obligation layer can identify and suppress stale work
+before it is considered current or executable. It does not prove that an
+already-running stale worker cannot race an Entitlements mutation. That
+cross-domain execution proof belongs to SBH-50-02 / SBH-50-03 and may need a
+separate Entitlements authority grant.
+
+This task does not implement issuance or revocation recovery, access policy for
+past-due or canceled subscriptions, Entitlement repair/reconciliation, an
+AccessEffect worker, retry scheduling, cache repair, or generic convergence
+execution. It does not rewire every Subscription creation, renewal, cancellation,
+or expiry path. No implementation path may mutate Subscription truth to simplify
+effect execution.
+
+The implementation proof must cover duplicate replay, conflicting evidence for
+one source version, ordered targets preserving the newer target, atomic frozen
+supersession from both `REQUIRED` and `FAILED_RETRYABLE`, stale promotion
+rejection, unrelated aggregate-version increments, terminal non-reopening,
+Subscription-truth immutability, and the absence of Entitlements changes. It must
+also pass migration-generation drift, Ash snapshot alignment,
+idempotency/concurrency proof, and repository gates. Record database query
+counts for focused create, replay, and current-target lookup paths.
+
+The prospective implementation branch is
+`subs-task/sbh-50-06-access-effect-foundation`. No implementation
+`task_base_sha` is assigned here. Record it only after this governance amendment
+passes independent review and exact-head CI, a human merges it, and independent
+verification confirms the merge commit and tree.
 
 ---
 
@@ -4291,13 +4413,15 @@ EXTERNALIZED
 `NONE` means the current task contract identifies no shared modification.
 `AUTHORITY_ASSIGNED` means an explicit authority is recorded for the named
 shared surface. On a `CLOSED` row, it records completed task-specific
-provenance only and grants no further execution authority.
+provenance only and grants no further execution authority. SBH-50-06 holds
+current task-specific authority under v0.1.28 until that row closes.
 `BLOCKED_SHARED_AUTHORITY` means the task cannot proceed until that authority is
 assigned. `EXTERNALIZED` means the surface remains owned outside SUBS and the
 task must not modify it. `SBH-10-01`, `SBH-60-01`, `SBH-10-02`, `SBH-20-01`,
-and `SBH-10-06` retain `AUTHORITY_ASSIGNED` as completed task-specific
-provenance only. No authority grant is reusable outside its named row and
-surfaces.
+`SBH-10-06`, and `SBH-10-03` retain `AUTHORITY_ASSIGNED` as completed
+task-specific provenance only. SBH-50-06 authority applies only to its named
+row and expires when that row closes. No authority grant is reusable outside
+its named row and surfaces.
 
 | Row | Shared surface or boundary | Shared-authority status | Execution consequence |
 |---|---|---|---|
@@ -4318,7 +4442,7 @@ surfaces.
 | `SBH-30-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-40-02` | no shared modification identified in this contract | `NONE` | Durable worker path remains dependency-blocked. |
 | `SBH-40-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-50-06` | migrations, Ash snapshots, Entitlements core if required | `BLOCKED_SHARED_AUTHORITY` | Not executable until required authority is assigned. |
+| `SBH-50-06` | Subscription-owned `Store.Subscriptions.AccessEffect` resource and optional task-local status/value type; registration in `Store.Subscriptions`; bounded `Store.Subscriptions.Facade` create/reuse and transition functions; focused Subscription fixtures/tests; one AccessEffect PostgreSQL migration with indexes and its Ash/Postgres snapshot; Phase 27 implementation evidence | `AUTHORITY_ASSIGNED` | Current task-specific authority for SBH-50-06 only. It expires at closure. No Entitlements changes, no other migration or snapshot, and no authority for SBH-50-02 through SBH-50-05. |
 | `SBH-50-02` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-03` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
@@ -4346,8 +4470,8 @@ Do not "helpfully" fix the neighbouring domain.
 Every implementation row has a frozen scope. `State` below is its current
 register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
 `SBH-10-03`, `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and
-`SBH-80-02` are `CLOSED`. The current `READY` implementation/proof row
-count is zero. The recorded
+`SBH-80-02` are `CLOSED`. Exactly one implementation/proof row is `READY`:
+`SBH-50-06`. The recorded
 `loop_eligible` values remain register metadata; human selection is still
 required under the serial workflow before a `READY` row may enter
 implementation.
@@ -4371,7 +4495,7 @@ implementation.
 | `SBH-30-05` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-40-02` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-40-03` | cancellation proof | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-50-06` | shared-boundary hardening | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-50-06` | shared-boundary hardening | — | `READY` | No |
 | `SBH-50-02` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-03` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
@@ -4420,11 +4544,11 @@ SBH-80-01 = P1
 
 `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`, `SBH-10-03`,
 `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
-`CLOSED`. There are zero current canonical `READY` implementation/proof rows.
-The v0.1.27 transition blocks JC-229 / SBH-10-04 pending shared authority.
-SBH-10-05 remains `BLOCKED_DEPENDENCY / No`, and SBH-50-06 remains
-`BLOCKED_SHARED_AUTHORITY / No`. The JC-223 dependency edges are unchanged.
-The P1 labels provide no severity ordering.
+`CLOSED`. The v0.1.28 transition leaves exactly one canonical `READY`
+implementation/proof row, `SBH-50-06`. JC-229 / SBH-10-04 remains
+`BLOCKED_SHARED_AUTHORITY`, SBH-10-05 remains `BLOCKED_DEPENDENCY`, and
+SBH-50-02 through SBH-50-05 remain `BLOCKED_DEPENDENCY`. The JC-223 dependency
+edges are unchanged. The P1 labels provide no severity ordering.
 
 ---
 
@@ -5418,7 +5542,10 @@ or `task_base_sha`. The next task base can be assigned only through a separate
 explicit implementation admission after independent review, exact-head CI,
 human merge, and independent post-merge commit/tree verification.
 
-# 47. Current v0.1.27 Serial Verdict
+# 47. Historical v0.1.27 Serial Verdict
+
+The current-state effects in this section are superseded by the v0.1.28
+transition in section 48.
 
 ```text
 SUBS lifecycle = READY
@@ -5449,3 +5576,47 @@ canonical amendment after Subscription collection-attempt evidence, Orders
 reservation-generation semantics, InventoryAdmission identity/recovery, and
 provider collection idempotency authority are resolved. Payments core remains
 unchanged unless a separate authority decision is made.
+
+# 48. Current v0.1.28 Serial Verdict
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+hardening/subscriptions amendment base = c66fb843beeb25e4943ceb6119b1ed7de3999964
+canonical READY implementation/proof rows = 1
+canonical READY row = SBH-50-06
+```
+
+```text
+SBH-10-04 = BLOCKED_SHARED_AUTHORITY / No
+SBH-10-04 shared authority = BLOCKED_SHARED_AUTHORITY
+SBH-10-05 = BLOCKED_DEPENDENCY / No
+SBH-50-02 = BLOCKED_DEPENDENCY / No
+SBH-50-03 = BLOCKED_DEPENDENCY / No
+SBH-50-04 = BLOCKED_DEPENDENCY / No
+SBH-50-05 = BLOCKED_DEPENDENCY / No
+SBH-50-06 = READY / No
+SBH-50-06 shared authority = AUTHORITY_ASSIGNED
+```
+
+The v0.1.28 governance-only transition changes only SBH-50-06 from
+`BLOCKED_SHARED_AUTHORITY / BLOCKED_SHARED_AUTHORITY` to
+`READY / AUTHORITY_ASSIGNED`. It assigns the exact AccessEffect authority in
+that row's contract. Every other implementation/proof row retains its existing
+state. Exactly one canonical row is READY, `SBH-50-06`.
+
+The JC-223 dependency graph is unchanged. SBH-10-04 remains
+`BLOCKED_SHARED_AUTHORITY`; SBH-10-05 and SBH-50-02 through SBH-50-05 remain
+`BLOCKED_DEPENDENCY`.
+
+PR #78 remains open and draft as partial implementation and proof evidence for
+blocked SBH-10-04. It is unrelated to this SBH-50-06 admission and grants no
+authority to continue its implementation.
+
+This governance amendment assigns no implementation `task_base_sha`. The
+prospective branch is `subs-task/sbh-50-06-access-effect-foundation`. JC-289 may
+be admitted for implementation only after independent review, exact-head CI,
+human merge, and independent merge commit/tree verification. Its exact
+`task_base_sha` must then be the accepted post-governance
+`hardening/subscriptions` tip. No implementation authority is usable before
+that admission.

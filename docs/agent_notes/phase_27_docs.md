@@ -598,3 +598,146 @@ Implement the Phase 27 variable-subscription spine without violating the existin
   checkout interlocks, payment provider contract, subscription domain map,
   lifecycle registry, and this Phase 27 note. No runtime or schema path changes.
 - Governance PR merge and post-merge verification remain pending.
+
+## JC-289 / SBH-50-06 AccessEffect foundation admission for v0.1.28 governance
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
+- `docs/agent_notes/phase_27_docs.md`
+- `docs/phases/phase_27_variable_subscriptions.md`
+- `docs/phases/phase_27a_membership_subscriptions_entitlements.md`
+- `docs/governance/subscription_scheduling_terms.md`
+- `docs/governance/state_machines.md`
+- `docs/governance/idempotency.md`
+- `docs/governance/performance_scaling.md`
+- `docs/phases/phase_29_performance_architecture_optimizations.md`
+- `docs/hardening/01_domain_map.md`
+- `docs/hardening/02_lifecycle_registry.md`
+- [PR #78, partial SBH-10-04 evidence](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/78)
+- [PR #79, merged v0.1.27 governance](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/79)
+
+### Decisions / pins
+
+1. This governance amendment starts at the exact accepted
+   `hardening/subscriptions` base `c66fb843beeb25e4943ceb6119b1ed7de3999964`
+   on `subs-governance/sbh-50-06-access-effect-admission`. PR #79 merged at
+   that base. This record supersedes the earlier v0.1.27 verification text
+   below that said PR #79 remained open and draft.
+2. Only SBH-50-06 changes state:
+   `BLOCKED_SHARED_AUTHORITY / BLOCKED_SHARED_AUTHORITY` to
+   `READY / AUTHORITY_ASSIGNED`. It is the sole canonical READY
+   implementation/proof row. SBH-10-04 remains
+   `BLOCKED_SHARED_AUTHORITY`; SBH-10-05 and SBH-50-02 through SBH-50-05
+   remain `BLOCKED_DEPENDENCY`. The JC-223 graph is unchanged.
+3. The later SBH-50-06 implementation may add one Subscription-owned
+   `Store.Subscriptions.AccessEffect` resource, an optional task-local status
+   or value type, resource registration, bounded Facade create/reuse and
+   transition functions, focused Subscription fixtures/tests, one PostgreSQL
+   table/index migration and matching Ash/Postgres snapshot, and Phase 27
+   implementation evidence. This authority expires when SBH-50-06 closes and
+   cannot be reused by SBH-50-02 through SBH-50-05. No other migration or
+   snapshot is authorized.
+4. `AccessEffect` records the desired Commerce access target and the need for
+   downstream convergence. It is not an EntitlementGrant. Subscription and
+   AccessEffect record desired access; `Store.Entitlements` remains the
+   authority for actual grants. No Entitlements production file, resource,
+   value, cache behavior, migration, snapshot, grant/revoke action, or facade
+   may change.
+5. Preserve the JC-222 lifecycle exactly:
+
+   ```text
+   REQUIRED → PENDING → APPLIED
+   PENDING → FAILED_RETRYABLE → PENDING
+   PENDING → SUPERSEDED
+   ```
+
+   `APPLIED` and `SUPERSEDED` are terminal for that obligation identity. Do
+   not add `PROCESSING`, `SUSPENDED`, `CANCELED`, or generic event-sourcing
+   states. A stale `REQUIRED` or `FAILED_RETRYABLE` obligation must pass through
+   `PENDING` to `SUPERSEDED` atomically, with no external operation between
+   transitions.
+6. Each obligation belongs to one Subscription and records its source identity
+   and source version. The aggregate version may be captured at the
+   access-changing commit as provenance, but it is not the current target
+   version. Unrelated Subscription writes do not supersede access targets.
+   Durable AccessEffect target ordering determines current-target precedence.
+7. Store immutable target evidence for disposition, applicable entitlement
+   kind and scope, any required validity boundary, exact Subscription contract
+   and PlanRevision provenance, source version, and a deterministic target
+   fingerprint. The later executor must not derive its target from mutable
+   `SubscriptionPlan` state.
+8. Replaying the same source version and canonical target reuses one durable
+   row. Different target evidence for that source version fails closed. A
+   database uniqueness constraint and transactional locking or compare-and-swap
+   must prevent duplicate rows, stale payload overwrite, and older target
+   promotion. Current-target lookup uses a Subscription/source-order index and
+   does not scan all history.
+9. This admission proves only that the obligation layer can identify and
+   suppress stale work before it is current or executable. It does not prove
+   that an already-running stale worker cannot race an Entitlements mutation;
+   SBH-50-02 / SBH-50-03 own that later proof.
+10. SBH-50-06 does not add a worker, executor, retry scheduling, issuance or
+    revocation recovery, access-policy enforcement, entitlement repair, cache
+    repair, generic convergence infrastructure, or lifecycle-source rewiring.
+    It does not change Subscription truth to ease effect execution. If any stop
+    condition in the master-register contract requires broader authority, stop
+    and return to governance.
+11. The prospective implementation branch is
+    `subs-task/sbh-50-06-access-effect-foundation`. No implementation
+    `task_base_sha` is assigned until the governance PR passes independent
+    review and exact-head CI, a human merges it, and independent verification
+    confirms the merge commit and tree. The accepted post-governance SUBS tip
+    will then be the task base.
+12. PR #78 remains open and draft as partial proof for blocked SBH-10-04. It is
+    unrelated to this admission.
+
+### Plan
+
+1. Record the v0.1.28 row transition and bounded authority in the canonical
+   Subscription master register.
+2. Record the admission contract and evidence pointers in this Phase 27 note.
+3. Confirm that the exact-base diff contains only these two governance/evidence
+   documents and leaves the JC-223 dependency graph and all other row states
+   unchanged.
+4. Run the required repository gate, open the governance PR, then complete
+   independent review and exact-head CI. Human merge and independent
+   post-merge commit/tree verification remain required before JC-289 can be
+   admitted for implementation.
+
+### Performance & Scaling Review
+
+- Hot paths: later create, replay, and current-target lookup paths are hot
+  Subscription paths. This governance amendment changes no runtime behavior.
+- Warm/cold paths: this amendment adds no query, worker, or cache path. No
+  historical scan is allowed for current-target lookup.
+- Database queries and N+1 risk: this amendment executes zero application
+  queries. The implementation proof must record query counts separately for
+  create, replay, and current-target lookup, and check for N+1 reads.
+- Indexes: the AccessEffect migration authority covers indexes that bound
+  lookup by Subscription and source ordering. PostgreSQL remains the authority.
+- Caching: no Redis, ETS, Cachex, GenServer, or distributed lock is justified.
+  No cache semantics or invalidation are part of this task.
+- Oban uniqueness and idempotency: no AccessEffect worker or enqueue path is
+  authorized here. Durable database uniqueness plus transactional locking or
+  compare-and-swap enforce obligation identity and target ordering.
+- Telemetry and logging: this amendment adds none. The implementation evidence
+  should report replay reuse, conflicting-target rejection, stale suppression,
+  and query counts without logging sensitive target payloads.
+
+### Verification record
+
+- The branch was created from exact base
+  `c66fb843beeb25e4943ceb6119b1ed7de3999964`.
+- PR #79 merged at `c66fb843beeb25e4943ceb6119b1ed7de3999964`, which is the
+  current `hardening/subscriptions` tip at this amendment base.
+- PR #78 remains `OPEN / DRAFT` for blocked SBH-10-04 and is unrelated to this
+  admission.
+- [PR #82](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/82)
+  is the live record for exact-head CI and review status. Human merge and
+  independent post-merge commit/tree verification remain pending.
+- The intended changed paths are this note and
+  `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`.
+  No production code, tests, migration, Ash snapshot, dependency, worker, or
+  Entitlements file is in scope.
