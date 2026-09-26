@@ -7,11 +7,20 @@ authorization. S0-IA-AUTH-03R1 corrected only that record's Redis support file
 boundary for typed `status` and `abandon` primitives.
 
 Current execution authority is governed by canonical `active_workstreams.md`, not
-those historical records. Current IA-03 execution status: `NOT AUTHORIZED`. Before a
-fresh bounded IA-03 task-admission decision, reconcile the then-current `origin/main`
-into `hardening/s0-baseline`, validate the integration, obtain exact-head CI, and
-complete a fresh independent post-integration review. The task-admission decision
-must follow that reconciliation.
+those historical records. Current IA-03 execution status: `NOT AUTHORIZED`. The
+reconciliation prerequisite for a fresh bounded IA-03 task-admission review was
+satisfied by PR #83:
+
+- Canonical main reconciled: `d78a916472a75c9ffebea33acf6b07f41ffe07f3`.
+- Accepted S0 integration: `f4127902c3f328b76674724faa6a473c629c01ef`.
+- Exact-head CI run `36250010176`, attempt 1: `PASS`.
+- Independent post-integration review: `PASS`.
+
+A fresh bounded IA-03 task-admission decision is now permitted. IA-03 remains
+`NOT AUTHORIZED` until that separate decision completes. The governance-only PR that
+records this completed reconciliation does not reopen the integration prerequisite
+before the immediate task-admission review; its narrow scope and future-main rule are
+recorded in canonical `active_workstreams.md`.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1108,10 +1117,13 @@ IA-03 coding boundary.
 
 HISTORICAL NEXT-STEP NOTE:
 The original sequence called for independent review/merge of S0-IA-AUTH-03R1 and then
-a separate IA-03 coding prompt. Current canonical governance supersedes that note:
-main-to-S0 reconciliation and a fresh bounded task-admission decision are required
-before IA-03 implementation. Completion of IA-03 does not authorize IA-04 or any
-later slice.
+a separate IA-03 coding prompt. Canonical governance later required main-to-S0
+reconciliation and a fresh bounded task-admission decision before IA-03 implementation.
+PR #83 completed the reconciliation prerequisite. The remaining gate is the separate
+fresh bounded task-admission decision; IA-03 remains `NOT AUTHORIZED` until it passes.
+The narrow governance-only recording change does not reopen the completed
+reconciliation, as recorded in canonical `active_workstreams.md`. Completion of IA-03
+does not authorize IA-04 or any later slice.
 
 ## 19. Approved bounded amendment for SBH-10-04
 

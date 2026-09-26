@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `b40832ee8f955f294cec8c5193aa2c61a02e75b9` (replacement base; PR #71) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `f4127902c3f328b76674724faa6a473c629c01ef` (replacement base; PR #71 candidate accepted and PR #83 reconciliation completed) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -288,7 +288,7 @@ Convergence with current `main` remains a later integration obligation.
 
 ### Current S0 replacement development base
 
-Current S0 development base: `b40832ee8f955f294cec8c5193aa2c61a02e75b9`.
+Current S0 development base: `f4127902c3f328b76674724faa6a473c629c01ef`.
 
 Provenance:
 
@@ -297,18 +297,37 @@ Provenance:
 - PR #71 merged into `hardening/s0-baseline` as `b40832ee8f955f294cec8c5193aa2c61a02e75b9`.
 - Candidate and merge commit have identical tree `61b240c552358dbf7c09a633b89495f40f900af4`.
 - Independent post-merge review: `PASS`.
+- PR #83 reconciled canonical main `d78a916472a75c9ffebea33acf6b07f41ffe07f3` into prior S0 `b40832ee8f955f294cec8c5193aa2c61a02e75b9` as `f4127902c3f328b76674724faa6a473c629c01ef`.
+- The PR #83 integration commit's parents are the prior S0 SHA and canonical main SHA, in that order.
+- Exact-head CI run `36250010176`, attempt 1: `PASS`; all five required jobs passed.
+- Independent post-integration review: `PASS`.
 
-### S0 main-to-branch reconciliation gate
+### S0 main-to-branch reconciliation record
 
 PR #80 added an accepted InventoryAdmission architecture amendment for
-renewal-generation admission to canonical `main`. Before any new S0 implementation
-or fresh IA-03 task-admission decision, integrate the then-current `origin/main` into
-`hardening/s0-baseline` through a dedicated integration branch and worktree. Validate
-the integrated tree, obtain exact-head CI, and complete a fresh independent
-post-integration review. This is a task-admission blocker, not a lifecycle change.
-S0 remains `READY`; IA-03 remains `NOT AUTHORIZED`. The integration grants no
-implementation authority, including for SBH-10-04 or InventoryAdmission. A fresh
-bounded IA-03 task-admission decision is still required after reconciliation.
+renewal-generation admission to canonical `main`. The required reconciliation is
+complete. PR #83 merged the exact canonical main `d78a916472a75c9ffebea33acf6b07f41ffe07f3`
+into prior S0 `b40832ee8f955f294cec8c5193aa2c61a02e75b9`, producing accepted S0
+integration `f4127902c3f328b76674724faa6a473c629c01ef`. The merge was conflict-free.
+Its tree `9959f6db68823ccbf99bf8c17c8ac419079d3ea0` matched canonical main at the
+time of integration. The integration introduced no runtime or migration changes.
+Exact-head CI run `36250010176`, attempt 1, and the independent post-integration
+review both passed.
+
+Resulting state: S0 remains `READY`; IA-03 remains `NOT AUTHORIZED`.
+
+Task-admission status: the reconciliation prerequisite is satisfied. S0 remains
+`READY`, and a fresh bounded task-admission review may now occur. IA-03 remains
+`NOT AUTHORIZED`; this does not authorize IA-03 or SBH-10-04 implementation.
+
+The narrow governance PR that records this completed PR #83 reconciliation changes
+authority/status documentation only. It adds no runtime, dependency, schema, migration,
+CI, shared-architecture, or implementation semantics. Its governance-only commit does
+not invalidate the completed reconciliation or require another main-to-S0 integration
+before the immediate fresh IA-03 task-admission review. This exception applies only to
+this bounded reconciliation record. Future `main` changes must still be evaluated under
+`AGENTS.md` main-to-long-lived-branch synchronization rules; this exception does not
+waive reconciliation when a future change requires it.
 
 ### PLATFORM
 
@@ -863,7 +882,7 @@ When updating:
 This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
 - `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
-- `origin/hardening/s0-baseline` = `b40832ee8f955f294cec8c5193aa2c61a02e75b9` (current fetched persistent S0 tip after PR #71)
+- `origin/hardening/s0-baseline` = `f4127902c3f328b76674724faa6a473c629c01ef` (current fetched persistent S0 tip after PR #83 reconciliation)
 - `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
 - `origin/hardening/subscriptions` = `80d44613dc45a26ecb34a8eb6cbad8cce1e4f0c1` (verified PR #31 v0.1.8 runtime-transition merge; not the accepted development base)
 - PR #6 = MERGED into `hardening/s0-baseline`
