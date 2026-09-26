@@ -2,8 +2,16 @@
 
 Status: FROZEN. This document records the accepted architecture decision and does
 not itself authorize implementation. IA-01 and IA-02 are complete and frozen.
-S0-IA-AUTH-03 separately authorizes IA-03 only. S0-IA-AUTH-03R1 corrects only the
-IA-03 Redis support file boundary for typed `status` and `abandon` primitives.
+The historical S0-IA-AUTH-03 record documented the prior bounded IA-03
+authorization. S0-IA-AUTH-03R1 corrected only that record's Redis support file
+boundary for typed `status` and `abandon` primitives.
+
+Current execution authority is governed by canonical `active_workstreams.md`, not
+those historical records. Current IA-03 execution status: `NOT AUTHORIZED`. Before a
+fresh bounded IA-03 task-admission decision, reconcile the then-current `origin/main`
+into `hardening/s0-baseline`, validate the integration, obtain exact-head CI, and
+complete a fresh independent post-integration review. The task-admission decision
+must follow that reconciliation.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1007,9 +1015,10 @@ Only an accepted capacity review may change the derived permit budget.
 
 No implementation may begin until this design is independently reviewed and accepted.
 The design has now been independently accepted and is frozen. That acceptance does
-not authorize the implementation plan. S0-IA-AUTH-03 is the separate, bounded
-authorization for IA-03 only, corrected by S0-IA-AUTH-03R1 for the minimum typed
-Redis `status`/`abandon` support boundary. IA-01 and IA-02 are complete and frozen.
+not authorize the implementation plan. The historical S0-IA-AUTH-03 record
+documented separate, bounded IA-03 authorization, as corrected by S0-IA-AUTH-03R1
+for the minimum typed Redis `status`/`abandon` support boundary. That record does not
+grant current execution authority. IA-01 and IA-02 are complete and frozen.
 
 The acceptance review must specifically confirm:
 
@@ -1037,7 +1046,7 @@ The acceptance review must specifically confirm:
 IMPLEMENTATION STATUS:
 IA-01 COMPLETE / FROZEN
 IA-02 COMPLETE / FROZEN
-AUTHORIZED FOR IA-03 ONLY
+IA-03 NOT AUTHORIZED
 
 IA-01 COMPLETION RECORD:
 - Initial implementation: `7fd2e88fec286d9e216c865d26ef28b1a8c69438`
@@ -1070,11 +1079,11 @@ IA-02 COMPLETION RECORD:
   fail-closed Redis behavior; no Redis stock authority; no `Store.Repo`/PostgreSQL
   mutation; no IA-03+ behavior.
 
-AUTHORIZATION BOUNDARY:
-The IA-03 authorization covers only the internal caller-independent admission
-orchestration listed in the implementation-plan gate (frozen plan DL-01), plus the
-S0-IA-AUTH-03R1 minimum typed Redis support required by that orchestration. Future
-IA-03 coding may touch only:
+HISTORICAL AUTHORIZATION BOUNDARY (S0-IA-AUTH-03 / R1):
+The historical IA-03 authorization covered only the internal caller-independent
+admission orchestration listed in the implementation-plan gate (frozen plan DL-01),
+plus the S0-IA-AUTH-03R1 minimum typed Redis support required by that orchestration.
+Its historical coding boundary listed these files:
 
 ```text
 lib/store/orders/inventory_admission.ex
@@ -1083,22 +1092,26 @@ test/store/orders/inventory_admission_test.exs
 test/store/orders/inventory_admission_redis_test.exs
 ```
 
-The Redis-file allowance is strictly limited to typed Redis primitives for
-`status` and `abandon` (`QUEUED -> ABANDONED` under
+Under that historical boundary, the Redis-file allowance was limited to typed Redis
+primitives for `status` and `abandon` (`QUEUED -> ABANDONED` under
 `trusted_pre_reservation_abandonment`). Status must not create, enqueue, or admit.
 Abandon must not invent atomic next-head promotion; frozen `abandon_queued` removes
 only queued membership and marks `ABANDONED`, and next-head promotion remains the
-already-authorized `promote_next`/`promote_queued` path.
+`promote_next`/`promote_queued` path described in that record.
 
-It does not authorize IA-04 or later, PostgreSQL reservation execution, recovery,
-workers, checkout, shared lifecycle fences, lease renewal/release machinery, DL-02
-telemetry/rate-limit expansion, configuration beyond IA-03 needs, or certification.
+That historical authorization did not include IA-04 or later, PostgreSQL reservation
+execution, recovery, workers, checkout, shared lifecycle fences, lease
+renewal/release machinery, DL-02 telemetry/rate-limit expansion, configuration
+beyond IA-03 needs, or certification.
 Section 16 describes the future MVP and remains a frozen design, not the current
 IA-03 coding boundary.
 
-NEXT:
-Independently review/merge S0-IA-AUTH-03R1, then supply a separate IA-03 coding
-prompt. Completion of IA-03 does not authorize IA-04 or any later slice.
+HISTORICAL NEXT-STEP NOTE:
+The original sequence called for independent review/merge of S0-IA-AUTH-03R1 and then
+a separate IA-03 coding prompt. Current canonical governance supersedes that note:
+main-to-S0 reconciliation and a fresh bounded task-admission decision are required
+before IA-03 implementation. Completion of IA-03 does not authorize IA-04 or any
+later slice.
 
 ## 19. Approved bounded amendment for SBH-10-04
 
