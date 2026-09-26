@@ -599,7 +599,7 @@ Implement the Phase 27 variable-subscription spine without violating the existin
   lifecycle registry, and this Phase 27 note. No runtime or schema path changes.
 - Governance PR merge and post-merge verification remain pending.
 
-## JC-289 / SBH-50-06 AccessEffect foundation admission — v0.1.28 governance
+## JC-289 / SBH-50-06 AccessEffect foundation admission for v0.1.28 governance
 
 ### Links consulted
 
