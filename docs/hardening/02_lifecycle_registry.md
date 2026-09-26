@@ -335,13 +335,14 @@ release on `requires_action` above are observed current runtime behavior. The
 release on `requires_action` is a known safety gap because authentication may
 still succeed and payment application expects an active reservation. The
 current Stripe renewal adapter also uses the occurrence `renewal_key` as its
-outbound idempotency key. These are not the v0.1.27 target: each sequential
-collection after verified terminal non-success needs a distinct durable
-collection-attempt, PaymentIntent, and provider idempotency identity; an
-ambiguous replay keeps the same identities and a `requires_action` hold stays
-active. See the canonical blocked contract in the
+outbound idempotency key. The blocked v0.1.27 target proposes distinct
+collection-attempt, PaymentIntent, and provider idempotency identities after
+verified terminal non-success; an ambiguous replay would keep the same
+identities and a `requires_action` hold would stay active. This proposal does
+not change current cross-domain law or runtime behavior. See the canonical
+blocked contract in the
 [Subscription Hardening Master Register](subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md).
-This registry remains descriptive and no runtime behavior changes here.
+This registry remains descriptive.
 
 ### Provider and webhook handling
 

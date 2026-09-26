@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
 **Version:** v0.1.27
-**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL
-**Verified:** 2026-09-25
+**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with one bounded v0.1.27 Stage B renewal identity/recovery amendment
+**Verified:** 2026-09-26
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the JC-223 dependency graph and hardening matrix, and the historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes beyond an explicitly recorded task-specific grant, or manufacture READY work.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze with the bounded v0.1.27 renewal identity and recovery amendment, the unchanged JC-223 dependency graph and hardening matrix, and historical controller evidence retained for provenance. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md`, authorize migrations or shared-domain changes beyond an explicitly recorded task-specific grant, or manufacture READY work.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
@@ -87,16 +87,26 @@ migrations unless separately authorized, Payments core, Orders core, or
 generic Entitlements infrastructure. Cross-domain mutations still require the
 owning workstream/domain authority.
 
-JC-219, JC-220, JC-221, JC-222, JC-223, and the existing frozen Subscription
-lifecycle and scheduling law remain canonical. Simplifying execution does not
-reopen or supersede them.
+JC-219, JC-220, JC-221, JC-222, and JC-223 remain canonical. The v0.1.27
+amendment changes one Stage B renewal rule: a new collection after verified
+terminal financial non-success receives distinct collection, PaymentIntent,
+and provider idempotency identities, while an ambiguous retry reuses the same
+collection identity. The bound commercial contract, RenewalAttempt
+occurrence, `renewal_key`, and Order remain stable. This supersedes only the
+prior occurrence-wide provider idempotency identity rule. All other frozen
+Stage B law remains unchanged, and the JC-223 dependency graph is
+byte-for-byte unchanged. This amendment changes only the Subscription-side
+future target; effective Provider, Payments, Orders, and Inventory contracts
+remain in force until their owners approve changes.
 
 ## Current v0.1.27 transition: JC-229 / SBH-10-04 blocked for shared authority
 
 This governance-only amendment starts from the exact accepted SUBS tip
 `0016237646f9fddfc2364680b8cc9ddeb7c10655`. It records the retry and
-collection-attempt authority gap found while implementing SBH-10-04. It changes
-no production code, tests, migrations, Ash snapshots, or JC-223 dependency edge.
+collection-attempt authority gap found while implementing SBH-10-04. It makes
+the bounded Stage B renewal identity/recovery amendment described above. It
+changes no production code, tests, migrations, Ash snapshots, or JC-223
+dependency edge.
 
 SBH-10-04 transitions from `READY / EXTERNALIZED` to
 `BLOCKED_SHARED_AUTHORITY / BLOCKED_SHARED_AUTHORITY`. No implementation/proof
@@ -141,16 +151,28 @@ expired hold is not such a fence.
 Each collection attempt must have a stable durable identity, a distinct local
 PaymentIntent identity, and a distinct provider idempotency identity. The
 occurrence `renewal_key` remains occurrence metadata. Provider evidence must
-carry both the occurrence identity and collection-attempt identity. The
-`RenewalAttempt.payment_intent_id`, when already set, remains pinned to its
-original PaymentIntent. A later PaymentIntent must be linked through its own
-durable collection-attempt record, never by replacing that pointer.
+carry both the occurrence identity and collection-attempt identity. Every
+PaymentIntent must be durably attributable to its exact collection attempt and
+RenewalAttempt occurrence. Successful reconciliation must identify the exact
+successful collection evidence without ambiguity or destructive history
+rewriting.
 
-The target identity is a durable UUIDv7 `collection_attempt_id` plus a
-monotonically increasing attempt number scoped to the RenewalAttempt. Persist
-the record before PaymentIntent or provider work. Derive the local key as
-`renewal-collection:<collection_attempt_id>` and the provider idempotency key
-as `renewal-collection:<collection_attempt_id>`. Both are stable for transport
+The meaning of the legacy single `RenewalAttempt.payment_intent_id` field is
+unresolved. A later explicit Subscription, Payments, and SBH-10-05 authority
+decision must define whether it remains compatibility evidence, identifies a
+current or successful intent, or is superseded by the collection-attempt
+relationship. This amendment chooses none of those meanings and does not
+authorize overwriting durable payment history.
+
+The target identity is a durable UUIDv7 `collection_attempt_id`. Any
+monotonically increasing collection ordinal must have a separate durable
+meaning and must not reuse or reinterpret the existing
+`RenewalAttempt.attempt_no`, which remains the current renewal failure/dunning
+counter and telemetry value unless later authority explicitly changes it.
+Persist the collection record before PaymentIntent or provider work. Derive the
+target local key as `renewal-collection:<collection_attempt_id>` and the
+target provider idempotency key as
+`renewal-collection:<collection_attempt_id>`. Both are stable for transport
 replay of that attempt and distinct for a later attempt. The existing
 Payments/provider owners must confirm these identities fit their boundaries
 before implementation; this target does not grant their implementation
@@ -164,10 +186,13 @@ PaymentIntent identity after a local pre-submission cancel, stop for Payments
 owner review rather than create a new collection identity. A submitted intent
 with timeout, transport error, 5xx, or otherwise unknown result is
 `outcome_unknown` and replays the same collection attempt and keys.
-`requires_action` remains unresolved on that same attempt. Verified
-PaymentIntent `succeeded` closes that collection as success and forbids a later
-collection for the occurrence. Order payment application and Subscription
-reconciliation remain under their existing authorities.
+`requires_action` remains unresolved on that same attempt. Verified canonical
+provider success attributed to the exact collection attempt closes its
+collection eligibility. The PaymentApplication boundary applies the paid Order
+and inventory effects; any extension must consume only the reservation
+generation linked to that attempt. SBH-10-05 then reconciles under its existing
+authority. A local PaymentIntent `succeeded` state or synchronous provider
+response alone does not apply those effects.
 Verified `failed` is terminal financial non-success only when durable provider
 evidence establishes a final decline or equivalent final failure. A
 `provider_cancelled`/expired outcome is terminal only when durable provider
@@ -2876,7 +2901,8 @@ these rules:
    submitting its PaymentIntent. Each record identifies the RenewalAttempt,
    the same Order, its stable collection-attempt ID, its distinct PaymentIntent,
    its distinct deterministic PaymentIntent key, its provider idempotency key,
-   and its durable outcome.
+   and its durable outcome. Any collection ordinal is distinct from the
+   existing `RenewalAttempt.attempt_no` dunning/failure counter.
 3. Replaying an attempt after a timeout, transport error, provider 5xx, or
    otherwise ambiguous outcome reuses that same collection-attempt record,
    PaymentIntent, and provider idempotency key. Ambiguity is not financial
@@ -2884,18 +2910,26 @@ these rules:
 4. A new collection attempt is permitted only after durable provider/payment
    evidence proves terminal financial non-success for the preceding attempt
    and the current dunning policy permits another collection. A local timeout,
-   process crash, or failed network request is not that evidence.
-   A succeeded PaymentIntent closes that collection as success and cannot be
-   submitted again or followed by a new collection attempt for the occurrence.
+   process crash, or failed network request is not that evidence. Only
+   verified canonical provider success attributed to the exact collection
+   attempt closes its collection eligibility. The PaymentApplication boundary
+   applies the paid Order and inventory effects; an approved extension must
+   consume only the generation linked to that successful collection.
+   SBH-10-05 then reconciles under its existing authority. A local
+   PaymentIntent `succeeded` state or synchronous provider response alone does
+   not apply those effects or permit collection-history rewriting.
 5. `requires_action` stays on the same collection attempt and PaymentIntent.
    It does not release a physical hold or permit a new attempt. At the bounded
    authentication deadline, the system may request cancellation of that same
    PaymentIntent. It releases the hold only after provider/payment evidence
    proves terminal non-success. If the result remains unknown, collection
    stops and the hold remains unresolved for reconciliation or manual action.
-6. `RenewalAttempt.payment_intent_id`, when set, remains pinned to the original
-   PaymentIntent and is never overwritten. A later collection uses its own
-   durable child record and cannot silently replace that pointer.
+6. Every PaymentIntent is durably attributable to its exact collection attempt
+   and RenewalAttempt occurrence. Successful reconciliation identifies the
+   exact successful collection evidence without ambiguity or destructive
+   history rewriting. The meaning of the legacy single
+   `RenewalAttempt.payment_intent_id` remains unresolved until a later explicit
+   Subscription, Payments, and SBH-10-05 authority decision.
 7. The occurrence `renewal_key` remains the occurrence identity and provider
    metadata. Each collection attempt has a different provider idempotency
    identity that remains stable across replays. Provider evidence carries the
@@ -2904,9 +2938,11 @@ these rules:
 8. A physical collection attempt reserves a new generation for the same
    occurrence, Order, and variant. The previous reservation row stays
    terminal. At most one generation for that occurrence and variant may be
-   active. A successful collection consumes only its linked generation. A
-   failed or provider-confirmed cancelled attempt releases only its own
-   generation. Failure to reserve stock prevents provider work.
+   active. After verified canonical success, PaymentApplication with the
+   required owner-approved extension consumes only the generation linked to
+   that collection attempt. A failed or
+   provider-confirmed cancelled attempt releases only its own generation.
+   Failure to reserve stock prevents provider work.
 9. A local reservation TTL cannot release a hold for a prepared collection
    with no PaymentIntent, a `created` PaymentIntent, or a submitted,
    `requires_action`, or outcome-unknown PaymentIntent while a worker may still
@@ -2959,10 +2995,14 @@ existing A evidence can recover that value, stop and return to governance.
   Order after the preceding intent is terminal. If Payments core changes are
   needed, obtain separate Payments authority.
 - Prove that the unchanged SBH-10-05 payment-success/reconciliation path can
-  associate a later collection PaymentIntent with the same RenewalAttempt and
-  original Order without replacing `RenewalAttempt.payment_intent_id` or
-  changing reconciliation semantics. If it cannot, stop for a separate
-  authority decision; this amendment changes neither SBH-10-05 nor its edge.
+  associate the exact successful collection PaymentIntent with the same
+  RenewalAttempt and original Order, identify its collection attempt
+  unambiguously, and preserve all earlier collection evidence. The meaning of
+  the legacy `RenewalAttempt.payment_intent_id` field remains unresolved for a
+  separate Subscription, Payments, and SBH-10-05 authority decision. If the
+  current path cannot support exact successful-evidence attribution, stop for
+  that authority decision; this amendment changes neither SBH-10-05 nor its
+  dependency edge.
 - The current payment-success path consumes physical reservations through the
   Order boundary. Preserve one nonterminal collection attempt per occurrence
   and ensure all active generations for its renewal Order belong to that
@@ -2972,9 +3012,12 @@ existing A evidence can recover that value, stop and return to governance.
 
 No Subscription collection-record, Orders, InventoryAdmission, Payments,
 migration, Ash-snapshot, or provider authority is assigned by this amendment.
-These are blockers, not implied grants. No compatibility-unbound RenewalAttempt
-may reach provider work, and no historical collection record may be fabricated
-from mutable state.
+The numbered collection behavior above is the blocked Subscription target for
+future contract review. It has no force against another domain's current
+authoritative contract until that owner explicitly approves the relevant
+change. These are blockers, not implied grants. No compatibility-unbound
+RenewalAttempt may reach provider work, and no historical collection record may
+be fabricated from mutable state.
 
 ### Existing implementation seam from PR #76
 
@@ -3049,8 +3092,11 @@ all of the following:
     PaymentIntent identity without Payments core changes, or a separate
     Payments authority is recorded before implementation.
 16. Provider metadata identifies both the immutable occurrence and the exact
-    collection attempt. SBH-10-05 continues to apply success only through its
-    existing authority and the RenewalAttempt's original Order.
+    collection attempt. Successful reconciliation identifies the exact
+    successful collection evidence without ambiguity or destructive history
+    rewriting. SBH-10-05 remains unchanged; its ability to apply a later
+    collection's successful PaymentIntent and the meaning of the legacy
+    `RenewalAttempt.payment_intent_id` remain explicit authority gates.
 17. The current stored payment method and provider selection are revalidated
     immediately before provider work. The proof does not claim that Catalog
     weight or descriptive fields were bound at B, and it does not let them

@@ -110,23 +110,30 @@ If you need a different model (soft oversell, no reservations, etc.):
 
 No doc update = no behavior change.
 
-## 11) Subscription renewal collection holds (governance target)
+## 11) Subscription renewal collection holds (blocked target)
 
 A renewal occurrence keeps one immutable `RenewalAttempt` and one Order. A later
 dunning collection is a new collection attempt for that same occurrence and
-Order. This section defines the required reservation behavior for that model.
-It does not authorize Orders or InventoryAdmission implementation. The
-current S0-ARCH-01 design remains frozen until its owner separately accepts a
-compatible identity and recovery contract.
+Order. This section records a proposed reservation target only. It does not
+amend effective inventory law or authorize Orders or InventoryAdmission
+implementation.
 
-For physical subscription renewal holds, this target supersedes the one-row
-`(order_id, variant_id)` identity and automatic TTL release in sections 3, 5,
-6, and 7. It applies only to collection generations and leaves generic
-checkout reservation identity and lifecycle unchanged. A renewal hold may be
-released before provider submission only after the durable dispatch fence
-below proves no worker can submit. Runtime behavior remains unchanged until
-separate Orders and InventoryAdmission authority accepts and implements the
-extension.
+Until the owner responsible for S0-ARCH-01 and InventoryAdmission explicitly
+approves and records an amendment, sections 3, 5, 6, and 7 remain authoritative,
+including the current one-row `(order_id, variant_id)` identity, terminal
+reservation lifecycle, and automatic TTL-release rules. S0-ARCH-01 and
+`INV-ADM-004` also remain authoritative. Adoption of the target below would
+require that owner's explicit amendment or supersession of those identity,
+lifecycle, and TTL rules. No behavior changes while that decision is pending.
+
+The blocked target applies only to future renewal collection generations. If
+approved, it would leave generic checkout reservation identity and lifecycle
+unchanged. A renewal hold could be released before provider submission only
+after the durable dispatch fence below proved no worker could submit.
+Approval would require an explicit override of the current
+`(order_id, variant_id)` identity and automatic TTL release only for physical
+renewal collection generations. Generic checkout would remain under its
+existing reservation rules.
 
 ### Reservation generations
 
@@ -141,9 +148,10 @@ extension.
 - Only one collection attempt for the occurrence may be nonterminal at a time.
   Every active reservation generation on its Order must belong to that same
   collection attempt.
-- Payment success consumes only the active reservation generation linked to
-  the successful collection attempt. It must not consume a different
-  generation merely because the Order ID matches.
+- After verified canonical provider success is attributed to the exact
+  collection attempt, the PaymentApplication boundary would consume only the
+  active reservation generation linked to that attempt. It would not consume
+  a different generation merely because the Order ID matches.
 - This collection identity does not change the generic checkout identity law.
   Any Orders implementation must retain checkout's existing
   `order_id + variant_id` idempotency behavior.
@@ -161,9 +169,12 @@ extension.
   collection attempt, PaymentIntent, and provider idempotency identity. Keep
   that attempt's physical hold active. Ambiguity does not permit another
   collection attempt.
-- A PaymentIntent `succeeded` result closes the occurrence as successful. It
-  consumes only that collection attempt's active reservation generation and
-  forbids a later collection attempt.
+- Only verified canonical provider success attributed to the exact collection
+  attempt closes its collection eligibility. Under an approved target, the
+  PaymentApplication boundary would mark the Order paid and consume only the
+  reservation generation linked to that attempt; SBH-10-05 would then
+  reconcile under its existing authority. A local PaymentIntent `succeeded`
+  state or synchronous provider response alone would not consume inventory.
 - A PaymentIntent `failed` result is terminal financial non-success only when
   durable verified provider/payment evidence establishes a final decline or
   equivalent final failure. A provider-confirmed cancellation or expiry is
