@@ -52,6 +52,22 @@ Behavior (MUST):
 - Only one PaymentIntent may be in submitted state per order at a time:
   - additional attempts must either reuse the same intent (provider-dependent) or create a new intent after failing/cancelling the previous one.
 
+### 3.3 Renewal collection identity exception
+
+For an admitted SBH-10-04 renewal collection, the typed Payments path may use:
+
+```text
+payment_intent_key = "renewal-collection:<collection_attempt_id>"
+```
+
+The durable collection record is created first. Replays of that collection reuse the same PaymentIntent and key. A later collection may use a new key only after the prior collection has verified terminal financial non-success and current dunning policy permits another collection. The occurrence `renewal_key` remains metadata and does not replace the collection key.
+
+The current PaymentIntent resource and indexes already permit distinct keys for terminal history on one Order. Existing preflight checks continue to reject a conflicting `submitted`, `requires_action`, or `succeeded` intent. This exception needs no PaymentIntent schema migration or new Payments resource. Generic checkout continues to use the deterministic Order/amount/currency/provider key above.
+
+The collection must durably link the exact PaymentIntent. The existing `PaymentApplication` continues to apply the Order once and record the exact PaymentIntent used for the successful application. Renewal-specific collection validation and exact reservation-generation selection belong in the bounded payment/Subscription/Orders orchestration. Generic PaymentApplication does not gain Subscription rules. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
+
+Before physical renewal success reaches reservation consumption, the renewal path must prove the exact local PaymentIntent-to-collection relationship and the exact expected active reservation-key set. It then uses the exact-key Orders consume operation within the paid-Order transaction. If an order-level PaymentApplication already exists, the renewal path verifies that its `payment_intent_id` matches the successful intent before treating the result as a replay. This validation stays outside generic checkout semantics.
+
 ## 4) State interlocks (MUST)
 ### 4.1 Order state transition to paid
 Order transitions to paid only when:

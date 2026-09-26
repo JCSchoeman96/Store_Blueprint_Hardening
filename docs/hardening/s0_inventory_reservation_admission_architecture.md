@@ -1099,3 +1099,27 @@ IA-03 coding boundary.
 NEXT:
 Independently review/merge S0-IA-AUTH-03R1, then supply a separate IA-03 coding
 prompt. Completion of IA-03 does not authorize IA-04 or any later slice.
+
+## 19. Approved bounded amendment for SBH-10-04
+
+This addendum amends S0-ARCH-01 only to admit server-derived reservation generations for physical subscription renewals. In the base architecture, generic checkout uses `order_id + variant_id` as its logical identity and recovery-fence identity. For a physical renewal generation, the full server-derived `reservation_key` is the logical durable-operation and recovery-fence identity. `INV-ADM-004` continues to require at most one durable effect per logical identity: the generic key remains one `(order_id, variant_id)` pair, while each renewal generation has its own exact key. `K_v` still serializes entrants by variant and `B_total` still bounds total database entrants. All other lease, PostgreSQL, ambiguity, recovery, and fail-closed requirements remain in force. This section grants no runtime implementation authority by itself.
+
+Generic checkout continues to derive:
+
+```text
+order:<order_id>:sku:<variant_id>
+```
+
+The renewal-specific server path may derive a generation key in this form:
+
+```text
+order:<order_id>:sku:<variant_id>:renewal_collection:<collection_attempt_id>:generation:<reservation_generation_id>
+```
+
+The collection and generation IDs are trusted server identities. Generic request construction still rejects caller-supplied reservation keys. The renewal-specific typed path must carry the exact generation key through request identity, request fingerprint, operation descriptor, Lease value, Redis recovery metadata, and PostgreSQL recovery. The Lease may also retain the identity digest used for coordination.
+
+The full reservation key is the logical durable-operation identity. Redis continues to gate by variant for `K_v = 1` and keeps the existing global `B_total` limit. Redis remains a coordination and recovery-fencing layer. It cannot establish stock availability, reservation existence, or commit outcome.
+
+PostgreSQL remains the sole durable reservation authority. Recovery must query by the exact generation key and compare the operation's trusted PRE/POST facts. An ambiguous database outcome retains the existing recovery fence. Lease expiry, Redis loss, a local timeout, or missing evidence cannot authorize another durable mutation. The [cross-domain authority amendment](../governance/sbh_10_04_cross_domain_authority_amendment.md) assigns the separate Orders migration for historical generations and the partial unique active-row index.
+
+This addendum does not change `K_v`, `B_total`, Redis structures outside the exact-key metadata needed by the request, the generic reservation key, or the PostgreSQL stock check. It does not authorize unrelated InventoryAdmission stages. At the canonical main base, the full PostgreSQL recovery service and worker remain planned work. The later SBH-10-04 re-admission must verify their current source compatibility and must obtain any separate S0 task authority needed to implement missing recovery stages.

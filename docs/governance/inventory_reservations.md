@@ -52,10 +52,12 @@ If Redis is used, Postgres remains the durable source of truth.
 This is a separate pack; do not half-implement it.
 
 ## 5) Reservation identity (MUST)
-Reservations must have a stable idempotency key:
+Generic checkout reservations must have a stable idempotency key:
 - reservation_key = "order:<order_id>:sku:<variant_id>" (or similar)
 - unique constraint on reservation_key to prevent duplicates
 - unique constraint on `(order_id, variant_id)` to pin one reservation intent row per pair
+
+The physical subscription-renewal exception is bounded by Section 5.1.
 
 Pinned quantity behavior (MUST):
 - reserve operation sets the desired quantity for `(order_id, variant_id)` (not append-only).
@@ -66,7 +68,29 @@ Pinned quantity behavior (MUST):
   - `delta == 0`: NOOP
 - `desired_qty == 0` transitions active reservation to `cancelled` and releases held units.
 
+### 5.1 Physical subscription-renewal generations
+
+The later, separately admitted SBH-10-04 implementation may use multiple historical reservation rows for one physical renewal Order/variant. This exception applies only to renewal collection generations. Generic checkout keeps the single-row `(order_id, variant_id)` behavior and the key `order:<order_id>:sku:<variant_id>`.
+
+Each renewal generation uses a server-derived key that includes the exact collection and reservation-generation identities:
+
+```text
+order:<order_id>:sku:<variant_id>:renewal_collection:<collection_attempt_id>:generation:<reservation_generation_id>
+```
+
+The global unique `reservation_key` remains the durable generation identity. Replace the unconditional `(order_id, variant_id)` uniqueness rule with a unique partial index on `(order_id, variant_id) WHERE state = 'active'`. Keep the global `reservation_key` unique index. The task-specific Orders migration and Ash snapshot must retain every old row and enforce at most one active generation for each Order/variant.
+
+For every new generation, lock the PostgreSQL inventory row and check stock again. Provider work may start only after every physical hold required by the collection is active. A pre-submission fence may release its active generation while keeping the same collection attempt. If that collection resumes, it gets a new `reservation_generation_id` and a new key. A later collection also gets a new generation. Neither case reactivates an old row.
+
+`consumed`, `expired`, and `cancelled` rows remain terminal and historical. A verified terminal non-success releases only the active generation for that collection. A successful collection consumes only the generation whose exact `reservation_key` is linked to that collection. `requires_action`, local TTL, process death, timeout, transport failure, provider 5xx, or local cancellation after possible submission does not release the hold or permit another collection.
+
+The generic lifecycle and TTL rules in Sections 6 and 7 continue to apply to generic checkout. Ordinary expiry candidate selection and cleanup must skip physical renewal generation rows even when their `expires_at` has passed. TTL is not proof that the collection is safe to release. The exact-key Orders release path may release a renewal generation only after a durable pre-submission fence or verified terminal financial non-success; otherwise an unresolved or `requires_action` generation stays active until payment evidence or separately governed recovery resolves it. Virtual renewals without physical holds do not create reservation generations.
+
+Before payment-success consumption for a physical renewal, Subscription validation must prove that every expected active hold belongs to the exact successful collection. The Orders consume operation then targets only those exact generation keys. The renewal-specific request, release, recovery, and consume paths must use the exact generation key. PostgreSQL remains the inventory authority. Redis admission continues to bound entry by variant and by the existing global budget; it does not establish reservation truth. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md) and [S0-ARCH-01](../hardening/s0_inventory_reservation_admission_architecture.md).
+
 ## 6) Reservation lifecycle (MUST)
+The transitions below describe generic checkout. Physical renewal generations follow Section 5.1: ordinary TTL cleanup cannot move an active renewal row to `expired`, and a renewal success consumes only validated exact generation keys.
+
 States:
 - active
 - consumed (converted to sale)

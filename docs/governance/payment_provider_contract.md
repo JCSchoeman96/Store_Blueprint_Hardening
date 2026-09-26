@@ -134,6 +134,27 @@ Key derivation examples:
 
 **Law:** the idempotency key must be stable across retries.
 
+### 4.1 Renewal collection identity
+
+For the later, separately admitted SBH-10-04 implementation, a renewal provider request must carry:
+
+- `renewal_key` as occurrence metadata;
+- `collection_attempt_id`;
+- `renewal_attempt_id`;
+- `order_id`;
+- `local_intent_id`;
+- `subscription_id`.
+
+Its provider idempotency key is:
+
+```text
+renewal-collection:<collection_attempt_id>
+```
+
+An ambiguous replay uses the same collection ID and key. A later collection receives a new ID and key only after verified terminal financial non-success and approval under the existing dunning policy. The provider must receive amount and currency from the durable local PaymentIntent for that collection. `renewal_key` remains occurrence metadata and is not reused as the key for sequential collections.
+
+This is a bounded renewal adapter/contract extension. Provider modules remain limited to payload construction, signature verification, and canonical normalization. This section does not change unrelated provider behavior. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
+
 ---
 
 ## 5) Signature verification requirements
