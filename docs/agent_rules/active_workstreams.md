@@ -242,7 +242,7 @@ Explicit exclusion:
 
 S0 is **not** the mandatory development parent of PLATFORM or SUBS.
 
-**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. It does not automatically start implementation or authorize IA-03 or IA-04+. IA-03 remains **NOT AUTHORIZED** until a separate bounded task-admission decision.
+**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. READY itself does not automatically start implementation or authorize IA-03 or IA-04+. Current implementation authority is recorded by the bounded task-admission records below.
 
 ### S0 activation record
 
@@ -314,7 +314,7 @@ time of integration. The integration introduced no runtime or migration changes.
 Exact-head CI run `36250010176`, attempt 1, and the independent post-integration
 review both passed.
 
-Resulting state: S0 remains `READY`; IA-03 remains `NOT AUTHORIZED`.
+State at completion of the PR #83 reconciliation, before the fresh task-admission decision: S0 remained `READY`; IA-03 was `NOT AUTHORIZED`.
 
 Task-admission status: the reconciliation prerequisite is satisfied. S0 remains
 `READY`. The fresh bounded generic IA-03 task admission below authorizes only the
