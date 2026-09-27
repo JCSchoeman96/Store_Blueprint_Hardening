@@ -242,7 +242,7 @@ Explicit exclusion:
 
 S0 is **not** the mandatory development parent of PLATFORM or SUBS.
 
-**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. It does not automatically start implementation or authorize IA-03 or IA-04+. IA-03 remains **NOT AUTHORIZED** until a separate bounded task-admission decision.
+**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. READY itself does not automatically start implementation or authorize IA-03 or IA-04+. Current implementation authority is recorded by the bounded task-admission records below.
 
 ### S0 activation record
 
@@ -314,11 +314,12 @@ time of integration. The integration introduced no runtime or migration changes.
 Exact-head CI run `36250010176`, attempt 1, and the independent post-integration
 review both passed.
 
-Resulting state: S0 remains `READY`; IA-03 remains `NOT AUTHORIZED`.
+State at completion of the PR #83 reconciliation, before the fresh task-admission decision: S0 remained `READY`; IA-03 was `NOT AUTHORIZED`.
 
 Task-admission status: the reconciliation prerequisite is satisfied. S0 remains
-`READY`, and a fresh bounded task-admission review may now occur. IA-03 remains
-`NOT AUTHORIZED`; this does not authorize IA-03 or SBH-10-04 implementation.
+`READY`. The fresh bounded generic IA-03 task admission below authorizes only the
+recorded four-file implementation boundary. It does not authorize SBH-10-04
+implementation.
 
 The narrow governance PR that records this completed PR #83 reconciliation changes
 authority/status documentation only. It adds no runtime, dependency, schema, migration,
@@ -328,6 +329,36 @@ before the immediate fresh IA-03 task-admission review. This exception applies o
 this bounded reconciliation record. Future `main` changes must still be evaluated under
 `AGENTS.md` main-to-long-lived-branch synchronization rules; this exception does not
 waive reconciliation when a future change requires it.
+
+### Fresh generic IA-03 task admission (2026-09-26)
+
+Task base: `f4127902c3f328b76674724faa6a473c629c01ef`.
+
+S0 lifecycle remains `READY`. Generic IA-03 is `AUTHORIZED / NOT STARTED`.
+IA-04 and later remain `NOT AUTHORIZED`; completing IA-03 does not authorize a
+later slice.
+
+The exact coding boundary is:
+
+```text
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_test.exs
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+No fifth implementation file is authorized. The frozen read-only contracts are
+`lib/store/orders/inventory_admission/request.ex`,
+`lib/store/orders/inventory_admission/operation.ex`,
+`lib/store/orders/inventory_admission/lease.ex`, and
+`test/store/orders/inventory_admission_state_test.exs`. IA-03 must not modify
+them. The admitted behavior and exclusions are recorded in section 20 of
+`s0_inventory_reservation_admission_architecture.md`.
+
+PR #80's renewal-generation InventoryAdmission work remains separately
+`NOT AUTHORIZED`. It needs a future S0 governance/task-admission decision for
+its typed identity contract and exact-key recovery. Generic IA-03 uses only
+`order:<order_id>:sku:<variant_id>`.
 
 ### PLATFORM
 

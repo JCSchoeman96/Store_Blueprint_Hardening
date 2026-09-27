@@ -1,14 +1,15 @@
 # S0-ARCH-01: Inventory reservation admission architecture
 
-Status: FROZEN. This document records the accepted architecture decision and does
-not itself authorize implementation. IA-01 and IA-02 are complete and frozen.
-The historical S0-IA-AUTH-03 record documented the prior bounded IA-03
-authorization. S0-IA-AUTH-03R1 corrected only that record's Redis support file
-boundary for typed `status` and `abandon` primitives.
+Status: FROZEN architecture. The accepted architecture decisions remain unchanged.
+Canonical task authority is tracked in `active_workstreams.md`; section 20 records
+the current generic IA-03 admission and its exact scope. IA-01 and IA-02 are
+complete and frozen. The historical S0-IA-AUTH-03 record documented the prior
+bounded IA-03 authorization. S0-IA-AUTH-03R1 corrected only that record's Redis
+support file boundary for typed `status` and `abandon` primitives.
 
-Current execution authority is governed by canonical `active_workstreams.md`, not
-those historical records. Current IA-03 execution status: `NOT AUTHORIZED`. The
-reconciliation prerequisite for a fresh bounded IA-03 task-admission review was
+Current generic IA-03 status: `AUTHORIZED / NOT STARTED` under the fresh bounded
+task-admission decision recorded in section 20 and canonical
+`active_workstreams.md`. The reconciliation prerequisite for that decision was
 satisfied by PR #83:
 
 - Canonical main reconciled: `d78a916472a75c9ffebea33acf6b07f41ffe07f3`.
@@ -16,11 +17,10 @@ satisfied by PR #83:
 - Exact-head CI run `36250010176`, attempt 1: `PASS`.
 - Independent post-integration review: `PASS`.
 
-A fresh bounded IA-03 task-admission decision is now permitted. IA-03 remains
-`NOT AUTHORIZED` until that separate decision completes. The governance-only PR that
-records this completed reconciliation does not reopen the integration prerequisite
-before the immediate task-admission review; its narrow scope and future-main rule are
-recorded in canonical `active_workstreams.md`.
+S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. PR #80's
+renewal-generation path remains separately unauthorized and requires its own future
+S0 governance/task-admission decision. This admission does not reopen the integration
+prerequisite; its scope is limited to the generic IA-03 contract below.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1119,11 +1119,9 @@ HISTORICAL NEXT-STEP NOTE:
 The original sequence called for independent review/merge of S0-IA-AUTH-03R1 and then
 a separate IA-03 coding prompt. Canonical governance later required main-to-S0
 reconciliation and a fresh bounded task-admission decision before IA-03 implementation.
-PR #83 completed the reconciliation prerequisite. The remaining gate is the separate
-fresh bounded task-admission decision; IA-03 remains `NOT AUTHORIZED` until it passes.
-The narrow governance-only recording change does not reopen the completed
-reconciliation, as recorded in canonical `active_workstreams.md`. Completion of IA-03
-does not authorize IA-04 or any later slice.
+PR #83 completed the reconciliation prerequisite, and the separate generic IA-03
+task-admission decision is recorded in section 20. This note is historical. Completion
+of IA-03 does not authorize IA-04 or any later slice.
 
 ## 19. Approved bounded amendment for SBH-10-04
 
@@ -1150,3 +1148,136 @@ The full reservation key is the logical durable-operation identity. Redis contin
 PostgreSQL remains the sole durable reservation authority. Recovery must query by the exact generation key and compare the operation's trusted PRE/POST facts. An ambiguous database outcome retains the existing recovery fence. Lease expiry, Redis loss, a local timeout, or missing evidence cannot authorize another durable mutation. The [cross-domain authority amendment](../governance/sbh_10_04_cross_domain_authority_amendment.md) assigns the separate Orders migration for historical generations and the partial unique active-row index.
 
 This addendum does not change `K_v`, `B_total`, Redis structures outside the exact-key metadata needed by the request, the generic reservation key, or the PostgreSQL stock check. It does not authorize unrelated InventoryAdmission stages. At the canonical main base, the full PostgreSQL recovery service and worker remain planned work. The later SBH-10-04 re-admission must verify their current source compatibility and must obtain any separate S0 task authority needed to implement missing recovery stages.
+
+## 20. Fresh generic IA-03 task admission
+
+This governance record admits only the generic caller-independent IA-03 Redis
+orchestration against task base
+`f4127902c3f328b76674724faa6a473c629c01ef`. S0 remains `READY`. Generic IA-03 is
+`AUTHORIZED / NOT STARTED`. IA-04 and later remain `NOT AUTHORIZED`, and IA-03
+completion does not authorize them. This admission adds no lifecycle state and does
+not change the frozen lifecycle.
+
+Generic IA-03 uses only the existing identity form:
+
+```text
+order:<order_id>:sku:<variant_id>
+```
+
+The exact implementation boundary is:
+
+```text
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_test.exs
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+No fifth file is authorized. These frozen contracts are read-only:
+
+```text
+lib/store/orders/inventory_admission/request.ex
+lib/store/orders/inventory_admission/operation.ex
+lib/store/orders/inventory_admission/lease.ex
+test/store/orders/inventory_admission_state_test.exs
+```
+
+IA-03 may implement only:
+
+- `InventoryAdmission.reserve`, `InventoryAdmission.status`, and
+  `InventoryAdmission.abandon`.
+- Construction and validation of the frozen generic `Request`.
+- Calls to frozen IA-02 `enqueue_or_return_existing/2` and
+  `promote_queued/2`.
+- The minimum new typed Redis `status` and `abandon` operations.
+- Immediate return for queued work, with bounded busy, mismatch, and unavailable
+  handling.
+- Exact replay convergence, finite deadline and lease metadata propagation,
+  caller-independent Redis queue lifetime, and server-owned operation identity
+  returned from frozen IA-02 state.
+- Low-cardinality transition or status observability only when required within the
+  four authorized files.
+
+The typed Redis `status` operation:
+
+- Never creates a request or operation, queues a missing request, or grants admission
+  because status was requested.
+- Validates exact trusted reservation identity, request fingerprint, and
+  metadata/fence/index coherence.
+- Returns typed lifecycle information and fails closed on missing, contradictory,
+  malformed, or uncertain evidence.
+- Uses only bounded queued-expiry or promotion behavior already authorized by IA-02.
+- Performs no PostgreSQL work.
+
+The typed Redis `abandon` operation authorizes only `QUEUED -> ABANDONED` under
+guard `trusted_pre_reservation_abandonment`. It must validate exact trusted identity
+and fingerprint, reject mismatch or stale state, atomically remove only the exact
+queued member, write coherent terminal `ABANDONED` evidence, and retain finite replay
+evidence. Repeated abandon is idempotent and remains governed by the same typed
+contract. It must not abandon
+`ADMITTED`, `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, or `UNRESOLVED`;
+infer a PostgreSQL outcome; release active durable-operation capacity; or invent
+next-head promotion. Existing `promote_queued/2` remains the promotion mechanism.
+InventoryAdmission must not use raw Redis, `KEYS`, or unbounded `SCAN`.
+
+The legal lifecycle transition `ADMITTED -> EXPIRED` remains unchanged. IA-03 may
+observe and report `ADMITTED`, but its operational unclaimed-lease expiry and release
+mechanism is excluded. A later separately authorized lease/reaper phase owns
+operational recovery of stale unclaimed admitted leases. IA-03 must not invent an
+admitted-expiry Redis transition, release an admitted variant permit
+because time elapsed, decrement `B_total` for an admitted lease because time elapsed,
+implement lease release or renewal machinery, or add a reaper.
+
+The existing lifecycle states remain:
+
+```text
+REQUESTED
+QUEUED
+ADMITTED
+RESERVING
+UNKNOWN_DB_OUTCOME
+RECOVERING
+UNRESOLVED
+COMPLETED
+REJECTED
+EXPIRED
+ABANDONED
+```
+
+Terminal states remain `COMPLETED`, `REJECTED`, `EXPIRED`, `ABANDONED`, and
+`UNRESOLVED`.
+
+IA-03 must not add or modify `Store.Repo` usage, PostgreSQL reads or writes,
+`InventoryReservation` or `InventoryItem` mutation, `ADMITTED -> RESERVING`,
+durable reservation execution, PRE/POST PostgreSQL collection, ambiguous database
+outcome handling, `InventoryAdmission.Recovery`, Oban, workers, a reaper, active
+lease renewal or release, shared reservation fences, `Store.Orders.reserve_inventory/3`
+integration, checkout, payment, or subscription integration, multi-variant admission,
+migrations, schema, configuration, dependencies, CI, performance certification,
+DL-02 rate-limit or telemetry expansion, or IA-04+.
+
+PR #80's renewal-generation InventoryAdmission work is not part of this admission. It
+remains separately `NOT AUTHORIZED` and requires its own future S0 governance/task
+admission for the new typed identity contract and exact-key recovery. Do not modify
+`Request`, `Operation`, or `Lease` to accommodate renewal-generation keys. The
+renewal path does not change the generic identity above.
+
+### Performance & Scaling Review
+
+- HOT: bounded Redis admission, status, and abandon coordination.
+- WARM: none required.
+- COLD: PostgreSQL remains the durable authority and IA-03 does not enter it.
+- Database query count: zero; N+1 risk: none.
+- Indexes and caching: unchanged; IA-03 adds no cache, invalidation, or stampede path.
+- Redis uses only the existing HASH/ZSET and O(1) sequence. Redis has no stock or
+  availability ledger.
+- TTLs retain queue, evidence, and terminal records for finite periods.
+- Cleanup uses bounded exact-key and index operations only.
+- PubSub is optional and limited to a read/status projection.
+- Store.Repo entrants for queued, status, and abandon paths: zero.
+- Oban: no enqueue or uniqueness path is added.
+- Telemetry and logging: no expansion; any required transition/status events stay
+  low-cardinality and inside the four authorized files.
+- No process or timer per queued waiter and no waiter state proportional to queue
+  length in a GenServer.
+- No 100k certification claim.
