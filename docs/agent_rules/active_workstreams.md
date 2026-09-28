@@ -824,23 +824,18 @@ S0 `READY` does not itself admit IA-03 or authorize other production implementat
 | PR | Title / subject | Belongs to | Status | Bootstrap note |
 | --- | --- | --- | --- | --- |
 | #2 | Memory / GC / runtime methodology | Platform | OPEN against `main` from older `main` | Requires later Platform reconciliation against current `main`; do not review/rebase/retarget/merge from this registry task |
-| #9 | PLAT-PERF-01 RedisPool teardown ownership | Platform | OPEN / DRAFT; authorized source for semantic reconciliation | Integrate the approved head below into the dedicated workstation-infrastructure integration. Preserve its provider-wait ownership/lifecycle semantics. Do not modify or close PR #9 before its successor integration is accepted. |
 
-### Active temporary integration workstreams
-
-| Workstream | Path | Branch | Upstream | Parent authority | Source heads | Owned area | Excluded area | Lifecycle |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `workstation-infra-pr9-semantic-reconcile` | `/home/jcschoeman96/.config/superpowers/worktrees/Store_Blueprint_Hardening/Store_Blueprint_Hardening-integration-workstation-infra-pr9-nightly-pg18` | `platform/integration-workstation-infra-pr9-nightly-pg18` | `origin/platform/integration-workstation-infra-pr9-nightly-pg18` | `origin/main` at `0bb6965635d9b020d3321c438b658fe7feb063af` | PR #9 `d52668e34ec37400355c9ce9c22c681661105a9c`; workstation candidate `e7699dc00d518bc35a3e59851feeea2ee8ae4071`; nightly predecessor `fc815101ed9e7d714eb397bd5793ab25f88556be`; prior integration reference `2ef62a0` | Semantic reconciliation of performance-smoke observer/provider-phase and provider-wait ownership behavior; Redis DEV/TEST namespaces and scoped cleanup; PostgreSQL 18 DEV/TEST settings; CI/nightly workflow; canonical app Compose; migration documentation and tests | PR #9 branch and PR state; permanent `main`; workstation `dev-core` stack; existing project containers, volumes, databases, and legacy Compose infrastructure | `IMPLEMENTING` |
-
-The integration uses source behavior from these exact heads. It does not merge PR #9 wholesale, replace the conflicted performance-smoke file from either side, or change PR #9. The prior unpushed integration attempt is reference material only and is not the workstream base.
-
-### Recently resolved ownership gates
+### Recently resolved ownership gates and integrations
 
 | PR | Title / subject | Belongs to | Status | Resulting authority |
 | --- | --- | --- | --- | --- |
 | #6 | S0-IA-AUTH-03R1 governance correction (IA-03 Redis status/abandon boundary) | S0 | **MERGED** / **RESOLVED** into `hardening/s0-baseline` | `origin/hardening/s0-baseline` tip observed below (candidate evidence only) |
+| #9 | PLAT-PERF-01 RedisPool teardown ownership | Platform | **CLOSED** / **SUPERSEDED BY PR #86** | PR #9 must not be merged independently; its accepted integration is recorded under PR #86 |
+| #86 | Workstation infrastructure and PR #9 lifecycle semantic integration | Platform | **MERGED** / **ACCEPTED** | Merge SHA `59a166c8cfba73bc1c239775cc326936a1f7b1ad`; exact-main CI run `36406423871` attempt 1 failed only `performance_smoke_required`, and attempt 2 passed all five required jobs |
 
 PR #6 authorized a governance/docs correction only. It did **not** implement IA-03.
+
+The `workstation-infra-pr9-semantic-reconcile` temporary integration workstream is `COMPLETE` / `VERIFIED_ON_TARGET` through PR #86 and is no longer active.
 
 ---
 
@@ -921,12 +916,14 @@ When updating:
 
 This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
-- `origin/main` = dynamic canonical governance ref; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
+- `origin/main` = `59a166c8cfba73bc1c239775cc326936a1f7b1ad` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `f4127902c3f328b76674724faa6a473c629c01ef` (current fetched persistent S0 tip after PR #83 reconciliation)
-- `origin/hardening/platform-security` = `cc605040bfc8ddd6868a62de20f52c905f999835` (current branch tip after governance cleanup propagation)
-- `origin/hardening/subscriptions` = `80d44613dc45a26ecb34a8eb6cbad8cce1e4f0c1` (verified PR #31 v0.1.8 runtime-transition merge; not the accepted development base)
+- `origin/hardening/platform-security` = `435924ae2b9c819c8d4f820c5b316d154f3be2b0` (current fetched persistent PLATFORM tip)
+- `origin/hardening/subscriptions` = `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` (current fetched persistent SUBS tip)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
+
+The pending SUBS reconciliation is based on `hardening/subscriptions` at `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` with accepted runtime integration base `main` at `59a166c8cfba73bc1c239775cc326936a1f7b1ad`. This governance/status-only closure does not invalidate `59a166c8cfba73bc1c239775cc326936a1f7b1ad` as the accepted runtime integration base for the pending SUBS and PLATFORM reconciliations.
 
 Earlier topology-bootstrap commissioning evidence (historical only):
 
