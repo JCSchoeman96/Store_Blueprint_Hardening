@@ -39,12 +39,11 @@ defmodule Store.PerformanceSmoke.RedisPoolTransferOwnershipTest do
   test "transferred ownership permits cleanup while alive and then stops the pool" do
     owned_key = Redis.key("perf:lifecycle:owned:#{System.unique_integer([:positive])}")
 
-    other_project_key =
-      "another_project:test:perf:lifecycle:#{System.unique_integer([:positive])}"
+    sibling_key = Redis.key("perf:lifecycle:sibling:#{System.unique_integer([:positive])}")
 
     {:ok, pool_pid} = RedisPool.start_link(pool_size: 1, redis_opts: redis_opts())
     assert {:ok, "OK"} = RedisPool.command(["SET", owned_key, "owned"])
-    assert {:ok, "OK"} = RedisPool.command(["SET", other_project_key, "external"])
+    assert {:ok, "OK"} = RedisPool.command(["SET", sibling_key, "sibling"])
 
     on_exit(:assert_pool_stopped, fn ->
       refute Process.alive?(pool_pid)
@@ -56,8 +55,12 @@ defmodule Store.PerformanceSmoke.RedisPoolTransferOwnershipTest do
       assert Process.whereis(RedisPool) == pool_pid
       assert :ok = RedisPool.maybe_delete_keys([owned_key])
       assert {:ok, nil} = RedisPool.command(["GET", owned_key])
-      assert {:ok, "external"} = RedisPool.command(["GET", other_project_key])
-      assert :ok = RedisPool.maybe_delete_keys([other_project_key])
+
+      try do
+        assert {:ok, "sibling"} = RedisPool.command(["GET", sibling_key])
+      after
+        assert :ok = RedisPool.maybe_delete_keys([sibling_key])
+      end
     end)
 
     assert Process.alive?(pool_pid)
