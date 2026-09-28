@@ -40,7 +40,9 @@
 - Keep single-tenant semantics only; no tenant routing, no `tenant_id`.
 - Add dependencies from blueprint: Ash stack, Petal Components, Oban, Req, Credo, ExDoc, StreamData, Dialyxir.
 - Add `mix check` and `mix check.ci` aliases.
-- Use `STORE_DB_PORT` with default `5433` in `dev`/`test` to match local Docker Postgres setup.
+- Historical Phase 00 proposal: use `STORE_DB_PORT` with default `5433` in `dev`/`test`.
+  The current workstation contract is documented in
+  [`docs/deployment/env-vars.md`](../deployment/env-vars.md).
 - Add Phase 00 enforcement gates:
   - no Repo calls in `lib/store_web/**`
   - moduledoc required (`@moduledoc` or `@moduledoc false`)

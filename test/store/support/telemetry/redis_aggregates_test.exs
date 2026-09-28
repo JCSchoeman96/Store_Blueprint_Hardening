@@ -5,7 +5,7 @@ defmodule Store.Support.Telemetry.RedisAggregatesTest do
   alias Store.Support.Telemetry.RedisAggregates
 
   setup do
-    assert :ok = Redis.flush_db()
+    assert :ok = Redis.clear_namespace()
     wait_for_stable_bucket!()
     :ok
   end
