@@ -25,8 +25,13 @@ server must provide `citext`; the workstation PostgreSQL 18 TEST migration was
 verified using the non-superuser project role.
 
 Performance smoke runs set `STORE_PERF_SMOKE=true` and must provide
-`STORE_PERF_DATABASE_HOST`, `STORE_PERF_DATABASE_PORT`, `STORE_PERF_REDIS_HOST`,
-and `STORE_PERF_REDIS_PORT` for project-isolated PostgreSQL 18 and Redis 7.
+`STORE_PERF_DATABASE_NAME`, `STORE_PERF_DATABASE_HOST`,
+`STORE_PERF_DATABASE_PORT`, `STORE_PERF_REDIS_HOST`, and
+`STORE_PERF_REDIS_PORT` for project-isolated PostgreSQL 18 and Redis 7. The
+performance database name must differ from `store_blueprint_dev` and every
+`store_blueprint_test*` database. CI creates a separate job-owned performance
+database before running the smoke suite. Outside CI, the performance PostgreSQL
+and Redis endpoints cannot use the locked workstation DEV or TEST loopback ports.
 `STORE_PERF_DATABASE_USERNAME` defaults to `store_blueprint_test` and
 `STORE_PERF_DATABASE_PASSWORD` defaults to `STORE_TEST_DATABASE_PASSWORD`.
 Redis ACL settings use `STORE_PERF_REDIS_USERNAME` and

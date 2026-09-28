@@ -14,6 +14,30 @@ required_performance_env! = fn name ->
   end
 end
 
+Code.require_file(Path.join(__DIR__, "support/performance_database_safety.ex"))
+
+performance_database_name =
+  if performance_smoke? do
+    performance_database = System.fetch_env!("STORE_PERF_DATABASE_NAME")
+    postgres_host = System.fetch_env!("STORE_PERF_DATABASE_HOST")
+
+    postgres_port =
+      System.fetch_env!("STORE_PERF_DATABASE_PORT") |> String.to_integer()
+
+    redis_host = System.fetch_env!("STORE_PERF_REDIS_HOST")
+    redis_port = System.fetch_env!("STORE_PERF_REDIS_PORT") |> String.to_integer()
+
+    Store.Config.PerformanceDatabaseSafety.validate!(
+      performance_database,
+      "store_blueprint_test#{test_db_suffix}",
+      {postgres_host, postgres_port},
+      {redis_host, redis_port},
+      System.get_env("CI") == "true"
+    )
+  else
+    "store_blueprint_test#{test_db_suffix}"
+  end
+
 test_database_config =
   if performance_smoke? do
     [
@@ -115,7 +139,7 @@ config :store, Store.Repo,
   password: Keyword.fetch!(test_database_config, :password),
   hostname: Keyword.fetch!(test_database_config, :hostname),
   port: Keyword.fetch!(test_database_config, :port),
-  database: "store_blueprint_test#{test_db_suffix}",
+  database: performance_database_name,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: bench_pool_size
 
@@ -125,7 +149,7 @@ config :store, Store.DirectRepo,
   password: Keyword.fetch!(test_database_config, :password),
   hostname: Keyword.fetch!(test_database_config, :hostname),
   port: Keyword.fetch!(test_database_config, :port),
-  database: "store_blueprint_test#{test_db_suffix}",
+  database: performance_database_name,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: bench_direct_pool_size
 

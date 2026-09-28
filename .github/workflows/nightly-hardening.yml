@@ -135,12 +135,24 @@ jobs:
               | tee -a tmp/nightly/replay-stress-seed-${{ matrix.seed }}.log
           done
 
+      - name: Initialize isolated performance database
+        env:
+          STORE_PERF_SMOKE: "true"
+          STORE_PERF_DATABASE_NAME: store_blueprint_perf
+          STORE_PERF_DATABASE_HOST: 127.0.0.1
+          STORE_PERF_DATABASE_PORT: 55433
+          STORE_PERF_REDIS_HOST: 127.0.0.1
+          STORE_PERF_REDIS_PORT: 56380
+          STORE_PERF_REDIS_DB: "0"
+        run: mix ash_postgres.create && mix ash_postgres.migrate
+
       - name: Run nightly full-stress performance smoke
         env:
           STORE_PERF_SMOKE: "true"
           STORE_PERF_PROFILE: full_stress
           STORE_PERF_CHAOS_PROFILE: provider_incident
           STORE_PERF_CHAOS_SEED: nightly-provider-incident
+          STORE_PERF_DATABASE_NAME: store_blueprint_perf
           STORE_PERF_DATABASE_HOST: 127.0.0.1
           STORE_PERF_DATABASE_PORT: 55433
           STORE_PERF_REDIS_HOST: 127.0.0.1
