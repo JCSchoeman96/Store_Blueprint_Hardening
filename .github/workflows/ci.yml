@@ -12,24 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
-      STORE_DB_PORT: 5433
-      PGHOST: localhost
-      PGPORT: 5433
+      STORE_DB_PORT: 55433
+      PGHOST: 127.0.0.1
+      PGPORT: 55433
       PGUSER: postgres
       PGPASSWORD: postgres
-      PGDATABASE: store_test
+      PGDATABASE: store_blueprint_test
+      STORE_TEST_DATABASE_PASSWORD: postgres
 
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         ports:
-          - 5433:5432
+          - 55433:5432
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: store_test
+          POSTGRES_DB: store_blueprint_test
         options: >-
-          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-cmd "pg_isready -U postgres -d store_blueprint_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -37,7 +38,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 56380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -90,6 +91,17 @@ jobs:
           echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
 
+      - name: Create least-privilege test role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "CREATE ROLE store_blueprint_test LOGIN PASSWORD 'postgres' NOSUPERUSER NOCREATEROLE CREATEDB"
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "ALTER DATABASE store_blueprint_test OWNER TO store_blueprint_test"
+          test "$(psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U store_blueprint_test -d "$PGDATABASE" -Atqc \
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user")" = "f"
+
       - name: Initialize Database
         run: mix ash_postgres.create && mix ash_postgres.migrate
 
@@ -111,24 +123,25 @@ jobs:
     needs: check_static
     env:
       MIX_ENV: test
-      STORE_DB_PORT: 5433
-      PGHOST: localhost
-      PGPORT: 5433
+      STORE_DB_PORT: 55433
+      PGHOST: 127.0.0.1
+      PGPORT: 55433
       PGUSER: postgres
       PGPASSWORD: postgres
-      PGDATABASE: store_test
+      PGDATABASE: store_blueprint_test
+      STORE_TEST_DATABASE_PASSWORD: postgres
 
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         ports:
-          - 5433:5432
+          - 55433:5432
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: store_test
+          POSTGRES_DB: store_blueprint_test
         options: >-
-          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-cmd "pg_isready -U postgres -d store_blueprint_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -136,7 +149,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 56380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -188,6 +201,17 @@ jobs:
           echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
 
+      - name: Create least-privilege test role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "CREATE ROLE store_blueprint_test LOGIN PASSWORD 'postgres' NOSUPERUSER NOCREATEROLE CREATEDB"
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "ALTER DATABASE store_blueprint_test OWNER TO store_blueprint_test"
+          test "$(psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U store_blueprint_test -d "$PGDATABASE" -Atqc \
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user")" = "f"
+
       - name: Initialize Database
         run: mix ash_postgres.create && mix ash_postgres.migrate
 
@@ -203,28 +227,33 @@ jobs:
     needs: check_static
     env:
       MIX_ENV: test
-      STORE_DB_PORT: 5433
+      STORE_DB_PORT: 55433
       STORE_PERF_SMOKE: "true"
       STORE_PERF_PROFILE: ci_gate
       STORE_PERF_REPO_POOL_SIZE: "40"
-      PGHOST: localhost
-      PGPORT: 5433
+      STORE_PERF_DATABASE_HOST: 127.0.0.1
+      STORE_PERF_DATABASE_PORT: 55433
+      STORE_PERF_REDIS_HOST: 127.0.0.1
+      STORE_PERF_REDIS_PORT: 56380
+      STORE_PERF_REDIS_DB: "0"
+      PGHOST: 127.0.0.1
+      PGPORT: 55433
       PGUSER: postgres
       PGPASSWORD: postgres
-      PGDATABASE: store_test
+      PGDATABASE: store_blueprint_test
+      STORE_TEST_DATABASE_PASSWORD: postgres
 
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         ports:
-          - 5433:5432
+          - 55433:5432
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: store_test
-          POSTGRES_INITDB_ARGS: "--auth-host=trust"
+          POSTGRES_DB: store_blueprint_test
         options: >-
-          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-cmd "pg_isready -U postgres -d store_blueprint_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -232,7 +261,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 56380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -284,6 +313,17 @@ jobs:
           echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
 
+      - name: Create least-privilege test role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "CREATE ROLE store_blueprint_test LOGIN PASSWORD 'postgres' NOSUPERUSER NOCREATEROLE CREATEDB"
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "ALTER DATABASE store_blueprint_test OWNER TO store_blueprint_test"
+          test "$(psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U store_blueprint_test -d "$PGDATABASE" -Atqc \
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user")" = "f"
+
       - name: Initialize Database
         run: mix ash_postgres.create && mix ash_postgres.migrate
 
@@ -306,30 +346,35 @@ jobs:
     needs: check_static
     env:
       MIX_ENV: test
-      STORE_DB_PORT: 5433
+      STORE_DB_PORT: 55433
       STORE_PERF_SMOKE: "true"
       STORE_PERF_PROFILE: ci_gate
       STORE_PERF_CHAOS_PROFILE: mobile_realistic
       STORE_PERF_CHAOS_SEED: ci-mobile-realistic
       STORE_PERF_REPO_POOL_SIZE: "40"
-      PGHOST: localhost
-      PGPORT: 5433
+      STORE_PERF_DATABASE_HOST: 127.0.0.1
+      STORE_PERF_DATABASE_PORT: 55433
+      STORE_PERF_REDIS_HOST: 127.0.0.1
+      STORE_PERF_REDIS_PORT: 56380
+      STORE_PERF_REDIS_DB: "0"
+      PGHOST: 127.0.0.1
+      PGPORT: 55433
       PGUSER: postgres
       PGPASSWORD: postgres
-      PGDATABASE: store_test
+      PGDATABASE: store_blueprint_test
+      STORE_TEST_DATABASE_PASSWORD: postgres
 
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         ports:
-          - 5433:5432
+          - 55433:5432
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: store_test
-          POSTGRES_INITDB_ARGS: "--auth-host=trust"
+          POSTGRES_DB: store_blueprint_test
         options: >-
-          --health-cmd "pg_isready -U postgres -d store_test"
+          --health-cmd "pg_isready -U postgres -d store_blueprint_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -337,7 +382,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 56380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -388,6 +433,17 @@ jobs:
           done
           echo "Postgres did not become ready on ${PGHOST}:${PGPORT}"
           exit 1
+
+      - name: Create least-privilege test role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "CREATE ROLE store_blueprint_test LOGIN PASSWORD 'postgres' NOSUPERUSER NOCREATEROLE CREATEDB"
+          psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U postgres -d postgres \
+            -c "ALTER DATABASE store_blueprint_test OWNER TO store_blueprint_test"
+          test "$(psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U store_blueprint_test -d "$PGDATABASE" -Atqc \
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user")" = "f"
 
       - name: Initialize Database
         run: mix ash_postgres.create && mix ash_postgres.migrate

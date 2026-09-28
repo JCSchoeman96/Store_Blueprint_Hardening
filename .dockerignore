@@ -1,4 +1,7 @@
 .git
+.env
+.env.*
+.envrc
 _build
 deps
 node_modules
