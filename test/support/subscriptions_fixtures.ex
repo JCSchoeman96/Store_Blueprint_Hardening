@@ -42,7 +42,7 @@ defmodule Store.SubscriptionsFixtures do
     :entitlement_scope_key
   ]
 
-  @spec create_customer!(String.t()) :: map()
+  @spec create_customer!(String.t()) :: Store.Accounts.User.t()
   def create_customer!(prefix \\ "phase26_sub_customer") do
     TestFixtures.register_user!(email: TestFixtures.unique_email(prefix))
   end

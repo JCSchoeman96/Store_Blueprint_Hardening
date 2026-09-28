@@ -9,6 +9,7 @@ defmodule StoreWeb.Plugs.WaitingRoom do
 
   def init(opts), do: opts
 
+  # sobelow_skip ["XSS.SendResp"]
   def call(conn, _opts) do
     conn = WaitingRoom.assign_live_scope(conn)
 

@@ -3,10 +3,14 @@ defmodule Store.TestSupport.StripeAPIStub do
 
   import ExUnit.Assertions
 
+  require Logger
+
   alias Store.Perf.ChaosProfile
+  alias Store.TestSupport.ProviderWaitOwnershipProbe
 
   @stub_name Store.Payments.Providers.Stripe
   @chaos_override_key :stripe_perf_chaos_override
+  @logical_chaos_metadata_key :perf_chaos_logical_request_key
 
   def req_options, do: [plug: {Req.Test, Store.Payments.Providers.Stripe}]
 
@@ -42,6 +46,22 @@ defmodule Store.TestSupport.StripeAPIStub do
   def clear_chaos_override do
     Application.delete_env(:store, @chaos_override_key)
     :ok
+  end
+
+  def with_chaos_request_key(logical_key, fun)
+      when is_binary(logical_key) and logical_key != "" and is_function(fun, 0) do
+    previous_metadata = Logger.metadata()
+    Logger.metadata(Keyword.put(previous_metadata, @logical_chaos_metadata_key, logical_key))
+
+    try do
+      fun.()
+    after
+      Logger.reset_metadata(previous_metadata)
+    end
+  end
+
+  def chaos_request_key(endpoint, params) when is_binary(endpoint) and is_map(params) do
+    resolve_chaos_request_key(endpoint, params)
   end
 
   def stub_payment_intent(fun) when is_function(fun, 2) do
@@ -169,7 +189,7 @@ defmodule Store.TestSupport.StripeAPIStub do
       |> ChaosProfile.normalize_profile()
 
     seed = Map.get(override, :seed, ChaosProfile.current_seed())
-    request_key = ChaosProfile.request_key(endpoint, params)
+    request_key = resolve_chaos_request_key(endpoint, params)
 
     case Map.get(override, :mode) do
       :slow ->
@@ -220,6 +240,16 @@ defmodule Store.TestSupport.StripeAPIStub do
   defp restore_override(nil), do: Application.delete_env(:store, @chaos_override_key)
   defp restore_override(previous), do: Application.put_env(:store, @chaos_override_key, previous)
 
+  defp resolve_chaos_request_key(endpoint, params) do
+    case Logger.metadata()[@logical_chaos_metadata_key] do
+      logical_key when is_binary(logical_key) and logical_key != "" ->
+        "#{endpoint}:#{logical_key}"
+
+      _ ->
+        ChaosProfile.request_key(endpoint, params)
+    end
+  end
+
   defp respond_default(conn, params, endpoint) do
     case {conn.method, conn.request_path} do
       {"POST", "/v1/checkout/sessions"} ->
@@ -239,16 +269,28 @@ defmodule Store.TestSupport.StripeAPIStub do
   defp respond_for_action(conn, endpoint, params, success_fun) do
     case resolve_action(endpoint, params) do
       {:ok, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         Req.Test.json(conn, success_fun.(params))
 
       {:timeout, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         timeout_response(conn, endpoint)
 
       {:error, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         provider_error_response(conn, endpoint)
+    end
+  end
+
+  defp provider_wait_barrier_enter do
+    if Code.ensure_loaded?(ProviderWaitOwnershipProbe) and
+         function_exported?(ProviderWaitOwnershipProbe, :maybe_enter_barrier, 0) do
+      ProviderWaitOwnershipProbe.maybe_enter_barrier()
+    else
+      :ok
     end
   end
 

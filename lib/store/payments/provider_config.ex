@@ -51,11 +51,38 @@ defmodule Store.Payments.ProviderConfig do
 
   @spec request_options() :: keyword()
   def request_options do
-    stripe_config()
-    |> Keyword.get(:request_options, [])
-    |> Keyword.put_new(:finch, finch_name())
-    |> Keyword.put_new(:receive_timeout, http_receive_timeout_ms())
-    |> Keyword.put_new(:pool_timeout, http_pool_timeout_ms())
+    opts =
+      stripe_config()
+      |> Keyword.get(:request_options, [])
+      |> Keyword.put_new(:receive_timeout, http_receive_timeout_ms())
+
+    opts
+    |> Keyword.delete(:pool_timeout)
+    |> put_finch_request_options()
+    |> reject_conflicting_transport_options!()
+  end
+
+  defp put_finch_request_options(opts) do
+    pool_timeout = http_pool_timeout_ms()
+
+    case Keyword.get(opts, :finch) do
+      nil ->
+        Keyword.put(opts, :finch, name: finch_name(), pool_timeout: pool_timeout)
+
+      name when is_atom(name) ->
+        Keyword.put(opts, :finch, name: name, pool_timeout: pool_timeout)
+
+      finch_opts when is_list(finch_opts) ->
+        Keyword.put(opts, :finch, Keyword.put_new(finch_opts, :pool_timeout, pool_timeout))
+    end
+  end
+
+  defp reject_conflicting_transport_options!(opts) do
+    if Keyword.has_key?(opts, :connect_options) do
+      raise ArgumentError, "cannot set both :finch and :connect_options"
+    end
+
+    opts
   end
 
   @spec validate_timeout_hierarchy() :: :ok | {:error, Error.t()}

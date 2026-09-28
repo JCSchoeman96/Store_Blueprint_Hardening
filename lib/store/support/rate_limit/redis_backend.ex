@@ -47,6 +47,11 @@ defmodule Store.Support.RateLimit.RedisBackend do
     end
   end
 
-  defp redis_key(scope, key) when is_atom(scope), do: "store:rate_limit:#{scope}:#{key}"
-  defp redis_key(scope, key), do: "store:rate_limit:#{scope}:#{key}"
+  defp redis_key(scope, key) do
+    key_prefix =
+      Application.get_env(:store, :rate_limit, [])
+      |> Keyword.get(:redis_key_prefix, "store_blueprint_hardening")
+
+    "#{key_prefix}:rate_limit:#{scope}:#{key}"
+  end
 end

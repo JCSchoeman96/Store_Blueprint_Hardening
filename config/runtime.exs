@@ -23,6 +23,18 @@ end
 config :store, StoreWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() == :prod do
+  optional_env = fn env ->
+    case System.get_env(env) do
+      nil -> nil
+      "" -> nil
+      value -> value
+    end
+  end
+
+  required_env! = fn env ->
+    optional_env.(env) || raise "environment variable #{env} is missing."
+  end
+
   parse_positive_integer! = fn env, default ->
     case System.get_env(env, default) do
       value when is_binary(value) ->
@@ -36,32 +48,17 @@ if config_env() == :prod do
     end
   end
 
-  token_signing_secret =
-    System.get_env("STORE_TOKEN_SIGNING_SECRET") ||
-      raise "environment variable STORE_TOKEN_SIGNING_SECRET is missing."
+  token_signing_secret = required_env!.("STORE_TOKEN_SIGNING_SECRET")
 
-  google_client_id =
-    System.get_env("STORE_GOOGLE_CLIENT_ID") ||
-      raise "environment variable STORE_GOOGLE_CLIENT_ID is missing."
+  google_client_id = required_env!.("STORE_GOOGLE_CLIENT_ID")
 
-  google_client_secret =
-    System.get_env("STORE_GOOGLE_CLIENT_SECRET") ||
-      raise "environment variable STORE_GOOGLE_CLIENT_SECRET is missing."
+  google_client_secret = required_env!.("STORE_GOOGLE_CLIENT_SECRET")
 
-  google_redirect_uri_base =
-    System.get_env("STORE_GOOGLE_REDIRECT_URI_BASE") ||
-      raise "environment variable STORE_GOOGLE_REDIRECT_URI_BASE is missing."
+  google_redirect_uri_base = required_env!.("STORE_GOOGLE_REDIRECT_URI_BASE")
 
-  quote_hash_secret =
-    System.get_env("STORE_QUOTE_HASH_SECRET") ||
-      raise "environment variable STORE_QUOTE_HASH_SECRET is missing."
+  quote_hash_secret = required_env!.("STORE_QUOTE_HASH_SECRET")
 
-  database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
+  database_url = required_env!.("DATABASE_URL")
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
   db_pool_mode = System.get_env("STORE_DB_POOL_MODE", "session")
@@ -70,7 +67,7 @@ if config_env() == :prod do
   # prepared statements). When DATABASE_URL points at PgBouncer in transaction
   # pooling, set STORE_DIRECT_DATABASE_URL to a direct Postgres URL that
   # bypasses PgBouncer. If unset, DirectRepo falls back to DATABASE_URL.
-  direct_database_url = System.get_env("STORE_DIRECT_DATABASE_URL") || database_url
+  direct_database_url = optional_env.("STORE_DIRECT_DATABASE_URL") || database_url
 
   repo_common_opts = [
     pool_size: parse_positive_integer!.("POOL_SIZE", "10"),
@@ -102,18 +99,11 @@ if config_env() == :prod do
   # want to use a different value for prod and you most likely don't want
   # to check this value into version control, so we use an environment
   # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+  secret_key_base = required_env!.("SECRET_KEY_BASE")
 
   host = System.get_env("PHX_HOST") || "example.com"
 
-  sentry_dsn =
-    System.get_env("SENTRY_DSN") ||
-      raise "environment variable SENTRY_DSN is missing."
+  sentry_dsn = required_env!.("SENTRY_DSN")
 
   log_level =
     case System.get_env("STORE_LOG_LEVEL", "info") do
@@ -334,26 +324,23 @@ if config_env() == :prod do
 
   stripe_webhook_secret =
     if :stripe in enabled_payment_providers do
-      System.get_env("STORE_STRIPE_WEBHOOK_SECRET") ||
-        raise "environment variable STORE_STRIPE_WEBHOOK_SECRET is missing."
+      required_env!.("STORE_STRIPE_WEBHOOK_SECRET")
     else
-      System.get_env("STORE_STRIPE_WEBHOOK_SECRET")
+      optional_env.("STORE_STRIPE_WEBHOOK_SECRET")
     end
 
   stripe_secret_key =
     if :stripe in enabled_payment_providers do
-      System.get_env("STORE_STRIPE_SECRET_KEY") ||
-        raise "environment variable STORE_STRIPE_SECRET_KEY is missing."
+      required_env!.("STORE_STRIPE_SECRET_KEY")
     else
-      System.get_env("STORE_STRIPE_SECRET_KEY")
+      optional_env.("STORE_STRIPE_SECRET_KEY")
     end
 
   stripe_publishable_key =
     if :stripe in enabled_payment_providers do
-      System.get_env("STORE_STRIPE_PUBLISHABLE_KEY") ||
-        raise "environment variable STORE_STRIPE_PUBLISHABLE_KEY is missing."
+      required_env!.("STORE_STRIPE_PUBLISHABLE_KEY")
     else
-      System.get_env("STORE_STRIPE_PUBLISHABLE_KEY", "pk_test_store_blueprint")
+      optional_env.("STORE_STRIPE_PUBLISHABLE_KEY") || "pk_test_store_blueprint"
     end
 
   payment_timeout_ms = parse_positive_integer!.("STORE_PAYMENT_TIMEOUT_MS", "5000")
@@ -401,10 +388,9 @@ if config_env() == :prod do
 
   postmark_server_token =
     if comms_provider == :req_postmark do
-      System.get_env("STORE_POSTMARK_SERVER_TOKEN") ||
-        raise "environment variable STORE_POSTMARK_SERVER_TOKEN is missing."
+      required_env!.("STORE_POSTMARK_SERVER_TOKEN")
     else
-      System.get_env("STORE_POSTMARK_SERVER_TOKEN")
+      optional_env.("STORE_POSTMARK_SERVER_TOKEN")
     end
 
   config :store, :comms,
@@ -452,12 +438,12 @@ if config_env() == :prod do
     allowed_redirect_hosts: digital_allowed_hosts,
     s3: [
       region: System.get_env("STORE_DIGITAL_S3_REGION", "us-east-1"),
-      access_key_id: System.get_env("STORE_DIGITAL_S3_ACCESS_KEY_ID"),
-      secret_access_key: System.get_env("STORE_DIGITAL_S3_SECRET_ACCESS_KEY"),
-      host: System.get_env("STORE_DIGITAL_S3_HOST"),
-      scheme: System.get_env("STORE_DIGITAL_S3_SCHEME"),
+      access_key_id: optional_env.("STORE_DIGITAL_S3_ACCESS_KEY_ID"),
+      secret_access_key: optional_env.("STORE_DIGITAL_S3_SECRET_ACCESS_KEY"),
+      host: optional_env.("STORE_DIGITAL_S3_HOST"),
+      scheme: optional_env.("STORE_DIGITAL_S3_SCHEME"),
       port:
-        case System.get_env("STORE_DIGITAL_S3_PORT") do
+        case optional_env.("STORE_DIGITAL_S3_PORT") do
           nil -> nil
           value -> String.to_integer(value)
         end
@@ -465,9 +451,7 @@ if config_env() == :prod do
 
   if digital_provider == :s3 do
     for env <- ["STORE_DIGITAL_S3_ACCESS_KEY_ID", "STORE_DIGITAL_S3_SECRET_ACCESS_KEY"] do
-      unless System.get_env(env) do
-        raise "environment variable #{env} is missing."
-      end
+      _ = required_env!.(env)
     end
   end
 
@@ -484,7 +468,7 @@ if config_env() == :prod do
     backend: rate_limit_backend,
     redis_client: Store.Support.RateLimit.RedixClient,
     redis_name: :store_rate_limit_redis,
-    redis_key_prefix: System.get_env("STORE_REDIS_KEY_PREFIX", "prod:store"),
+    redis_key_prefix: "store_blueprint_hardening:prod",
     webhook_limit: parse_positive_integer!.("STORE_WEBHOOK_RATE_LIMIT_LIMIT", "120"),
     webhook_window_seconds:
       parse_positive_integer!.("STORE_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "60"),
@@ -506,8 +490,8 @@ if config_env() == :prod do
       host: System.get_env("STORE_REDIS_HOST", "localhost"),
       port: String.to_integer(System.get_env("STORE_REDIS_PORT", "6379")),
       database: String.to_integer(System.get_env("STORE_REDIS_DB", "0")),
-      username: System.get_env("STORE_REDIS_USERNAME"),
-      password: System.get_env("STORE_REDIS_PASSWORD"),
+      username: optional_env.("STORE_REDIS_USERNAME"),
+      password: optional_env.("STORE_REDIS_PASSWORD"),
       ssl: redis_tls?
     ],
     signed_download_limit: parse_positive_integer!.("STORE_DIGITAL_SIGNED_DOWNLOAD_LIMIT", "10"),

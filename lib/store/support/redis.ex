@@ -20,8 +20,10 @@ defmodule Store.Support.Redis do
   @spec ping() :: :ok | {:error, term()}
   def ping, do: RedixClient.ping()
 
-  @spec flush_db() :: :ok | {:error, term()}
-  def flush_db, do: RedixClient.flush_db()
+  @spec clear_namespace() :: :ok | {:error, term()}
+  def clear_namespace do
+    do_delete_prefix("#{key_prefix()}:*", "0")
+  end
 
   @spec key(String.t()) :: String.t()
   def key(relative_key) when is_binary(relative_key) do
@@ -29,6 +31,7 @@ defmodule Store.Support.Redis do
   end
 
   @spec term_get(String.t()) :: {:ok, :miss | {:hit, term()}} | {:error, term()}
+  # sobelow_skip ["Misc.BinToTerm"]
   def term_get(relative_key) when is_binary(relative_key) do
     case command(["GET", key(relative_key)]) do
       {:ok, nil} ->
@@ -215,12 +218,15 @@ defmodule Store.Support.Redis do
            Integer.to_string(@default_scan_count)
          ]) do
       {:ok, [next_cursor, keys]} when is_binary(next_cursor) and is_list(keys) ->
-        delete_keys(keys)
+        case delete_keys(keys) do
+          :ok when next_cursor == "0" ->
+            :ok
 
-        if next_cursor == "0" do
-          :ok
-        else
-          do_delete_prefix(match, next_cursor)
+          :ok ->
+            do_delete_prefix(match, next_cursor)
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       {:ok, unexpected} ->

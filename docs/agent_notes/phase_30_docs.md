@@ -27,7 +27,9 @@
    - avoid reloading checkout context after shipping/finalize when the updated order is already in hand
    - collapse the payment-intent blocking checks into one read
 5. No new public checkout API is introduced in this phase.
-6. The k6 benchmark harness must run against an isolated test database suffix via `STORE_TEST_DB_SUFFIX` so it never pollutes the default `store_test` database used by `mix test` and `mix check`.
+6. Historical Phase 30 benchmark decision: use an isolated `STORE_TEST_DB_SUFFIX` such as `bench`.
+   Current performance smoke runs require the dedicated performance database
+   contract in [`docs/deployment/env-vars.md`](../deployment/env-vars.md).
 7. Phase 30.2 keeps the benchmark-only large pool profile in `config/test.exs`:
    - default benchmark profile for `STORE_TEST_DB_SUFFIX=bench` is `200/200` for `Store.Repo` / `Store.DirectRepo`
    - local benchmark runs on this workstation must override that down to `100/60` because local Postgres reports `max_connections = 300`
@@ -57,7 +59,8 @@
   - `finalize_totals`
   - `create_payment_intent`
 - Added the benchmark bootstrap script at `priv/perf/benchmark_bootstrap.exs`.
-- Benchmark bootstrap now refuses to run without `STORE_TEST_DB_SUFFIX` so the harness uses an isolated benchmark database such as `store_testbench`.
+- At the time of this note, benchmark bootstrap refused to run without
+  `STORE_TEST_DB_SUFFIX` and used a database such as `store_testbench`.
 - Added `perf/k6/` benchmark scripts for storefront HTTP, webhook ingress, and a browser-level checkout journey.
 - Fixed the public product slug lookup used by `/shop/:slug` by switching `Product.get_for_public` to a supported action filter shape.
 - Removed webhook and callback traffic from the mixed storefront benchmark so storefront latency is measured independently from webhook ingress.

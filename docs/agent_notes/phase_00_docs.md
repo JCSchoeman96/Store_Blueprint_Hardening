@@ -40,7 +40,9 @@
 - Keep single-tenant semantics only; no tenant routing, no `tenant_id`.
 - Add dependencies from blueprint: Ash stack, Petal Components, Oban, Req, Credo, ExDoc, StreamData, Dialyxir.
 - Add `mix check` and `mix check.ci` aliases.
-- Use `STORE_DB_PORT` with default `5433` in `dev`/`test` to match local Docker Postgres setup.
+- Historical Phase 00 proposal: use `STORE_DB_PORT` with default `5433` in `dev`/`test`.
+  The current workstation contract is documented in
+  [`docs/deployment/env-vars.md`](../deployment/env-vars.md).
 - Add Phase 00 enforcement gates:
   - no Repo calls in `lib/store_web/**`
   - moduledoc required (`@moduledoc` or `@moduledoc false`)
@@ -1094,9 +1096,11 @@ behavior.
 - Durably record IA-02 as independently post-integration certified and frozen.
 - Authorize only the IA-03 internal caller-independent admission orchestration
   while keeping the frozen architecture and plan unchanged in substance.
-- This is the current authorization record. It supersedes S0-IA-AUTH-02 only for the
-  bounded IA-03 transition and does not rewrite historical IA-01 or IA-02
-  authorization records.
+- This remains the IA-03 authorization record. S0-IA-AUTH-03R1 corrects only the
+  Redis support file boundary and typed `status`/`abandon` primitive contracts so the
+  already-authorized orchestration is implementable without reopening IA-02.
+- It supersedes S0-IA-AUTH-02 only for the bounded IA-03 transition and does not
+  rewrite historical IA-01 or IA-02 authorization records.
 
 ### LINKS CONSULTED
 
@@ -1145,14 +1149,25 @@ behavior.
 
 ### IA-03 SCOPE
 
+Future IA-03 coding file boundary (as corrected by S0-IA-AUTH-03R1):
+
 - `lib/store/orders/inventory_admission.ex`
+- `lib/store/orders/inventory_admission/redis.ex`
 - `test/store/orders/inventory_admission_test.exs`
+- `test/store/orders/inventory_admission_redis_test.exs`
+
+Scope:
+
 - Internal `InventoryAdmission.reserve` orchestration.
 - Internal `InventoryAdmission.status` orchestration.
 - Internal `InventoryAdmission.abandon` orchestration.
 - Building and validating the trusted Request using the already-frozen IA-01 value
   contracts.
-- Calling only typed IA-02 Redis primitive functions.
+- Calling only typed Redis primitives: frozen IA-02 primitives plus the minimum
+  IA-03-authorized typed Redis `status` and `abandon` support primitives recorded by
+  S0-IA-AUTH-03R1. Raw Redis commands from `InventoryAdmission` remain forbidden.
+- The `redis.ex` / Redis-test allowance is only for those typed `status` and
+  `abandon` support primitives. It does not reopen IA-02 enqueue/promotion semantics.
 - Returning immediately for queued work rather than retaining the caller process.
 - Preserving queue lifetime independently from Phoenix request lifetime, LiveView
   lifetime, browser connection, and caller BEAM process.
@@ -1160,10 +1175,11 @@ behavior.
   unavailable results.
 - Finite queue, lease, and deadline propagation.
 - Server-owned operation identity handling using the frozen IA-01/IA-02 semantics.
-- Governed abandon behavior using the frozen lifecycle.
+- Governed abandon behavior using the frozen lifecycle and frozen
+  `trusted_pre_reservation_abandonment` guard.
 - Caller-independent status/retry contract.
 - Fail-closed Redis uncertainty handling.
-- The exact coding task will be supplied separately after this authorization is
+- The exact coding task will be supplied separately after S0-IA-AUTH-03R1 is
   independently reviewed.
 
 ### IA-03 LIFECYCLE PRESERVATION
@@ -1231,9 +1247,8 @@ behavior.
 
 ### NEXT
 
-- Supply the separate IA-03 coding prompt after independent review of this
-  governance change. Do not implement IA-04 or later, close S0-CLOSE-02, or mark S0
-  merge-ready.
+- Apply S0-IA-AUTH-03R1 before any IA-03 coding prompt. Do not implement IA-04 or
+  later, close S0-CLOSE-02, or mark S0 merge-ready.
 
 ### BLOCKERS
 
@@ -1243,6 +1258,8 @@ behavior.
 - `bd dolt test` remains unavailable because this checkout uses the embedded-mode CLI;
   `dolt-beads.service` is not installed. Bead work was still claimed through normal
   `bd` commands.
+- Original AUTH-03 file boundary contradicted the typed-primitive requirement for
+  `status`/`abandon`; corrected by S0-IA-AUTH-03R1.
 
 ### COMMANDS RUN
 
@@ -1292,3 +1309,348 @@ behavior.
 - 100K REVIEW. Architecture must remain compatible with high concurrency through
   bounded queueing and caller-independent state. This authorization does not claim
   100k certification. That remains an evidence phase.
+
+## S0-IA-AUTH-03R1 IA-03 Redis status/abandon support boundary (2026-09-04)
+
+### GOAL
+
+- Correct the internal contradiction in S0-IA-AUTH-03: IA-03 authorizes
+  `reserve`/`status`/`abandon` orchestration that must call only typed Redis
+  primitives, but the frozen IA-02 Redis public surface exposes only
+  `enqueue_or_return_existing/2` and `promote_queued/2` (plus decoding/key helpers)
+  and has no typed `status` or `abandon` primitive.
+- Expand the future IA-03 coding file boundary only enough to add those typed Redis
+  support primitives. Do not reopen IA-02. Do not redesign IA-03. Do not authorize
+  IA-04+.
+
+### LINKS CONSULTED
+
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md),
+  especially `QUEUED -> ABANDONED` and Section 18.
+- [`s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md),
+  especially Section 10 `abandon_queued` / `promote_next` / `release_known_outcome`,
+  Section 24 IA-03 / DL-01, and Section 27.
+- Frozen IA-01 guard `:trusted_pre_reservation_abandonment` in
+  `lib/store/orders/inventory_admission.ex`.
+- Exact-head Redis adapter at `77a272c3887a7ab46e84a7fed02163d964e37b9b`.
+
+### DECISIONS / PINS
+
+- `S0-ARCH-01` remains `FROZEN`.
+- `S0-PLAN-01` remains `FROZEN`.
+- IA-01 remains `COMPLETE / FROZEN`.
+- IA-02 remains `COMPLETE / FROZEN`. IA-02 enqueue/promotion semantics are not
+  reopened.
+- S0-IA-AUTH-03 remains the IA-03 authorization, corrected by this R1 record.
+- InventoryAdmission implementation remains `AUTHORIZED FOR IA-03 ONLY`.
+- IA-03 remains `AUTHORIZED / NOT STARTED`.
+- IA-04+ remains `NOT AUTHORIZED`.
+- `S0-CLOSE-02` remains `BLOCKED`.
+- S0 merge readiness remains `BLOCKED`.
+- This correction does not itself authorize implementation. A separate coding prompt
+  must follow independent review of this governance change.
+
+### CONTRADICTION CORRECTED
+
+- AUTH-03 required `InventoryAdmission.status` and `InventoryAdmission.abandon` to
+  use only typed Redis primitives, while authorizing edits only to
+  `inventory_admission.ex` and its orchestration test.
+- The exact-head Redis adapter has no public `status` or `abandon` function.
+- `enqueue_or_return_existing/2` is unsafe as a fake status read because it may
+  create/admit/queue state.
+- `abandon` requires an authoritative atomic Redis mutation for
+  `QUEUED -> ABANDONED`; raw Redis from `InventoryAdmission` is forbidden.
+- R1 expands the IA-03 coding boundary to include `redis.ex` and its Redis test only
+  for the minimum typed Redis support required by those two orchestration paths.
+
+### FUTURE IA-03 CODING FILE BOUNDARY
+
+Exactly:
+
+```text
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_test.exs
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+The `redis.ex` / Redis-test allowance is ONLY for typed Redis support required by
+IA-03 `status` and `abandon` orchestration. No lease renewal/release, recovery,
+reaper, Postgres, checkout, shared lifecycle fences, or IA-04+ work.
+
+### STATUS PRIMITIVE CONTRACT
+
+Authorize a typed Redis status operation that:
+
+- never creates a new request/operation;
+- never queues a missing request;
+- never grants admission merely because status was requested;
+- validates the frozen reservation identity and request fingerprint;
+- validates metadata/fence/index coherence;
+- returns typed current IA lifecycle information;
+- may perform only bounded already-approved lazy expiry where required for truthful
+  state;
+- fails closed on missing, corrupt, contradictory, or uncertain Redis evidence.
+
+### ABANDON PRIMITIVE CONTRACT
+
+Authorize a typed atomic Redis abandon operation for only:
+
+```text
+QUEUED -> ABANDONED
+```
+
+Guard: `trusted_pre_reservation_abandonment`.
+
+It must:
+
+- require exact trusted reservation identity/fingerprint;
+- reject stale/mismatched operation ownership;
+- atomically remove exact queued membership;
+- write `ABANDONED` terminal state consistently to required metadata/fence evidence;
+- retain bounded terminal evidence;
+- never abandon `ADMITTED`;
+- never abandon `RESERVING`;
+- never abandon `UNKNOWN_DB_OUTCOME`;
+- never abandon `RECOVERING`;
+- never abandon `UNRESOLVED`;
+- never release potentially active durable-operation capacity;
+- never infer a PostgreSQL result;
+- fail closed on uncertain Redis state;
+- use explicit keys only; no `KEYS` command / unbounded `SCAN`.
+
+Do not invent a new lifecycle state.
+
+### PROMOTION RULE
+
+Frozen authority already resolves promotion-after-abandon. Do not invent new
+promotion semantics.
+
+- Frozen plan Section 10 `abandon_queued`: compare identity and state; remove only
+  queued membership and mark `ABANDONED`. It cannot abandon `RESERVING`.
+- Frozen architecture `QUEUED -> ABANDONED`: remove the queue member and metadata;
+  repeated cancel is a no-op.
+- Contrast: frozen `release_known_outcome` explicitly promotes the next eligible
+  request in the same atomic operation. `abandon_queued` does not.
+- Next-head promotion remains the already-authorized `promote_next` /
+  `promote_queued` path. Frozen plan also records that `status/2` may trigger
+  bounded promotion for the identity. Abandoned/expired members are skipped
+  atomically when that separate promotion path runs.
+
+Therefore abandon itself must not invent atomic next-head promotion. Promotion after
+queued removal remains the already-authorized promotion path.
+
+### EXCLUSIONS
+
+Still not authorized:
+
+- `Store.Repo`
+- `InventoryItem` mutation
+- `InventoryReservation` mutation
+- `ADMITTED -> RESERVING`
+- durable reservation call
+- PRE/POST DB reads
+- ambiguous outcome recovery
+- `InventoryAdmission.Recovery`
+- Oban
+- reaper
+- lease renewal/release machinery
+- shared lifecycle fences
+- `Store.Orders` integration
+- checkout
+- multi-variant
+- DL-02
+- migrations/schema
+- performance certification
+- IA-04+
+- reopening IA-02 enqueue/promotion semantics beyond calling the already-frozen
+  `promote_queued` path where the frozen plan already permits it
+
+### PLAN
+
+- Record this governance correction only.
+- Independently review and merge before any IA-03 coding prompt.
+- Keep IA-02 COMPLETE/FROZEN.
+
+### DONE
+
+- Updated the three authorized governance documents with this R1 correction.
+- No production code, tests, Redis behavior, PostgreSQL, configuration, migrations,
+  or performance workloads were changed or run by this governance task.
+
+### NEXT
+
+- Independently review/merge this governance PR.
+- Only then supply the separate IA-03 coding prompt.
+- Do not implement IA-04 or later, close S0-CLOSE-02, or mark S0 merge-ready.
+
+### BLOCKERS
+
+- `S0-CLOSE-02` remains `BLOCKED`.
+- S0 merge readiness remains `BLOCKED`.
+- `bd dolt test` remains unavailable in embedded mode; bead work used normal `bd`
+  commands.
+
+### COMMANDS RUN
+
+- Baseline SHA verification against
+  `origin/hardening/s0-baseline` =
+  `77a272c3887a7ab46e84a7fed02163d964e37b9b`.
+- Focused inspection of frozen `abandon_queued`, architecture
+  `QUEUED -> ABANDONED`, and exact-head Redis public API.
+- `git diff --check` (PASS).
+- `mix check.docs_notes` (PASS).
+- `mix docs` (PASS; pre-existing Operation nested-type hide warnings only).
+- Focused marker assertions for S0-IA-AUTH-03R1, status/abandon contracts,
+  promotion-after-abandon reference, and exactly three governance files changed
+  (PASS).
+
+### GATES
+
+- Documentation-only governance correction: `PASS`.
+- Exactly three governance files changed: `PASS`.
+- IA-01: `COMPLETE / FROZEN`.
+- IA-02: `COMPLETE / FROZEN`.
+- IA-03: `AUTHORIZED / NOT STARTED`.
+- IA-04+: `NOT AUTHORIZED`.
+- `S0-CLOSE-02`: `BLOCKED`.
+- S0 merge readiness: `BLOCKED`.
+
+### Performance & Scaling Review
+
+- DATA LAYER. HOT: Redis coordination only for status/abandon support. WARM: none
+  required. COLD: PostgreSQL remains durable inventory truth and is not touched.
+- REDIS STRUCTURES. Reuse existing bounded HASH/ZSET/common-hash-tag design.
+- TTL. Finite terminal/evidence retention.
+- INVALIDATION / CLEANUP. Exact-key bounded cleanup only. Forbidden: `KEYS`,
+  unbounded `SCAN`, `FLUSHDB`, process-per-waiter, timer-per-waiter, Redis stock
+  truth.
+- PUBSUB. No correctness authority.
+- STORE.REPO EFFECT. Zero.
+- 100K. No certification claim.
+
+## S0 baseline reconciliation candidate (2026-09-22)
+
+### Links consulted
+
+- [`AGENTS.md`](../../AGENTS.md)
+- [`docs/agent_rules/active_workstreams.md`](../agent_rules/active_workstreams.md)
+- [`docs/hardening/s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md)
+- [`docs/hardening/s0_inventory_reservation_admission_implementation_plan.md`](../hardening/s0_inventory_reservation_admission_implementation_plan.md)
+- [`docs/governance/performance_scaling.md`](../governance/performance_scaling.md)
+- [`docs/phases/phase_29_performance_architecture_optimizations.md`](../phases/phase_29_performance_architecture_optimizations.md)
+
+### Source and candidate SHAs
+
+- S0 source: `9b0b26a68399149abdde7c96529fbc1951e22cac` (`origin/hardening/s0-baseline`).
+- Accepted main source: `59dd41100593b207907c3a7ab4d77755cd80f929` (`origin/main`).
+- Merge base: `e498fdaa92b377d9fd8762a46b12e495535d113b`.
+- Reconciliation merge: `769e4075adbadd002d79d389d9077da726697eae`.
+- Exact code candidate validated: `e97d67f0ba29f3cce88b110698fd457ba808c08a`.
+- Later commits on this branch are documentation-only validation records; the
+  branch HEAD must be rechecked before publication.
+- This branch is an integration candidate only. Canonical S0 remains `BOOTSTRAPPED`,
+  has no accepted development base, and has no IA-03 implementation authority.
+
+### Decisions and pins
+
+- The merge used a dedicated branch, `integration/s0-baseline-reconciliation`,
+  from the published S0 source. The published S0 branch was not rebased or edited.
+- Canonical `main` was accepted for shared runtime, dependency, security, governance,
+  and performance-harness conflict resolution.
+- The three merge conflicts were limited to shared performance harness files:
+  `priv/repo/performance_smoke_test.exs`,
+  `test/store/perf/observer_contract_test.exs`, and
+  `test/support/performance_smoke_observer_contract.ex`.
+- No merge diff touched `priv/repo/migrations`,
+  `lib/store/orders/inventory_admission/**`, or the frozen InventoryAdmission
+  architecture record. Redis remains ephemeral coordination, PostgreSQL remains
+  durable inventory and reservation truth, and `K_v = 1` remains unchanged.
+- The merge does not accept a development base, transition the S0 lifecycle, or
+  authorize IA-03. Independent review and explicit human acceptance remain required.
+
+### Plan
+
+- Validate the exact candidate SHA with repository checks, focused InventoryAdmission
+  tests, Dialyzer, and a final forbidden-diff audit.
+- Record validation output and open a bounded review PR without merging it or changing
+  canonical lifecycle state.
+- Stop at the activation-review handoff. Do not begin IA-03 from this candidate.
+
+### Performance & Scaling Review
+
+- HOT: the reconciliation changes shared performance observer and Redis-pool smoke
+  harness inputs, but it does not change storefront, cart, checkout, webhook, or
+  InventoryAdmission business queries.
+- WARM: the accepted `main` harness adds/retains pool and lock-observation checks;
+  the merge introduces no new application query or N+1 path.
+- COLD: no migration, index, durable inventory write, cache invalidation, Oban
+  uniqueness rule, or Redis stock ledger change is present.
+- Query count and N+1 risk: unchanged for production code. The smoke observer remains
+  diagnostic and does not provide business correctness.
+- Caching and TTLs: unchanged. No ETS/Redis cache policy or invalidation path changed.
+- Telemetry and logging: only performance-harness observation code is reconciled;
+  production telemetry ownership is unchanged.
+- No 100K or performance-certification claim is made by this candidate.
+
+### Validation record
+
+- `mix check`: PASS, 576 tests and 3 property tests with 0 failures; repository
+  checks, Credo, Sobelow, and docs generation completed. Sobelow emitted
+  low-confidence findings and exited successfully.
+- Focused InventoryAdmission tests: PASS, 45 tests with 0 failures.
+- `mix dialyzer --format short`: PASS, 130 warnings skipped by the checked-in
+  ignore file and 0 unsuppressed errors.
+- The first PR CI run (`35700384831`) exposed a strict `MIX_ENV=test
+  mix check.types` failure in the S0-only checkout diagnostic helper. The failure
+  was reproduced locally before changing code. The fix is limited to that helper:
+  canonical `File.stream!/3` argument order, explicit ETS side-effect returns,
+  removal of unreachable fallback/error branches, and contracts matching the
+  inferred error shapes. No ignore entries were added.
+- Remediated exact-head strict type gate: `MIX_ENV=test mix check.types` PASS,
+  130 reviewed warnings skipped and 0 unsuppressed errors.
+- Focused checkout/performance plus InventoryAdmission tests: PASS, 78 tests with
+  0 failures.
+- PR CI run `35703573228` passed on candidate predecessor
+  `ceb2d007a184c07cc94c6c967c8496d409128b06`.
+- Final exact-head CI is review-time external evidence and must be verified
+  against the final candidate SHA after all source and document changes stop.
+- `git diff --check origin/hardening/s0-baseline...HEAD`: PASS.
+- Forbidden-path audit: PASS. The candidate changes no migrations,
+  `lib/store/orders/inventory_admission/**`, or InventoryAdmission tests.
+- Worktree: clean at the exact candidate SHA.
+
+## SBH-10-04 renewal reservation generation amendment (2026-09-26)
+
+### Links consulted
+
+- [`S0-ARCH-01`](../hardening/s0_inventory_reservation_admission_architecture.md)
+- [`S0 implementation plan`](../hardening/s0_inventory_reservation_admission_implementation_plan.md)
+- [`Inventory & Reservations governance`](../governance/inventory_reservations.md)
+- [`SBH-10-04 cross-domain authority amendment`](../governance/sbh_10_04_cross_domain_authority_amendment.md)
+- [`Performance & Scaling governance`](../governance/performance_scaling.md)
+
+### Decisions and pins
+
+- Canonical governance base: `1fb29528e63a255cf86f1810d99b2372a55923cc`.
+- Accepted SUBS evidence: `c66fb843beeb25e4943ceb6119b1ed7de3999964`.
+- Generic checkout keeps `order:<order_id>:sku:<variant_id>`, `K_v = 1`, the global `B_total` budget, and PostgreSQL as stock and reservation authority.
+- The S0 architecture contract requires a server-derived generation key through request identity, operation descriptors, Lease values, Redis recovery metadata, and PostgreSQL recovery by that exact key.
+- The frozen IA-01 implementation plan still blocks changes to the existing `Request`, `Operation`, and `Lease` contracts. A separate S0 governance/task admission for the minimum typed renewal path and exact-key recovery is required before SBH-10-04 can be marked `READY`.
+- The amendment grants no generic InventoryAdmission redesign and does not certify the recovery service or worker as implemented at the canonical base.
+
+### Plan
+
+1. Merge the reviewed canonical governance amendment to `main`.
+2. Verify the exact merge commit and tree independently.
+3. Complete a separate S0 governance/task admission for the typed renewal-key and exact-key recovery path, including any S0-scoped implementation required by that admission; pass its required review, merge, and independent post-merge commit/tree verification.
+4. Only after the S0 admission merges and verifies, re-admit SBH-10-04 in a separate SUBS governance change against the then-current accepted SUBS tip and recheck current source compatibility. The SUBS amendment must not mark SBH-10-04 `READY` from PR #80 alone.
+5. Assign a new implementation task base only after the SUBS re-admission merges and receives independent post-merge verification.
+
+### Performance & Scaling Review
+
+- **Hot:** Future renewal reservations and payment success remain hot paths. This governance work adds no production query. The implementation review must measure request, lease, recovery, and exact-generation query counts and state N+1 risk.
+- **Warm:** No cache is added. Redis coordinates bounded admission only; PostgreSQL remains authoritative. Generic checkout TTL and stock invalidation rules stay in force; unresolved renewal generations bypass generic TTL cleanup until evidence permits exact release. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
+- **Cold:** Ambiguous database outcomes must reconcile by exact `reservation_key` under the existing bounded recovery fence. No 100,000-user certification is claimed.
+- **Indexes:** Keep global `reservation_key` uniqueness and the `inventory_items.variant_id` index. The authorized Orders change supplies the partial unique active `(order_id, variant_id)` index.
+- **Idempotency and telemetry:** A generation key identifies one durable reservation mutation. The implementation must keep Oban and provider identities collection-specific and record exact recovery outcomes separately from Redis lease state.

@@ -42,3 +42,7 @@ npm-debug.log
 *.zip
 
 .envrc
+.env
+.env.*
+!.env.example
+!.env.production.example

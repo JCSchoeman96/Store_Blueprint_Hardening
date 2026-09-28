@@ -2,14 +2,14 @@ ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Store.Repo, :manual)
 Ecto.Adapters.SQL.Sandbox.mode(Store.DirectRepo, :manual)
 
-case Store.Support.Redis.flush_db() do
+case Store.Support.Redis.clear_namespace() do
   :ok ->
     :ok
 
   {:error, reason} ->
     raise """
-    Redis is required for the Phase 29 cache and telemetry spine tests but is unreachable.
-    Expose Redis to the test environment (for example with Docker -p 6379:6379).
+    Shared Redis TEST is required for the cache and telemetry spine tests but is unreachable.
+    Verify the workstation Redis TEST service at 127.0.0.1:56380.
     reason=#{inspect(reason)}
     """
 end
