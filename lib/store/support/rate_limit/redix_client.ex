@@ -35,15 +35,6 @@ defmodule Store.Support.RateLimit.RedixClient do
 
   def incr_with_ttl(_key, _ttl_seconds), do: {:error, :invalid_redis_counter_args}
 
-  @spec flush_db() :: :ok | {:error, term()}
-  def flush_db do
-    case Redix.command(connection_name(), ["FLUSHDB"]) do
-      {:ok, "OK"} -> :ok
-      {:ok, unexpected} -> {:error, {:unexpected_redis_reply, unexpected}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   @spec ping() :: :ok | {:error, term()}
   def ping do
     case Redix.command(connection_name(), ["PING"]) do

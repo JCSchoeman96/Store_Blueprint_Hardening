@@ -134,59 +134,103 @@ Key derivation examples:
 
 **Law:** the idempotency key must be stable across retries.
 
-### Blocked Subscription renewal collection target (v0.1.27)
+### 4.1 Renewal collection identity
 
-This section records a blocked future target, not effective provider law. It
-does not amend the general retry law above or authorize provider, Payments, or
-Subscription implementation. The current contract remains in force until the
-Subscription, provider, and Payments owners explicitly approve the
-renewal-specific identity and evidence model and a later task receives
-implementation authority.
+The accepted main contract records this bounded provider extension for a
+later, separately admitted SBH-10-04 implementation. It does not admit the
+Subscription implementation: SBH-10-04 remains `BLOCKED_SHARED_AUTHORITY` in
+the current SUBS authority record. General provider behavior for unrelated
+flows remains unchanged.
 
-Under that target, each future-authorized renewal collection attempt would have
-a durable UUIDv7 `collection_attempt_id`. Any collection ordinal would have a
-separate durable meaning and would not reuse or reinterpret the existing
-`RenewalAttempt.attempt_no` without a later explicit authority decision. The
-occurrence `renewal_key` would remain metadata and Oban occurrence identity;
-it would not identify every sequential dunning collection.
+One RenewalAttempt and one renewal Order remain the commercial occurrence.
+Each collection attempt has a durable UUIDv7 `collection_attempt_id` created
+before PaymentIntent or provider work. Any collection ordinal has separate
+durable meaning and must not reuse or reinterpret `RenewalAttempt.attempt_no`.
+`renewal_key` remains occurrence metadata and Oban identity; it does not
+identify sequential collections. The provider request carries:
 
-The proposed provider key is:
+- `renewal_key` as occurrence metadata;
+- `collection_attempt_id`;
+- `renewal_attempt_id`;
+- `order_id`;
+- `local_intent_id`;
+- `subscription_id`.
+
+Its provider idempotency key is:
 
 ```text
 renewal-collection:<collection_attempt_id>
 ```
 
-Every retry of that same ambiguous provider request would reuse this key. A
-pre-submission dispatch fence could release a reservation hold after proving no
-worker can submit, while recovery would retain the same collection attempt,
-PaymentIntent, and provider key. A new provider key would be allowed only for
-a new durable collection attempt after verified provider/payment evidence
-proves final financial non-success and dunning policy permits another
-collection. A timeout, transport failure, provider 5xx, `requires_action`,
-local expiry, or local cancellation after submission would remain unresolved
-and reuse the same attempt and key. Only verified canonical provider success
-attributed to the exact collection attempt would close its collection
-eligibility. Order payment application would proceed through the
-PaymentApplication boundary; any approved extension would consume only the
-reservation generation linked to that attempt, then SBH-10-05 would reconcile
-under its existing authority. A local PaymentIntent `succeeded` state or
-synchronous provider response alone would not apply paid or inventory effects.
+An ambiguous replay uses the same collection ID, PaymentIntent, and provider
+key. A later collection receives a new ID and key only after verified
+terminal financial non-success and approval under the existing dunning policy.
+Timeout, transport failure, provider 5xx, `requires_action`, local expiry, or
+local cancellation after possible submission remains unresolved and reuses the
+same collection and key. A pre-submission dispatch fence is dispatch evidence,
+not a financial outcome; if it proves no worker can submit, it may release
+only the exact active reservation generation. Recovery retains the same
+collection and PaymentIntent. Only verified canonical provider success
+attributed to that exact collection can close its collection eligibility.
 
-Under an approved target, the provider request would carry both occurrence and
-collection identities:
-`renewal_key`, `collection_attempt_id`, `renewal_attempt_id`, `order_id`,
-`local_intent_id`, and `subscription_id`. The amount and currency would come
-from the validated durable PaymentIntent for that collection attempt. The
-Subscription Facade would revalidate the current payment method and selected
-provider immediately before provider work; neither would be frozen at
-checkpoint B.
+The provider receives amount and currency from the validated durable local
+PaymentIntent. The Subscription Facade revalidates the current payment method
+and selected provider immediately before provider work; neither is frozen at
+checkpoint B. A local PaymentIntent `succeeded` state or synchronous provider
+response alone does not apply paid or inventory effects. Order payment
+application remains behind the PaymentApplication boundary, and physical
+reservation consumption uses only the generation linked to the successful
+collection; SBH-10-05 retains its existing authority. No legacy collection
+identity or key may be inferred from mutable state or fabricated for an
+existing PaymentIntent. The inspected Stripe renewal adapter currently uses
+`renewal_key` as its provider idempotency key; the admitted implementation
+must use the collection key for sequential collections.
 
-The inspected Stripe renewal adapter currently sends `renewal_key` as its
-provider idempotency key. The blocked target identifies that as insufficient
-for a new collection after an authoritative decline. It does not authorize
-changing provider modules or contracts; provider-owner approval and a later
-implementation grant are required. No legacy collection identity or key may
-be inferred from mutable state or fabricated for an existing PaymentIntent.
+For create and webhook identity handling, provider modules remain limited to
+payload construction, signature verification, and canonical normalization.
+Status retrieval and cancellation are bounded to §4.2. See [the SBH-10-04
+cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
+
+### 4.2 Renewal collection status recovery and cancellation
+
+The later SBH-10-04 implementation may extend
+`Store.Payments.Providers.Behaviour`, the `Store.Payments.Providers` wrapper,
+the typed Payments facade, and supported provider adapters with
+`retrieve_renewal_collection_intent` and
+`cancel_renewal_collection_intent`. These operations target only the exact
+PaymentIntent linked to one durable `collection_attempt_id`; they are not
+general PaymentIntent retrieve/cancel APIs.
+
+Status retrieval accepts `collection_attempt_id`, `local_intent_id`, and the
+exact `provider_payment_id` when available. If the provider response was lost
+before the ID was stored, an adapter may use an exact provider-supported
+lookup bound to both collection and local intent IDs. Zero or multiple
+matches, mismatched identity, unknown status, unsupported lookup, timeout,
+transport failure, or provider 5xx return an ambiguous result. Replaying the
+provider create key is not proof of current status.
+
+Adapters normalize authenticated provider responses into canonical
+collection status bound to the exact provider object and its local correlation
+metadata. Payments/Subscriptions validate returned IDs, amount, and currency
+before updating collection or PaymentIntent evidence. Cancellation targets
+only that exact provider object; its request or acknowledgement is not
+terminal evidence. On retry, retrieve status before repeating cancellation.
+If the provider requires an idempotency key for cancellation, derive a stable
+operation key from the collection ID and keep it separate from the create key
+`renewal-collection:<collection_attempt_id>`. Retrieve status again or accept
+a verified canonical webhook before classifying terminal financial
+non-success.
+
+The existing local authentication deadline may trigger bounded status
+retrieval and cancellation for a `requires_action` renewal collection. The
+deadline, local PaymentIntent state, timeout, or cancel acknowledgement cannot
+release inventory or permit a new collection. After bounded automatic
+reconciliation is exhausted, preserve the unresolved collection and active
+hold and escalate for operator review. Only adapters that can safely identify
+and verify these exact operations may support them; unsupported adapters fail
+closed. Provider modules retain no Repo/Ash access, Oban enqueue, or
+business-state transitions. These renewal-only operations do not change
+generic checkout or dunning policy.
 
 ---
 

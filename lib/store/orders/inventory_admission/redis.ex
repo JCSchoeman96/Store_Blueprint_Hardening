@@ -1269,7 +1269,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   @type admission :: %{
           status: :existing | :queued | :admitted,
-          state: InventoryAdmission.state(),
+          state: Store.Orders.InventoryAdmission.state(),
           member: String.t(),
           variant_id: String.t(),
           variant_hex: String.t(),
@@ -1308,12 +1308,14 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   end
 
   @spec normalize_variant_key(term()) :: {:ok, String.t()} | {:error, :invalid_input}
-  def normalize_variant_key(value) do
+  def normalize_variant_key(value) when is_binary(value) do
     case UUIDv7.decode(value) do
       {:ok, raw16} -> {:ok, Base.encode16(raw16, case: :lower)}
       :error -> {:error, :invalid_input}
     end
   end
+
+  def normalize_variant_key(_value), do: {:error, :invalid_input}
 
   @spec derive_admission_member(term(), term(), String.t()) ::
           {:ok, String.t()} | {:error, :invalid_input}
@@ -1564,11 +1566,13 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   defp decode_state(_state), do: {:error, :unavailable}
 
   defp decode_variant_hex(value) when is_binary(value) do
-    with true <- Regex.match?(@variant_hex_regex, value),
-         {:ok, raw16} <- Base.decode16(value, case: :lower) do
-      {:ok, UUIDv7.encode!(raw16)}
+    if Regex.match?(@variant_hex_regex, value) do
+      case Base.decode16(value, case: :lower) do
+        {:ok, raw16} -> {:ok, UUIDv7.encode!(raw16)}
+        :error -> {:error, :unavailable}
+      end
     else
-      _ -> {:error, :unavailable}
+      {:error, :unavailable}
     end
   rescue
     _error -> {:error, :unavailable}
@@ -1722,20 +1726,36 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   defp redis_server_time do
     case redis_command(["TIME"]) do
-      {:ok, [seconds, microseconds]} when is_binary(seconds) and is_binary(microseconds) ->
-        with {seconds, ""} <- Integer.parse(seconds),
-             {microseconds, ""} <- Integer.parse(microseconds),
-             true <- seconds >= 0 and microseconds >= 0 and microseconds < 1_000_000 do
-          {:ok, seconds * 1_000 + div(microseconds, 1_000)}
-        else
-          _ -> {:error, :unavailable}
-        end
+      {:ok, [seconds, microseconds]} ->
+        parse_server_time(seconds, microseconds)
 
       _ ->
         {:error, :unavailable}
     end
   rescue
     _error -> {:error, :unavailable}
+  end
+
+  defp parse_server_time(seconds, microseconds) do
+    case {Integer.parse(seconds), Integer.parse(microseconds)} do
+      {{seconds, ""}, {microseconds, ""}} ->
+        cond do
+          seconds < 0 ->
+            {:error, :unavailable}
+
+          microseconds < 0 ->
+            {:error, :unavailable}
+
+          microseconds >= 1_000_000 ->
+            {:error, :unavailable}
+
+          true ->
+            {:ok, seconds * 1_000 + div(microseconds, 1_000)}
+        end
+
+      _ ->
+        {:error, :unavailable}
+    end
   end
 
   defp expired_members(key, now_ms, cleanup_limit) do
@@ -1787,28 +1807,34 @@ defmodule Store.Orders.InventoryAdmission.Redis do
            "variant_hex",
            "member"
          ]) do
-      {:ok, [state, identity_digest, variant_hex, member]}
-      when is_binary(state) and is_binary(identity_digest) and is_binary(variant_hex) and
-             is_binary(member) ->
-        with :ok <- validate_member(member),
-             :ok <- validate_digest(identity_digest),
-             :ok <- validate_variant_hex(variant_hex),
-             true <- Map.has_key?(@wire_states, state) do
-          {:ok, %{state: state, identity_digest: identity_digest, variant_hex: variant_hex}}
-        else
-          _ -> {:error, :unavailable}
-        end
+      {:ok, [state, identity_digest, variant_hex, member]} ->
+        cleanup_metadata_values(state, identity_digest, variant_hex, member)
 
       _ ->
         {:error, :unavailable}
     end
   end
 
+  defp cleanup_metadata_values(state, identity_digest, variant_hex, member)
+       when is_binary(state) and is_binary(identity_digest) and is_binary(variant_hex) and
+              is_binary(member) do
+    with :ok <- validate_member(member),
+         :ok <- validate_digest(identity_digest),
+         :ok <- validate_variant_hex(variant_hex),
+         {:ok, _decoded_state} <- Map.fetch(@wire_states, state) do
+      {:ok, %{state: state, identity_digest: identity_digest, variant_hex: variant_hex}}
+    else
+      :error -> {:error, :unavailable}
+      _ -> {:error, :unavailable}
+    end
+  end
+
+  defp cleanup_metadata_values(_state, _identity_digest, _variant_hex, _member),
+    do: {:error, :unavailable}
+
   defp validate_variant_hex(value) when is_binary(value) do
     if Regex.match?(@variant_hex_regex, value), do: :ok, else: {:error, :unavailable}
   end
-
-  defp validate_variant_hex(_value), do: {:error, :unavailable}
 
   defp valid_member?(value), do: validate_member(value) == :ok
 
@@ -1847,9 +1873,6 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
       {:error, _reason} ->
         {:error, :unavailable}
-
-      _unexpected ->
-        {:error, :unavailable}
     end
   rescue
     _error -> {:error, :unavailable}
@@ -1859,7 +1882,6 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     case Redix.command(RedixClient.connection_name(), command) do
       {:ok, reply} -> {:ok, reply}
       {:error, _reason} -> {:error, :unavailable}
-      _unexpected -> {:error, :unavailable}
     end
   rescue
     _error -> {:error, :unavailable}
@@ -1952,13 +1974,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   end
 
-  defp validate_metadata_retention(metadata_retention_ms) do
-    if is_integer(metadata_retention_ms) and metadata_retention_ms > 0 do
-      :ok
-    else
-      {:error, :invalid_input}
-    end
-  end
+  defp validate_metadata_retention(metadata_retention_ms)
+       when is_integer(metadata_retention_ms) and metadata_retention_ms > 0,
+       do: :ok
 
   defp ceil_seconds(milliseconds), do: div(milliseconds + 999, 1000)
 

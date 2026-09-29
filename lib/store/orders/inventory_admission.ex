@@ -73,11 +73,22 @@ defmodule Store.Orders.InventoryAdmission do
           | :return_existing_terminal
           | :requires_new_authorization
 
-  @spec states() :: [state()]
-  def states, do: @states
+  @type state_list :: [state()]
+  @type terminal_state_list :: [state()]
 
-  @spec terminal_states() :: [state()]
-  def terminal_states, do: @terminal_states
+  @type transition_error :: :invalid_admission_state | :invalid_admission_transition
+
+  @type transition_guard_error ::
+          transition_error()
+          | :invalid_request_guard
+          | :invalid_operation_or_lease_guard
+          | :invalid_transition_guard
+
+  @spec states() :: state_list()
+  def states, do: Enum.map(@states, & &1)
+
+  @spec terminal_states() :: terminal_state_list()
+  def terminal_states, do: Enum.map(@terminal_states, & &1)
 
   @spec terminal?(term()) :: boolean()
   def terminal?(state), do: state in @terminal_states
@@ -96,7 +107,7 @@ defmodule Store.Orders.InventoryAdmission do
     valid_state?(from) and valid_state?(to) and to in Map.get(@transitions, from, [])
   end
 
-  @spec validate_transition(term(), term()) :: :ok | {:error, atom()}
+  @spec validate_transition(term(), term()) :: :ok | {:error, transition_error()}
   def validate_transition(from, to) do
     cond do
       not valid_state?(from) or not valid_state?(to) ->
@@ -110,7 +121,8 @@ defmodule Store.Orders.InventoryAdmission do
     end
   end
 
-  @spec validate_transition(term(), term(), guard_evidence()) :: :ok | {:error, atom()}
+  @spec validate_transition(term(), term(), guard_evidence()) ::
+          :ok | {:error, transition_guard_error()}
   def validate_transition(from, to, evidence) do
     with :ok <- validate_transition(from, to) do
       validate_guard(from, to, evidence)

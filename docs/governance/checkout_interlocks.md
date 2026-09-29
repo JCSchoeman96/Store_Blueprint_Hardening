@@ -52,46 +52,46 @@ Behavior (MUST):
 - Only one PaymentIntent may be in submitted state per order at a time:
   - additional attempts must either reuse the same intent (provider-dependent) or create a new intent after failing/cancelling the previous one.
 
-### 3.3 Blocked Subscription renewal collection target (v0.1.27)
+### 3.3 Renewal collection identity and success interlocks
 
-This section records a future renewal target only. It does not amend the
-effective PaymentIntent rules in sections 3.1–3.2, authorize runtime behavior,
-or assign Payments, provider, Orders, InventoryAdmission, or Subscription
-implementation authority. Those owners must explicitly approve any change to
-their contracts before this target can become effective. SBH-10-04 remains
-blocked pending those decisions.
+The accepted main contract defines this bounded Payments/Orders behavior for a
+later, separately admitted SBH-10-04 implementation. It does not admit the
+Subscription implementation: SBH-10-04 remains `BLOCKED_SHARED_AUTHORITY` in
+the current SUBS authority record. Generic checkout rules in §§3.1–3.2 remain
+unchanged.
 
-Under the target, the occurrence-level `renewal_key` would identify the one
-RenewalAttempt and Order, not every provider collection against that
-occurrence. A durable collection-attempt record would be created before
-PaymentIntent or provider work and would have a UUIDv7
-`collection_attempt_id`. Any monotonic collection ordinal would have a
-separate durable meaning and would not reuse or reinterpret the existing
-`RenewalAttempt.attempt_no` without a later explicit authority decision.
+One RenewalAttempt and one renewal Order remain the commercial occurrence.
+Create a durable collection record with a UUIDv7 `collection_attempt_id`
+before PaymentIntent or provider work. Any collection ordinal has separate
+durable meaning and must not reuse or reinterpret
+`RenewalAttempt.attempt_no`. The occurrence `renewal_key` remains metadata; it
+does not identify sequential collections.
 
-The target local PaymentIntent key is
-`renewal-collection:<collection_attempt_id>`. It would be distinct for each
-collection attempt against the same Order and reused only for replay of that
-same collection. The target provider idempotency key is also
-`renewal-collection:<collection_attempt_id>`; it would remain stable for
-ambiguous transport/provider replay. A pre-submission dispatch fence could
-release a reservation hold after proving no worker can submit, but recovery
-would remain on the same collection attempt and keys. A new key and
-PaymentIntent would be allowed only after verified provider/payment evidence
-proves final financial non-success and dunning policy permits another attempt.
-An ambiguous result, `requires_action`, local timeout, or local cancellation
-after submission would not allow a new collection key.
+For an admitted SBH-10-04 renewal collection, the typed Payments path may use:
 
-Every PaymentIntent would need durable attribution to its exact collection
-attempt and RenewalAttempt occurrence. Successful reconciliation would need to
-identify the exact successful collection evidence without ambiguity or
-destructive history rewriting. The meaning of the legacy single
-`RenewalAttempt.payment_intent_id` remains unresolved for a later explicit
-Subscription, Payments, and SBH-10-05 authority decision. One PaymentIntent
-may be in flight per Order as required above. The target does not change
-generic checkout key derivation. The v0.1.27 Subscription register records
-this as a blocked target, not current runtime behavior or effective
-cross-domain law.
+```text
+payment_intent_key = "renewal-collection:<collection_attempt_id>"
+```
+
+The PaymentIntent is durably linked to the exact collection and RenewalAttempt.
+Replays of that collection reuse the same PaymentIntent and key. A later
+collection may use a new key only after verified terminal financial
+non-success and current dunning policy permits another collection. An
+ambiguous result, `requires_action`, timeout, or local cancellation after
+possible submission remains unresolved and cannot authorize a new collection.
+A pre-submission dispatch fence may release the exact active reservation
+generation only after proving no worker can submit; recovery retains the same
+collection, PaymentIntent, and keys, with a new reservation generation if it
+resumes. The meaning of the legacy single
+`RenewalAttempt.payment_intent_id` remains for the separate SBH-10-05 decision.
+
+The current PaymentIntent resource and indexes already permit distinct keys for terminal history on one Order. Existing preflight checks continue to reject a conflicting `submitted`, `requires_action`, or `succeeded` intent. This exception needs no PaymentIntent schema migration or new Payments resource. Generic checkout continues to use the deterministic Order/amount/currency/provider key above.
+
+The collection must durably link the exact PaymentIntent. The existing `PaymentApplication` continues to apply the Order once and record the exact PaymentIntent used for the successful application. Renewal-specific collection validation and exact reservation-generation selection belong in the bounded payment/Subscription/Orders orchestration. Generic PaymentApplication does not gain Subscription rules. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
+
+Before physical renewal success reaches reservation consumption, the renewal path must prove the exact local PaymentIntent-to-collection relationship and the exact expected active reservation-key set. It then uses the exact-key Orders consume operation within the paid-Order transaction. If an order-level PaymentApplication already exists, the renewal path verifies that its `payment_intent_id` matches the successful intent before treating the result as a replay. This validation stays outside generic checkout semantics.
+
+The current generic payment-success path consumes reservations by Order. An admitted renewal success path must not invoke that order-wide consume operation. Payments must use a renewal-specific paid transaction that preserves the PaymentApplication apply-once insert and exact-intent replay check while consuming only the validated collection's exact reservation keys through Orders. Virtual renewals skip reservation consumption. Generic checkout continues to use its current order-wide path.
 
 ## 4) State interlocks (MUST)
 ### 4.1 Order state transition to paid

@@ -66,12 +66,12 @@ defmodule Store.MixProject do
       {:simple_sat, "~> 0.1"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
-      {:phoenix_live_view, ">= 1.1.33 and < 1.2.0-0"},
-      {:petal_components, "~> 3.0"},
+      {:phoenix_live_view, "~> 1.2.0"},
+      {:petal_components, "~> 4.16"},
       {:lazy_html, ">= 0.1.0", only: :test},
-      {:phoenix_live_dashboard, "~> 0.8.3"},
+      {:phoenix_live_dashboard, "~> 0.9.0"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
-      {:tailwind, "~> 0.3", runtime: Mix.env() == :dev},
+      {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
       {:heroicons,
        github: "tailwindlabs/heroicons",
        tag: "v2.2.0",
@@ -81,8 +81,8 @@ defmodule Store.MixProject do
        depth: 1},
       {:swoosh, ">= 1.26.3 and < 2.0.0-0"},
       {:oban, "~> 2.0"},
-      {:req, ">= 0.6.1 and < 0.7.0-0"},
-      {:sentry, "~> 10.8"},
+      {:req, "~> 0.7.0"},
+      {:sentry, "~> 13.0"},
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.5"},
       {:telemetry_metrics, "~> 1.0"},
@@ -92,16 +92,17 @@ defmodule Store.MixProject do
       {:redix, "~> 1.5"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
-      {:dns_cluster, "~> 0.2.0"},
+      {:dns_cluster, "~> 0.3.0"},
       {:bandit, ">= 1.12.5 and < 2.0.0-0"},
       # Security floors for transitive HTTP/authentication runtime packages.
       {:mint, ">= 1.9.3 and < 2.0.0-0"},
-      {:plug, "~> 1.19.5"},
+      {:plug, ">= 1.19.5 and < 2.0.0-0"},
       {:hpax, ">= 1.0.4 and < 2.0.0-0"},
       {:thousand_island, ">= 1.5.0 and < 2.0.0-0"},
       {:ymlr, ">= 5.1.6 and < 6.0.0-0"},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.15", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.37", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.1"},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
@@ -145,6 +146,7 @@ defmodule Store.MixProject do
         "check.docs_notes",
         "check.subscriptions_docs_sync",
         "credo --strict",
+        "sobelow --private --skip --exit Medium",
         "docs"
       ],
       check: [
@@ -166,17 +168,18 @@ defmodule Store.MixProject do
         "check.subscriptions_docs_sync",
         "test",
         "credo --strict",
+        "sobelow --private --skip --exit Medium",
         "docs"
       ],
       "check.ci": ["check"],
-      "check.types": ["dialyzer --format short --ignore-exit-status"],
+      "check.types": ["dialyzer --format short"],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end
 
   defp dialyzer do
     [
-      plt_add_apps: [:mix, :ex_unit],
+      plt_add_apps: [:mix, :ex_unit, :inets],
       flags: [:error_handling, :unmatched_returns, :underspecs],
       ignore_warnings: ".dialyzer_ignore.exs"
     ]

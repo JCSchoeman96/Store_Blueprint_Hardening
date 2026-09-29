@@ -63,6 +63,17 @@ defmodule Store.Orders.InventoryAdmission.Request do
           expiry_policy: expiry_policy()
         }
 
+  @type validation_error ::
+          :invalid_request
+          | :invalid_order_id
+          | :invalid_variant_id
+          | :quantity_must_be_non_negative_integer
+          | :invalid_mutation_kind
+          | :invalid_expiry_policy
+          | :reservation_key_mismatch
+          | :identity_digest_mismatch
+          | :request_fingerprint_mismatch
+
   @spec new(map()) :: {:ok, t()} | {:error, atom()}
   def new(%__MODULE__{} = request) do
     case validate(request) do
@@ -155,7 +166,7 @@ defmodule Store.Orders.InventoryAdmission.Request do
   @spec valid?(term()) :: boolean()
   def valid?(request), do: match?(:ok, validate(request))
 
-  @spec validate(term()) :: :ok | {:error, atom()}
+  @spec validate(term()) :: :ok | {:error, validation_error()}
   def validate(%__MODULE__{} = request) do
     with {:ok, order_id} <- normalize_uuid(request.order_id, :order_id),
          {:ok, variant_id} <- normalize_uuid(request.variant_id, :variant_id),
@@ -259,21 +270,23 @@ defmodule Store.Orders.InventoryAdmission.Request do
     end
   end
 
-  defp normalize_uuid(value, :order_id) do
+  defp normalize_uuid(value, :order_id) when is_binary(value) do
     case UUIDv7.decode(value) do
       {:ok, raw16} -> {:ok, UUIDv7.encode!(raw16)}
       :error -> {:error, :invalid_order_id}
     end
   end
 
-  defp normalize_uuid(value, :variant_id) do
+  defp normalize_uuid(_value, :order_id), do: {:error, :invalid_order_id}
+
+  defp normalize_uuid(value, :variant_id) when is_binary(value) do
     case UUIDv7.decode(value) do
       {:ok, raw16} -> {:ok, UUIDv7.encode!(raw16)}
       :error -> {:error, :invalid_variant_id}
     end
   end
 
-  defp normalize_uuid(_value, _key), do: {:error, :invalid_uuid}
+  defp normalize_uuid(_value, :variant_id), do: {:error, :invalid_variant_id}
 
   defp validate_quantity(quantity) when is_integer(quantity) and quantity >= 0, do: :ok
   defp validate_quantity(_quantity), do: {:error, :quantity_must_be_non_negative_integer}
@@ -327,7 +340,6 @@ defmodule Store.Orders.InventoryAdmission.Request do
 
   defp required_reason(:order_id), do: :order_id_required
   defp required_reason(:variant_id), do: :variant_id_required
-  defp required_reason(_key), do: :required_field_missing
 
   defp build_reservation_key(order_id, variant_id),
     do: "order:#{order_id}:sku:#{variant_id}"

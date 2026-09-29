@@ -10,7 +10,9 @@
 
 This is a frozen planning artifact. It authorizes no implementation by itself. IA-01
 and IA-02 are complete and frozen. The separate S0-IA-AUTH-03 decision authorizes only
-the bounded IA-03 internal admission orchestration described in Section 27. IA-04 and
+the bounded IA-03 internal admission orchestration described in Section 27.
+S0-IA-AUTH-03R1 corrects that authorization only enough to permit typed Redis
+`status` and `abandon` support primitives inside the IA-03 coding boundary. IA-04 and
 later remain unauthorized.
 
 ---
@@ -1549,9 +1551,15 @@ mutation, bounded membership, idempotent repeats, and fail-closed error results.
 **Files:**
 
 - `lib/store/orders/inventory_admission.ex`
-- `lib/store/orders/inventory_admission/request.ex`
-- `lib/store/orders/inventory_admission/lease.ex`
+- `lib/store/orders/inventory_admission/redis.ex` (S0-IA-AUTH-03R1: typed
+  `status`/`abandon` support only)
 - `test/store/orders/inventory_admission_test.exs`
+- `test/store/orders/inventory_admission_redis_test.exs`
+
+Frozen plan historically also listed `request.ex` and `lease.ex` here. Those remain
+IA-01 frozen contracts. The current authorization does not permit editing them.
+The authoritative IA-03 coding boundary is Section 27 as corrected by
+S0-IA-AUTH-03R1.
 
 **Tasks:**
 
@@ -1902,10 +1910,16 @@ or release an unresolved fence.
 Task: Build the internal `InventoryAdmission.reserve/status/abandon` orchestration.
 
 Objective: Separate short caller interactions from queue lifetime and keep lifecycle
-decisions out of the Redis adapter.
+decisions out of ad hoc Redis commands while using typed Redis primitives.
 
-Output: `lib/store/orders/inventory_admission.ex` and
-`test/store/orders/inventory_admission_test.exs`.
+Output: `lib/store/orders/inventory_admission.ex`,
+`lib/store/orders/inventory_admission/redis.ex`,
+`test/store/orders/inventory_admission_test.exs`, and
+`test/store/orders/inventory_admission_redis_test.exs`.
+
+The Redis-file allowance is only the S0-IA-AUTH-03R1 minimum typed Redis support for
+`status` and `abandon`. Do not reopen IA-02 enqueue/promotion semantics beyond calling
+the already-frozen `promote_queued` path where this plan already permits it.
 
 Note: DATA LAYER: HOT admission coordination precedes COLD/DURABLE PostgreSQL.
 INDEXES: use existing durable identities; no migration. CACHE: none in correctness
@@ -2287,10 +2301,11 @@ Before handing this plan to an implementation-planning reviewer, confirm:
 This plan is frozen and remains subordinate to S0-ARCH-01. It is not blanket
 authorization for the complete implementation plan. S0-IA-AUTH-03 is the separate,
 explicit authorization decision for the IA-03 internal caller-independent admission
-orchestration only. IA-01 and IA-02 are complete and frozen. Any discovery that
-requires changing `K_v`, moving inventory truth to Redis, weakening the PostgreSQL
-guard, adding a migration, or introducing multi-variant admission must stop and reopen
-the appropriate architecture review.
+orchestration only, corrected by S0-IA-AUTH-03R1 for typed Redis `status`/`abandon`
+support. IA-01 and IA-02 are complete and frozen. Any discovery that requires
+changing `K_v`, moving inventory truth to Redis, weakening the PostgreSQL guard,
+adding a migration, or introducing multi-variant admission must stop and reopen the
+appropriate architecture review.
 
 ### Authorization state
 
@@ -2343,17 +2358,22 @@ the appropriate architecture review.
 
 IA-03 is a bounded implementation tracer bullet for the internal
 caller-independent admission orchestration corresponding to frozen-plan DL-01.
-This authorization does not itself authorize implementation. A later coding prompt
-may implement only:
+S0-IA-AUTH-03R1 corrects the file boundary so that orchestration can call typed Redis
+`status` and `abandon` primitives without reopening IA-02 or performing raw Redis
+from `InventoryAdmission`. This authorization does not itself authorize
+implementation. A later coding prompt may implement only:
 
 - `lib/store/orders/inventory_admission.ex`;
+- `lib/store/orders/inventory_admission/redis.ex`;
 - `test/store/orders/inventory_admission_test.exs`;
+- `test/store/orders/inventory_admission_redis_test.exs`;
 - internal `InventoryAdmission.reserve` orchestration;
 - internal `InventoryAdmission.status` orchestration;
 - internal `InventoryAdmission.abandon` orchestration;
 - building and validating the trusted Request from the already-frozen IA-01 value
   contracts, without modifying those contracts;
-- calling only typed IA-02 Redis primitive functions;
+- calling only typed Redis primitives: frozen IA-02 primitives plus the minimum
+  IA-03-authorized typed Redis `status` and `abandon` support primitives;
 - returning immediately for queued work rather than retaining the caller process;
 - preserving queue lifetime independently from Phoenix request lifetime, LiveView
   lifetime, browser connection, and caller BEAM process;
@@ -2361,13 +2381,76 @@ may implement only:
   unavailable results;
 - finite queue, lease, and deadline propagation;
 - server-owned operation identity handling using the frozen IA-01/IA-02 semantics;
-- governed abandon behavior using the frozen lifecycle;
+- governed abandon behavior using the frozen lifecycle and
+  `trusted_pre_reservation_abandonment`;
 - caller-independent status/retry contract; and
 - fail-closed Redis uncertainty handling.
+
+The `redis.ex` / Redis-test allowance is ONLY for the minimum typed Redis support
+required by IA-03 `status` and `abandon` orchestration. It must not reopen IA-02
+enqueue/promotion semantics, add lease renewal/release, recovery, reaper, Postgres,
+checkout, shared lifecycle fences, or IA-04+ behavior.
 
 IA-01 Request, Operation, and Lease modules remain frozen contracts. IA-03 may use
 them. It may not reopen them. Frozen plan PHASE IA-03 still lists those modules as
 phase files; this authorization does not permit editing them.
+
+### IA-03 typed Redis status contract
+
+Authorize a typed Redis status operation that:
+
+- never creates a new request/operation;
+- never queues a missing request;
+- never grants admission merely because status was requested;
+- validates the frozen reservation identity and request fingerprint;
+- validates metadata/fence/index coherence;
+- returns typed current IA lifecycle information;
+- may perform only bounded already-approved lazy expiry where required for truthful
+  state; and
+- fails closed on missing, corrupt, contradictory, or uncertain Redis evidence.
+
+### IA-03 typed Redis abandon contract
+
+Authorize a typed atomic Redis abandon operation for only:
+
+```text
+QUEUED -> ABANDONED
+```
+
+Guard: `trusted_pre_reservation_abandonment`.
+
+It must:
+
+- require exact trusted reservation identity/fingerprint;
+- reject stale/mismatched operation ownership;
+- atomically remove exact queued membership;
+- write `ABANDONED` terminal state consistently to required metadata/fence evidence;
+- retain bounded terminal evidence;
+- never abandon `ADMITTED`, `RESERVING`, `UNKNOWN_DB_OUTCOME`, `RECOVERING`, or
+  `UNRESOLVED`;
+- never release potentially active durable-operation capacity;
+- never infer a PostgreSQL result;
+- fail closed on uncertain Redis state; and
+- use explicit keys only, with no `KEYS` command / unbounded `SCAN`.
+
+Do not invent a new lifecycle state.
+
+### IA-03 promotion-after-abandon rule
+
+Frozen authority already resolves this. Do not invent new promotion semantics.
+
+- Section 10 `abandon_queued`: compare identity and state; remove only queued
+  membership and mark `ABANDONED`. It cannot abandon `RESERVING`.
+- Architecture `QUEUED -> ABANDONED`: remove the queue member and metadata;
+  repeated cancel is a no-op.
+- Contrast: `release_known_outcome` explicitly promotes the next eligible request in
+  the same atomic operation. `abandon_queued` does not.
+- Next-head promotion remains the already-authorized `promote_next` /
+  `promote_queued` path. Frozen plan also records that `status/2` may trigger
+  bounded promotion for the identity. Abandoned/expired members are skipped
+  atomically when that separate promotion path runs.
+
+Therefore abandon itself must not invent atomic next-head promotion.
 
 ### IA-03 lifecycle preservation
 
@@ -2533,6 +2616,6 @@ IA-02 COMPLETE / FROZEN
 AUTHORIZED FOR IA-03 ONLY
 
 NEXT:
-Supply a separate IA-03 coding prompt after independent review of this governance
-change. Do not start IA-04 or later, close S0-CLOSE-02, or mark S0 merge-ready as
+Independently review/merge S0-IA-AUTH-03R1, then supply a separate IA-03 coding
+prompt. Do not start IA-04 or later, close S0-CLOSE-02, or mark S0 merge-ready as
 part of IA-03.
