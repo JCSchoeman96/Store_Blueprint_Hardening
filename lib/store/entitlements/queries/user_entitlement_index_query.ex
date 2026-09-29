@@ -6,6 +6,11 @@ defmodule Store.Entitlements.Queries.UserEntitlementIndexQuery do
   alias Store.Support.Errors.Error
 
   @allowed_keys MapSet.new(["status", :status, "limit", :limit, "offset", :offset])
+  @status_by_binary %{
+    "active" => :active,
+    "revoked" => :revoked,
+    "expired" => :expired
+  }
   @max_limit 200
 
   @enforce_keys [:status, :limit, :offset]
@@ -63,8 +68,7 @@ defmodule Store.Entitlements.Queries.UserEntitlementIndexQuery do
         value
         |> String.trim()
         |> String.downcase()
-        |> String.to_atom()
-        |> validate_status()
+        |> parse_status_binary()
 
       _ ->
         {:error, Error.new("VALIDATION_ERROR", "status is invalid")}
@@ -76,6 +80,13 @@ defmodule Store.Entitlements.Queries.UserEntitlementIndexQuery do
 
   defp validate_status(status) when status in [:active, :revoked, :expired], do: {:ok, status}
   defp validate_status(_status), do: {:error, Error.new("VALIDATION_ERROR", "status is invalid")}
+
+  defp parse_status_binary(value) do
+    case Map.fetch(@status_by_binary, value) do
+      {:ok, status} -> {:ok, status}
+      :error -> validate_status(nil)
+    end
+  end
 
   defp parse_limit(params) do
     params

@@ -17,6 +17,13 @@ defmodule Store.Subscriptions.Queries.AdminSubscriptionIndexQuery do
                   "offset",
                   :offset
                 ])
+  @status_by_binary %{
+    "pending" => :pending,
+    "active" => :active,
+    "past_due" => :past_due,
+    "canceled" => :canceled,
+    "expired" => :expired
+  }
 
   @max_limit 200
 
@@ -86,8 +93,7 @@ defmodule Store.Subscriptions.Queries.AdminSubscriptionIndexQuery do
         value
         |> String.trim()
         |> String.downcase()
-        |> String.to_atom()
-        |> validate_status()
+        |> parse_status_binary()
 
       _ ->
         {:error, Error.new("VALIDATION_ERROR", "status is invalid")}
@@ -102,6 +108,13 @@ defmodule Store.Subscriptions.Queries.AdminSubscriptionIndexQuery do
        do: {:ok, status}
 
   defp validate_status(_status), do: {:error, Error.new("VALIDATION_ERROR", "status is invalid")}
+
+  defp parse_status_binary(value) do
+    case Map.fetch(@status_by_binary, value) do
+      {:ok, status} -> {:ok, status}
+      :error -> validate_status(nil)
+    end
+  end
 
   defp parse_optional_uuid(params, key) do
     value = Map.get(params, key) || Map.get(params, Atom.to_string(key))

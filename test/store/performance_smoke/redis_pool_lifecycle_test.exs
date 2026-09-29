@@ -59,7 +59,10 @@ defmodule Store.PerformanceSmoke.RedisPoolLifecycleTest do
 
   setup_all do
     {:ok, pid} = RedisPool.start_link(pool_size: 1, redis_opts: redis_opts())
-    key = "store:perf:lifecycle:#{System.unique_integer([:positive])}"
+
+    key =
+      "#{redis_key_prefix()}:performance_smoke:lifecycle:#{System.unique_integer([:positive])}"
+
     assert {:ok, "OK"} = RedisPool.command(["SET", key, "1"])
 
     # Register the post-teardown assertion first: ExUnit on_exit callbacks run
@@ -123,5 +126,11 @@ defmodule Store.PerformanceSmoke.RedisPoolLifecycleTest do
       sync_connect: true
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp redis_key_prefix do
+    :store
+    |> Application.get_env(:rate_limit, [])
+    |> Keyword.fetch!(:redis_key_prefix)
   end
 end

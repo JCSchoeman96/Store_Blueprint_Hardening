@@ -1,7 +1,88 @@
 import Config
 
-test_db_suffix = System.get_env("STORE_TEST_DB_SUFFIX") || System.get_env("MIX_TEST_PARTITION")
+test_db_suffix =
+  System.get_env("STORE_TEST_DB_SUFFIX") || System.get_env("MIX_TEST_PARTITION") || ""
+
+redis_test_run_id = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+performance_smoke? = System.get_env("STORE_PERF_SMOKE") == "true"
 bench_role = System.get_env("STORE_BENCH_ROLE", "server")
+
+required_performance_env! = fn name ->
+  case System.get_env(name) do
+    value when is_binary(value) and value != "" -> value
+    _ -> raise "#{name} must point to project-isolated performance infrastructure"
+  end
+end
+
+Code.require_file(Path.join(__DIR__, "support/performance_database_safety.ex"))
+
+performance_database_name =
+  if performance_smoke? do
+    performance_database = System.fetch_env!("STORE_PERF_DATABASE_NAME")
+    postgres_host = System.fetch_env!("STORE_PERF_DATABASE_HOST")
+
+    postgres_port =
+      System.fetch_env!("STORE_PERF_DATABASE_PORT") |> String.to_integer()
+
+    redis_host = System.fetch_env!("STORE_PERF_REDIS_HOST")
+    redis_port = System.fetch_env!("STORE_PERF_REDIS_PORT") |> String.to_integer()
+
+    Store.Config.PerformanceDatabaseSafety.validate!(
+      performance_database,
+      "store_blueprint_test#{test_db_suffix}",
+      {postgres_host, postgres_port},
+      {redis_host, redis_port},
+      System.get_env("CI") == "true"
+    )
+  else
+    "store_blueprint_test#{test_db_suffix}"
+  end
+
+test_database_config =
+  if performance_smoke? do
+    [
+      username: System.get_env("STORE_PERF_DATABASE_USERNAME", "store_blueprint_test"),
+      password:
+        System.get_env("STORE_PERF_DATABASE_PASSWORD") ||
+          System.get_env("STORE_TEST_DATABASE_PASSWORD"),
+      hostname: required_performance_env!.("STORE_PERF_DATABASE_HOST"),
+      port:
+        required_performance_env!.("STORE_PERF_DATABASE_PORT")
+        |> String.to_integer()
+    ]
+  else
+    [
+      username: "store_blueprint_test",
+      password: System.get_env("STORE_TEST_DATABASE_PASSWORD"),
+      hostname: "127.0.0.1",
+      port: 55433
+    ]
+  end
+
+redis_connection_config =
+  if performance_smoke? do
+    [
+      host: required_performance_env!.("STORE_PERF_REDIS_HOST"),
+      port:
+        required_performance_env!.("STORE_PERF_REDIS_PORT")
+        |> String.to_integer(),
+      database: System.get_env("STORE_PERF_REDIS_DB", "0") |> String.to_integer(),
+      username: System.get_env("STORE_PERF_REDIS_USERNAME"),
+      password: System.get_env("STORE_PERF_REDIS_PASSWORD"),
+      ssl: System.get_env("STORE_PERF_REDIS_SSL", "false") in ~w(true 1)
+    ]
+  else
+    [
+      host: "127.0.0.1",
+      port: 56380,
+      database: 0,
+      username: System.get_env("STORE_REDIS_USERNAME"),
+      password: System.get_env("STORE_REDIS_PASSWORD"),
+      ssl: System.get_env("STORE_REDIS_SSL", "false") in ~w(true 1)
+    ]
+  end
+
+redis_environment = if performance_smoke?, do: "perf", else: "test"
 
 bench_pool_size =
   case bench_role do
@@ -54,22 +135,21 @@ bench_direct_pool_size =
 # Sandbox mode wraps each test in a transaction, making PgBouncer's
 # transaction-mode pooling redundant and adding unnecessary latency.
 config :store, Store.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  port: 5433,
-  database: "store_#{config_env()}#{test_db_suffix}",
+  username: Keyword.fetch!(test_database_config, :username),
+  password: Keyword.fetch!(test_database_config, :password),
+  hostname: Keyword.fetch!(test_database_config, :hostname),
+  port: Keyword.fetch!(test_database_config, :port),
+  database: performance_database_name,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: bench_pool_size
 
 # 2. The Direct Route (Hits Postgres directly for Oban)
 config :store, Store.DirectRepo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  # Direct Port from your original setup
-  port: 5433,
-  database: "store_#{config_env()}#{test_db_suffix}",
+  username: Keyword.fetch!(test_database_config, :username),
+  password: Keyword.fetch!(test_database_config, :password),
+  hostname: Keyword.fetch!(test_database_config, :hostname),
+  port: Keyword.fetch!(test_database_config, :port),
+  database: performance_database_name,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: bench_direct_pool_size
 
@@ -114,22 +194,12 @@ rate_limit_backend =
     value -> raise "invalid STORE_RATE_LIMIT_BACKEND value: #{value}"
   end
 
-redis_tls? = System.get_env("STORE_REDIS_SSL", "false") in ~w(true 1)
-
 config :store, :rate_limit,
   backend: rate_limit_backend,
   redis_client: Store.Support.RateLimit.RedixClient,
   redis_name: :store_rate_limit_redis,
-  redis_key_prefix: System.get_env("STORE_REDIS_KEY_PREFIX", "test:store"),
-  # Use a dedicated Redis DB for tests; this should not be shared with dev/prod.
-  redis: [
-    host: System.get_env("STORE_REDIS_HOST", "localhost"),
-    port: String.to_integer(System.get_env("STORE_REDIS_PORT", "6379")),
-    database: String.to_integer(System.get_env("STORE_REDIS_TEST_DB", "1")),
-    username: System.get_env("STORE_REDIS_USERNAME"),
-    password: System.get_env("STORE_REDIS_PASSWORD"),
-    ssl: redis_tls?
-  ],
+  redis_key_prefix: "store_blueprint_hardening:#{redis_environment}:#{redis_test_run_id}",
+  redis: redis_connection_config,
   signed_download_limit: 10,
   signed_download_window_seconds: 60
 

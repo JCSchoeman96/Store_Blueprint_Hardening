@@ -28,6 +28,9 @@ Checkout replay safety:
 
 Inventory/reservations:
 - OUT_OF_STOCK: insufficient available inventory
+- INVENTORY_ADMISSION_BUSY: Admission coordination made a definitive backpressure decision because an admission, queue, or budget bound prevents progress. No durable reservation attempt is implied; this is not OUT_OF_STOCK.
+- INVENTORY_ADMISSION_UNAVAILABLE: Admission coordination cannot safely determine or perform the requested operation because Redis or required evidence is unavailable, contradictory, or uncertain. Fail closed; do not bypass admission into PostgreSQL. This is not a durable reservation result.
+- INVENTORY_ADMISSION_UNSUPPORTED: The enforced admission boundary rejects this mutation path before durable mutation, including paths marked ENFORCED_UNAVAILABLE.
 - RESERVATION_CONFLICT: concurrency conflict creating reservation
 
 Refunds:

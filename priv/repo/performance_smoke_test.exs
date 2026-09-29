@@ -17,6 +17,12 @@ if Enum.any?(Application.started_applications(), fn {app, _desc, _vsn} -> app ==
   """
 end
 
+unless Code.ensure_loaded?(Store.PerformanceSmoke.ProviderPhase) do
+  Code.require_file(
+    Path.expand("../../test/support/performance_smoke_observer_contract.ex", __DIR__)
+  )
+end
+
 schedulers = max(System.schedulers_online(), 1)
 repo_pool_default = min(max(schedulers * 20, 100), 200)
 
@@ -32,6 +38,14 @@ repo_pool_size =
 # designed for correctness, not throughput. Use the real connection pool instead.
 repo_config = Application.get_env(:store, Store.Repo, [])
 
+repo_parameters =
+  repo_config
+  |> Keyword.get(:parameters, [])
+  |> Keyword.put(
+    :application_name,
+    Store.PerformanceSmoke.ConnectionIdentity.store_repo_application_name()
+  )
+
 Application.put_env(
   :store,
   Store.Repo,
@@ -42,6 +56,7 @@ Application.put_env(
     # Transaction-mode PgBouncer cannot use server-side prepared statements,
     # so enabling them here would produce artificially fast results.
     prepare: :unnamed,
+    parameters: repo_parameters,
     queue_target: 10_000,
     queue_interval: 10_000,
     timeout: 60_000
@@ -51,12 +66,21 @@ Application.put_env(
 direct_repo_pool = max(div(repo_pool_size, 4), 10)
 direct_repo_config = Application.get_env(:store, Store.DirectRepo, [])
 
+direct_repo_parameters =
+  direct_repo_config
+  |> Keyword.get(:parameters, [])
+  |> Keyword.put(
+    :application_name,
+    Store.PerformanceSmoke.ConnectionIdentity.direct_repo_application_name()
+  )
+
 Application.put_env(
   :store,
   Store.DirectRepo,
   Keyword.merge(direct_repo_config,
     pool: DBConnection.ConnectionPool,
     pool_size: direct_repo_pool,
+    parameters: direct_repo_parameters,
     queue_target: 10_000,
     queue_interval: 10_000,
     timeout: 60_000
@@ -83,6 +107,10 @@ unless Code.ensure_loaded?(Store.TestSupport.StripeAPIStub) do
   Code.require_file(Path.expand("../../test/support/stripe_api_stub.ex", __DIR__))
 end
 
+unless Code.ensure_loaded?(Store.TestSupport.ProviderWaitOwnershipProbe) do
+  Code.require_file(Path.expand("../../test/support/provider_wait_ownership_probe.ex", __DIR__))
+end
+
 defmodule Store.PerformanceSmoke.Config do
   @moduledoc false
 
@@ -95,6 +123,7 @@ defmodule Store.PerformanceSmoke.Config do
             hll_max_rel_error: 0.02,
             concurrency_users: 20,
             provider_fault_users: 10,
+            provider_fault_max_concurrency: 1,
             provider_fault_delay_ms: 2_000,
             provider_fault_modes: [:slow, :timeout, :error],
             provider_fault_db_share_max_ratio: 0.25,
@@ -105,11 +134,15 @@ defmodule Store.PerformanceSmoke.Config do
             stampede_max_resource_queries: 1,
             payment_provider: "stripe",
             repo_pool_size: 20,
+            direct_repo_pool_size: 10,
+            repo_application_name: "store_perf_repo",
+            direct_repo_application_name: "store_perf_direct_repo",
             redis_pool_size: 10,
             observer_interval_ms: 500,
             lock_wait_max_ratio: 0.10,
             lock_wait_min_active_backends: 10,
             pool_utilization_max_ratio: 0.95,
+            expected_reservation_wait_max_ms: 250.0,
             benchee_time_seconds: 2,
             benchee_warmup_seconds: 1,
             sample_iterations: 100,
@@ -203,6 +236,11 @@ defmodule Store.PerformanceSmoke.Config do
       stampede_max_resource_queries: env_int("STORE_PERF_STAMPEDE_MAX_RESOURCE_QUERIES", 1),
       payment_provider: payment_provider(),
       repo_pool_size: Keyword.get(Store.Repo.config(), :pool_size),
+      direct_repo_pool_size: Keyword.get(Store.DirectRepo.config(), :pool_size),
+      repo_application_name:
+        Store.PerformanceSmoke.ConnectionIdentity.store_repo_application_name(),
+      direct_repo_application_name:
+        Store.PerformanceSmoke.ConnectionIdentity.direct_repo_application_name(),
       redis_pool_size: max(env_int("STORE_PERF_REDIS_POOL_SIZE", redis_pool_default), 1),
       observer_interval_ms: env_int("STORE_PERF_OBSERVER_INTERVAL_MS", 500),
       lock_wait_max_ratio: env_float("STORE_PERF_LOCK_WAIT_MAX_RATIO", 0.10),
@@ -217,8 +255,26 @@ defmodule Store.PerformanceSmoke.Config do
         ),
       sample_iterations: Map.fetch!(defaults, :sample_iterations),
       run_id: run_id,
-      redis_prefix: "store:perf:#{run_id}",
+      redis_prefix: "store_blueprint_hardening:perf:#{run_id}",
       report_path: Store.Perf.ChaosProfile.report_path(Store.Perf.ChaosProfile.current_profile())
+    }
+    |> assign_provider_fault_max_concurrency()
+  end
+
+  @doc """
+  Bound simultaneous provider-fault workers to one quarter of the Store.Repo pool.
+  """
+  @spec provider_fault_max_concurrency(pos_integer(), pos_integer()) :: pos_integer()
+  def provider_fault_max_concurrency(users, repo_pool_size)
+      when is_integer(users) and users >= 1 and is_integer(repo_pool_size) and repo_pool_size >= 1 do
+    min(users, max(1, div(repo_pool_size, 4)))
+  end
+
+  defp assign_provider_fault_max_concurrency(%__MODULE__{} = config) do
+    %{
+      config
+      | provider_fault_max_concurrency:
+          provider_fault_max_concurrency(config.provider_fault_users, config.repo_pool_size)
     }
   end
 
@@ -619,7 +675,7 @@ defmodule Store.PerformanceSmoke.Gate do
   @spec assert_observer_summary!(map()) :: :ok
   def assert_observer_summary!(summary) when is_map(summary) do
     assert summary.pass,
-           "observer gate failed for #{summary.name}: peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_lock_waiters=#{summary.peak_lock_waiters} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold}"
+           "observer gate failed for #{summary.name}: peak_total_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_total_lock_waiters=#{summary.peak_total_lock_waiters} peak_expected_reservation_waiters=#{summary.peak_expected_reservation_waiters} peak_expected_wait_duration_ms=#{summary.peak_expected_wait_duration_ms} peak_unexpected_lock_waiters=#{summary.peak_unexpected_lock_waiters} peak_unexpected_lock_wait_ratio=#{summary.peak_unexpected_lock_wait_ratio} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} lock_wait_max_ratio=#{summary.lock_wait_max_ratio} lock_wait_min_active_backends=#{summary.lock_wait_min_active_backends} expected_reservation_wait_max_ms=#{summary.expected_reservation_wait_max_ms} pool_utilization_max_ratio=#{summary.pool_utilization_max_ratio} samples_over_lock_threshold=#{summary.samples_over_lock_threshold} samples_over_expected_wait_duration_threshold=#{summary.samples_over_expected_wait_duration_threshold} samples_over_unexpected_lock_threshold=#{summary.samples_over_unexpected_lock_threshold} samples_over_pool_threshold=#{summary.samples_over_pool_threshold} samples_over_unmitigated_pool_threshold=#{summary.samples_over_unmitigated_pool_threshold} drained=#{summary.drained?} post_workload_waiters=#{summary.post_workload_waiters}"
 
     :ok
   end
@@ -627,7 +683,7 @@ defmodule Store.PerformanceSmoke.Gate do
   @spec assert_provider_fault_summary!(map()) :: :ok
   def assert_provider_fault_summary!(summary) when is_map(summary) do
     assert summary.pass,
-           "provider fault gate failed for #{summary.name}: mode=#{summary.mode} success_count=#{summary.success_count} error_counts=#{inspect(summary.error_counts)} mean_duration_ms=#{summary.mean_duration_ms} p99_duration_ms=#{summary.p99_duration_ms} mean_db_share_ratio=#{summary.mean_db_share_ratio} peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_active_backend_utilization=#{summary.peak_active_backend_utilization}"
+           "provider fault gate failed for #{summary.name}: mode=#{summary.mode} success_count=#{summary.success_count} error_counts=#{inspect(summary.error_counts)} mean_duration_ms=#{summary.mean_duration_ms} p99_duration_ms=#{summary.p99_duration_ms} mean_db_share_ratio=#{summary.mean_db_share_ratio} peak_lock_wait_ratio=#{summary.peak_lock_wait_ratio} peak_active_backend_utilization=#{summary.peak_active_backend_utilization} ownership_proof=#{inspect(Map.get(summary, :ownership_proof))}"
 
     :ok
   end
@@ -636,109 +692,294 @@ end
 defmodule Store.PerformanceSmoke.Observer do
   @moduledoc false
 
-  alias Store.PerformanceSmoke.{Config, Reporter}
+  alias Store.PerformanceSmoke.{Config, ObserverContract, ProviderPhase, Reporter}
 
-  @sample_query """
+  @reservation_drain_timeout_ms 5_000
+
+  @target_inventory_ctid_query """
+  SELECT ctid::text
+  FROM inventory_items
+  WHERE variant_id = $1
+  """
+
+  @aggregate_sample_query """
   SELECT
     COUNT(*) FILTER (WHERE state = 'active')::bigint AS active_backends,
-    COUNT(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')::bigint AS lock_waiters
+    COUNT(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')::bigint AS lock_waiters,
+    COUNT(*) FILTER (WHERE state = 'active' AND application_name = $1)::bigint AS repo_active_backends,
+    COUNT(*) FILTER (WHERE state = 'active' AND application_name = $2)::bigint AS direct_repo_active_backends
   FROM pg_stat_activity
   WHERE datname = current_database()
     AND backend_type = 'client backend'
     AND pid <> pg_backend_pid()
   """
 
-  @spec capture(String.t(), Config.t(), (-> term())) :: {term(), map()}
-  def capture(name, %Config{} = config, fun) when is_binary(name) and is_function(fun, 0) do
+  @sample_query """
+  SELECT
+    activity.pid,
+    activity.application_name,
+    activity.state,
+    activity.wait_event_type,
+    activity.wait_event,
+    activity.query,
+    (EXTRACT(EPOCH FROM (clock_timestamp() - activity.query_start)) * 1000)::float8 AS wait_duration_ms,
+    cardinality(pg_blocking_pids(activity.pid)) > 0 AS has_blocker,
+    EXISTS (
+      SELECT 1
+      FROM pg_locks AS wait_lock
+      WHERE wait_lock.pid = activity.pid
+        AND wait_lock.granted = false
+        AND wait_lock.locktype IN ('transactionid', 'tuple')
+    ) AS has_ungranted_lock,
+    EXISTS (
+      SELECT 1
+      FROM pg_locks AS lock
+      WHERE $1::text IS NOT NULL
+        AND lock.pid = activity.pid
+        AND lock.locktype = 'tuple'
+        AND lock.relation = 'inventory_items'::regclass
+        AND lock.page IS NOT NULL
+        AND lock.tuple IS NOT NULL
+        AND format('(%s,%s)', lock.page, lock.tuple) = $1::text
+    ) AS waits_on_target_row
+  FROM pg_stat_activity AS activity
+  WHERE activity.datname = current_database()
+    AND activity.backend_type = 'client backend'
+    AND activity.pid <> pg_backend_pid()
+  """
+
+  @spec inventory_reservation_scope!(String.t()) :: ObserverContract.expected_scope()
+  def inventory_reservation_scope!(variant_id) when is_binary(variant_id) do
+    variant_uuid = ObserverContract.uuid_param!(variant_id)
+
+    case Ecto.Adapters.SQL.query!(Store.DirectRepo, @target_inventory_ctid_query, [variant_uuid]) do
+      %{rows: [[ctid]]} when is_binary(ctid) ->
+        %{kind: :inventory_reservation, relation: "inventory_items", ctid: ctid}
+
+      %{rows: []} ->
+        raise "inventory reservation observer target not found for variant #{inspect(variant_id)}"
+
+      result ->
+        raise "unexpected inventory reservation observer target result: #{inspect(result)}"
+    end
+  end
+
+  @spec capture(String.t(), Config.t(), (-> term()), keyword()) :: {term(), map()}
+  def capture(name, %Config{} = config, fun, opts \\ [])
+      when is_binary(name) and is_function(fun, 0) and is_list(opts) do
+    expected_scope = Keyword.get(opts, :expected_scope)
+    drain_timeout_ms = Keyword.get(opts, :drain_timeout_ms, @reservation_drain_timeout_ms)
     parent = self()
     ref = make_ref()
-    {:ok, pid} = Task.start_link(fn -> sample_loop(parent, ref, config, []) end)
-    result = fun.()
-    send(pid, {:stop, parent, ref})
 
-    samples =
+    {:ok, pid} =
+      Task.start_link(fn -> sample_loop(parent, ref, config, expected_scope, []) end)
+
+    result = fun.()
+
+    if is_nil(expected_scope) do
+      send(pid, {:stop, parent, ref})
+    else
+      send(pid, {:drain, parent, ref, drain_timeout_ms})
+    end
+
+    {samples, drain} =
       receive do
-        {:observer_samples, ^ref, samples} -> samples
+        {:observer_samples, ^ref, samples, drain} -> {samples, drain}
       end
 
-    summary = summarize(name, config, samples)
+    summary =
+      ObserverContract.summarize(
+        name,
+        config,
+        samples,
+        expected_scope: expected_scope,
+        drain: drain,
+        enforced: Config.observer_gate_enforced?(config)
+      )
+
     Reporter.record_observer(summary)
     {result, summary}
   end
 
-  defp sample_loop(parent, ref, config, acc) do
-    sample = sample(config)
+  defp sample_loop(parent, ref, config, expected_scope, acc) do
+    sample = sample(config, expected_scope)
 
     receive do
       {:stop, ^parent, ^ref} ->
-        send(parent, {:observer_samples, ref, Enum.reverse([sample | acc])})
+        send(parent, {:observer_samples, ref, Enum.reverse([sample | acc]), nil})
+
+      {:drain, ^parent, ^ref, timeout_ms} ->
+        drain_loop(
+          parent,
+          ref,
+          config,
+          expected_scope,
+          [sample | acc],
+          timeout_ms,
+          System.monotonic_time(:millisecond),
+          1
+        )
     after
       config.observer_interval_ms ->
-        sample_loop(parent, ref, config, [sample | acc])
+        sample_loop(parent, ref, config, expected_scope, [sample | acc])
     end
   end
 
-  defp sample(config) do
-    %{rows: [[active_backends, lock_waiters]]} =
-      Ecto.Adapters.SQL.query!(Store.DirectRepo, @sample_query, [])
+  defp drain_loop(
+         parent,
+         ref,
+         config,
+         expected_scope,
+         acc,
+         timeout_ms,
+         started_at_ms,
+         drain_sample_count
+       ) do
+    sample = sample(config, expected_scope)
+    samples = [sample | acc]
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
 
-    active_backends = parse_count(active_backends)
-    lock_waiters = parse_count(lock_waiters)
+    cond do
+      sample.lock_waiters == 0 ->
+        send(
+          parent,
+          {:observer_samples, ref, Enum.reverse(samples),
+           %{
+             enabled?: true,
+             drained?: true,
+             post_workload_sample: sample,
+             sample_count: drain_sample_count,
+             elapsed_ms: elapsed_ms
+           }}
+        )
+
+      elapsed_ms >= timeout_ms ->
+        send(
+          parent,
+          {:observer_samples, ref, Enum.reverse(samples),
+           %{
+             enabled?: true,
+             drained?: false,
+             post_workload_sample: sample,
+             sample_count: drain_sample_count,
+             elapsed_ms: elapsed_ms
+           }}
+        )
+
+      true ->
+        wait_ms = min(config.observer_interval_ms, max(timeout_ms - elapsed_ms, 1))
+        Process.sleep(wait_ms)
+
+        drain_loop(
+          parent,
+          ref,
+          config,
+          expected_scope,
+          samples,
+          timeout_ms,
+          started_at_ms,
+          drain_sample_count + 1
+        )
+    end
+  end
+
+  defp sample(config, nil) do
+    %{rows: [[active_backends, lock_waiters, repo_active_backends, direct_repo_active_backends]]} =
+      Ecto.Adapters.SQL.query!(Store.DirectRepo, @aggregate_sample_query, [
+        config.repo_application_name,
+        config.direct_repo_application_name
+      ])
 
     %{
       timestamp_ms: System.system_time(:millisecond),
+      phase: Store.PerformanceSmoke.ProviderPhase.current(),
       active_backends: active_backends,
+      total_active_backends: active_backends,
+      repo_active_backends: repo_active_backends,
+      direct_repo_active_backends: direct_repo_active_backends,
+      other_active_backends: active_backends - repo_active_backends - direct_repo_active_backends,
       lock_waiters: lock_waiters,
       lock_wait_ratio: ratio(lock_waiters, active_backends),
-      active_backend_utilization: ratio(active_backends, config.repo_pool_size)
+      active_backend_utilization: ratio(repo_active_backends, config.repo_pool_size),
+      repo_active_backend_utilization: ratio(repo_active_backends, config.repo_pool_size),
+      direct_repo_active_backend_utilization:
+        ratio(direct_repo_active_backends, config.direct_repo_pool_size)
     }
   end
 
-  defp summarize(name, config, samples) do
-    samples_over_lock_threshold =
-      Enum.count(samples, fn sample ->
-        sample.active_backends >= config.lock_wait_min_active_backends and
-          sample.lock_wait_ratio > config.lock_wait_max_ratio
-      end)
+  defp sample(config, expected_scope) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        Store.DirectRepo,
+        @sample_query,
+        [target_ctid(expected_scope)]
+      )
 
-    samples_over_pool_threshold =
-      Enum.count(samples, fn sample ->
-        sample.active_backend_utilization > config.pool_utilization_max_ratio
-      end)
+    backend_rows = Enum.map(rows, &backend_row/1)
 
-    enforced = Config.observer_gate_enforced?(config)
+    populations =
+      ObserverContract.connection_populations(
+        backend_rows,
+        config.repo_pool_size,
+        config.direct_repo_pool_size
+      )
+
+    active_backends = populations.total_active_backends
+    lock_waiters = Enum.count(backend_rows, &lock_waiter?/1)
 
     %{
-      name: name,
-      pass:
-        if(enforced,
-          do: samples_over_lock_threshold == 0 and samples_over_pool_threshold == 0,
-          else: true
-        ),
-      enforced: enforced,
-      sample_count: length(samples),
-      peak_active_backends: peak_value(samples, :active_backends, 0),
-      peak_lock_waiters: peak_value(samples, :lock_waiters, 0),
-      peak_lock_wait_ratio: peak_value(samples, :lock_wait_ratio, 0.0),
-      peak_active_backend_utilization: peak_value(samples, :active_backend_utilization, 0.0),
-      samples_over_lock_threshold: samples_over_lock_threshold,
-      samples_over_pool_threshold: samples_over_pool_threshold,
-      lock_wait_max_ratio: config.lock_wait_max_ratio,
-      lock_wait_min_active_backends: config.lock_wait_min_active_backends,
-      pool_utilization_max_ratio: config.pool_utilization_max_ratio
+      timestamp_ms: System.system_time(:millisecond),
+      phase: Store.PerformanceSmoke.ProviderPhase.current(),
+      active_backends: active_backends,
+      total_active_backends: populations.total_active_backends,
+      repo_active_backends: populations.repo_active_backends,
+      direct_repo_active_backends: populations.direct_repo_active_backends,
+      other_active_backends: populations.other_active_backends,
+      backend_rows: backend_rows,
+      lock_waiters: lock_waiters,
+      lock_wait_ratio: ratio(lock_waiters, active_backends),
+      active_backend_utilization: populations.repo_utilization,
+      repo_active_backend_utilization: populations.repo_utilization,
+      direct_repo_active_backend_utilization: populations.direct_repo_utilization
     }
   end
 
-  defp peak_value(samples, key, default) do
-    samples
-    |> Enum.map(&Map.get(&1, key))
-    |> Enum.max(fn -> default end)
+  defp backend_row([
+         pid,
+         application_name,
+         state,
+         wait_event_type,
+         wait_event,
+         query,
+         wait_duration_ms,
+         has_blocker?,
+         has_ungranted_lock?,
+         waits_on_target_row?
+       ]) do
+    %{
+      pid: pid,
+      application_name: application_name,
+      state: state,
+      wait_event_type: wait_event_type,
+      wait_event: wait_event,
+      query: query,
+      wait_duration_ms: wait_duration_ms,
+      has_blocker?: has_blocker?,
+      has_ungranted_lock?: has_ungranted_lock?,
+      waits_on_target_row?: waits_on_target_row?
+    }
+  end
+
+  defp target_ctid(nil), do: nil
+  defp target_ctid(%{ctid: ctid}), do: ctid
+
+  defp lock_waiter?(row) do
+    row.state == "active" and row.wait_event_type == "Lock"
   end
 
   defp ratio(_numerator, 0), do: 0.0
   defp ratio(numerator, denominator), do: numerator / denominator
-
-  defp parse_count(value) when is_integer(value), do: value
 end
 
 defmodule Store.PerformanceSmoke.ProviderFault do
@@ -1241,6 +1482,7 @@ defmodule Store.PerformanceSmokeTest do
     Config,
     Gate,
     Observer,
+    ProviderPhase,
     RedisPool,
     Reporter,
     SingleFlightCache,
@@ -1250,7 +1492,16 @@ defmodule Store.PerformanceSmokeTest do
   alias Store.PerformanceSmoke.Fixtures
   alias Store.Support.Errors.Error
   alias Store.Repo
+  alias Store.TestSupport.ProviderWaitOwnershipProbe
   alias Store.TestSupport.StripeAPIStub
+
+  test "provider fault concurrency leaves three quarters of the Repo pool free" do
+    assert Config.provider_fault_max_concurrency(50, 40) == 10
+    assert Config.provider_fault_max_concurrency(10, 40) == 10
+    assert Config.provider_fault_max_concurrency(100, 40) == 10
+    assert Config.provider_fault_max_concurrency(100, 200) == 50
+    assert Config.provider_fault_max_concurrency(1, 40) == 1
+  end
 
   setup_all do
     # Defensive cleanup: detach any stale telemetry handlers from prior crashed runs.
@@ -1306,6 +1557,8 @@ defmodule Store.PerformanceSmokeTest do
         # Clean up database rows created during the run.
         # Without the Sandbox, test data persists — truncate perf-specific tables
         # to prevent unique constraint violations on subsequent runs.
+        Store.Config.PerformanceDatabaseSafety.assert_destructive_cleanup_allowed!(Store.Repo)
+
         # Order matters: respect foreign key dependencies (children first).
         tables_to_truncate = [
           "payment_intents",
@@ -1536,8 +1789,23 @@ defmodule Store.PerformanceSmokeTest do
         end)
 
       summary = run_provider_fault_scenario(config, fixture, prepared_checkouts, mode)
+      assert summary.peak_in_flight <= config.provider_fault_max_concurrency
+      assert summary.ownership_proof.status == :proof_passed
       Gate.assert_provider_fault_summary!(summary)
     end)
+  end
+
+  test "provider-wait ownership proof detects retained Repo checkouts", %{config: config} do
+    released_proof = run_ownership_probe_matrix(config, hold_checkout?: false)
+    assert released_proof.status == :proof_passed, inspect(released_proof)
+    assert released_proof.occupancy_delta == 0
+    assert released_proof.queue_delta == 0
+    assert released_proof.process_local_checked_out_count == 0
+
+    retained_proof = run_ownership_probe_matrix(config, hold_checkout?: true)
+    assert retained_proof.status == :proof_failed, inspect(retained_proof)
+    assert retained_proof.occupancy_delta >= 1
+    assert retained_proof.diagnostic =~ "STORE_REPO_OWNERSHIP_RETAINED_DURING_PROVIDER_WAIT"
   end
 
   test "seat-hold registry Redis ZSET concurrency remains fast", %{config: config} do
@@ -1590,35 +1858,41 @@ defmodule Store.PerformanceSmokeTest do
   test "thundering herd on domain reservation has one winner", %{config: config} do
     fixture = Fixtures.checkout_fixture!()
     :ok = Fixtures.force_inventory!(fixture.variant_id, 1)
+    expected_scope = Observer.inventory_reservation_scope!(fixture.variant_id)
 
     orders = Enum.map(1..config.thundering_herd_users, fn _ -> Fixtures.create_order!() end)
 
     {{samples, results}, observer_summary} =
-      Observer.capture("domain_thundering_herd_observer", config, fn ->
-        orders
-        |> Task.async_stream(
-          fn order ->
-            {result, elapsed_ms} =
-              timed(fn ->
-                Orders.reserve_inventory(order.id, [
-                  %{variant_id: fixture.variant_id, quantity: 1}
-                ])
-              end)
+      Observer.capture(
+        "domain_thundering_herd_observer",
+        config,
+        fn ->
+          orders
+          |> Task.async_stream(
+            fn order ->
+              {result, elapsed_ms} =
+                timed(fn ->
+                  Orders.reserve_inventory(order.id, [
+                    %{variant_id: fixture.variant_id, quantity: 1}
+                  ])
+                end)
 
-            {elapsed_ms, result}
-          end,
-          max_concurrency: config.thundering_herd_users,
-          ordered: false,
-          timeout: :infinity
-        )
-        |> Enum.reduce({[], []}, fn
-          {:ok, {elapsed_ms, result}}, {durations, acc} ->
-            {[elapsed_ms | durations], [result | acc]}
+              {elapsed_ms, result}
+            end,
+            max_concurrency: config.thundering_herd_users,
+            ordered: false,
+            timeout: :infinity
+          )
+          |> Enum.reduce({[], []}, fn
+            {:ok, {elapsed_ms, result}}, {durations, acc} ->
+              {[elapsed_ms | durations], [result | acc]}
 
-          {:exit, reason}, {durations, acc} ->
-            {durations, [{:error, reason} | acc]}
-        end)
-      end)
+            {:exit, reason}, {durations, acc} ->
+              {durations, [{:error, reason} | acc]}
+          end)
+        end,
+        expected_scope: expected_scope
+      )
 
     success_count = Enum.count(results, &match?({:ok, _}, &1))
 
@@ -1916,46 +2190,71 @@ defmodule Store.PerformanceSmokeTest do
     })
   end
 
-  defp run_provider_fault_scenario(config, fixture, prepared_checkouts, mode) do
-    scenario_name = "provider_fault_#{mode}"
+  defp run_provider_fault_scenario(config, fixture, prepared_checkouts, mode, opts \\ []) do
+    hold_checkout? = Keyword.get(opts, :hold_checkout?, false)
+
+    scenario_name =
+      if hold_checkout? do
+        "provider_fault_#{mode}_ownership_negative"
+      else
+        "provider_fault_#{mode}"
+      end
+
+    in_flight = :atomics.new(2, [])
+
+    expected_probe_cohort =
+      ProviderWaitOwnershipProbe.expected_probe_cohort(
+        config.provider_fault_max_concurrency,
+        config.provider_fault_users
+      )
 
     repo_filter = fn _event, _measurements, metadata ->
       Map.get(metadata, :repo) == Store.Repo
     end
 
-    {{{results, duration_events}, repo_events}, observer_summary} =
-      Observer.capture("#{scenario_name}_observer", config, fn ->
-        with_repo_query_telemetry(repo_filter, fn ->
-          with_checkout_intent_telemetry(fn ->
-            with_provider_fault_stub(
-              config,
-              mode,
-              fn ->
-                prepared_checkouts
-                |> Enum.with_index(1)
-                |> async_stream_with_stripe_stub(
-                  fn {prepared, ordinal} ->
-                    StripeAPIStub.with_chaos_request_key(
-                      "#{scenario_name}:#{ordinal}",
-                      fn ->
-                        Store.Payments.create_intent_for_order(
-                          prepared.actor,
-                          prepared.checkout_key,
-                          fixture.payment_input
-                        )
-                      end
-                    )
-                  end,
-                  max_concurrency: config.provider_fault_users,
-                  ordered: false,
-                  timeout: :infinity
-                )
-                |> Enum.map(fn
-                  {:ok, result} -> result
-                  {:exit, reason} -> {:error, reason}
-                end)
-              end
-            )
+    {{{{results, ownership_proof}, duration_events}, repo_events}, observer_summary} =
+      with_provider_phase_tracking(fn ->
+        Observer.capture("#{scenario_name}_observer", config, fn ->
+          with_repo_query_telemetry(repo_filter, fn ->
+            with_checkout_intent_telemetry(fn ->
+              with_provider_fault_stub(
+                config,
+                mode,
+                fn ->
+                  with_provider_wait_ownership_probe(
+                    expected_probe_cohort,
+                    hold_checkout?,
+                    fn ->
+                      prepared_checkouts
+                      |> Enum.with_index(1)
+                      |> async_stream_with_stripe_stub(
+                        fn {prepared, ordinal} ->
+                          StripeAPIStub.with_chaos_request_key(
+                            "#{scenario_name}:#{ordinal}",
+                            fn ->
+                              track_provider_fault_in_flight(in_flight, fn ->
+                                Store.Payments.create_intent_for_order(
+                                  prepared.actor,
+                                  prepared.checkout_key,
+                                  fixture.payment_input
+                                )
+                              end)
+                            end
+                          )
+                        end,
+                        max_concurrency: config.provider_fault_max_concurrency,
+                        ordered: false,
+                        timeout: :infinity
+                      )
+                      |> Enum.map(fn
+                        {:ok, result} -> result
+                        {:exit, reason} -> {:error, reason}
+                      end)
+                    end
+                  )
+                end
+              )
+            end)
           end)
         end)
       end)
@@ -1969,11 +2268,145 @@ defmodule Store.PerformanceSmokeTest do
         duration_events,
         repo_events,
         observer_summary,
-        config
+        config,
+        peak_in_flight: :atomics.get(in_flight, 2),
+        ownership_proof: ownership_proof
       )
 
     Reporter.record_provider_fault(summary)
     summary
+  end
+
+  defp with_provider_wait_ownership_probe(expected_probe_cohort, hold_checkout?, fun)
+       when is_function(fun, 0) do
+    parent = self()
+    proof_ref = make_ref()
+
+    sampler_pid =
+      spawn_link(fn ->
+        receive do
+          :await_ownership_sample ->
+            proof = ProviderWaitOwnershipProbe.await_and_sample!()
+            send(parent, {proof_ref, proof})
+        after
+          5_000 ->
+            send(
+              parent,
+              {proof_ref,
+               %{
+                 status: :proof_incomplete,
+                 diagnostic: "PROVIDER_WAIT_OWNERSHIP_SAMPLER_NOT_STARTED",
+                 expected_probe_cohort: expected_probe_cohort,
+                 entered_count: 0,
+                 barrier_reached_count: 0,
+                 released_waiter_count: 0,
+                 baseline: nil,
+                 barrier: nil,
+                 occupancy_delta: nil,
+                 queue_delta: nil,
+                 process_local_checked_out_count: 0,
+                 hold_checkout?: hold_checkout?
+               }}
+            )
+        end
+      end)
+
+    try do
+      :ok =
+        ProviderWaitOwnershipProbe.configure!(
+          expected_cohort: expected_probe_cohort,
+          hold_checkout?: hold_checkout?,
+          sampler: sampler_pid
+        )
+
+      _baseline = ProviderWaitOwnershipProbe.capture_baseline!()
+      send(sampler_pid, :await_ownership_sample)
+
+      worker_results = fun.()
+
+      proof =
+        receive do
+          {^proof_ref, proof} -> proof
+        after
+          60_000 ->
+            %{
+              status: :proof_incomplete,
+              diagnostic: "PROVIDER_WAIT_OWNERSHIP_PROOF_RECEIVE_TIMEOUT",
+              expected_probe_cohort: expected_probe_cohort,
+              entered_count: 0,
+              barrier_reached_count: 0,
+              released_waiter_count: 0,
+              baseline: nil,
+              barrier: nil,
+              occupancy_delta: nil,
+              queue_delta: nil,
+              process_local_checked_out_count: 0,
+              hold_checkout?: hold_checkout?
+            }
+        end
+
+      {worker_results, proof}
+    after
+      ProviderWaitOwnershipProbe.release_all!()
+      ProviderWaitOwnershipProbe.reset!()
+    end
+  end
+
+  defp run_ownership_probe_matrix(config, opts) do
+    hold_checkout? = Keyword.fetch!(opts, :hold_checkout?)
+    modes = Keyword.get(opts, :modes, [:slow])
+    fixture = Fixtures.checkout_fixture!()
+
+    proofs =
+      Enum.map(modes, fn mode ->
+        prepared_checkouts =
+          Enum.map(1..config.provider_fault_users, fn _ ->
+            Fixtures.prepare_checkout_for_payment_intent!(fixture, Ash.UUIDv7.generate())
+          end)
+
+        summary =
+          run_provider_fault_scenario(config, fixture, prepared_checkouts, mode,
+            hold_checkout?: hold_checkout?
+          )
+
+        summary.ownership_proof
+      end)
+
+    List.first(proofs)
+  end
+
+  defp track_provider_fault_in_flight(in_flight, fun) when is_function(fun, 0) do
+    current = :atomics.add_get(in_flight, 1, 1)
+    update_provider_fault_peak_in_flight(in_flight, current)
+
+    try do
+      fun.()
+    after
+      :atomics.sub(in_flight, 1, 1)
+    end
+  end
+
+  defp update_provider_fault_peak_in_flight(in_flight, current) do
+    peak = :atomics.get(in_flight, 2)
+
+    if current > peak do
+      case :atomics.compare_exchange(in_flight, 2, peak, current) do
+        :ok -> :ok
+        _ -> update_provider_fault_peak_in_flight(in_flight, current)
+      end
+    else
+      :ok
+    end
+  end
+
+  defp with_provider_phase_tracking(fun) when is_function(fun, 0) do
+    {:ok, handler_id} = ProviderPhase.start_tracking()
+
+    try do
+      fun.()
+    after
+      ProviderPhase.stop_tracking(handler_id)
+    end
   end
 
   defp with_provider_fault_stub(config, mode, fun) when is_function(fun, 0) do
@@ -2017,10 +2450,13 @@ defmodule Store.PerformanceSmokeTest do
          duration_events,
          repo_events,
          observer_summary,
-         config
+         config,
+         opts \\ []
        ) do
     request_count = length(prepared_checkouts)
     success_count = Enum.count(results, &match?({:ok, _}, &1))
+    peak_in_flight = Keyword.get(opts, :peak_in_flight, 0)
+    ownership_proof = Keyword.get(opts, :ownership_proof)
 
     error_counts =
       results
@@ -2034,6 +2470,14 @@ defmodule Store.PerformanceSmokeTest do
     total_repo_query_ms = Enum.sum(Enum.map(repo_events, & &1.query_time_ms))
     mean_repo_queue_ms = total_repo_queue_ms / max(request_count, 1)
     mean_repo_query_ms = total_repo_query_ms / max(request_count, 1)
+    repo_query_event_count = length(repo_events)
+
+    mean_query_count_per_request =
+      if request_count > 0 do
+        repo_query_event_count / request_count
+      else
+        0.0
+      end
 
     mean_db_share_ratio =
       if duration_stats.mean_ms > 0.0 do
@@ -2060,12 +2504,32 @@ defmodule Store.PerformanceSmokeTest do
     pool_utilization_max_ratio =
       provider_fault_pool_utilization_max_ratio(mode, config)
 
+    provider_wait_pool_pass =
+      observer_summary.provider_wait_sample_count > 0 and
+        observer_summary.provider_wait_repo_utilization_peak <= pool_utilization_max_ratio
+
     pressure_pass =
       mean_db_share_ratio <= config.provider_fault_db_share_max_ratio and
-        observer_summary.peak_active_backend_utilization <= pool_utilization_max_ratio and
+        observer_summary.pass and
+        provider_wait_pool_pass and
         observer_summary.peak_lock_wait_ratio <= config.provider_fault_lock_wait_max_ratio
 
     telemetry_pass = sample_count == request_count
+
+    ownership_proof =
+      ownership_proof ||
+        %{
+          status: :proof_incomplete,
+          diagnostic: "PROVIDER_WAIT_OWNERSHIP_PROOF_MISSING",
+          hold_checkout?: false
+        }
+
+    ownership_pass =
+      if Map.get(ownership_proof, :hold_checkout?, false) do
+        ownership_proof.status == :proof_failed
+      else
+        ownership_proof.status == :proof_passed
+      end
 
     %{
       name: scenario_name,
@@ -2080,12 +2544,27 @@ defmodule Store.PerformanceSmokeTest do
       mean_repo_query_ms: mean_repo_query_ms,
       mean_db_share_ratio: mean_db_share_ratio,
       peak_lock_wait_ratio: observer_summary.peak_lock_wait_ratio,
+      peak_repo_active_backend_utilization: observer_summary.peak_repo_active_backend_utilization,
+      provider_wait_repo_utilization_peak: observer_summary.provider_wait_repo_utilization_peak,
+      provider_wait_sample_count: observer_summary.provider_wait_sample_count,
       peak_active_backend_utilization: observer_summary.peak_active_backend_utilization,
+      provider_fault_users: config.provider_fault_users,
+      provider_fault_max_concurrency: config.provider_fault_max_concurrency,
+      repo_pool_size: config.repo_pool_size,
+      repo_query_event_count: repo_query_event_count,
+      mean_query_count_per_request: mean_query_count_per_request,
+      peak_in_flight: peak_in_flight,
+      ownership_proof: ownership_proof,
       provider_fault_db_share_max_ratio: config.provider_fault_db_share_max_ratio,
       provider_fault_pool_utilization_max_ratio: pool_utilization_max_ratio,
       provider_fault_lock_wait_max_ratio: config.provider_fault_lock_wait_max_ratio,
       telemetry_sample_count_expected: request_count,
-      pass: if(enforced, do: expectation_pass and pressure_pass and telemetry_pass, else: true)
+      provider_wait_pool_gate_pass?: provider_wait_pool_pass,
+      pass:
+        if(enforced,
+          do: expectation_pass and pressure_pass and telemetry_pass and ownership_pass,
+          else: ownership_pass
+        )
     }
   end
 
@@ -2353,6 +2832,7 @@ summary = %{
     lock_wait_max_ratio: run_config.lock_wait_max_ratio,
     lock_wait_min_active_backends: run_config.lock_wait_min_active_backends,
     pool_utilization_max_ratio: run_config.pool_utilization_max_ratio,
+    expected_reservation_wait_max_ms: run_config.expected_reservation_wait_max_ms,
     provider_fault_db_share_max_ratio: run_config.provider_fault_db_share_max_ratio,
     provider_fault_pool_utilization_max_ratio:
       run_config.provider_fault_pool_utilization_max_ratio,
