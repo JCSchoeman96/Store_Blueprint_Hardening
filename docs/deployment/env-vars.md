@@ -28,8 +28,8 @@ Performance smoke runs set `STORE_PERF_SMOKE=true` and must provide
 `STORE_PERF_DATABASE_NAME`, `STORE_PERF_DATABASE_HOST`,
 `STORE_PERF_DATABASE_PORT`, `STORE_PERF_REDIS_HOST`, and
 `STORE_PERF_REDIS_PORT` for project-isolated PostgreSQL 18 and Redis 7. The
-performance database name must differ from `store_blueprint_dev` and every
-`store_blueprint_test*` database. CI creates a separate job-owned performance
+performance database name must be exactly `store_blueprint_perf` (not
+`store_blueprint_dev` or any `store_blueprint_test*` database). CI creates a separate job-owned performance
 database before running the smoke suite. Outside CI, the performance PostgreSQL
 and Redis endpoints cannot use the locked workstation DEV or TEST loopback ports.
 `STORE_PERF_DATABASE_USERNAME` defaults to `store_blueprint_test` and

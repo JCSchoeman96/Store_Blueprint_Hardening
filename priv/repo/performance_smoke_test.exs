@@ -1557,6 +1557,8 @@ defmodule Store.PerformanceSmokeTest do
         # Clean up database rows created during the run.
         # Without the Sandbox, test data persists — truncate perf-specific tables
         # to prevent unique constraint violations on subsequent runs.
+        Store.Config.PerformanceDatabaseSafety.assert_destructive_cleanup_allowed!(Store.Repo)
+
         # Order matters: respect foreign key dependencies (children first).
         tables_to_truncate = [
           "payment_intents",
