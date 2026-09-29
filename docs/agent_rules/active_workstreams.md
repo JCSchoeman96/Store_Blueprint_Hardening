@@ -619,12 +619,50 @@ The accepted SUB-ACT-01 development base
 `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` remains activation provenance; it
 is not replaced by this reconciliation record.
 
-PLATFORM still requires its own future bounded reconciliation with accepted
-canonical `main` before integration where applicable. This SUBS closure does
-not perform or substitute for that PLATFORM reconciliation.
+The PLATFORM reconciliation is recorded separately below. This SUBS closure
+does not alter PLATFORM lifecycle or authorize PLATFORM work.
 
 The temporary integration workstream `integration/subscriptions-main-59a166c` is
 `COMPLETE` / `VERIFIED_ON_TARGET` through PR #88 and is no longer active.
+
+### PLATFORM main-to-branch reconciliation record
+
+The bounded reconciliation of accepted canonical `main` into
+`hardening/platform-security` is complete. PR #91 accepted the integration.
+This record preserves PLATFORM's independent lifecycle and development-base
+semantics above. It does not change either.
+
+Canonical `main` source:
+
+- PR #90 candidate `c9dae2080a6f05df18c277d66530883e813e66dd` merged into
+  `main` as `7f5545117f1cc965b0529787705ec2a1969af32a`.
+- PR #90 exact-main CI run `36555509169`: `PASS`; all five required jobs passed.
+
+Historical integration inputs:
+
+- Platform source before reconciliation:
+  `435924ae2b9c819c8d4f820c5b316d154f3be2b0`.
+- Accepted main reconciliation source:
+  `7f5545117f1cc965b0529787705ec2a1969af32a`.
+
+Reconciliation path on temporary branch `integration/platform-main-7f554511`:
+
+- Reviewed integration candidate `d1d7ac3e278f6f07aaa14c752ceb25f3bac8d060`.
+- Candidate parents: `435924ae2b9c819c8d4f820c5b316d154f3be2b0` and
+  `7f5545117f1cc965b0529787705ec2a1969af32a`.
+
+Accepted integration:
+
+- PR #91 merged into `hardening/platform-security` as
+  `8a113dac52d19bebf067018a1484055612e71ea6`.
+- Merge parents: `435924ae2b9c819c8d4f820c5b316d154f3be2b0` and
+  `d1d7ac3e278f6f07aaa14c752ceb25f3bac8d060`.
+- PR #91 exact-head CI run `36562911494`: `PASS`; all five required jobs passed.
+- Merge and candidate tree `9fa843480403ab15d0668c2ebe52a5e17c4824ad` are
+  equal, so the merge introduced no content drift.
+
+The temporary integration workstream `integration/platform-main-7f554511` is
+`COMPLETE` / `VERIFIED_ON_TARGET` through PR #91 and is no longer active.
 
 ### SUBS activation record: SUB-ACT-03
 
@@ -893,6 +931,8 @@ S0 `READY` does not itself admit IA-03 or authorize other production implementat
 | #86 | Workstation infrastructure and PR #9 lifecycle semantic integration | Platform | **MERGED** / **ACCEPTED** | Merge SHA `59a166c8cfba73bc1c239775cc326936a1f7b1ad`; exact-main CI run `36406423871` attempt 1 failed only `performance_smoke_required`, and attempt 2 passed all five required jobs |
 | #89 | Performance smoke destructive DB safety guard | Platform / `main` | **MERGED** / **ACCEPTED** into `main` | Merge SHA `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7`; exact-head CI run `36535488158` `PASS`; exact-main CI run `36538649644` `PASS` (all five required jobs) |
 | #88 | Reconcile accepted main runtime base into SUBS | SUBS | **MERGED** / **ACCEPTED** into `hardening/subscriptions` | Merge SHA `f621d2db355d3ef2c1531f73b0c698a323cc768e`; merge parents `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` and `2849e9fe642c5ce76e132779128e3db9a4acc77c`; candidate exact-head CI run `36542911205` `PASS` (all five required jobs); merge tree equals reviewed candidate tree `99eb23e6561b7dafb504656acce0e115d9a4eed2` |
+| #90 | docs(governance): post-PR-88 SUBS reconciliation closure | SUBS / `main` | **MERGED** / **ACCEPTED** into `main` | Merge SHA `7f5545117f1cc965b0529787705ec2a1969af32a`; candidate `c9dae2080a6f05df18c277d66530883e813e66dd`; exact-main CI run `36555509169` `PASS` (all five required jobs) |
+| #91 | Reconcile Platform hardening with canonical main | Platform | **MERGED** / **ACCEPTED** into `hardening/platform-security` | Merge SHA `8a113dac52d19bebf067018a1484055612e71ea6`; candidate `d1d7ac3e278f6f07aaa14c752ceb25f3bac8d060`; exact-head CI run `36562911494` `PASS` (all five required jobs); merge tree equals candidate tree `9fa843480403ab15d0668c2ebe52a5e17c4824ad` |
 
 PR #6 authorized a governance/docs correction only. It did **not** implement IA-03.
 
@@ -979,10 +1019,12 @@ When updating:
 
 This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
-- `origin/main` = `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7` at this refresh (PR #89 merge); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
+- `origin/main` = `7f5545117f1cc965b0529787705ec2a1969af32a` at this refresh (PR #90 merge); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `f4127902c3f328b76674724faa6a473c629c01ef` (current fetched persistent S0 tip after PR #83 reconciliation)
-- `origin/hardening/platform-security` = `435924ae2b9c819c8d4f820c5b316d154f3be2b0` (current fetched persistent PLATFORM tip)
+- `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip after PR #91 reconciliation)
 - `origin/hardening/subscriptions` = `f621d2db355d3ef2c1531f73b0c698a323cc768e` (current fetched persistent SUBS tip after PR #88 reconciliation)
+- PR #90 = MERGED / ACCEPTED into `main`
+- PR #91 = MERGED / ACCEPTED into `hardening/platform-security`
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 - PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (SUBS main reconciliation complete; see SUBS main-to-branch reconciliation record)
@@ -992,10 +1034,9 @@ SUBS main-to-branch reconciliation is **complete** through PR #88. Historical in
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
 `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef`, and integration-branch commits
 `12bb5631959bbe485012d532a75960b18958973f`, `d04587a40216ecc96c1f25f32a142f613ca42188`,
-and `2849e9fe642c5ce76e132779128e3db9a4acc77c`. PLATFORM still requires its own
-future bounded reconciliation with accepted canonical `main` before integration
-where applicable; ordinary independent PLATFORM hardening does not require
-continuous `main` synchronization.
+and `2849e9fe642c5ce76e132779128e3db9a4acc77c`. Ordinary independent PLATFORM
+hardening does not require continuous `main` synchronization. The bounded
+Platform reconciliation and its historical provenance are recorded above.
 
 Earlier topology-bootstrap commissioning evidence (historical only):
 
