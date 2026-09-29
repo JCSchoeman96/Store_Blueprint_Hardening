@@ -567,6 +567,65 @@ Under the serial model, required CI must pass before merge. Unrelated CI or plat
 
 Do not rerun CI or alter PR #33 in a governance task.
 
+### SUBS main-to-branch reconciliation record
+
+The bounded reconciliation of accepted canonical `main` runtime/governance into
+`hardening/subscriptions` is **complete**. PR #88 accepted the integration. This
+record preserves historical provenance; it does not reopen SUBS lifecycle law,
+serial execution policy, or SBH-10-04 shared-authority status.
+
+Historical integration inputs (frozen provenance):
+
+- Accepted runtime integration base on canonical `main`:
+  `59a166c8cfba73bc1c239775cc326936a1f7b1ad` (PR #86 merge into `main`).
+- SUBS source head at integration start:
+  `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef`.
+
+Governance prerequisite on `main` before final SUBS merge:
+
+- PR #89 merged into `main` as `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7`.
+- PR #89 exact-head CI run `36535488158`: `PASS`.
+- PR #89 exact-main CI run `36538649644`: `PASS`; all five required jobs passed.
+
+Reconciliation path on temporary branch `integration/subscriptions-main-59a166c`
+(preserved commit evidence only):
+
+- `12bb5631959bbe485012d532a75960b18958973f`
+- `d04587a40216ecc96c1f25f32a142f613ca42188` (reconciled accepted `main` /
+  PR #89 perf DB safety governance into the integration line)
+- Reviewed merge candidate `2849e9fe642c5ce76e132779128e3db9a4acc77c`
+
+Accepted integration merge:
+
+- PR #88 merged into `hardening/subscriptions` as
+  `f621d2db355d3ef2c1531f73b0c698a323cc768e`.
+- Merge parents: `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` and
+  `2849e9fe642c5ce76e132779128e3db9a4acc77c`.
+- Merge commit tree `99eb23e6561b7dafb504656acce0e115d9a4eed2` equals the
+  reviewed candidate tree; the merge introduced no content drift.
+- PR #88 candidate exact-head CI run `36542911205`: `PASS`; all five required
+  jobs passed.
+
+Resulting persistent SUBS tip after acceptance:
+`origin/hardening/subscriptions` =
+`f621d2db355d3ef2c1531f73b0c698a323cc768e`.
+
+SUBS lifecycle remains `READY` under SUB-ACT-03 and the serial execution policy
+above. `SBH-10-04` remains `BLOCKED_SHARED_AUTHORITY` until a separate governed
+re-admission path succeeds; this integration does not authorize SBH-10-04
+implementation.
+
+The accepted SUB-ACT-01 development base
+`575ffa1848ac69abe855bd018c7ae8eaf05d61e4` remains activation provenance; it
+is not replaced by this reconciliation record.
+
+PLATFORM still requires its own future bounded reconciliation with accepted
+canonical `main` before integration where applicable. This SUBS closure does
+not perform or substitute for that PLATFORM reconciliation.
+
+The temporary integration workstream `integration/subscriptions-main-59a166c` is
+`COMPLETE` / `VERIFIED_ON_TARGET` through PR #88 and is no longer active.
+
 ### SUBS activation record: SUB-ACT-03
 
 This record is historical activation evidence. It establishes the current SUBS lifecycle as `READY`; it does not define the current serial task-admission policy.
@@ -832,10 +891,14 @@ S0 `READY` does not itself admit IA-03 or authorize other production implementat
 | #6 | S0-IA-AUTH-03R1 governance correction (IA-03 Redis status/abandon boundary) | S0 | **MERGED** / **RESOLVED** into `hardening/s0-baseline` | `origin/hardening/s0-baseline` tip observed below (candidate evidence only) |
 | #9 | PLAT-PERF-01 RedisPool teardown ownership | Platform | **CLOSED** / **SUPERSEDED BY PR #86** | PR #9 must not be merged independently; its accepted integration is recorded under PR #86 |
 | #86 | Workstation infrastructure and PR #9 lifecycle semantic integration | Platform | **MERGED** / **ACCEPTED** | Merge SHA `59a166c8cfba73bc1c239775cc326936a1f7b1ad`; exact-main CI run `36406423871` attempt 1 failed only `performance_smoke_required`, and attempt 2 passed all five required jobs |
+| #89 | Performance smoke destructive DB safety guard | Platform / `main` | **MERGED** / **ACCEPTED** into `main` | Merge SHA `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7`; exact-head CI run `36535488158` `PASS`; exact-main CI run `36538649644` `PASS` (all five required jobs) |
+| #88 | Reconcile accepted main runtime base into SUBS | SUBS | **MERGED** / **ACCEPTED** into `hardening/subscriptions` | Merge SHA `f621d2db355d3ef2c1531f73b0c698a323cc768e`; merge parents `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` and `2849e9fe642c5ce76e132779128e3db9a4acc77c`; candidate exact-head CI run `36542911205` `PASS` (all five required jobs); merge tree equals reviewed candidate tree `99eb23e6561b7dafb504656acce0e115d9a4eed2` |
 
 PR #6 authorized a governance/docs correction only. It did **not** implement IA-03.
 
 The `workstation-infra-pr9-semantic-reconcile` temporary integration workstream is `COMPLETE` / `VERIFIED_ON_TARGET` through PR #86 and is no longer active.
+
+The `integration/subscriptions-main-59a166c` temporary integration workstream is `COMPLETE` / `VERIFIED_ON_TARGET` through PR #88 and is no longer active.
 
 ---
 
@@ -916,14 +979,23 @@ When updating:
 
 This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
-- `origin/main` = `59a166c8cfba73bc1c239775cc326936a1f7b1ad` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
+- `origin/main` = `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7` at this refresh (PR #89 merge); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `f4127902c3f328b76674724faa6a473c629c01ef` (current fetched persistent S0 tip after PR #83 reconciliation)
 - `origin/hardening/platform-security` = `435924ae2b9c819c8d4f820c5b316d154f3be2b0` (current fetched persistent PLATFORM tip)
-- `origin/hardening/subscriptions` = `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` (current fetched persistent SUBS tip)
+- `origin/hardening/subscriptions` = `f621d2db355d3ef2c1531f73b0c698a323cc768e` (current fetched persistent SUBS tip after PR #88 reconciliation)
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
+- PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (SUBS main reconciliation complete; see SUBS main-to-branch reconciliation record)
+- PR #89 = MERGED / ACCEPTED into `main`
 
-The pending SUBS reconciliation is based on `hardening/subscriptions` at `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` with accepted runtime integration base `main` at `59a166c8cfba73bc1c239775cc326936a1f7b1ad`. This governance/status-only closure does not invalidate `59a166c8cfba73bc1c239775cc326936a1f7b1ad` as the accepted runtime integration base for the pending SUBS and PLATFORM reconciliations.
+SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
+`main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
+`fa26c01e4c4dbe312e5445915839f7f4a5eb8bef`, and integration-branch commits
+`12bb5631959bbe485012d532a75960b18958973f`, `d04587a40216ecc96c1f25f32a142f613ca42188`,
+and `2849e9fe642c5ce76e132779128e3db9a4acc77c`. PLATFORM still requires its own
+future bounded reconciliation with accepted canonical `main` before integration
+where applicable; ordinary independent PLATFORM hardening does not require
+continuous `main` synchronization.
 
 Earlier topology-bootstrap commissioning evidence (historical only):
 
