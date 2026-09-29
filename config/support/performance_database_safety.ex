@@ -1,14 +1,14 @@
 defmodule Store.Config.PerformanceDatabaseSafety do
   @moduledoc false
 
-  alias Ecto.Adapters.SQL
-
   @performance_database "store_blueprint_perf"
 
   @workstation_dev_postgres_port 55_432
   @workstation_test_postgres_port 55_433
   @workstation_dev_redis_port 56_379
   @workstation_test_redis_port 56_380
+
+  @ecto_sql_module Module.concat([Ecto, Adapters, SQL])
 
   @spec performance_database_name() :: String.t()
   def performance_database_name, do: @performance_database
@@ -55,19 +55,26 @@ defmodule Store.Config.PerformanceDatabaseSafety do
             "destructive performance smoke cleanup refused: repo database #{inspect(configured_database)} is not the contracted performance database #{@performance_database}"
     end
 
-    case SQL.query!(repo, "SELECT current_database()", []) do
-      %{rows: [[connected_database]]} ->
-        if connected_database == configured_database and
-             allowed_performance_database?(connected_database) do
-          :ok
-        else
-          raise ArgumentError,
-                "destructive performance smoke cleanup refused: connected database #{inspect(connected_database)} does not match configured performance database #{inspect(configured_database)}"
+    case Code.ensure_loaded(@ecto_sql_module) do
+      {:module, _} ->
+        case apply(@ecto_sql_module, :query!, [repo, "SELECT current_database()", []]) do
+          %{rows: [[connected_database]]} ->
+            if connected_database == configured_database and
+                 allowed_performance_database?(connected_database) do
+              :ok
+            else
+              raise ArgumentError,
+                    "destructive performance smoke cleanup refused: connected database #{inspect(connected_database)} does not match configured performance database #{inspect(configured_database)}"
+            end
+
+          other ->
+            raise ArgumentError,
+                  "destructive performance smoke cleanup refused: unable to read current_database() from #{inspect(repo)} (#{inspect(other)})"
         end
 
-      other ->
+      {:error, _} ->
         raise ArgumentError,
-              "destructive performance smoke cleanup refused: unable to read current_database() from #{inspect(repo)} (#{inspect(other)})"
+              "destructive performance smoke cleanup refused: Ecto SQL adapter is not available to verify current_database()"
     end
   end
 

@@ -14,6 +14,8 @@ required_performance_env! = fn name ->
   end
 end
 
+Code.require_file(Path.join(__DIR__, "support/performance_database_safety.ex"))
+
 performance_database_name =
   if performance_smoke? do
     performance_database = System.fetch_env!("STORE_PERF_DATABASE_NAME")
