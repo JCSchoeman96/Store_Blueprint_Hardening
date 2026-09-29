@@ -57,6 +57,22 @@ If severe regression is detected:
 
 Do not run destructive state rewrites from web/controllers.
 
+## SBH-10-03 renewal-contract schema rollback (controlled sequence)
+
+Rolling back `20260929101700_sbh_10_03_renewal_contract_snapshot_rollback_fence` and
+`20260924203729_sbh_10_03_renewal_contract_snapshot` is one controlled sequence:
+
+1. Quiesce renewal writers first (`RunDueSubscriptionRenewalsWorker`,
+   `ProcessSubscriptionRenewalWorker`, and `ReconcilePaidSubscriptionRenewalWorker`
+   must not be processing new renewal work).
+2. Roll back the fence migration (`down` is a no-op schema change but enforces the
+   evidence gate).
+3. Only when `renewal_attempts` has no durable charged-contract evidence may
+   operators roll back `SBH-10-03` itself.
+
+If durable renewal-contract evidence exists, the fence `down` raises before any
+destructive `SBH-10-03` rollback can remove charged-contract columns.
+
 ## Reconciliation Commands
 
 Use these for safe post-incident recovery:
