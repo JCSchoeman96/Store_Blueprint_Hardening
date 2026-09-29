@@ -41,6 +41,22 @@ defmodule Store.Support.DatabaseEnvironmentTest do
     end
   end
 
+  test "performance database rejects arbitrary caller-controlled names" do
+    assert_raise ArgumentError, ~r/must be exactly store_blueprint_perf/, fn ->
+      validate_performance_database("store_blueprint_prod", "store_blueprint_test")
+    end
+
+    assert_raise ArgumentError, ~r/must be exactly store_blueprint_perf/, fn ->
+      PerformanceDatabaseSafety.validate!(
+        "my_application_database",
+        "store_blueprint_test",
+        {"performance.internal", 5_432},
+        {"performance.internal", 6_380},
+        true
+      )
+    end
+  end
+
   test "performance infrastructure rejects shared workstation endpoints" do
     assert_raise ArgumentError, fn ->
       PerformanceDatabaseSafety.validate!(
@@ -62,6 +78,26 @@ defmodule Store.Support.DatabaseEnvironmentTest do
       )
     end
 
+    assert_raise ArgumentError, fn ->
+      PerformanceDatabaseSafety.validate!(
+        "store_blueprint_perf",
+        "store_blueprint_test",
+        {"127.0.0.1", 55_432},
+        {"127.0.0.1", 56_380},
+        true
+      )
+    end
+
+    assert_raise ArgumentError, fn ->
+      PerformanceDatabaseSafety.validate!(
+        "store_blueprint_perf",
+        "store_blueprint_test",
+        {"127.0.0.1", 55_433},
+        {"127.0.0.1", 56_379},
+        true
+      )
+    end
+
     assert PerformanceDatabaseSafety.validate!(
              "store_blueprint_perf",
              "store_blueprint_test",
@@ -69,6 +105,41 @@ defmodule Store.Support.DatabaseEnvironmentTest do
              {"127.0.0.1", 56_380},
              true
            ) == "store_blueprint_perf"
+  end
+
+  test "destructive cleanup guard refuses non-performance connected databases" do
+    assert_raise ArgumentError, ~r/contracted performance database/, fn ->
+      PerformanceDatabaseSafety.assert_destructive_cleanup_allowed!(Store.Repo)
+    end
+  end
+
+  test "destructive cleanup guard rejects a connected database that differs from the configured database" do
+    mismatch_error =
+      ~r/connected database "store_blueprint_test" does not match configured performance database "store_blueprint_perf"/
+
+    assert_raise ArgumentError, mismatch_error, fn ->
+      PerformanceDatabaseSafety.assert_destructive_cleanup_databases_match!(
+        "store_blueprint_perf",
+        "store_blueprint_test"
+      )
+    end
+
+    assert_raise ArgumentError,
+                 ~r/connected database "store_blueprint_prod" does not match configured performance database "store_blueprint_perf"/,
+                 fn ->
+                   PerformanceDatabaseSafety.assert_destructive_cleanup_databases_match!(
+                     "store_blueprint_perf",
+                     "store_blueprint_prod"
+                   )
+                 end
+  end
+
+  test "destructive cleanup guard accepts matching configured and connected performance databases" do
+    assert :ok =
+             PerformanceDatabaseSafety.assert_destructive_cleanup_databases_match!(
+               "store_blueprint_perf",
+               "store_blueprint_perf"
+             )
   end
 
   defp validate_performance_database(performance_database, test_database) do
