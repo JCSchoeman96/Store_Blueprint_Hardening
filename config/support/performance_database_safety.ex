@@ -46,6 +46,24 @@ defmodule Store.Config.PerformanceDatabaseSafety do
     raise ArgumentError, "STORE_PERF_DATABASE_NAME must name a project-isolated database"
   end
 
+  @doc false
+  @spec assert_destructive_cleanup_databases_match!(String.t(), String.t()) :: :ok
+  def assert_destructive_cleanup_databases_match!(configured_database, connected_database)
+      when is_binary(configured_database) and is_binary(connected_database) do
+    unless allowed_performance_database?(configured_database) do
+      raise ArgumentError,
+            "destructive performance smoke cleanup refused: repo database #{inspect(configured_database)} is not the contracted performance database #{@performance_database}"
+    end
+
+    if connected_database == configured_database and
+         allowed_performance_database?(connected_database) do
+      :ok
+    else
+      raise ArgumentError,
+            "destructive performance smoke cleanup refused: connected database #{inspect(connected_database)} does not match configured performance database #{inspect(configured_database)}"
+    end
+  end
+
   @spec assert_destructive_cleanup_allowed!(module()) :: :ok
   def assert_destructive_cleanup_allowed!(repo) when is_atom(repo) do
     configured_database = repo.config()[:database]
@@ -59,13 +77,7 @@ defmodule Store.Config.PerformanceDatabaseSafety do
       {:module, _} ->
         case apply(@ecto_sql_module, :query!, [repo, "SELECT current_database()", []]) do
           %{rows: [[connected_database]]} ->
-            if connected_database == configured_database and
-                 allowed_performance_database?(connected_database) do
-              :ok
-            else
-              raise ArgumentError,
-                    "destructive performance smoke cleanup refused: connected database #{inspect(connected_database)} does not match configured performance database #{inspect(configured_database)}"
-            end
+            assert_destructive_cleanup_databases_match!(configured_database, connected_database)
 
           other ->
             raise ArgumentError,
