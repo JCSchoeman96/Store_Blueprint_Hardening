@@ -6,6 +6,7 @@ defmodule Store.TestSupport.StripeAPIStub do
   require Logger
 
   alias Store.Perf.ChaosProfile
+  alias Store.TestSupport.ProviderWaitOwnershipProbe
 
   @stub_name Store.Payments.Providers.Stripe
   @chaos_override_key :stripe_perf_chaos_override
@@ -29,22 +30,6 @@ defmodule Store.TestSupport.StripeAPIStub do
     end)
   end
 
-  def with_chaos_request_key(logical_key, fun)
-      when is_binary(logical_key) and logical_key != "" and is_function(fun, 0) do
-    previous_metadata = Logger.metadata()
-    Logger.metadata(Keyword.put(previous_metadata, @logical_chaos_metadata_key, logical_key))
-
-    try do
-      fun.()
-    after
-      Logger.reset_metadata(previous_metadata)
-    end
-  end
-
-  def chaos_request_key(endpoint, params) when is_binary(endpoint) and is_map(params) do
-    resolve_chaos_request_key(endpoint, params)
-  end
-
   def with_chaos_override(override, fun) when is_map(override) and is_function(fun, 0) do
     previous = Application.get_env(:store, @chaos_override_key)
     Application.put_env(:store, @chaos_override_key, override)
@@ -61,6 +46,22 @@ defmodule Store.TestSupport.StripeAPIStub do
   def clear_chaos_override do
     Application.delete_env(:store, @chaos_override_key)
     :ok
+  end
+
+  def with_chaos_request_key(logical_key, fun)
+      when is_binary(logical_key) and logical_key != "" and is_function(fun, 0) do
+    previous_metadata = Logger.metadata()
+    Logger.metadata(Keyword.put(previous_metadata, @logical_chaos_metadata_key, logical_key))
+
+    try do
+      fun.()
+    after
+      Logger.reset_metadata(previous_metadata)
+    end
+  end
+
+  def chaos_request_key(endpoint, params) when is_binary(endpoint) and is_map(params) do
+    resolve_chaos_request_key(endpoint, params)
   end
 
   def stub_payment_intent(fun) when is_function(fun, 2) do
@@ -236,6 +237,9 @@ defmodule Store.TestSupport.StripeAPIStub do
     })
   end
 
+  defp restore_override(nil), do: Application.delete_env(:store, @chaos_override_key)
+  defp restore_override(previous), do: Application.put_env(:store, @chaos_override_key, previous)
+
   defp resolve_chaos_request_key(endpoint, params) do
     case Logger.metadata()[@logical_chaos_metadata_key] do
       logical_key when is_binary(logical_key) and logical_key != "" ->
@@ -245,9 +249,6 @@ defmodule Store.TestSupport.StripeAPIStub do
         ChaosProfile.request_key(endpoint, params)
     end
   end
-
-  defp restore_override(nil), do: Application.delete_env(:store, @chaos_override_key)
-  defp restore_override(previous), do: Application.put_env(:store, @chaos_override_key, previous)
 
   defp respond_default(conn, params, endpoint) do
     case {conn.method, conn.request_path} do
@@ -268,16 +269,28 @@ defmodule Store.TestSupport.StripeAPIStub do
   defp respond_for_action(conn, endpoint, params, success_fun) do
     case resolve_action(endpoint, params) do
       {:ok, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         Req.Test.json(conn, success_fun.(params))
 
       {:timeout, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         timeout_response(conn, endpoint)
 
       {:error, delay_ms} ->
+        provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
         provider_error_response(conn, endpoint)
+    end
+  end
+
+  defp provider_wait_barrier_enter do
+    if Code.ensure_loaded?(ProviderWaitOwnershipProbe) and
+         function_exported?(ProviderWaitOwnershipProbe, :maybe_enter_barrier, 0) do
+      ProviderWaitOwnershipProbe.maybe_enter_barrier()
+    else
+      :ok
     end
   end
 

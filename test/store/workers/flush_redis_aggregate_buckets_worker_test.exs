@@ -9,7 +9,7 @@ defmodule Store.Workers.FlushRedisAggregateBucketsWorkerTest do
   alias Store.Workers.FlushRedisAggregateBucketsWorker
 
   setup do
-    assert :ok = Redis.flush_db()
+    assert :ok = Redis.clear_namespace()
     Store.DirectRepo.delete_all(AggregateBucket)
     :ok
   end

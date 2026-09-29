@@ -1,27 +1,23 @@
 import Config
 
-# Configure your database
-# 1. The High-Velocity Proxy Route (Hits PgBouncer)
+# Configure the shared workstation PostgreSQL DEV cluster directly.
 config :store, Store.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  port: 6432,
-  database: "store_dev",
+  username: "store_blueprint_dev",
+  password: System.get_env("STORE_DEV_DATABASE_PASSWORD"),
+  hostname: "127.0.0.1",
+  port: 55432,
   stacktrace: true,
-  show_sensitive_data_on_connection_error: true,
-  pool_size: 20,
-  prepare: :unnamed
+  database: "store_blueprint_dev",
+  pool_size: 20
 
-# 2. The Direct Route (Hits Postgres directly for Oban)
+# Oban and migrations use a direct connection to the same DEV database.
 config :store, Store.DirectRepo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  port: 5433,
-  database: "store_dev",
+  username: "store_blueprint_dev",
+  password: System.get_env("STORE_DEV_DATABASE_PASSWORD"),
+  hostname: "127.0.0.1",
+  port: 55432,
+  database: "store_blueprint_dev",
   stacktrace: true,
-  show_sensitive_data_on_connection_error: true,
   pool_size: 5
 
 config :store,
@@ -57,12 +53,11 @@ config :store, :rate_limit,
   backend: rate_limit_backend,
   redis_client: Store.Support.RateLimit.RedixClient,
   redis_name: :store_rate_limit_redis,
-  redis_key_prefix: System.get_env("STORE_REDIS_KEY_PREFIX", "dev:store"),
-  # For host-based dev with Docker Redis, publish the container port (e.g. -p 6379:6379).
+  redis_key_prefix: "store_blueprint_hardening:dev",
   redis: [
-    host: System.get_env("STORE_REDIS_HOST", "localhost"),
-    port: String.to_integer(System.get_env("STORE_REDIS_PORT", "6379")),
-    database: String.to_integer(System.get_env("STORE_REDIS_DB", "0")),
+    host: "127.0.0.1",
+    port: 56379,
+    database: 0,
     username: System.get_env("STORE_REDIS_USERNAME"),
     password: System.get_env("STORE_REDIS_PASSWORD"),
     ssl: redis_tls?

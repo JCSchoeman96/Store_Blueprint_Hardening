@@ -31,10 +31,11 @@ Implement the Phase 27 variable-subscription spine without violating the existin
    - open checkout drafts tied to pending-payment orders for the same user and membership plan
 7. Subscription management remains inline on the existing account/admin detail routes; no dedicated manage routes are introduced.
 8. Stripe payment-method updates use inline SetupIntent + Elements, not hosted Checkout redirect.
-9. Physical renewals are now charge-safe:
+9. Current physical renewal behavior has bounded safety gaps for sequential collections:
    - catalog and variant-plan blockers are retry-suppressed hard failures
-   - inventory is reserved before Stripe and explicitly released on known failure paths
-   - shipping is re-quoted live, but large quote drift is blocked by a surge circuit breaker
+   - inventory is reserved before Stripe, but the current `requires_action` path releases the hold while the payment can still succeed
+   - the current retry path can re-quote shipping and rewrite totals; a surge circuit breaker limits drift but does not replace reuse of finalized Order totals
+   - the SBH-10-04 amendment records the future correction; this governance change does not alter runtime behavior
 
 ## PLAN
 
@@ -140,3 +141,45 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - Remaining risk:
   - physical renewals add one shipping quote call plus one reservation call per processed subscription
   - due-tick scans for past-due subscriptions should use the new partial index on unsuppressed retries
+
+## SBH-10-04 cross-domain governance amendment (2026-09-26)
+
+### Links consulted
+
+- [`SBH-10-04 cross-domain authority amendment`](../governance/sbh_10_04_cross_domain_authority_amendment.md)
+- [`Checkout interlocks`](../governance/checkout_interlocks.md)
+- [`Payment provider contract`](../governance/payment_provider_contract.md)
+- [`Inventory & Reservations`](../governance/inventory_reservations.md)
+- Accepted SUBS evidence at `c66fb843beeb25e4943ceb6119b1ed7de3999964`: `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md` §§23.3 and 47, and `docs/governance/payment_provider_contract.md` §4.
+
+### Decisions and pins
+
+- The cross-domain grant is based on canonical `main` `1fb29528e63a255cf86f1810d99b2372a55923cc` and SUBS evidence tip `c66fb843beeb25e4943ceb6119b1ed7de3999964`.
+- One RenewalAttempt and one renewal Order remain the commercial occurrence. Sequential collection attempts get their own durable identities and PaymentIntent/provider idempotency keys.
+- `requires_action` remains unresolved. The existing runtime release behavior is a known gap; this governance task makes no runtime change.
+- The later collection reuses the finalized Order totals. It does not re-quote or rewrite shipping or tax.
+- SBH-10-05 remains separate and must reconcile against the exact successful PaymentApplication PaymentIntent and collection evidence.
+- JC-223 edges remain unchanged: SBH-10-04 depends on SBH-10-03; SBH-10-05 depends on SBH-10-03 and SBH-10-04.
+
+### Plan
+
+1. Merge the governance PR to canonical `main`.
+2. Verify the exact merge commit and tree independently.
+3. Complete a separate S0 governance/task admission for the typed renewal-key and exact-key recovery path, including any S0-scoped implementation required by that admission; pass its required review, merge, and independent post-merge commit/tree verification.
+4. Only after the S0 admission merges and verifies, create the separate SUBS governance re-admission amendment against the then-current accepted tip and recheck current source compatibility. The SUBS amendment must not mark SBH-10-04 `READY` from the governance PR alone.
+5. Assign a new SBH-10-04 task base only after that SUBS amendment merges and receives independent post-merge verification.
+
+### Performance & Scaling Review
+
+- **Hot:** Renewal collection creation, physical inventory holds, payment dispatch, provider status/cancel reconciliation, webhooks, and paid application. This docs-only change adds no production query. The later implementation must measure each path's query count and N+1 risk.
+- **Warm:** No cache is added. PostgreSQL remains inventory authority; Redis remains bounded admission coordination. Generic checkout TTL and stock invalidation remain unchanged; unresolved renewal generations bypass generic TTL cleanup until exact release evidence exists. No cache stampede protection is added to this admission path; database locks and uniqueness constraints control reservation concurrency.
+- **Cold:** Provider and database ambiguity use bounded reconciliation; exhaustion leaves the collection unresolved, keeps the hold active, and requires operator review. Collection workers reuse the durable collection ID on retry.
+- **Indexes:** The task-specific Orders migration adds one active generation partial index while retaining the globally unique `reservation_key`. Subscription indexes enforce unique collection ordinal, a unique nullable `payment_intent_id` association, and at most one unresolved collection per RenewalAttempt.
+- **Oban and idempotency:** Existing occurrence scheduling remains keyed by subscription and `renewal_key`; collection reconciliation jobs are unique by collection ID and dispatch epoch, and each provider operation targets the same collection PaymentIntent.
+- **Telemetry and logging:** Record dispatch epoch, fenced-through epoch, fence result, provider reconcile/cancel result, verified outcome, collection ID, local intent ID, reservation key, recovery result, and PaymentApplication result separately.
+
+### Verification
+
+- `STORE_TEST_DB_SUFFIX=sbh1004 mix check`: PASS; 576 tests, 0 failures, Credo clean, and documentation generated. Existing low-confidence Sobelow findings and generated-documentation warnings are outside this docs-only change.
+- `git diff --check`: PASS.
+- Changed files are governance and agent-note Markdown only; no runtime code, tests, migration, or Ash snapshot changed.

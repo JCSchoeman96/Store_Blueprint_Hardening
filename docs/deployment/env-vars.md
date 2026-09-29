@@ -1,6 +1,45 @@
 # Runtime Environment Contract
 
-This document is the deployment contract for runtime configuration enforced by `config/runtime.exs`, with release/runtime context from `Dockerfile`, `docker-compose.yml`, `rel/env.sh.eex`, and `pgbouncer/pgbouncer.ini`.
+This document is the deployment contract for runtime configuration enforced by `config/runtime.exs`, with release/runtime context from `Dockerfile`, `compose.yaml`, `rel/env.sh.eex`, and `pgbouncer/pgbouncer.ini`.
+
+## Workstation development and tests
+
+The workstation `dev-core` stack owns these shared PostgreSQL 18 and Redis 7
+endpoints. The repository connects to them and never manages their containers.
+
+| Environment | PostgreSQL | Database | Role | Redis |
+| --- | --- | --- | --- | --- |
+| Development | `127.0.0.1:55432` | `store_blueprint_dev` | `store_blueprint_dev` | `127.0.0.1:56379` |
+| Test | `127.0.0.1:55433` | `store_blueprint_test` plus the existing direct suffix | `store_blueprint_test` | `127.0.0.1:56380` |
+
+Supply `STORE_DEV_DATABASE_PASSWORD` and `STORE_TEST_DATABASE_PASSWORD` through
+local secret management. On the standard workstation, run database-backed Mix
+commands with `~/.local/bin/with-store-blueprint-db-secrets`. The test role is
+non-superuser and needs `CREATEDB` to support parallel test database suffixes.
+Test configuration pins the PostgreSQL and Redis TEST endpoints so it cannot
+inherit DEV. Each test process gets its own key prefix under
+`store_blueprint_hardening:test:`.
+
+PostgreSQL migrations install the `citext` extension. The selected PostgreSQL
+server must provide `citext`; the workstation PostgreSQL 18 TEST migration was
+verified using the non-superuser project role.
+
+Performance smoke runs set `STORE_PERF_SMOKE=true` and must provide
+`STORE_PERF_DATABASE_NAME`, `STORE_PERF_DATABASE_HOST`,
+`STORE_PERF_DATABASE_PORT`, `STORE_PERF_REDIS_HOST`, and
+`STORE_PERF_REDIS_PORT` for project-isolated PostgreSQL 18 and Redis 7. The
+performance database name must be exactly `store_blueprint_perf` (not
+`store_blueprint_dev` or any `store_blueprint_test*` database). CI creates a separate job-owned performance
+database before running the smoke suite. Outside CI, the performance PostgreSQL
+and Redis endpoints cannot use the locked workstation DEV or TEST loopback ports.
+`STORE_PERF_DATABASE_USERNAME` defaults to `store_blueprint_test` and
+`STORE_PERF_DATABASE_PASSWORD` defaults to `STORE_TEST_DATABASE_PASSWORD`.
+Redis ACL settings use `STORE_PERF_REDIS_USERNAME` and
+`STORE_PERF_REDIS_PASSWORD`. CI supplies job-owned ephemeral services. These
+settings keep performance fixtures away from shared workstation DEV/TEST data.
+
+`.env.production.example` is the safe production template for `compose.yaml`;
+it is separate from the workstation `.env.example`.
 
 ## Runtime modes
 
@@ -110,13 +149,17 @@ Timeout guardrails enforced at boot:
 ### Rate limiting and Redis
 
 - `STORE_RATE_LIMIT_BACKEND` (`ets|redis`, default `ets`)
-- `STORE_REDIS_KEY_PREFIX` (default `prod:store`)
+- Production Redis keys use the fixed `store_blueprint_hardening:prod` namespace.
 - `STORE_REDIS_HOST` (default `localhost`)
 - `STORE_REDIS_PORT` (default `6379`)
 - `STORE_REDIS_DB` (default `0`)
 - `STORE_REDIS_USERNAME` (optional)
 - `STORE_REDIS_PASSWORD` (optional)
 - `STORE_REDIS_SSL` (`true`/`1` enables TLS; default false)
+
+Production Redis host, port, database, credentials, and TLS settings are
+independent of the workstation Redis endpoints. Do not override the project
+namespace with an unscoped prefix.
 - `STORE_WEBHOOK_RATE_LIMIT_LIMIT` (default `120`)
 - `STORE_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS` (default `60`)
 - `STORE_ADMIN_RATE_LIMIT_LIMIT` (default `300`)
