@@ -25,6 +25,7 @@ defmodule Store.Subscriptions.Facade do
   alias Store.Subscriptions.Facade.StaleWrite
 
   alias Store.Subscriptions.Inputs.{
+    EstablishAccessEffectInput,
     QueueSubscriptionPlanChangeInput,
     QueueSubscriptionVariantChangeInput,
     StartSubscriptionPaymentMethodUpdateInput
@@ -36,6 +37,7 @@ defmodule Store.Subscriptions.Facade do
   }
 
   alias Store.Subscriptions.{
+    AccessEffect,
     ContractChange,
     PlanRevision,
     RenewalAttempt,
@@ -68,6 +70,62 @@ defmodule Store.Subscriptions.Facade do
                                    "SHIPPING_UNAVAILABLE",
                                    "SHIPPING_COST_SURGE"
                                  ])
+
+  @spec establish_access_effect_for_system(EstablishAccessEffectInput.t()) ::
+          {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
+  def establish_access_effect_for_system(%EstablishAccessEffectInput{} = input) do
+    with {:ok, canonical_input} <- EstablishAccessEffectInput.new(Map.from_struct(input)) do
+      with_access_effect_transaction(fn ->
+        establish_access_effect_in_transaction(canonical_input)
+      end)
+    end
+  end
+
+  def establish_access_effect_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed AccessEffect input is required")}
+  end
+
+  @spec get_current_access_effect_for_system(Subscription.t()) ::
+          {:ok, AccessEffect.t() | nil} | {:error, Error.t() | term()}
+  def get_current_access_effect_for_system(%Subscription{id: subscription_id}) do
+    read_current_access_effect(subscription_id)
+  end
+
+  def get_current_access_effect_for_system(_subscription_id) do
+    {:error, Error.new("VALIDATION_ERROR", "typed Subscription is required")}
+  end
+
+  @spec mark_access_effect_pending_for_system(AccessEffect.t()) ::
+          {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
+  def mark_access_effect_pending_for_system(%AccessEffect{} = effect) do
+    with_access_effect_transaction(fn ->
+      transition_access_effect(effect, :required, :pending, :mark_pending_from_required)
+    end)
+  end
+
+  @spec mark_access_effect_applied_for_system(AccessEffect.t()) ::
+          {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
+  def mark_access_effect_applied_for_system(%AccessEffect{} = effect) do
+    with_access_effect_transaction(fn ->
+      transition_access_effect(effect, :pending, :applied, :mark_applied)
+    end)
+  end
+
+  @spec mark_access_effect_failed_retryable_for_system(AccessEffect.t()) ::
+          {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
+  def mark_access_effect_failed_retryable_for_system(%AccessEffect{} = effect) do
+    with_access_effect_transaction(fn ->
+      transition_access_effect(effect, :pending, :failed_retryable, :mark_failed_retryable)
+    end)
+  end
+
+  @spec retry_access_effect_for_system(AccessEffect.t()) ::
+          {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
+  def retry_access_effect_for_system(%AccessEffect{} = effect) do
+    with_access_effect_transaction(fn ->
+      transition_access_effect(effect, :failed_retryable, :pending, :retry_to_pending)
+    end)
+  end
 
   @spec list_subscriptions_for_user(map(), UserSubscriptionIndexQuery.t()) ::
           {:ok, [Subscription.t()]} | {:error, Error.t() | term()}
@@ -4747,4 +4805,365 @@ defmodule Store.Subscriptions.Facade do
       _ -> nil
     end
   end
+
+  defp with_access_effect_transaction(fun) do
+    case Repo.in_transaction?() do
+      true -> fun.()
+      false -> run_owned_access_effect_transaction(fun)
+    end
+  end
+
+  defp run_owned_access_effect_transaction(fun) do
+    case Repo.transaction(fn -> transactional_access_effect_result(fun) end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp transactional_access_effect_result(fun) do
+    case fun.() do
+      {:ok, _value} = result -> result
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp establish_access_effect_in_transaction(input) do
+    with {:ok, current_provenance} <- lock_access_effect_subscription(input.subscription_id),
+         {:ok, existing} <-
+           get_access_effect_for_source_version(input.subscription_id, input.source_version) do
+      reuse_or_establish_access_effect(input, current_provenance, existing)
+    end
+  end
+
+  defp reuse_or_establish_access_effect(input, _current_provenance, %AccessEffect{} = effect) do
+    if effect.target_fingerprint == AccessEffect.target_fingerprint(input) do
+      {:ok, effect}
+    else
+      {:error,
+       Error.new(
+         "IDEMPOTENCY_KEY_REUSE_MISMATCH",
+         "AccessEffect source version was reused with different target evidence"
+       )}
+    end
+  end
+
+  defp reuse_or_establish_access_effect(input, current_provenance, nil) do
+    with :ok <- validate_access_effect_source_version(input, current_provenance),
+         :ok <- validate_access_effect_provenance(input, current_provenance),
+         :ok <- validate_access_effect_target_entitlement(input, current_provenance) do
+      establish_new_access_effect(input)
+    end
+  end
+
+  defp validate_access_effect_source_version(input, current_provenance) do
+    if input.source_version <= current_provenance.aggregate_version do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "AccessEffect source version cannot exceed the locked Subscription aggregate version"
+       )}
+    end
+  end
+
+  defp establish_new_access_effect(input) do
+    with {:ok, current} <- get_current_access_effect_for_subscription(input.subscription_id),
+         :ok <- reject_stale_access_effect_version(input, current),
+         {:ok, created} <- create_access_effect_record(input),
+         :ok <- supersede_older_access_effect(current) do
+      {:ok, created}
+    end
+  end
+
+  defp lock_access_effect_subscription(subscription_id) do
+    case Ecto.UUID.dump(subscription_id) do
+      {:ok, dumped_id} ->
+        case Repo.query(
+               """
+               SELECT subscriptions.source_order_line_item_id::text,
+                      subscriptions.current_contract_change_id::text,
+                      subscriptions.current_plan_revision_id::text,
+                      subscriptions.aggregate_version,
+                      plan_revisions.entitlement_kind,
+                      plan_revisions.entitlement_scope_key
+               FROM subscriptions
+               LEFT JOIN plan_revisions
+                 ON plan_revisions.id = subscriptions.current_plan_revision_id
+               WHERE subscriptions.id = $1
+               FOR UPDATE OF subscriptions
+               """,
+               [dumped_id]
+             ) do
+          {:ok,
+           %{
+             rows: [
+               [
+                 line_item_id,
+                 contract_change_id,
+                 plan_revision_id,
+                 aggregate_version,
+                 revision_entitlement_kind,
+                 revision_entitlement_scope_key
+               ]
+             ]
+           }} ->
+            {:ok,
+             %{
+               source_order_line_item_id: line_item_id,
+               contract_change_id: contract_change_id,
+               plan_revision_id: plan_revision_id,
+               aggregate_version: aggregate_version,
+               revision_entitlement_kind: revision_entitlement_kind,
+               revision_entitlement_scope_key: revision_entitlement_scope_key
+             }}
+
+          {:ok, %{rows: []}} ->
+            {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
+
+          {:error, reason} ->
+            {:error, Normalize.normalize(reason)}
+        end
+
+      :error ->
+        {:error, Error.new("VALIDATION_ERROR", "subscription id must be a UUID")}
+    end
+  end
+
+  defp validate_access_effect_provenance(input, current_provenance) do
+    target_provenance = %{
+      source_order_line_item_id: input.source_order_line_item_id,
+      contract_change_id: input.contract_change_id,
+      plan_revision_id: input.plan_revision_id
+    }
+
+    if target_provenance == Map.take(current_provenance, Map.keys(target_provenance)) do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "AccessEffect provenance must match the Subscription's immutable source evidence"
+       )}
+    end
+  end
+
+  defp validate_access_effect_target_entitlement(input, current_provenance) do
+    revision_pair = {
+      current_provenance.revision_entitlement_kind,
+      current_provenance.revision_entitlement_scope_key
+    }
+
+    target_pair = {
+      input.entitlement_kind && Atom.to_string(input.entitlement_kind),
+      input.entitlement_scope_key
+    }
+
+    valid_target? =
+      case input.disposition do
+        :effective -> target_pair == revision_pair
+        :non_effective -> target_pair == {nil, nil} or target_pair == revision_pair
+      end
+
+    if valid_target? do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "AccessEffect entitlement target must match its immutable PlanRevision evidence"
+       )}
+    end
+  end
+
+  defp get_access_effect_for_source_version(subscription_id, source_version) do
+    query =
+      AccessEffect
+      |> Ash.Query.for_read(:read_for_subscription_source_version, %{
+        subscription_id: subscription_id,
+        source_version: source_version
+      })
+
+    case Ash.read_one(query,
+           domain: Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %AccessEffect{} = effect} -> {:ok, effect}
+      {:ok, nil} -> {:ok, nil}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp get_current_access_effect_for_subscription(subscription_id) do
+    query =
+      AccessEffect
+      |> Ash.Query.for_read(:read_current_for_subscription, %{subscription_id: subscription_id})
+      |> Ash.Query.limit(1)
+
+    case Ash.read_one(query,
+           domain: Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %AccessEffect{} = effect} -> {:ok, effect}
+      {:ok, nil} -> {:ok, nil}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp read_current_access_effect(subscription_id) do
+    get_current_access_effect_for_subscription(subscription_id)
+  end
+
+  defp reject_stale_access_effect_version(_input, nil), do: :ok
+
+  defp reject_stale_access_effect_version(input, %AccessEffect{source_version: latest_version})
+       when input.source_version < latest_version do
+    {:error,
+     Error.new(
+       "STALE_RECORD",
+       "an older AccessEffect source version cannot replace the current target"
+     )}
+  end
+
+  defp reject_stale_access_effect_version(_input, _current), do: :ok
+
+  defp create_access_effect_record(input) do
+    changeset =
+      AccessEffect
+      |> Ash.Changeset.for_create(:establish, Map.from_struct(input), context: %{system?: true})
+
+    case Ash.create(changeset,
+           domain: Subscriptions,
+           authorize?: false,
+           context: %{system?: true},
+           return_notifications?: true
+         ) do
+      {:ok, %AccessEffect{} = effect, notifications} ->
+        with :ok <- ensure_no_access_effect_notifiers(notifications), do: {:ok, effect}
+
+      {:ok, %AccessEffect{} = effect} ->
+        {:ok, effect}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp ensure_no_access_effect_notifiers(notifications) when is_list(notifications) do
+    if Enum.all?(notifications, fn notification -> notification.for == [] end) do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "INTERNAL_ERROR",
+         "AccessEffect actions must not publish notifications"
+       )}
+    end
+  end
+
+  defp supersede_older_access_effect(nil), do: :ok
+
+  defp supersede_older_access_effect(%AccessEffect{} = effect) do
+    with {:ok, status} <- lock_access_effect_status(effect.id) do
+      supersede_access_effect_at_status(effect, status)
+    end
+  end
+
+  defp supersede_access_effect_at_status(_effect, status)
+       when status in [:applied, :superseded],
+       do: :ok
+
+  defp supersede_access_effect_at_status(effect, :pending) do
+    effect
+    |> transition_access_effect(:pending, :superseded, :supersede)
+    |> result_to_ok()
+  end
+
+  defp supersede_access_effect_at_status(effect, :required) do
+    transition_access_effect_through_pending(effect, :required, :mark_pending_from_required)
+  end
+
+  defp supersede_access_effect_at_status(effect, :failed_retryable) do
+    transition_access_effect_through_pending(effect, :failed_retryable, :retry_to_pending)
+  end
+
+  defp transition_access_effect_through_pending(effect, from, pending_action) do
+    with {:ok, pending} <- transition_access_effect(effect, from, :pending, pending_action),
+         {:ok, _superseded} <-
+           transition_access_effect(pending, :pending, :superseded, :supersede) do
+      :ok
+    end
+  end
+
+  defp transition_access_effect(%AccessEffect{} = effect, from, to, action) do
+    with {:ok, current_status} <- lock_access_effect_status(effect.id),
+         :ok <- ensure_access_effect_transition_status(current_status, from) do
+      perform_access_effect_update(effect, action, from, to)
+    end
+  end
+
+  defp perform_access_effect_update(effect, action, from, to) do
+    changeset = Ash.Changeset.for_update(effect, action, %{}, context: %{system?: true})
+
+    case Ash.update(changeset,
+           domain: Subscriptions,
+           authorize?: false,
+           context: %{system?: true},
+           return_notifications?: true
+         ) do
+      {:ok, %AccessEffect{status: ^to} = updated, notifications} ->
+        with :ok <- ensure_no_access_effect_notifiers(notifications), do: {:ok, updated}
+
+      {:ok, %AccessEffect{status: ^to} = updated} ->
+        {:ok, updated}
+
+      {:ok, _updated, _notifications} ->
+        {:error, invalid_access_effect_transition(from, to)}
+
+      {:ok, _updated} ->
+        {:error, invalid_access_effect_transition(from, to)}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp lock_access_effect_status(effect_id) do
+    case Ecto.UUID.dump(effect_id) do
+      {:ok, dumped_id} ->
+        case Repo.query("SELECT status FROM access_effects WHERE id = $1 FOR UPDATE", [dumped_id]) do
+          {:ok, %{rows: [[status]]}} -> {:ok, access_effect_status(status)}
+          {:ok, %{rows: []}} -> {:error, Error.new("NOT_FOUND", "AccessEffect not found")}
+          {:error, reason} -> {:error, Normalize.normalize(reason)}
+        end
+
+      :error ->
+        {:error, Error.new("VALIDATION_ERROR", "AccessEffect id must be a UUID")}
+    end
+  end
+
+  defp access_effect_status(status) when is_atom(status), do: status
+  defp access_effect_status("required"), do: :required
+  defp access_effect_status("pending"), do: :pending
+  defp access_effect_status("applied"), do: :applied
+  defp access_effect_status("failed_retryable"), do: :failed_retryable
+  defp access_effect_status("superseded"), do: :superseded
+
+  defp ensure_access_effect_transition_status(status, status), do: :ok
+
+  defp ensure_access_effect_transition_status(current, target) do
+    {:error, invalid_access_effect_transition(current, target)}
+  end
+
+  defp invalid_access_effect_transition(from, to) do
+    Error.new(
+      "INVALID_STATE_TRANSITION",
+      "AccessEffect cannot transition from #{from} to #{to}"
+    )
+  end
+
+  defp result_to_ok({:ok, _effect}), do: :ok
+  defp result_to_ok({:error, _reason} = error), do: error
 end
