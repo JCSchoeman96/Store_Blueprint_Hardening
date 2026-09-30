@@ -788,3 +788,182 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 ### Reconciliation status at the accepted runtime base
 
 The accepted main contract documents bounded target contracts for Orders, Payments, InventoryAdmission, and provider behavior for later, separately admitted work. It does not admit SBH-10-04 for Subscription implementation or assign a new task base. The SUBS v0.1.28 authority record remains controlling for SUBS issue status: SBH-10-04 is still `BLOCKED_SHARED_AUTHORITY`, and only SBH-50-06 is admitted as READY. The earlier v0.1.27 statements that no owning-surface contract amendment existed describe the state before the accepted main amendment; current target contracts are defined by the merged governance documents. No SBH-10-04 runtime implementation is introduced by this reconciliation.
+
+## JC-289 / SBH-50-06 NewYou conformance correction — v0.1.29 governance (2026-09-30)
+
+This entry is a new evidence record. The preceding v0.1.28 admission section
+and its PR #82 history remain unchanged. The v0.1.29 amendment supersedes only
+the bounded JC-289 contract details stated below; it does not rewrite the
+historical admission or alter JC-222, JC-223, or earlier SUBS authority.
+
+### Links consulted
+
+- `AGENTS.md` and `docs/agent_rules/active_workstreams.md` from current `origin/main`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`, §§23.3, 48, and 49
+- `docs/hardening/01_domain_map.md`
+- `docs/hardening/02_lifecycle_registry.md`
+- `docs/governance/subscription_scheduling_terms.md`
+- `docs/governance/state_machines.md`
+- `docs/governance/idempotency.md`
+- `docs/phases/phase_27_variable_subscriptions.md`
+- `docs/phases/phase_27a_membership_subscriptions_entitlements.md`
+- [NewYou authority README at main `3c8c05278ad3601823af2f57d53fba1bc8a5f5cc`](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/README.md)
+- [NewYou current authority manifest v1.0.0](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/CURRENT_AUTHORITY_MANIFEST_v1.0.0.json)
+- [NewYou Product `00_PLATFORM_v1.5.1.md`](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/00_PLATFORM_v1.5.1.md)
+- [NewYou Decisions `01_DECISIONS_v1.5.0.md`](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/01_DECISIONS_v1.5.0.md)
+- [NewYou Architecture `03_ARCHITECTURE_v1.1.1.md`](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/03_ARCHITECTURE_v1.1.1.md)
+- [NewYou Domain Map `04_DOMAIN_MAP_v1.2.0.md`](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/04_DOMAIN_MAP_v1.2.0.md)
+- [NewYou Roadmap `05_ROADMAP_v1.1.5.md`](https://github.com/JCSchoeman96/NewYou/blob/3c8c05278ad3601823af2f57d53fba1bc8a5f5cc/docs/00_platform/05_ROADMAP_v1.1.5.md)
+- [PR #82, v0.1.28 SBH-50-06 admission](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/82)
+- [PR #78, unrelated open JC-229 / SBH-10-04 work](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/78)
+- Current JC-289 description and relations: **controller-verified live Linear evidence** supplied on 2026-09-30; this record does not claim a local Linear inspection.
+
+### Decisions / pins
+
+1. This correction starts from the exact accepted SUBS tip
+   `f621d2db355d3ef2c1531f73b0c698a323cc768e`, on
+   `subs-governance/sbh-50-06-newyou-conformance`. At edit time, fetched
+   `origin/hardening/subscriptions` still equalled that SHA. Current
+   `origin/main` was `a74d3f05a5f250300d0c2293f294e77785f6818f`.
+2. Controller-verified live Linear evidence records JC-289 as open, Linear
+   status `Backlog`, canonical state `READY`, shared authority
+   `AUTHORITY_ASSIGNED`, and loop eligibility `No`. PR #82 did not complete the
+   issue. Its description retains the 2026-09-26 focused NewYou evaluation and
+   requires this bounded correction before implementation. Its blockers JC-227
+   / SBH-10-02 and JC-231 / SBH-20-01 are both `Done`. JC-289 continues to block
+   JC-245 / SBH-50-02, JC-246 / SBH-50-03, JC-247 / SBH-50-04, JC-239 /
+   SBH-30-04, and JC-242 / SBH-40-02. Related authority remains JC-222,
+   JC-223, JC-244, JC-248, JC-262, JC-264, and JC-276.
+3. NewYou `main` was inspected at
+   `3c8c05278ad3601823af2f57d53fba1bc8a5f5cc`. Its current README routes to
+   `docs/00_platform/README.md`; authority manifest
+   `CURRENT_AUTHORITY_MANIFEST_v1.0.0.json` routes the current Product
+   v1.5.1, Decisions v1.5.0, Architecture v1.1.1, Domain Map v1.2.0, and
+   Roadmap v1.1.5. The reusable requirement is transactionally durable
+   authoritative intent with post-commit asynchronous consequence execution.
+   NewYou-specific Product Law is not copied into Store law.
+4. First-class durable `AccessEffect` remains accepted because it has its own
+   durability, lifecycle, replay/idempotency, ordering, supersession, and
+   reconciliation semantics:
+
+   ```text
+   Subscription / AccessEffect = desired Commerce access target and obligation
+   Store.Entitlements          = actual entitlement/grant authority
+   ```
+
+5. One AccessEffect means one complete canonical Subscription-derived desired
+   access outcome for one source version. It is not one EntitlementGrant
+   forever. The current Store target remains scalar: disposition,
+   zero-or-one applicable Subscription entitlement kind/scope, validity
+   boundary where applicable, exact Subscription commercial-contract
+   provenance, exact PlanRevision provenance, source version, and deterministic
+   fingerprint/conflict identity covering the complete target. A future
+   recurring-component model requires separate authority. This amendment
+   authorizes no generic target-set child resource, arbitrary JSON effect/event
+   envelope, arbitrary effects collection, multi-component Subscription
+   model, or additional entitlement structure.
+6. The create/reuse primitive must compose with a caller-owned PostgreSQL
+   transaction. Future authoritative Subscription access-changing truth and
+   its durable AccessEffect obligation must be capable of one atomic
+   PostgreSQL commit. If the obligation cannot be recorded, the caller must be
+   able to roll back the source mutation. AccessEffect creation cannot be
+   forced to occur only post-commit, in an isolated transaction, through an
+   async job, or by external side effect. No Entitlements mutation occurs in
+   that transaction; Entitlements convergence stays post-commit/asynchronous.
+
+   ```text
+   authoritative Subscription access-changing truth
+   +
+   durable AccessEffect obligation
+   =
+   one atomic authoritative PostgreSQL commit
+   ```
+7. The lifecycle and transition constraints remain unchanged from JC-222:
+
+   ```text
+   REQUIRED → PENDING → APPLIED
+   PENDING → FAILED_RETRYABLE → PENDING
+   PENDING → SUPERSEDED
+   ```
+
+   `APPLIED` and `SUPERSEDED` remain terminal. Stale `REQUIRED` or
+   `FAILED_RETRYABLE` obligations pass atomically through `PENDING` to
+   `SUPERSEDED` when the frozen graph requires it, with no Entitlements
+   operation between transitions. No new states or lifecycle shortcuts are
+   introduced.
+8. JC-289's implementation proof must establish all of the following:
+   - creating an AccessEffect inside a caller-owned outer PostgreSQL transaction
+     and rolling back that transaction leaves no new AccessEffect persisted;
+   - exact replay for the same Subscription, source version, and complete
+     target reuses one durable identity;
+   - materially different target evidence at the same source version fails
+     closed;
+   - unrelated aggregate writes may create legal source-version gaps between
+     AccessEffects;
+   - unrelated later aggregate writes do not stale the latest target, and
+     current determination does not require
+     `effect.source_version == subscription.aggregate_version`;
+   - older obligations cannot become current after a newer target exists;
+   - `APPLIED` and `SUPERSEDED` cannot reopen; and
+   - the deterministic target fingerprint covers disposition, scalar
+     entitlement kind/scope where applicable, validity boundary where
+     applicable, exact Subscription contract provenance, exact PlanRevision
+     provenance, and source version.
+9. JC-289 performs no Entitlements production mutation or external access
+   side effect. No Entitlements source, migration, snapshot, state, facade,
+   grant/revoke action, or cache behavior is authorized.
+10. No JC-223 dependency edge, JC-222 lifecycle law, Domain ownership,
+    Entitlements authority/contract, SBH-50-02 through SBH-50-05 authority,
+    SBH-30-04 authority, SBH-40-02 authority, or Subscription commercial
+    lifecycle semantics changes. No Entitlements `:suspended` state is added.
+11. This governance amendment assigns no implementation `task_base_sha` and
+    creates no implementation branch or code. The prospective implementation
+    branch remains `subs-task/sbh-50-06-access-effect-foundation`. Admission
+    remains gated on governance PR independent review, exact-head CI, human
+    merge, independent post-merge merge-commit/tree verification, and refresh
+    of `hardening/subscriptions` before a separate task-base assignment.
+
+### Plan
+
+1. Append a bounded v0.1.29 clarification to the Master Register and preserve
+   the v0.1.28 admission as historical evidence.
+2. Add this separate Phase 27 evidence record without rewriting the prior
+   PR #82 record.
+3. Verify the exact-base diff contains only these two authorized Markdown
+   files, run `git diff --check` and the repository governance/documentation
+   gates, and verify the JC-222 lifecycle and JC-223 graph are unchanged.
+4. Open a governance PR to `hardening/subscriptions`. Independent review,
+   exact-head CI, human merge, and independent post-merge verification remain
+   gates before implementation admission.
+
+### Performance & Scaling Review
+
+- **Hot:** Future create/replay and current-target lookup occur on
+  Subscription access paths. This governance amendment adds no runtime path.
+- **Warm/cold:** No new worker, query, cache, or external call is added here.
+  Current-target lookup remains bounded and must not scan effect history.
+- **Database queries and N+1:** This amendment executes no application query.
+  Implementation tests must record create, replay, and current-target query
+  counts and check for N+1 reads. PostgreSQL remains durable truth.
+- **Indexes:** Existing task-specific authority covers indexes for
+  Subscription and source ordering; this correction adds no index or schema
+  authority.
+- **Caching:** No ETS/Redis cache, TTL, invalidation, or stampede behavior is
+  introduced or authorized.
+- **Oban and idempotency:** This correction adds no job or worker path. Durable
+  AccessEffect identity and transactional locking/compare-and-swap remain
+  business-truth concerns; queue machinery is not business truth.
+- **Telemetry/logging:** No production telemetry or logging change is made.
+  Implementation evidence should report replay reuse, conflict rejection,
+  stale suppression, and bounded query counts without exposing target payloads.
+
+### Verification record
+
+- The fetched `origin/hardening/subscriptions` matched the exact amendment base
+  before editing. Only the two authorized governance/evidence documents are in
+  scope.
+- The v0.1.28 PR #82 record above remains historical; it is not rewritten to
+  attribute the later NewYou correction to that admission.
+- The task remains governance-only. No implementation `task_base_sha` is
+  assigned, and implementation admission remains subject to the gates in
+  section 49 of the Master Register.
