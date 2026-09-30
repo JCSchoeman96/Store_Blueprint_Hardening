@@ -1280,3 +1280,125 @@ migrations / snapshots        = exactly one JC-289 migration and one matching sn
   AccessEffect ordering remains authoritative; Oban can trigger recovery but
   cannot establish target precedence.
 - No telemetry or logging changes are made.
+
+## v0.1.32 JC-300 / SBH-50-07 source-coverage and executor-cutover freeze
+
+### Goal
+
+Validate the post-JC-223 AccessEffect source-coverage finding and freeze only
+the coverage matrix and production-eligibility gate. JC-300 receives no source
+transition, business-policy, executor, Entitlements, or implementation
+authority from this governance record.
+
+### Links consulted
+
+- [Repository instructions](../../AGENTS.md).
+- Current [active-workstream registry](../agent_rules/active_workstreams.md)
+  and the v0.1.31 source-coverage evidence in this Phase 27 note.
+- [Subscription Hardening Master Register](../hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md),
+  v0.1.31 before this amendment and section 52 after it.
+- Live tracker evidence supplied on 2026-09-30 for
+  [JC-300](https://linear.app/jc-dev/issue/JC-300/access-effect-source-order-coverage-and-executor-production-cutover),
+  [JC-223](https://linear.app/jc-dev/issue/JC-223/sbh-00-05-freeze-first-executable-dependency-graph-and-hardening),
+  [JC-230](https://linear.app/jc-dev/issue/JC-230/sbh-10-05-reconciliation-applies-charged-contract-only),
+  [JC-239](https://linear.app/jc-dev/issue/JC-239/sbh-30-04-enforce-failed-payment-suspension-boundary),
+  [JC-242](https://linear.app/jc-dev/issue/JC-242/sbh-40-02-durable-period-boundary-terminalization),
+  [JC-245](https://linear.app/jc-dev/issue/JC-245/sbh-50-02-durable-active-entitlement-issuance-recovery),
+  [JC-246](https://linear.app/jc-dev/issue/JC-246/sbh-50-03-durable-terminal-entitlement-revocation-recovery),
+  and
+  [JC-247](https://linear.app/jc-dev/issue/JC-247/sbh-50-04-enforce-access-on-past-due-and-access-on-cancel).
+- Runtime source: [AccessEffect](../../lib/store/subscriptions/access_effect.ex),
+  [Subscriptions facade](../../lib/store/subscriptions/facade.ex),
+  [Entitlements facade](../../lib/store/entitlements/facade.ex), and
+  [Entitlements cache](../../lib/store/entitlements/cache.ex).
+- The current repository-wide GitHub and workspace-wide Linear searches,
+  including archived issues, returned zero exact `SBH-50-07` matches.
+
+### Decisions and pins
+
+1. A successful local narrow fetch refreshed `origin` and confirmed
+   `origin/hardening/subscriptions` and `FETCH_HEAD` both equal
+   `e2e01a7572488e9012b88e80e8ee36fd1e1a6e8c`. The dedicated governance
+   worktree is clean before editing and based on that exact SHA.
+2. The source audit confirmed both direct grant and direct revoke bypasses:
+   initial paid activation and paid renewal grant directly; immediate
+   cancellation and grace expiry revoke directly. No production source caller
+   currently establishes AccessEffect. PAST_DUE/grace and scheduled
+   cancellation/rescission targets are missing; suspension and period-boundary
+   terminalization capabilities are absent from current runtime. The paid
+   renewal path does not consume JC-230's exact charged-contract result.
+3. Current Entitlements issue/revoke APIs do not meet the shared stale-safe
+   executor boundary. Exact source convergence, caller-owned transaction
+   composition, complete results, write-failure propagation, and after-commit
+   cache/PubSub remain a separate, unassigned authority gate.
+4. The frozen invariant prohibits production eligibility until every
+   access-changing source transition establishes its correct complete target
+   in the source transaction or proves the existing current target exact.
+   The shared Postgres fence must serialize source authority, re-read the
+   current AccessEffect, prove the exact effect remains current, converge
+   Entitlements under the same fence, and record APPLIED only for that target.
+5. Master Register section 52 contains the 16-row mandatory matrix. It records
+   lifecycle owner, transaction/evidence, disposition/scope/boundary,
+   target-change rule and source-version provenance, derivation/execution
+   ownership, stale-work proof, and the legacy direct mutation to remove or
+   fence for initial paid activation, non-entitled activation, kind/scope
+   changes, other access-changing ContractChanges, paid renewal, PAST_DUE
+   entry/continuation, grace expiry, suspension, immediate/scheduled
+   cancellation, rescission, period-boundary terminalization, governed expiry,
+   recovery, and scope A to B replacement.
+6. The exact boundaries remain: JC-247 interprets purchased
+   `access_on_past_due` / `access_on_cancel`; JC-245 executes effective targets;
+   JC-246 executes non-effective targets; JC-230 supplies paid-renewal
+   charged-contract truth; JC-239 owns failed-payment suspension; JC-242 owns
+   period-boundary terminalization. JC-300 owns coverage and cutover proof
+   only.
+7. JC-300 is recorded as a new finding after the JC-223 freeze and advances
+   `CANDIDATE → VALIDATED → CONTRACT_FROZEN`. The assigned identifier is
+   `SBH-50-07 — Access-Source Coverage and Executor Production Cutover`.
+   JC-223's historical edges remain unchanged; JC-300 is related only and no
+   formal graph edge is added. Existing JC-245/246/247 relations are unchanged.
+8. JC-300 remains Backlog in Linear pending merged and independently verified
+   governance evidence. It has no implementation authority, READY state, or
+   `task_base_sha`. JC-245, JC-246, and JC-247 remain non-executable; the
+   Entitlements shared authority is unassigned; canonical READY
+   implementation/proof rows remain zero.
+9. Source capability blockers use `BLOCKED_DEPENDENCY`; the separate
+   Entitlements seam is recorded as `BLOCKED_SHARED_AUTHORITY`. These are
+   separate gates. The frozen JC-223 dependency graph, post-JC-223 capability
+   gates, and shared-authority requirement are not conflated.
+10. No production code, tests, migrations, Ash snapshots, dependencies,
+    configuration, workers, Entitlements code, active-workstream registry,
+    or Linear state is changed. The docs-sync gate requires the existing
+    Phase 27/27A notes and does not require another file to register the ID.
+
+### Plan
+
+1. Append the v0.1.32 provenance, source findings, invariant, complete coverage
+   matrix, ownership and capability gates, and cutover proof to Master Register
+   section 52.
+2. Record the same decisions, evidence links, scope, and performance review in
+   this Phase 27 note.
+3. Inspect the exact-base diff. Confirm only the Master Register and this note
+   changed; confirm v0.1.32, globally unused identifier before assignment,
+   post-JC-223 provenance, matrix dimensions, separated ownership, unchanged
+   JC-223 edges, zero READY rows, no task base, and no implementation or
+   Entitlements authority.
+4. Run `git diff --check`, formatting and documentation/governance gates, and
+   full `mix check` where supported. Push the governance branch and open a PR
+   against `hardening/subscriptions`; do not merge. Independent review and
+   exact-head CI remain pending. Do not update Linear before post-merge
+   verification.
+
+### Performance & Scaling Review
+
+- Hot paths are Subscription source transitions and future active/non-effective
+  AccessEffect execution. This governance edit adds no runtime path.
+- It performs no application database queries. Future work must record source,
+  current-target, and Entitlements query counts and N+1 risk.
+- Existing Subscription/source-version indexes must bound current-target
+  reads. This review authorizes no index, migration, or full history scan.
+- No cache or TTL changes are made. Cache invalidation and PubSub follow commit
+  and cannot establish target order.
+- No Oban worker or idempotency policy changes are made. Missing enqueue must
+  be recoverable from durable AccessEffect state; queue order is not authority.
+- No telemetry or logging changes are made.
