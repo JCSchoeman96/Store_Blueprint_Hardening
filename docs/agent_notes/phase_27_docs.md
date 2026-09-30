@@ -967,3 +967,126 @@ historical admission or alter JC-222, JC-223, or earlier SUBS authority.
 - The task remains governance-only. No implementation `task_base_sha` is
   assigned, and implementation admission remains subject to the gates in
   section 49 of the Master Register.
+
+## JC-289 / SBH-50-06 implementation evidence
+
+### Authority and scope
+
+- Implementation branch: `subs-task/sbh-50-06-access-effect-foundation`.
+- Exact implementation base: `a67958f36cf8e243b260d72d3cab3bd8e48d5b28`,
+  the verified PR #93 merge commit on `hardening/subscriptions`.
+- Authority: JC-289 / SBH-50-06 was admitted against Master Register v0.1.29
+  after independent tree verification. This section records the separate
+  implementation proof and does not amend the historical governance records
+  above.
+- The user explicitly authorized `lib/store/support/governance/surface_registry.ex`
+  as a bounded scope expansion solely to register the seven new
+  `Store.Subscriptions.Facade` system exports. The existing consumer set was
+  preserved. No other registry entry, allowed consumer, naming rule, or
+  governance behavior changed.
+- Runtime scope is limited to the AccessEffect resource and task-local value
+  types/input, Subscription domain registration, seven narrow façade
+  operations, focused tests, one generated migration and its matching
+  snapshot, this evidence, and the specifically authorized registry entry.
+  No Entitlements, worker, provider, queue, cache, Subscription lifecycle, or
+  dependency code was changed.
+
+### Implementation decisions
+
+- `Store.Subscriptions.AccessEffect` persists one complete desired access
+  outcome per Subscription source version, including disposition, optional
+  entitlement kind/scope, optional validity boundary, immutable source order
+  line, ContractChange and PlanRevision provenance, source version, lifecycle
+  status, timestamps, and deterministic target fingerprint.
+- The identity is protected by a PostgreSQL unique constraint on
+  Subscription + source version. Current lookup uses the bounded descending
+  Subscription/source-version index.
+- Target fingerprint v1 is a SHA-256 digest over deterministic term encoding
+  of a versioned `:store_subscriptions_access_effect_target` descriptor and
+  every canonical field: Subscription ID, source version, disposition,
+  entitlement kind, scope, validity boundary, source order line item ID,
+  ContractChange ID, and PlanRevision ID. Nil values are encoded explicitly.
+- Establishment takes the Subscription row lock, checks exact-version replay
+  and fingerprint conflict under that lock, then reads the newest effect with
+  descending source version and limit one. Source version is not compared to
+  `Subscription.aggregate_version` for freshness. A stale lower version is
+  rejected; a newer version is inserted normally and older nonterminal state
+  is superseded in the same PostgreSQL transaction. Database uniqueness is
+  the final identity backstop; Ash upsert is not used.
+- The establishment primitive joins an outer `Store.Repo.transaction/1` and
+  returns its result before outer commit. The rollback test proves a caller
+  can roll back both source work and a newly created AccessEffect.
+- Only frozen lifecycle edges are exposed. Required and retryable-failed
+  supersession pass through Pending; Pending supersedes directly; Applied and
+  Superseded remain terminal. No Entitlements operation or post-commit
+  notification is produced.
+
+### Verification record
+
+- Focused AccessEffect tests: 16 tests, 0 failures, covering identity replay,
+  same-version conflict, both race proofs, competing versions in both lock
+  arrival orders, source gaps, unrelated aggregate writes, stale writes,
+  lifecycle edges/terminal states, field immutability, fingerprint coverage,
+  outer rollback, bounded query counts/index use, and absence of access side
+  effects. Race coordination observes PostgreSQL lock blocking; it does not
+  use sleep-based interleavings.
+- Existing neighboring Subscription replay, optimistic-version,
+  ContractChange, PlanRevision, and façade suites: 68 tests, 0 failures.
+- Full `mix check` on an isolated fresh test database: **passed**, including
+  734 tests and 0 failures, surface naming, Credo, dependency audit, security
+  scan, and documentation generation. `check.surface_naming` passed after the
+  authorized seven-export registry addition.
+- Migration and snapshot: exactly one generated migration,
+  `priv/repo/migrations/20260930091321_sbh_50_06_access_effect_foundation.exs`,
+  and exactly one matching snapshot,
+  `priv/resource_snapshots/repo/access_effects/20260930091322.json`. A fresh
+  database applied the full migration history in order. Migration generation
+  `--check` reports clean alignment.
+- Query-count evidence from the focused SQL trace: first establishment uses
+  four data queries (Subscription lock, exact identity lookup, bounded newest
+  target lookup, insert); exact replay uses two (Subscription lock and exact
+  identity lookup); current-target lookup uses one bounded query. The
+  `EXPLAIN` proof selects the descending index and limit. The same-version
+  race leaves one row and both writers return the same identity; different
+  source versions preserve the newest target.
+- Caller-owned rollback: passed; the effect is absent after outer rollback.
+- `git diff --check`: passed. Formatting, strict Credo, and
+  `mix ash_postgres.generate_migrations --check`: passed.
+
+### Performance & Scaling Review
+
+- **Hot:** Establish/replay and current-target lookup are Subscription
+  orchestration calls. The parent Subscription row lock serializes a single
+  Subscription's target establishment and allows unrelated Subscriptions to
+  proceed independently.
+- **Warm/cold:** Historical evidence is cold. Current target reads are
+  one-row bounded by `ORDER BY source_version DESC LIMIT 1`; no history scan
+  or N+1 relationship load is used.
+- **Database queries and indexes:** Establishment is four data queries,
+  replay is two, and current lookup is one. The unique identity index backs
+  replay arbitration; the descending Subscription/source-version index backs
+  current lookup. The concurrency tests verify PostgreSQL blocking and row
+  counts rather than application-only read-before-write behavior.
+- **Caching:** No cache, ETS, Redis, TTL, invalidation, or stampede mechanism
+  was introduced. PostgreSQL is the durable source of truth.
+- **Oban and idempotency:** No worker/job path is added. Business replay
+  identity is the PostgreSQL Subscription/source-version constraint plus the
+  complete target fingerprint, not queue uniqueness.
+- **Telemetry/logging:** No production telemetry or logging changes are
+  introduced. The façade does not log target evidence.
+
+### Warnings and limits
+
+- Repository tests emit existing unused optional-argument warnings in
+  `renewal_attempt_monotonicity_test.exs` and
+  `stored_payment_method_revocation_test.exs`; strict Credo reports no issues.
+- Sobelow reports existing low-confidence findings outside the AccessEffect
+  implementation. Documentation generation also reports existing hidden
+  nested-type references in the Orders inventory admission module.
+- The repository migration tests explicitly rerun older migration modules
+  after the current newest version and emit Ecto migration-order warnings.
+  The clean fresh-database migration itself ran in timestamp order and
+  completed successfully.
+- This evidence records implementation validation only. The task PR remains
+  subject to exact-head CI and independent controller review; no merge or
+  final acceptance is claimed here.
