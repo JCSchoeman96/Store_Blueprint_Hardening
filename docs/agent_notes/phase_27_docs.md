@@ -1167,3 +1167,116 @@ migrations / snapshots        = exactly one JC-289 migration and one matching sn
   closure PR.
 - Independent controller review of the governance PR remains pending; this note
   does not claim final PASS for the closure amendment itself.
+
+## v0.1.31 SBH-50 access-convergence rollout-order review
+
+### Links consulted
+
+- [Repository instructions](../../AGENTS.md).
+- Current [active-workstream registry](../agent_rules/active_workstreams.md)
+  read from origin/main at a74d3f05a5f250300d0c2293f294e77785f6818f.
+- [Subscription Hardening Master Register](../hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md)
+  v0.1.30 at the exact review base, including the JC-223 matrix, SBH-50 law,
+  and v0.1.30 closure.
+- [Subscription domain map](../hardening/01_domain_map.md).
+- [Subscription lifecycle registry](../hardening/02_lifecycle_registry.md).
+- [JC-223 live Linear contract](https://linear.app/jc-dev/issue/JC-223/sbh-00-05-freeze-first-executable-dependency-graph-and-hardening).
+- [JC-245 live Linear contract](https://linear.app/jc-dev/issue/JC-245/sbh-50-02-durable-active-entitlement-issuance-recovery).
+- [JC-246 live Linear contract](https://linear.app/jc-dev/issue/JC-246/sbh-50-03-durable-terminal-entitlement-revocation-recovery).
+- [JC-247 live Linear contract](https://linear.app/jc-dev/issue/JC-247/sbh-50-04-enforce-access-on-past-due-and-access-on-cancel).
+- [JC-230 live Linear contract](https://linear.app/jc-dev/issue/JC-230/sbh-10-05-reconciliation-applies-charged-contract-only).
+- [JC-229 live Linear contract](https://linear.app/jc-dev/issue/JC-229/sbh-10-04-renewal-initiation-uses-bound-contract).
+- Runtime sources: [AccessEffect](../../lib/store/subscriptions/access_effect.ex),
+  [Subscriptions facade](../../lib/store/subscriptions/facade.ex),
+  [Entitlements facade](../../lib/store/entitlements/facade.ex), and
+  [Entitlements cache](../../lib/store/entitlements/cache.ex).
+
+### Decisions and pins
+
+1. The review branch starts from
+   16df6f77eea01c148acc3fa0856a7bc81aa74025, the fetched
+   origin/hardening/subscriptions tip. The registry's dynamic status entry
+   still names f621d2db355d3ef2c1531f73b0c698a323cc768e, but its SUBS path,
+   branch, upstream, and ownership match the live workstream. The registry is
+   not changed.
+2. The current AccessEffect foundation has no production source-path caller
+   and no executor. Immediate cancellation and grace expiry commit Subscription
+   truth, then directly mutate Entitlements. PAST_DUE and scheduled cancellation
+   do not establish effects from their access policies. An older active effect
+   can therefore remain the latest durable target after direct Entitlements
+   mutation.
+3. The governing invariant is that no AccessEffect executor becomes
+   production-eligible until every access-changing source transition that can
+   supersede a target establishes a newer target under the same source-order
+   authority. The complete scenario matrix, current state, source transaction,
+   target owner, and executor owner are recorded in Master Register section 51.
+4. The pressure test covers pending active effects followed by immediate
+   cancellation, grace expiry, PAST_DUE policy changes, and scheduled
+   cancellation policy changes; it also covers old active versus newer
+   non-effective execution, old revoke versus active recovery, and scope A
+   versus scope B. Direct Entitlements mutation, queue state, worker state,
+   grant state, Cachex, PubSub, and Subscription aggregate equality are not
+   ordering evidence. Aggregate version remains provenance and may have gaps.
+5. The three frozen issue contracts cannot safely sequence production
+   eligibility on their own. JC-245 and JC-246 execute active and
+   non-effective targets but do not own all target-producing transitions.
+   JC-247 derives policy targets but does not execute them. No current contract
+   defines the state that keeps executors ineligible until source coverage and
+   the shared fence are proven. The decision is
+   GOVERNED_WORK_ITEM_SPLIT_REQUIRED. No JC or SBH identifier is assigned.
+6. The minimum separately governable capability is a complete access-source
+   coverage matrix plus an executor cutover gate. It covers initial paid
+   activation; contract and entitlement-scope changes; paid renewal from the
+   exact JC-230 result; PAST_DUE, grace, and suspension; immediate cancellation;
+   scheduled cancellation, rescission, and period-boundary expiry. Each path
+   must atomically establish a changed target with source truth or prove the
+   current target remains exact. It must prevent un-fenced legacy writes and
+   require both dispositions to share the same execution fence.
+7. Ownership remains exact. JC-247 selects and records purchased-policy
+   targets. JC-245 executes active targets and consumes the exact paid contract
+   from JC-230. JC-246 executes non-effective targets and does not infer them
+   from status. JC-245 and JC-246 reuse one executor fence. No policy moves to
+   JC-245 or JC-246, and JC-247 gains no execution behavior.
+8. JC-230 remains Backlog and is blocked by JC-228 and JC-229. JC-229 remains
+   unresolved. No charged-contract interpretation is imported into JC-245.
+   The bounded Entitlements shared authority remains unassigned. JC-245,
+   JC-246, and JC-247 remain Backlog / non-executable. Canonical READY
+   implementation/proof rows remain zero. No implementation task_base_sha or
+   production implementation branch is assigned.
+9. JC-222 lifecycle law remains unchanged. JC-223 remains
+   CONTRACT_FROZEN / CANONICAL with its existing edges. This source-coverage
+   and production-eligibility gate is not a JC-223 dependency edge, so no
+   graph amendment or supersession is made. PR #78 remains untouched.
+
+### Plan
+
+1. Append the v0.1.31 correction after the v0.1.30 historical section in the
+   Master Register.
+2. Record this review, its source links, ownership boundaries, plan, and
+   performance review in this Phase 27 note.
+3. Inspect the exact-base diff, verify only the Master Register and this note
+   changed, check that historical JC-222 law and JC-223 edges are unchanged,
+   confirm zero READY implementation rows and no task base, and run
+   git diff --check plus the repository governance and documentation gates.
+4. Push the governance branch and open a PR against hardening/subscriptions.
+   Do not merge. PR exact-head CI and independent review remain acceptance
+   gates; this note does not claim implementation admission or final PASS.
+
+### Performance & Scaling Review
+
+- Hot paths are Subscription source commits and future active/non-effective
+  AccessEffect execution. This governance review adds no runtime path.
+- Warm behavior includes the per-user Entitlements Cachex entry and PubSub
+  invalidation. Neither cache state nor message delivery may order targets.
+  Future invalidation must follow the Entitlements transaction commit.
+- Cold work includes later repair and reconciliation. It must remain bounded
+  and indexed; no full history scan is added by this review.
+- The change runs no application database queries. Future implementation
+  must measure source-write, current-target, and Entitlements query counts and
+  check N+1 risk.
+- The existing Subscription/source-version index bounds current-target reads.
+  This review adds no index or migration authority.
+- No Oban worker, uniqueness rule, or idempotency key changes here. Durable
+  AccessEffect ordering remains authoritative; Oban can trigger recovery but
+  cannot establish target precedence.
+- No telemetry or logging changes are made.

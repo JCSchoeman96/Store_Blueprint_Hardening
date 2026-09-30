@@ -1,7 +1,7 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.30
-**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, v0.1.29 JC-289 NewYou-conformance contract clarification, and v0.1.30 JC-289 / SBH-50-06 post-implementation closure
+**Version:** v0.1.31
+**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, v0.1.29 JC-289 NewYou-conformance contract clarification, v0.1.30 JC-289 / SBH-50-06 post-implementation closure, and v0.1.31 SBH-50 access-convergence rollout-order correction
 **Verified:** 2026-09-30
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 records the post-implementation closure and current serial verdict. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the current v0.1.31 rollout-order correction. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
@@ -5923,3 +5923,232 @@ This closure assigns no implementation `task_base_sha`, creates no
 implementation branch, and does not select the next SUBS implementation issue.
 Independent controller review of this governance PR remains required before
 final acceptance.
+
+# 51. Current v0.1.31 SBH-50 access-convergence rollout-order correction
+
+This governance-only amendment starts from exact SUBS tip
+16df6f77eea01c148acc3fa0856a7bc81aa74025. It corrects the rollout order for
+SBH-50 access convergence. It changes no runtime code, tests, migrations, Ash
+snapshots, dependencies, configuration, JC-222 lifecycle law, or JC-223
+dependency edge. Sections 48 through 50 remain historical evidence.
+
+### Authority observed
+
+- Governance amendment base: 16df6f77eea01c148acc3fa0856a7bc81aa74025.
+- origin/hardening/subscriptions: 16df6f77eea01c148acc3fa0856a7bc81aa74025.
+- origin/main: a74d3f05a5f250300d0c2293f294e77785f6818f.
+- Master Register before amendment: v0.1.30.
+- Active-workstream registry source: origin/main.
+
+The active-workstream registry still records
+f621d2db355d3ef2c1531f73b0c698a323cc768e as its dynamic SUBS tip. That status
+entry is stale. Its persistent SUBS path, branch, upstream, and ownership match
+the live worktree and branch checked for this amendment. The registry file is
+unchanged.
+
+Live Linear state checked for this amendment:
+
+- JC-223 is Done and its dependency graph is frozen.
+- JC-245 / SBH-50-02 is Backlog. Its current contract requires durable active
+  target retry and requires a newer non-effective or different active target
+  to defeat a stale active worker at the Entitlements write boundary.
+- JC-246 / SBH-50-03 is Backlog. It executes current non-effective targets,
+  reuses the same source-target fence, and does not infer access policy from
+  Subscription status.
+- JC-247 / SBH-50-04 is Backlog. It derives and creates policy-driven targets
+  from immutable purchased policy and leaves active and non-effective
+  execution to JC-245 and JC-246.
+- JC-230 / SBH-10-05 is Backlog and blocked by JC-228 and JC-229. JC-229
+  remains unresolved. JC-245 must consume the exact charged-contract target
+  supplied by JC-230. JC-245 does not own charged-contract interpretation.
+
+### Runtime contradiction
+
+At this base, Store.Subscriptions.Facade exposes AccessEffect establishment
+and transition functions, but production source paths do not call them and no
+AccessEffect executor exists. Immediate cancellation commits the Subscription
+transition, then calls
+EntitlementsFacade.revoke_subscription_entitlements_for_system/2. Grace
+expiry terminalizes the Subscription, then makes the same direct revoke call.
+The direct revoke result is ignored.
+
+The current PAST_DUE path does not read access_on_past_due or establish an
+AccessEffect. Cancellation policy fields are stored in immutable commercial
+evidence but are not used to derive access targets. Scheduled cancellation
+stores its flag without establishing an AccessEffect, and the current source
+does not have the period-boundary terminalization path described by JC-242.
+
+This permits an active AccessEffect to remain the newest durable target while
+direct cancellation or expiry changes Entitlements outside that ordering
+authority. A later JC-245 recovery could then execute the still-current active
+effect and restore access that the newer Subscription truth should remove.
+A direct grant mutation, queue state, worker state, EntitlementGrant state,
+Cachex state, PubSub delivery, or aggregate-version equality cannot replace the
+current AccessEffect target.
+
+The Entitlements issue and revoke helpers also remain unsuitable as an
+unmodified executor boundary. They mutate grants through separate Ash writes
+and invalidate Cachex and broadcast PubSub immediately. The invalidation helper
+does not wait for an enclosing PostgreSQL transaction to commit. The revoke
+helper converts individual write errors to false and can return success for a
+partial or empty result. JC-245 still requires a bounded Entitlements
+shared-authority review for transaction-composable mutation, complete
+convergence results, and true post-commit cache/PubSub invalidation. This
+amendment assigns no such authority.
+
+### Safety invariant
+
+No durable AccessEffect executor may be production-eligible while an
+access-changing Subscription source transition can make its target obsolete
+without establishing a newer durable AccessEffect under the same source-order
+authority.
+
+All access-changing source truth that can supersede an existing AccessEffect
+must participate in AccessEffect ordering before stale-safe asynchronous
+execution is enabled. The source version orders durable AccessEffect targets.
+The aggregate version remains provenance and may have valid gaps. Do not use
+aggregate-version equality as a current-target fence.
+
+This correction authorizes none of these substitutes:
+
+- reconstructing access targets from Subscription status;
+- requiring aggregate-version equality to identify the current target;
+- adding generic Entitlements event or outbox infrastructure;
+- using Redis, ETS, or GenServer ordering;
+- duplicating access lifecycle on Subscription;
+- adding Entitlements PAST_DUE, SUSPENDED, or CANCELED mirror states;
+- moving policy selection into JC-245 or JC-246; or
+- moving execution into JC-247.
+
+### Pressure-test results
+
+| Sequence | Authoritative desired target | Source transaction and current ordering evidence | Issue ownership |
+| --- | --- | --- | --- |
+| Active effect pending, then immediate cancellation | REMOVE_IMMEDIATELY means non-effective at cancellation time. KEEP_UNTIL_PERIOD_END means effective only through the already-funded boundary. | Current code creates no newer AccessEffect before its direct revoke. The cancellation transaction must establish the changed target atomically; no un-fenced revoke may follow. | JC-247 derives the purchased-policy target. JC-245 executes an effective target. JC-246 executes a non-effective target. |
+| Active effect pending, then grace expiry | KEEP_DURING_GRACE stays effective only through the exact grace boundary, then becomes non-effective. REMOVE_IMMEDIATELY must remain non-effective from the first PAST_DUE transition. | Current expiry writes Subscription truth and then directly revokes without an effect. The PAST_DUE or expiry transaction must establish the target when it changes. An already-current identical non-effective target remains authoritative. | JC-247 derives the policy target. The lifecycle owner commits the boundary. JC-246 executes non-effective targets; JC-245 executes effective grace targets. |
+| Active effect pending, then PAST_DUE policy changes access | KEEP_DURING_GRACE creates an explicit effective target through the episode boundary. REMOVE_IMMEDIATELY creates a non-effective target. | Current transition does not read the policy or create an effect. The PAST_DUE source transaction must commit its new target atomically with the status transition. | The Subscription lifecycle source owns PAST_DUE. JC-239 owns the later suspension boundary. JC-247 derives the purchased-policy target. JC-245 or JC-246 executes by disposition. |
+| Active effect pending, then scheduled-cancellation policy changes access | KEEP_UNTIL_PERIOD_END preserves access only through the funded boundary. REMOVE_IMMEDIATELY makes the source non-effective when cancellation is scheduled. | Current scheduling only changes the cancellation flag and creates no target. For REMOVE_IMMEDIATELY, scheduling must commit a newer AccessEffect in the same source transaction. For KEEP_UNTIL_PERIOD_END, the current target must remain exact through the funded boundary, where terminalization must establish a newer non-effective target. | JC-241 supplies scheduled-cancellation law; JC-242 owns boundary terminalization. JC-247 derives the target. JC-245 or JC-246 executes by disposition. |
+| Old active worker races a newer non-effective transition | The newer non-effective target wins. | No newer effect exists today for direct cancellation or expiry. Before execution is eligible, source commit and current-target validation must share the same source-order fence through the Entitlements write. | JC-247 or the owning lifecycle path establishes the target. JC-245 and JC-246 must share one execution fence; JC-246 applies the non-effective target. |
+| Old revoke worker races newer active recovery | An authorized recovery target from the exact paid contract wins. | The recovery transaction must establish a newer active AccessEffect before an old revoke can mutate Entitlements. Current paid-renewal interpretation remains unresolved in JC-230 behind JC-229. | JC-230 owns the charged-contract result. JC-245 records and executes the active target. JC-246 uses the same fence for revocation. |
+| Scope A active effect races newer scope B active effect | Scope B is current when its authoritative source transition commits the newer target. | Current AccessEffect identity is Subscription plus source version. The source transaction must establish the complete newer scope target; the older effect must not become current or write after the fence observes scope B. | The owning commercial source derives scope B. JC-245 executes it from immutable target evidence. Do not derive paid-renewal scope inside JC-245 or add NewYou target-set semantics. |
+
+In every row, the current runtime lacks the required source-to-AccessEffect
+write. The existing AccessEffect foundation accepts caller-owned transactions,
+but no production transition uses it. Any future executor must re-read the
+current AccessEffect and mutate Entitlements under the same deterministic
+source-order serialization boundary. A check performed before the Entitlements
+write is insufficient.
+
+### Decision
+
+GOVERNED_WORK_ITEM_SPLIT_REQUIRED
+
+The existing three issue contracts do not express a safe production rollout
+without a separately governable source-order coverage and executor cutover
+capability:
+
+1. JC-245 and JC-246 own active and non-effective execution. Neither owns all
+   source transitions that can replace its target. JC-245 cannot select
+   cancellation or dunning policy. JC-246 cannot infer non-effective targets
+   from terminal status.
+2. JC-247 owns purchased-policy target derivation and atomic target creation,
+   but it does not execute targets. If JC-247 lands before both executors, its
+   targets remain pending. If either executor becomes production-eligible
+   before every source path writes its target, an unmodified direct Entitlements
+   mutation can leave an older AccessEffect current.
+3. The current contracts do not define the production-ineligible state or the
+   cutover proof that blocks execution until all target-producing source paths
+   are covered and un-fenced direct mutations are removed or use the same
+   source-order fence.
+
+The minimum separately governable capability must own an access-source
+coverage matrix and the production-eligibility cutover. It must cover initial
+paid activation, contract and entitlement-scope changes, renewal from the exact
+JC-230 charged contract, PAST_DUE and grace transitions, suspension, immediate
+cancellation, scheduled cancellation and rescission, and period-boundary
+expiry. For each transition it must prove one of two results: the source
+transaction atomically writes the new complete AccessEffect target under the
+Subscription source-order authority, or the existing current target remains
+exactly correct. It must also prove that no legacy Entitlements mutation can
+bypass that ordering boundary and that both execution dispositions use the
+same stale-safe fence.
+
+This capability does not select policy in JC-245 or JC-246, add execution
+semantics to JC-247, create a third executor, or assign Entitlements authority.
+The bounded Entitlements authority decision remains a separate future
+governance action. No new JC or SBH identifier is assigned here.
+
+### Rollout and frozen graph
+
+The safe future rollout has a separately governed production-eligibility
+cutover:
+
+1. The unassigned coverage capability defines every source path that can
+   replace an access target and proves the target each path must establish.
+2. The owning issue contracts wire those source targets. JC-247 handles
+   purchased access policy. JC-245 records active targets from the exact source
+   contract and scope. JC-246 consumes non-effective targets. JC-230 remains
+   the owner of paid-renewal contract interpretation.
+3. A separate bounded Entitlements authority decision resolves the common
+   transaction fence, complete mutation result, and after-commit
+   Cachex/PubSub invalidation.
+4. The cutover proof verifies every source path and both dispositions together.
+   Production eligibility starts only after the un-fenced direct mutations
+   have been removed or routed through the same source-order fence.
+
+Keep the issue boundaries:
+
+- JC-247 derives purchased-policy targets and establishes them atomically with
+  the owning Subscription source transition. It does not execute Entitlements
+  writes.
+- JC-245 owns durable active-target recovery and execution. Paid-renewal target
+  evidence comes from JC-230; JC-245 does not reinterpret the charged contract.
+- JC-246 owns durable non-effective execution and recovery. It consumes the
+  exact target and does not choose policy from status.
+- Both executors reuse the same transaction-composable source-target fence.
+  The required Entitlements authority is not assigned by this amendment.
+- No executor is production-eligible until the separately governed coverage
+  and cutover capability proves that every source path is ordered and every
+  Entitlements mutation is fenced.
+
+JC-223 remains CONTRACT_FROZEN / CANONICAL. No JC-223 amendment or
+supersession is required or made. The existing JC-223 edges remain unchanged:
+JC-245, JC-246, and JC-247 depend directly on SBH-50-06; JC-247 also retains
+its existing lifecycle capability requirements. This cutover is a distinct
+production-eligibility authority gate, not a new dependency edge. It does not
+use queue order or issue order as a substitute for source ordering.
+
+### Current serial verdict
+
+- SUBS lifecycle = READY.
+- SUBS execution policy = SERIAL / EXPLICIT HARDENING.
+- JC-245 / SBH-50-02 = Backlog / BLOCKED_DEPENDENCY / No.
+- JC-246 / SBH-50-03 = Backlog / BLOCKED_DEPENDENCY / No.
+- JC-247 / SBH-50-04 = Backlog / BLOCKED_DEPENDENCY / No.
+- canonical READY implementation/proof rows = 0.
+- implementation task_base_sha = none.
+- Entitlements shared modification authority = not assigned.
+- production implementation branch = none.
+- PR #78 = untouched.
+
+This amendment assigns no task base, creates no implementation branch, and
+does not change JC-222 lifecycle law or the prior v0.1.30 closure evidence.
+Only this Master Register and its Phase 27 evidence note are in scope.
+
+### Performance & Scaling Review
+
+- Hot paths are Subscription source transitions and future AccessEffect
+  execution. This governance amendment adds no runtime query or worker.
+- The amendment performs zero application database queries. Future
+  implementation must record source-write, current-target, and Entitlements
+  query counts and check N+1 risk.
+- The existing Subscription/source-version index bounds current-target lookup.
+  No index or migration is authorized here. Execution must not scan effect
+  history.
+- No cache or TTL behavior changes here. Future invalidation must happen after
+  the Entitlements transaction commits. Cachex and PubSub state cannot order
+  access targets.
+- No Oban worker or uniqueness policy changes here. Oban may trigger
+  execution, but the durable AccessEffect and source-order fence decide
+  current access.
+- No telemetry or logging changes are made.
