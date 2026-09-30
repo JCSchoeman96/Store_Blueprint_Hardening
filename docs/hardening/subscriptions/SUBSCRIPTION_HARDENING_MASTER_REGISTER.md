@@ -1,7 +1,7 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.29
-**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, and v0.1.29 JC-289 NewYou-conformance contract clarification
+**Version:** v0.1.30
+**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, v0.1.29 JC-289 NewYou-conformance contract clarification, and v0.1.30 JC-289 / SBH-50-06 post-implementation closure
 **Verified:** 2026-09-30
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, and the v0.1.29 bounded JC-289 NewYou-conformance contract clarification. Section 48 preserves the v0.1.28 admission record; section 49 records only the later bounded contract clarification. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 records the post-implementation closure and current serial verdict. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
@@ -3472,9 +3472,11 @@ Do not embed arbitrary Entitlements side effects directly inside unrelated Subsc
 
 ## SBH-50-06 — Durable AccessEffect Obligation Foundation
 
-**State:** `READY`.
-**Shared authority:** `AUTHORITY_ASSIGNED` for the bounded SBH-50-06 grant below.
+**State:** `CLOSED`.
+**Shared authority:** `AUTHORITY_ASSIGNED` (completed provenance only for the bounded SBH-50-06 grant below).
 **Loop eligible:** No.
+
+Post-implementation closure evidence and the current serial verdict are recorded in section 50. The frozen AccessEffect architecture, JC-222 lifecycle, and JC-223 edges in this row's contract are unchanged by closure.
 
 The v0.1.28 governance amendment changes only this row:
 
@@ -4413,8 +4415,9 @@ EXTERNALIZED
 `NONE` means the current task contract identifies no shared modification.
 `AUTHORITY_ASSIGNED` means an explicit authority is recorded for the named
 shared surface. On a `CLOSED` row, it records completed task-specific
-provenance only and grants no further execution authority. SBH-50-06 holds
-current task-specific authority under v0.1.28 until that row closes.
+provenance only and grants no further execution authority. SBH-50-06 retains
+`AUTHORITY_ASSIGNED` as completed task-specific provenance only after closure;
+its v0.1.28/v0.1.29 grants are exhausted and non-reusable.
 `BLOCKED_SHARED_AUTHORITY` means the task cannot proceed until that authority is
 assigned. `EXTERNALIZED` means the surface remains owned outside SUBS and the
 task must not modify it. `SBH-10-01`, `SBH-60-01`, `SBH-10-02`, `SBH-20-01`,
@@ -4442,7 +4445,7 @@ its named row and surfaces.
 | `SBH-30-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-40-02` | no shared modification identified in this contract | `NONE` | Durable worker path remains dependency-blocked. |
 | `SBH-40-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-50-06` | Subscription-owned `Store.Subscriptions.AccessEffect` resource and optional task-local status/value type; registration in `Store.Subscriptions`; bounded `Store.Subscriptions.Facade` create/reuse and transition functions; focused Subscription fixtures/tests; one AccessEffect PostgreSQL migration with indexes and its Ash/Postgres snapshot; Phase 27 implementation evidence | `AUTHORITY_ASSIGNED` | Current task-specific authority for SBH-50-06 only. It expires at closure. No Entitlements changes, no other migration or snapshot, and no authority for SBH-50-02 through SBH-50-05. |
+| `SBH-50-06` | Subscription-owned `Store.Subscriptions.AccessEffect` resource and optional task-local status/value type; registration in `Store.Subscriptions`; bounded `Store.Subscriptions.Facade` create/reuse and transition functions; focused Subscription fixtures/tests; one AccessEffect PostgreSQL migration with indexes and its Ash/Postgres snapshot; Phase 27 implementation evidence | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.28/v0.1.29 task-specific AccessEffect migration, Ash snapshot, and Facade authority is exhausted and non-reusable. No Entitlements changes and no authority for SBH-50-02 through SBH-50-05. |
 | `SBH-50-02` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-03` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
@@ -4470,8 +4473,8 @@ Do not "helpfully" fix the neighbouring domain.
 Every implementation row has a frozen scope. `State` below is its current
 register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
 `SBH-10-03`, `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and
-`SBH-80-02` are `CLOSED`. Exactly one implementation/proof row is `READY`:
-`SBH-50-06`. The recorded
+`SBH-80-02`, and `SBH-50-06` are `CLOSED`. No implementation/proof row is
+`READY`. The recorded
 `loop_eligible` values remain register metadata; human selection is still
 required under the serial workflow before a `READY` row may enter
 implementation.
@@ -4495,7 +4498,7 @@ implementation.
 | `SBH-30-05` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-40-02` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-40-03` | cancellation proof | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-50-06` | shared-boundary hardening | — | `READY` | No |
+| `SBH-50-06` | shared-boundary hardening | — | `CLOSED` | No |
 | `SBH-50-02` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-03` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
@@ -4544,11 +4547,13 @@ SBH-80-01 = P1
 
 `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`, `SBH-10-03`,
 `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
-`CLOSED`. The v0.1.28 transition leaves exactly one canonical `READY`
-implementation/proof row, `SBH-50-06`. JC-229 / SBH-10-04 remains
+`CLOSED`. The v0.1.30 closure leaves zero canonical `READY`
+implementation/proof rows. JC-229 / SBH-10-04 remains
 `BLOCKED_SHARED_AUTHORITY`, SBH-10-05 remains `BLOCKED_DEPENDENCY`, and
-SBH-50-02 through SBH-50-05 remain `BLOCKED_DEPENDENCY`. The JC-223 dependency
-edges are unchanged. The P1 labels provide no severity ordering.
+SBH-50-02 through SBH-50-05 remain `BLOCKED_DEPENDENCY` pending separate
+admission review; satisfying the frozen `SBH-50-06` prerequisite does not by
+itself admit those rows. The JC-223 dependency edges are unchanged. The P1
+labels provide no severity ordering.
 
 ---
 
@@ -5577,7 +5582,10 @@ reservation-generation semantics, InventoryAdmission identity/recovery, and
 provider collection idempotency authority are resolved. Payments core remains
 unchanged unless a separate authority decision is made.
 
-# 48. Current v0.1.28 Serial Verdict
+# 48. Historical v0.1.28 Serial Verdict
+
+The current-state effects in this section are superseded by the v0.1.30 closure
+in section 50.
 
 ```text
 SUBS lifecycle = READY
@@ -5621,9 +5629,10 @@ human merge, and independent merge commit/tree verification. Its exact
 `hardening/subscriptions` tip. No implementation authority is usable before
 that admission.
 
-# 49. Current v0.1.29 JC-289 / SBH-50-06 NewYou Conformance Correction
+# 49. Historical v0.1.29 JC-289 / SBH-50-06 NewYou Conformance Correction
 
-This section records a later, bounded task-contract clarification to the
+The current serial verdict is recorded in section 50. This section records a
+later, bounded task-contract clarification to the
 v0.1.28 SBH-50-06 admission. It preserves section 48 as historical evidence of
 what v0.1.28 admitted and when. This section supersedes only the bounded
 JC-289 implementation-contract details explicitly clarified below; it does
@@ -5794,3 +5803,123 @@ gated on governance PR independent review, exact-head CI, human merge, and
 independent post-merge merge-commit/tree verification, followed by refresh of
 `hardening/subscriptions`. Only then may the exact accepted SUBS tip be
 assigned as the implementation `task_base_sha` in a separate admission.
+
+# 50. Current v0.1.30 JC-289 / SBH-50-06 Post-Implementation Closure
+
+This governance-only amendment starts from the exact independently verified SUBS
+tip `da485d8e70b46c379ae205a90b5558c2851657a9`. It records completed JC-289 /
+SBH-50-06 implementation evidence, closes that row, and reconciles the Master
+Register with the merged AccessEffect foundation. It changes no production code,
+tests, migrations, Ash snapshots, dependencies, configuration, provider
+integrations, Entitlements authority, JC-222 lifecycle law, or JC-223
+dependency edge. Sections 48 and 49 remain historical evidence and are not
+rewritten.
+
+### Authority observed for this closure
+
+```text
+closure amendment base = da485d8e70b46c379ae205a90b5558c2851657a9
+origin/hardening/subscriptions = da485d8e70b46c379ae205a90b5558c2851657a9
+origin/main (observed) = a74d3f05a5f250300d0c2293f294e77785f6818f
+NewYou main (unchanged) = 3c8c05278ad3601823af2f57d53fba1bc8a5f5cc
+Master Register before amendment = v0.1.29
+```
+
+Linear state below is **controller-verified live Linear evidence** supplied for
+this closure; it is not represented as a Linear inspection by this document's
+author. JC-289 is `Done` after PR #94 merged to `hardening/subscriptions`.
+
+### SBH-50-06 implementation closure evidence
+
+```text
+task base (task_base_sha)     = a67958f36cf8e243b260d72d3cab3bd8e48d5b28
+successful final impl head    = 152e006e6d2c68489c5c49a16f842c72e08a38cb
+implementation PR             = #94
+merge commit                  = da485d8e70b46c379ae205a90b5558c2851657a9
+certified-head tree           = 42043d0c1db2ba298b5bef7cdcb78558dd3573de
+merge tree                    = 42043d0c1db2ba298b5bef7cdcb78558dd3573de
+exact-head required CI run    = 36704326821 (all five required jobs PASS)
+repository test result        = 738 tests, 0 failures (exact-head CI)
+migration count               = exactly one JC-289 PostgreSQL migration
+snapshot count                = exactly one matching Ash/Postgres snapshot
+independent implementation review = PASS (controller-verified pre-merge)
+merge-tree verification       = merge tree content-identical to certified final PR head
+post-merge content drift      = none relative to certified final implementation head
+Entitlements production scope = no mutation
+dependency/config/provider/runtime leakage = none observed in bounded implementation scope
+```
+
+Required exact-head CI jobs that passed on run `36704326821`:
+
+```text
+check_static
+test_pr_strict
+dialyzer_required
+performance_smoke_required
+performance_smoke_chaos_required
+```
+
+```text
+SBH-50-06
+READY / AUTHORITY_ASSIGNED
+→
+CLOSED / AUTHORITY_ASSIGNED (completed provenance only)
+```
+
+The v0.1.28 admission and v0.1.29 NewYou-conformance correction remain
+historical records. The frozen AccessEffect architecture, JC-222 lifecycle, and
+JC-223 dependency graph are unchanged. The durable AccessEffect obligation
+foundation is now canonically available on `hardening/subscriptions` for
+separately admitted downstream work; this closure grants no downstream
+implementation authority.
+
+### Downstream prerequisite satisfaction without promotion
+
+The frozen direct dependency on `SBH-50-06` is now satisfied for rows that
+listed it, including JC-245 / SBH-50-02, JC-246 / SBH-50-03, JC-247 /
+SBH-50-04, JC-239 / SBH-30-04, and JC-242 / SBH-40-02. This closure does not
+admit, READY-promote, or assign shared authority to any of those rows. Each
+still requires its own fresh admission/shared-authority review and remaining
+frozen prerequisites:
+
+- **JC-245 / SBH-50-02** — Entitlements stale-safe source-target execution and
+  transaction-aware post-commit cache/PubSub invalidation remain unresolved at
+  the runtime boundary.
+- **JC-246 / SBH-50-03** — requires fresh admission/shared-authority review
+  for stale-safe Entitlements mutation.
+- **JC-247 / SBH-50-04** — must reuse active/non-effective stale-safe
+  execution capability rather than creating another executor; still requires
+  relevant lifecycle/execution capability admission.
+- **JC-248 / SBH-50-05** — remains blocked by JC-245, JC-246, and JC-247.
+- **JC-239 / SBH-30-04** — JC-230 / SBH-10-05 and JC-238 / SBH-30-03 remain
+  unresolved.
+- **JC-242 / SBH-40-02** — JC-229 / SBH-10-04, JC-230 / SBH-10-05, and other
+  governed prerequisites remain unresolved.
+
+PR #78 remains open/draft partial evidence for blocked SBH-10-04 and is
+untouched by this closure.
+
+### Current serial verdict
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+hardening/subscriptions verified tip = da485d8e70b46c379ae205a90b5558c2851657a9
+canonical READY implementation/proof rows = 0
+```
+
+```text
+SBH-50-06 = CLOSED / No
+SBH-50-06 shared authority = AUTHORITY_ASSIGNED (completed provenance only)
+SBH-10-04 = BLOCKED_SHARED_AUTHORITY / No
+SBH-10-05 = BLOCKED_DEPENDENCY / No
+SBH-50-02 = BLOCKED_DEPENDENCY / No
+SBH-50-03 = BLOCKED_DEPENDENCY / No
+SBH-50-04 = BLOCKED_DEPENDENCY / No
+SBH-50-05 = BLOCKED_DEPENDENCY / No
+```
+
+This closure assigns no implementation `task_base_sha`, creates no
+implementation branch, and does not select the next SUBS implementation issue.
+Independent controller review of this governance PR remains required before
+final acceptance.

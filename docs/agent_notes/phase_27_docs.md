@@ -1113,3 +1113,57 @@ historical admission or alter JC-222, JC-223, or earlier SUBS authority.
 - This evidence records local implementation validation. The task PR's
   exact-head CI and independent controller review remain tracked on the PR; no
   merge or final acceptance is claimed here.
+
+## JC-289 / SBH-50-06 implementation closure — v0.1.30 governance (2026-09-30)
+
+This entry is a separate post-merge closure record. The governance admission
+sections above (including v0.1.28 PR #82 and v0.1.29 NewYou conformance) and
+the implementation evidence section immediately preceding this entry remain
+historical records and are not rewritten to imply merge verification existed at
+implementation-authoring time.
+
+### Links consulted
+
+- `AGENTS.md`
+- `docs/agent_rules/active_workstreams.md` from current `origin/main`
+- `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md` v0.1.29 → v0.1.30 closure amendment
+- [Implementation PR #94](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/94)
+- [Exact-head CI run 36704326821](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/actions/runs/36704326821)
+- [PR #78, unrelated open JC-229 / SBH-10-04 work](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/78)
+
+### Closure evidence
+
+```text
+task base (task_base_sha)     = a67958f36cf8e243b260d72d3cab3bd8e48d5b28
+successful final impl head    = 152e006e6d2c68489c5c49a16f842c72e08a38cb
+merge commit                  = da485d8e70b46c379ae205a90b5558c2851657a9
+certified-head tree           = 42043d0c1db2ba298b5bef7cdcb78558dd3573de
+merge tree                    = 42043d0c1db2ba298b5bef7cdcb78558dd3573de
+exact-head required CI run    = 36704326821 (all five required jobs PASS)
+independent implementation review = PASS (controller-verified)
+merged-on-target verification = origin/hardening/subscriptions at merge SHA above
+Linear JC-289                 = Done (controller-verified post-merge evidence)
+repository test result        = 738 tests, 0 failures (exact-head CI)
+migrations / snapshots        = exactly one JC-289 migration and one matching snapshot
+```
+
+### Scope and boundaries preserved
+
+- Final bounded scope: Subscription-owned `AccessEffect` foundation only; no
+  Entitlements production mutation, worker, cache, or external access side
+  effect.
+- No post-merge content drift: merge tree is content-identical to the certified
+  final implementation head.
+- JC-222 lifecycle and JC-223 dependency edges remain unchanged.
+- Downstream issue admission (JC-245, JC-246, JC-247, JC-248, JC-239,
+  JC-242, and others) remains separate; satisfying the JC-289 prerequisite does
+  not READY-promote those rows.
+
+### Verification record (governance amendment only)
+
+- Closure amendment base verified as
+  `da485d8e70b46c379ae205a90b5558c2851657a9` before editing.
+- Only the two authorized governance/evidence documents are in scope for this
+  closure PR.
+- Independent controller review of the governance PR remains pending; this note
+  does not claim final PASS for the closure amendment itself.
