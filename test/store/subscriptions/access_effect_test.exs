@@ -9,6 +9,7 @@ defmodule Store.Subscriptions.AccessEffectTest do
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
+  alias Store.Subscriptions.Subscription
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
   alias Store.TestSupport.StripeAPIStub
@@ -27,6 +28,56 @@ defmodule Store.Subscriptions.AccessEffectTest do
     assert replay.id == first.id
     assert replay.status == :required
     assert count_access_effects(fixture.subscription.id) == 1
+  end
+
+  test "entitlement kind and scope must be supplied as a complete pair" do
+    fixture = create_subscription_fixture!()
+    input = access_effect_input(fixture)
+    attrs = Map.from_struct(input)
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} =
+             EstablishAccessEffectInput.new(%{attrs | entitlement_scope_key: nil})
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} =
+             EstablishAccessEffectInput.new(%{attrs | entitlement_kind: nil})
+  end
+
+  test "database constraint rejects either incomplete entitlement pair" do
+    fixture = create_subscription_fixture!()
+    input = access_effect_input(fixture)
+
+    invalid_pairs = [
+      %{entitlement_kind: :membership_access, entitlement_scope_key: nil},
+      %{entitlement_kind: nil, entitlement_scope_key: "members"}
+    ]
+
+    Enum.each(invalid_pairs, fn pair ->
+      attrs =
+        input
+        |> Map.from_struct()
+        |> Map.merge(pair)
+
+      changeset =
+        Ash.Changeset.for_create(AccessEffect, :establish, attrs, context: %{system?: true})
+
+      {result, queries} =
+        capture_repo_queries(fn ->
+          Ash.create(changeset,
+            domain: Store.Subscriptions,
+            authorize?: false,
+            context: %{system?: true}
+          )
+        end)
+
+      assert {:error, _reason} = result
+
+      assert Enum.any?(data_queries(queries), fn query ->
+               normalized = query |> String.trim() |> String.downcase()
+               String.starts_with?(normalized, "insert") and normalized =~ "access_effects"
+             end)
+    end)
+
+    assert count_access_effects(fixture.subscription.id) == 0
   end
 
   test "a caller-owned outer rollback removes a newly established AccessEffect" do
@@ -89,6 +140,8 @@ defmodule Store.Subscriptions.AccessEffectTest do
     input = access_effect_input(fixture)
     assert {:ok, effect} = establish(input)
 
+    advance_subscription_aggregate!(fixture)
+
     Store.Repo.query!(
       "UPDATE subscriptions SET current_plan_revision_id = NULL WHERE id = $1",
       [Ecto.UUID.dump!(fixture.subscription.id)]
@@ -96,6 +149,43 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
     assert {:ok, replay} = establish(input)
     assert replay.id == effect.id
+  end
+
+  test "future source versions fail closed without persisting an effect" do
+    fixture = create_subscription_fixture!()
+    future_version = fixture.subscription.aggregate_version + 1
+    input = access_effect_input(fixture, %{source_version: future_version})
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} = establish(input)
+    assert count_access_effects(fixture.subscription.id) == 0
+  end
+
+  test "target entitlement evidence must match its immutable PlanRevision" do
+    fixture = create_subscription_fixture!()
+
+    for disposition <- [:effective, :non_effective] do
+      input =
+        access_effect_input(fixture, %{
+          disposition: disposition,
+          entitlement_kind: :digital_library,
+          entitlement_scope_key: "vip"
+        })
+
+      assert {:error, %Error{code: "VALIDATION_ERROR"}} = establish(input)
+      assert count_access_effects(fixture.subscription.id) == 0
+    end
+
+    assert {:ok, non_effective_without_entitlement} =
+             establish(
+               access_effect_input(fixture, %{
+                 disposition: :non_effective,
+                 entitlement_kind: nil,
+                 entitlement_scope_key: nil
+               })
+             )
+
+    assert non_effective_without_entitlement.entitlement_kind == nil
+    assert non_effective_without_entitlement.entitlement_scope_key == nil
   end
 
   test "target fingerprint covers every canonical target field, including nil values" do
@@ -127,40 +217,58 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
   test "source-version gaps are valid and unrelated aggregate writes do not stale the latest target" do
     fixture = create_subscription_fixture!()
-    first_input = access_effect_input(fixture, %{source_version: 8})
-    later_input = access_effect_input(fixture, %{source_version: 13})
+    first_input = access_effect_input(fixture)
 
     assert {:ok, first} = establish(first_input)
+
+    advance_subscription_aggregate!(fixture)
+    later_subscription = advance_subscription_aggregate!(fixture)
+
+    later_input =
+      access_effect_input(fixture, %{source_version: later_subscription.aggregate_version})
+
     assert {:ok, later} = establish(later_input)
-    assert later.source_version == 13
+    assert later.source_version == later_subscription.aggregate_version
+    assert later.source_version > first.source_version + 1
 
-    Store.Repo.query!(
-      "UPDATE subscriptions SET aggregate_version = aggregate_version + 1 WHERE id = $1",
-      [Ecto.UUID.dump!(fixture.subscription.id)]
-    )
+    latest_subscription = advance_subscription_aggregate!(fixture)
 
-    assert {:ok, current} = current_access_effect(fixture.subscription)
+    assert {:ok, current} = current_access_effect(latest_subscription)
     assert current.id == later.id
-    refute current.source_version == fixture.subscription.aggregate_version + 1
+    assert current.source_version < latest_subscription.aggregate_version
     assert fetch_access_effect!(first.id).status == :superseded
   end
 
   test "an older target cannot become current after a newer target exists" do
     fixture = create_subscription_fixture!()
-    newer_input = access_effect_input(fixture, %{source_version: 12})
-    older_input = access_effect_input(fixture, %{source_version: 9})
+    newer_subscription = advance_subscription_aggregate!(fixture)
+
+    newer_input =
+      access_effect_input(fixture, %{source_version: newer_subscription.aggregate_version})
 
     assert {:ok, newer} = establish(newer_input)
-    assert {:error, %Error{code: "STALE_RECORD"}} = establish(older_input)
 
-    assert {:ok, current} = current_access_effect(fixture.subscription)
+    assert {:error, %Error{code: "STALE_RECORD"}} =
+             establish(access_effect_input(fixture, %{source_version: newer.source_version - 1}))
+
+    assert {:ok, current} = current_access_effect(newer_subscription)
     assert current.id == newer.id
     assert count_access_effects(fixture.subscription.id) == 1
   end
 
   test "competing source versions preserve the newer target for either lock-arrival order" do
-    Enum.each([[4, 9], [9, 4]], fn [first_version, second_version] ->
+    Enum.each([:ascending, :descending], fn arrival_order ->
       fixture = create_committed_subscription_fixture!()
+      latest = advance_subscription_aggregate!(fixture, committed?: true)
+      high_version = latest.aggregate_version
+      low_version = high_version - 1
+
+      version_order =
+        if arrival_order == :ascending,
+          do: [low_version, high_version],
+          else: [high_version, low_version]
+
+      [first_version, second_version] = version_order
       first_input = access_effect_input(fixture, %{source_version: first_version})
       second_input = access_effect_input(fixture, %{source_version: second_version})
       parent = self()
@@ -181,8 +289,6 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
       first_result = Task.await(first_writer, 10_000)
       second_result = Task.await(second_writer, 10_000)
-      high_version = max(first_version, second_version)
-
       assert {:ok, current} = current_access_effect(fixture.subscription)
       assert current.source_version == high_version
 
@@ -215,16 +321,29 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
   test "APPLIED and SUPERSEDED effects remain terminal and cannot reopen" do
     fixture = create_subscription_fixture!()
-    applied = establish!(access_effect_input(fixture, %{source_version: 2}))
+    applied = establish!(access_effect_input(fixture))
     pending = transition!(:mark_access_effect_pending_for_system, applied)
     applied = transition!(:mark_access_effect_applied_for_system, pending)
 
     assert {:error, %Error{code: "INVALID_STATE_TRANSITION"}} =
              transition(:mark_access_effect_pending_for_system, applied)
 
-    newer = establish!(access_effect_input(fixture, %{source_version: 5}))
-    pending = transition!(:mark_access_effect_pending_for_system, newer)
-    superseded = transition!(:supersede_access_effect_for_system, pending)
+    newer_subscription = advance_subscription_aggregate!(fixture)
+
+    newer =
+      establish!(
+        access_effect_input(fixture, %{source_version: newer_subscription.aggregate_version})
+      )
+
+    stale_pending = transition!(:mark_access_effect_pending_for_system, newer)
+    latest_subscription = advance_subscription_aggregate!(fixture)
+
+    _latest =
+      establish!(
+        access_effect_input(fixture, %{source_version: latest_subscription.aggregate_version})
+      )
+
+    superseded = fetch_access_effect!(stale_pending.id)
 
     assert superseded.status == :superseded
 
@@ -232,8 +351,12 @@ defmodule Store.Subscriptions.AccessEffectTest do
              transition(:mark_access_effect_pending_for_system, superseded)
 
     assert {:error, %Error{code: "INVALID_STATE_TRANSITION"}} =
-             transition(:retry_access_effect_for_system, superseded)
+             transition(:mark_access_effect_applied_for_system, stale_pending)
 
+    assert {:error, %Error{code: "INVALID_STATE_TRANSITION"}} =
+             transition(:mark_access_effect_failed_retryable_for_system, stale_pending)
+
+    refute function_exported?(Facade, :supersede_access_effect_for_system, 1)
     assert fetch_access_effect!(applied.id).status == :applied
     assert fetch_access_effect!(superseded.id).status == :superseded
   end
@@ -298,7 +421,7 @@ defmodule Store.Subscriptions.AccessEffectTest do
       )
 
     explain = plan_rows |> List.flatten() |> Enum.join(" ")
-    assert explain =~ "access_effects_subscription_source_version_index"
+    assert explain =~ "access_effects_unique_subscription_source_version_index"
     assert explain =~ "Limit"
   end
 
@@ -349,6 +472,49 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
     on_exit(fn -> cleanup_committed_subscription_fixture!(fixture) end)
     fixture
+  end
+
+  defp advance_subscription_aggregate!(fixture, opts \\ []) do
+    advance = fn ->
+      subscription = reload_subscription!(fixture.subscription.id)
+      unique = Ecto.UUID.generate() |> String.replace("-", "")
+
+      updated =
+        subscription
+        |> Ash.Changeset.for_update(
+          :set_provider_billing_reference,
+          %{
+            provider_customer_ref: "cus_sbh5006_#{unique}",
+            provider_billing_ref: "pm_sbh5006_#{unique}"
+          },
+          context: %{system?: true}
+        )
+        |> Ash.update!(
+          domain: Store.Subscriptions,
+          authorize?: false,
+          context: %{system?: true}
+        )
+
+      assert updated.aggregate_version == subscription.aggregate_version + 1
+      updated
+    end
+
+    if Keyword.get(opts, :committed?, false) do
+      Sandbox.unboxed_run(Store.Repo, advance)
+    else
+      advance.()
+    end
+  end
+
+  defp reload_subscription!(subscription_id) do
+    Subscription
+    |> Ash.Query.filter(expr(id == ^subscription_id))
+    |> Ash.read!(
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+    |> List.first()
   end
 
   defp cleanup_committed_subscription_fixture!(fixture) do
@@ -449,7 +615,7 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
   defp assert_supersession_path(initial_status, expected_update_count) do
     fixture = create_subscription_fixture!()
-    initial_input = access_effect_input(fixture, %{source_version: 3})
+    initial_input = access_effect_input(fixture)
     required = establish!(initial_input)
 
     current =
@@ -466,7 +632,11 @@ defmodule Store.Subscriptions.AccessEffectTest do
           |> then(&transition!(:mark_access_effect_failed_retryable_for_system, &1))
       end
 
-    newer_input = access_effect_input(fixture, %{source_version: 11})
+    newer_subscription = advance_subscription_aggregate!(fixture)
+
+    newer_input =
+      access_effect_input(fixture, %{source_version: newer_subscription.aggregate_version})
+
     {newer_result, queries} = capture_repo_queries(fn -> establish(newer_input) end)
     assert {:ok, newer} = newer_result
 

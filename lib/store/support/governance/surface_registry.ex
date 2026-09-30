@@ -182,8 +182,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:mark_access_effect_pending_for_system, 1},
         {:mark_access_effect_applied_for_system, 1},
         {:mark_access_effect_failed_retryable_for_system, 1},
-        {:retry_access_effect_for_system, 1},
-        {:supersede_access_effect_for_system, 1}
+        {:retry_access_effect_for_system, 1}
       ]
     },
     Store.Entitlements.Facade => %{

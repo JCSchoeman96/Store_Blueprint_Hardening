@@ -127,14 +127,6 @@ defmodule Store.Subscriptions.Facade do
     end)
   end
 
-  @spec supersede_access_effect_for_system(AccessEffect.t()) ::
-          {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
-  def supersede_access_effect_for_system(%AccessEffect{} = effect) do
-    with_access_effect_transaction(fn ->
-      transition_access_effect(effect, :pending, :superseded, :supersede)
-    end)
-  end
-
   @spec list_subscriptions_for_user(map(), UserSubscriptionIndexQuery.t()) ::
           {:ok, [Subscription.t()]} | {:error, Error.t() | term()}
   def list_subscriptions_for_user(actor, %UserSubscriptionIndexQuery{} = query)
@@ -4856,8 +4848,22 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp reuse_or_establish_access_effect(input, current_provenance, nil) do
-    with :ok <- validate_access_effect_provenance(input, current_provenance) do
+    with :ok <- validate_access_effect_source_version(input, current_provenance),
+         :ok <- validate_access_effect_provenance(input, current_provenance),
+         :ok <- validate_access_effect_target_entitlement(input, current_provenance) do
       establish_new_access_effect(input)
+    end
+  end
+
+  defp validate_access_effect_source_version(input, current_provenance) do
+    if input.source_version <= current_provenance.aggregate_version do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "AccessEffect source version cannot exceed the locked Subscription aggregate version"
+       )}
     end
   end
 
@@ -4875,21 +4881,41 @@ defmodule Store.Subscriptions.Facade do
       {:ok, dumped_id} ->
         case Repo.query(
                """
-               SELECT source_order_line_item_id::text,
-                      current_contract_change_id::text,
-                      current_plan_revision_id::text
+               SELECT subscriptions.source_order_line_item_id::text,
+                      subscriptions.current_contract_change_id::text,
+                      subscriptions.current_plan_revision_id::text,
+                      subscriptions.aggregate_version,
+                      plan_revisions.entitlement_kind,
+                      plan_revisions.entitlement_scope_key
                FROM subscriptions
-               WHERE id = $1
-               FOR UPDATE
+               LEFT JOIN plan_revisions
+                 ON plan_revisions.id = subscriptions.current_plan_revision_id
+               WHERE subscriptions.id = $1
+               FOR UPDATE OF subscriptions
                """,
                [dumped_id]
              ) do
-          {:ok, %{rows: [[line_item_id, contract_change_id, plan_revision_id]]}} ->
+          {:ok,
+           %{
+             rows: [
+               [
+                 line_item_id,
+                 contract_change_id,
+                 plan_revision_id,
+                 aggregate_version,
+                 revision_entitlement_kind,
+                 revision_entitlement_scope_key
+               ]
+             ]
+           }} ->
             {:ok,
              %{
                source_order_line_item_id: line_item_id,
                contract_change_id: contract_change_id,
-               plan_revision_id: plan_revision_id
+               plan_revision_id: plan_revision_id,
+               aggregate_version: aggregate_version,
+               revision_entitlement_kind: revision_entitlement_kind,
+               revision_entitlement_scope_key: revision_entitlement_scope_key
              }}
 
           {:ok, %{rows: []}} ->
@@ -4911,13 +4937,41 @@ defmodule Store.Subscriptions.Facade do
       plan_revision_id: input.plan_revision_id
     }
 
-    if target_provenance == current_provenance do
+    if target_provenance == Map.take(current_provenance, Map.keys(target_provenance)) do
       :ok
     else
       {:error,
        Error.new(
          "VALIDATION_ERROR",
          "AccessEffect provenance must match the Subscription's immutable source evidence"
+       )}
+    end
+  end
+
+  defp validate_access_effect_target_entitlement(input, current_provenance) do
+    revision_pair = {
+      current_provenance.revision_entitlement_kind,
+      current_provenance.revision_entitlement_scope_key
+    }
+
+    target_pair = {
+      input.entitlement_kind && Atom.to_string(input.entitlement_kind),
+      input.entitlement_scope_key
+    }
+
+    valid_target? =
+      case input.disposition do
+        :effective -> target_pair == revision_pair
+        :non_effective -> target_pair == {nil, nil} or target_pair == revision_pair
+      end
+
+    if valid_target? do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "AccessEffect entitlement target must match its immutable PlanRevision evidence"
        )}
     end
   end

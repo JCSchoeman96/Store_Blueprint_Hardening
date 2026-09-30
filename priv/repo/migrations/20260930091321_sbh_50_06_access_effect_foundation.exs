@@ -86,9 +86,10 @@ defmodule Store.Repo.Migrations.Sbh5006AccessEffectFoundation do
              """
            )
 
-    create constraint(:access_effects, :access_effects_scope_requires_kind_check,
+    create constraint(:access_effects, :access_effects_entitlement_pair_complete_check,
              check: """
-               entitlement_kind IS NOT NULL OR entitlement_scope_key IS NULL
+               (entitlement_kind IS NULL AND entitlement_scope_key IS NULL) OR
+               (entitlement_kind IS NOT NULL AND entitlement_scope_key IS NOT NULL)
              """
            )
 
@@ -97,20 +98,12 @@ defmodule Store.Repo.Migrations.Sbh5006AccessEffectFoundation do
                length(target_fingerprint) = 64
              """
            )
-
-    create index(:access_effects, [:subscription_id, desc: :source_version],
-             name: "access_effects_subscription_source_version_index"
-           )
   end
 
   def down do
-    drop_if_exists index(:access_effects, [:subscription_id, desc: :source_version],
-                     name: "access_effects_subscription_source_version_index"
-                   )
-
     drop_if_exists constraint(:access_effects, :access_effects_fingerprint_length_check)
 
-    drop_if_exists constraint(:access_effects, :access_effects_scope_requires_kind_check)
+    drop_if_exists constraint(:access_effects, :access_effects_entitlement_pair_complete_check)
 
     drop_if_exists constraint(:access_effects, :access_effects_disposition_value_check)
 

@@ -284,8 +284,8 @@
         "entitlement_scope_key"
       ],
       "base_filter": null,
-      "check": "entitlement_kind IS NOT NULL OR entitlement_scope_key IS NULL",
-      "name": "access_effects_scope_requires_kind_check"
+      "check": "(entitlement_kind IS NULL AND entitlement_scope_key IS NULL) OR (entitlement_kind IS NOT NULL AND entitlement_scope_key IS NOT NULL)",
+      "name": "access_effects_entitlement_pair_complete_check"
     },
     {
       "attribute": [
@@ -297,37 +297,7 @@
     }
   ],
   "create_table_options": null,
-  "custom_indexes": [
-    {
-      "all_tenants?": false,
-      "concurrently": false,
-      "error_fields": [
-        "subscription_id",
-        "source_version"
-      ],
-      "fields": [
-        {
-          "type": "atom",
-          "value": "subscription_id"
-        },
-        {
-          "order": "desc",
-          "type": "directed",
-          "value": "source_version"
-        }
-      ],
-      "include": null,
-      "include_base_filter?": true,
-      "message": null,
-      "name": "access_effects_subscription_source_version_index",
-      "nulls_distinct": true,
-      "prefix": null,
-      "table": null,
-      "unique": false,
-      "using": null,
-      "where": null
-    }
-  ],
+  "custom_indexes": [],
   "custom_statements": [],
   "has_create_action": true,
   "hash": "5166BE8F22DF10699CF305A551577B02127B31BAC17FA04BBB2C86CAE538B875",

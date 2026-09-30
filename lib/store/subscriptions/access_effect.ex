@@ -201,18 +201,14 @@ defmodule Store.Subscriptions.AccessEffect do
         check: "disposition IN ('effective', 'non_effective')"
       )
 
-      check_constraint(:entitlement_scope_key, "access_effects_scope_requires_kind_check",
-        check: "entitlement_kind IS NOT NULL OR entitlement_scope_key IS NULL"
+      check_constraint(:entitlement_scope_key, "access_effects_entitlement_pair_complete_check",
+        check:
+          "(entitlement_kind IS NULL AND entitlement_scope_key IS NULL) OR " <>
+            "(entitlement_kind IS NOT NULL AND entitlement_scope_key IS NOT NULL)"
       )
 
       check_constraint(:target_fingerprint, "access_effects_fingerprint_length_check",
         check: "length(target_fingerprint) = 64"
-      )
-    end
-
-    custom_indexes do
-      index([:subscription_id, {:desc, :source_version}],
-        name: "access_effects_subscription_source_version_index"
       )
     end
   end

@@ -174,10 +174,13 @@ defmodule Store.Subscriptions.Inputs.EstablishAccessEffectInput do
 
   defp validate_scope_pair(nil, nil), do: :ok
 
+  defp validate_scope_pair(kind, scope) when not is_nil(kind) and is_binary(scope), do: :ok
+
   defp validate_scope_pair(nil, _scope),
     do: invalid(:entitlement_scope_key, "requires an entitlement kind")
 
-  defp validate_scope_pair(_kind, _scope), do: :ok
+  defp validate_scope_pair(_kind, nil),
+    do: invalid(:entitlement_scope_key, "is required when an entitlement kind is supplied")
 
   defp parse_optional_datetime(params, key) do
     case value(params, key) do
