@@ -1,12 +1,67 @@
+defmodule Store.Orders.InventoryAdmission.Reference do
+  @moduledoc false
+
+  @enforce_keys [
+    :reservation_key,
+    :variant_id,
+    :identity_digest,
+    :request_fingerprint,
+    :member,
+    :operation_id,
+    :operation_epoch
+  ]
+  defstruct [
+    :reservation_key,
+    :variant_id,
+    :identity_digest,
+    :request_fingerprint,
+    :member,
+    :operation_id,
+    :operation_epoch
+  ]
+
+  @type t :: %__MODULE__{
+          reservation_key: String.t(),
+          variant_id: Ecto.UUID.t(),
+          identity_digest: String.t(),
+          request_fingerprint: String.t(),
+          member: String.t(),
+          operation_id: Ecto.UUID.t(),
+          operation_epoch: pos_integer()
+        }
+
+  @spec valid?(term()) :: boolean()
+  def valid?(%__MODULE__{} = reference) do
+    [
+      non_empty_binary?(reference.reservation_key),
+      non_empty_binary?(reference.variant_id),
+      fixed_binary?(reference.identity_digest, 64),
+      fixed_binary?(reference.request_fingerprint, 64),
+      fixed_binary?(reference.member, 64),
+      non_empty_binary?(reference.operation_id),
+      is_integer(reference.operation_epoch) and reference.operation_epoch > 0
+    ]
+    |> Enum.all?()
+  end
+
+  def valid?(_reference), do: false
+
+  defp non_empty_binary?(value), do: is_binary(value) and byte_size(value) > 0
+
+  defp fixed_binary?(value, size), do: is_binary(value) and byte_size(value) == size
+end
+
 defmodule Store.Orders.InventoryAdmission do
   @moduledoc """
-  Pure admission lifecycle and replay contract for one inventory mutation.
+  Inventory admission lifecycle and bounded Redis orchestration for one inventory
+  mutation.
 
-  This module owns admission states and legal transitions. It does not perform
-  admission, coordinate capacity, or access Redis or PostgreSQL.
+  Redis coordinates admission only. This module never performs durable inventory
+  work or accesses PostgreSQL.
   """
 
-  alias Store.Orders.InventoryAdmission.{Lease, Operation, Request}
+  alias Store.Orders.InventoryAdmission.{Lease, Operation, Redis, Reference, Request}
+  alias Store.Support.Errors.Error
 
   @k_v 1
 
@@ -157,6 +212,141 @@ defmodule Store.Orders.InventoryAdmission do
 
   @spec variant_permit_count() :: 1
   def variant_permit_count, do: @k_v
+
+  @spec reserve(map() | Request.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def reserve(input, opts \\ [])
+
+  def reserve(input, opts) when is_list(opts) do
+    with {:ok, request} <- trusted_request(input),
+         {:ok, redis_result} <- Redis.enqueue_or_return_existing(request, opts),
+         result <- map_reserve_result(redis_result, request) do
+      result
+    else
+      {:error, :unavailable} -> {:error, unavailable_error()}
+      {:error, :invalid_input} -> {:error, validation_error(:invalid_options)}
+      {:error, {:invalid_request, reason}} -> {:error, validation_error(reason)}
+    end
+  rescue
+    _error -> {:error, unavailable_error()}
+  end
+
+  def reserve(_input, _opts), do: {:error, validation_error(:invalid_options)}
+
+  @spec status(Reference.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def status(reference, opts \\ [])
+
+  def status(%Reference{} = reference, opts) when is_list(opts) do
+    with :ok <- validate_reference(reference),
+         {:ok, redis_result} <- Redis.status(reference, opts) do
+      case redis_result do
+        {:status, status} -> {:ok, Map.put(status, :reference, reference)}
+        :mismatch -> {:error, mismatch_error()}
+        :frozen -> {:error, unavailable_error()}
+      end
+    else
+      {:error, :unavailable} -> {:error, unavailable_error()}
+      {:error, :invalid_input} -> {:error, validation_error(:invalid_reference)}
+      {:error, :invalid_reference} -> {:error, validation_error(:invalid_reference)}
+    end
+  rescue
+    _error -> {:error, unavailable_error()}
+  end
+
+  def status(_reference, _opts), do: {:error, validation_error(:invalid_reference)}
+
+  @spec abandon(Reference.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def abandon(reference, opts \\ [])
+
+  def abandon(%Reference{} = reference, opts) when is_list(opts) do
+    with :ok <- validate_reference(reference),
+         {:ok, redis_result} <-
+           Redis.abandon(reference, :trusted_pre_reservation_abandonment, opts) do
+      case redis_result do
+        {:abandoned, result} -> {:ok, Map.put(result, :reference, reference)}
+        {:already_abandoned, result} -> {:ok, Map.put(result, :reference, reference)}
+        :mismatch -> {:error, mismatch_error()}
+        :frozen -> {:error, unsupported_error()}
+      end
+    else
+      {:error, :unavailable} -> {:error, unavailable_error()}
+      {:error, :invalid_input} -> {:error, validation_error(:invalid_reference)}
+      {:error, :invalid_reference} -> {:error, validation_error(:invalid_reference)}
+    end
+  rescue
+    _error -> {:error, unavailable_error()}
+  end
+
+  def abandon(_reference, _opts), do: {:error, validation_error(:invalid_reference)}
+
+  defp trusted_request(%Request{} = request) do
+    case Request.new(request) do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_request, reason}}
+    end
+  end
+
+  defp trusted_request(params) when is_map(params) do
+    case Request.new(params) do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_request, reason}}
+    end
+  end
+
+  defp trusted_request(_input), do: {:error, {:invalid_request, :invalid_request}}
+
+  defp map_reserve_result({kind, admission}, request)
+       when kind in [:existing, :queued, :admitted] and is_map(admission) do
+    {:ok, Map.put(admission, :reference, reference_from(request, admission))}
+  end
+
+  defp map_reserve_result(:busy, _request),
+    do: {:error, admission_error("INVENTORY_ADMISSION_BUSY", "inventory admission is busy")}
+
+  defp map_reserve_result(:mismatch, _request), do: {:error, mismatch_error()}
+  defp map_reserve_result(:frozen, _request), do: {:error, unavailable_error()}
+  defp map_reserve_result(_result, _request), do: {:error, unavailable_error()}
+
+  defp reference_from(request, admission) do
+    %Reference{
+      reservation_key: request.reservation_key,
+      variant_id: request.variant_id,
+      identity_digest: request.identity_digest,
+      request_fingerprint: request.request_fingerprint,
+      member: admission.member,
+      operation_id: admission.operation_id,
+      operation_epoch: admission.operation_epoch
+    }
+  end
+
+  defp validate_reference(%Reference{} = reference) do
+    if Reference.valid?(reference) do
+      :ok
+    else
+      {:error, :invalid_reference}
+    end
+  end
+
+  defp admission_error(code, message), do: Error.new(code, message)
+
+  defp unavailable_error,
+    do: admission_error("INVENTORY_ADMISSION_UNAVAILABLE", "inventory admission is unavailable")
+
+  defp unsupported_error,
+    do:
+      admission_error(
+        "INVENTORY_ADMISSION_UNSUPPORTED",
+        "inventory admission operation is unsupported"
+      )
+
+  defp mismatch_error,
+    do:
+      admission_error(
+        "IDEMPOTENCY_KEY_REUSE_MISMATCH",
+        "request fingerprint does not match the live operation"
+      )
+
+  defp validation_error(reason),
+    do: Error.new("VALIDATION_ERROR", "inventory admission input is invalid", %{reason: reason})
 
   defp validate_guard(:requested, to, %Request{} = request) when to in [:queued, :admitted] do
     if Request.valid?(request), do: :ok, else: {:error, :invalid_request_guard}

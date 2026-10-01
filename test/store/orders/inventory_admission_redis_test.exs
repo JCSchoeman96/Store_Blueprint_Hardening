@@ -1,7 +1,7 @@
 defmodule Store.Orders.InventoryAdmissionRedisTest do
   use ExUnit.Case, async: false
 
-  alias Store.Orders.InventoryAdmission.Redis
+  alias Store.Orders.InventoryAdmission.{Redis, Reference}
   alias Store.Orders.InventoryAdmission.Request
   alias Store.Support.ID.UUIDv7
   alias Store.Support.RateLimit.RedixClient
@@ -810,6 +810,291 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:error, :invalid_input} =
              Redis.enqueue_or_return_existing(forged, opts(scope, b_total: 2))
   end
+
+  test "typed status reads queued evidence without allocating sequence or capacity", %{
+    scope: scope
+  } do
+    holder = request()
+    queued_request = request(@second_order_id, @variant_id)
+    options = opts(scope, b_total: 1)
+
+    assert {:ok, {:admitted, _holder}} = Redis.enqueue_or_return_existing(holder, options)
+    assert {:ok, {:queued, queued}} = Redis.enqueue_or_return_existing(queued_request, options)
+
+    keys = keys_for(queued_request, scope)
+    assert {:ok, sequence_before} = redis(["GET", keys.global_sequence])
+    assert {:ok, active_before} = redis(["ZCARD", keys.global_active_expiry])
+
+    assert {:ok, {:status, status}} =
+             Redis.status(reference_for(queued_request, queued), lookup_opts(scope))
+
+    assert status.state == :queued
+    assert status.member == queued.member
+    assert status.operation_id == queued.operation_id
+    assert status.operation_epoch == queued.operation_epoch
+    assert status.request_fingerprint == queued_request.request_fingerprint
+    assert {:ok, ^sequence_before} = redis(["GET", keys.global_sequence])
+    assert {:ok, ^active_before} = redis(["ZCARD", keys.global_active_expiry])
+    assert_queue_indexes(keys, queued.member)
+  end
+
+  test "typed status on a missing identity does not create Redis state", %{scope: scope} do
+    missing = request(UUIDv7.generate(), @second_variant_id)
+    keys = keys_for(missing, scope)
+
+    assert {:error, :unavailable} =
+             Redis.status(reference_for(missing, nil), lookup_opts(scope))
+
+    assert {:ok, 0} = redis(["EXISTS", keys.global_sequence])
+    assert {:ok, 0} = redis(["EXISTS", keys.request_meta, keys.reservation_fence])
+    assert {:ok, 0} = redis(["ZCARD", keys.global_queue_dispatch])
+  end
+
+  test "typed status reports admitted after lease deadline without releasing its permit", %{
+    scope: scope
+  } do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    keys = keys_for(admitted_request, scope)
+    {:ok, [seconds, microseconds]} = redis(["TIME"])
+
+    expired_deadline =
+      String.to_integer(seconds) * 1_000 + div(String.to_integer(microseconds), 1_000) - 1
+
+    assert {:ok, 0} =
+             redis([
+               "HSET",
+               keys.request_meta,
+               "lease_deadline_ms",
+               Integer.to_string(expired_deadline)
+             ])
+
+    assert {:ok, 0} =
+             redis([
+               "HSET",
+               keys.variant_active,
+               "lease_deadline_ms",
+               Integer.to_string(expired_deadline)
+             ])
+
+    assert {:ok, 0} =
+             redis([
+               "ZADD",
+               keys.global_active_expiry,
+               Integer.to_string(expired_deadline),
+               admitted.member
+             ])
+
+    assert {:ok, {:status, status}} =
+             Redis.status(reference_for(admitted_request, admitted), lookup_opts(scope))
+
+    assert status.state == :admitted
+    assert {:ok, "ADMITTED"} = redis(["HGET", keys.request_meta, "state"])
+    member = admitted.member
+    assert {:ok, ^member} = redis(["HGET", keys.variant_active, "member"])
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+  end
+
+  test "typed status fails closed on missing or contradictory evidence", %{scope: scope} do
+    holder = request(UUIDv7.generate(), @variant_id)
+    missing_fence = request()
+    contradictory = request(UUIDv7.generate(), @second_variant_id)
+
+    assert {:ok, {:admitted, _holder_admission}} =
+             Redis.enqueue_or_return_existing(holder, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, missing_fence_admission}} =
+             Redis.enqueue_or_return_existing(missing_fence, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, contradictory_admission}} =
+             Redis.enqueue_or_return_existing(contradictory, opts(scope, b_total: 1))
+
+    missing_keys = keys_for(missing_fence, scope)
+    contradictory_keys = keys_for(contradictory, scope)
+    assert {:ok, 1} = redis(["DEL", missing_keys.reservation_fence])
+
+    assert {:ok, 1} =
+             redis([
+               "ZREM",
+               contradictory_keys.global_queue_dispatch,
+               contradictory_admission.member
+             ])
+
+    assert {:error, :unavailable} =
+             Redis.status(
+               reference_for(missing_fence, missing_fence_admission),
+               lookup_opts(scope)
+             )
+
+    assert {:error, :unavailable} =
+             Redis.status(
+               reference_for(contradictory, contradictory_admission),
+               lookup_opts(scope)
+             )
+  end
+
+  test "typed abandon removes only the exact queued member and never promotes", %{scope: scope} do
+    holder = request()
+    abandoned_request = request(@second_order_id, @variant_id)
+    tail_request = request(UUIDv7.generate(), @variant_id)
+    options = opts(scope, b_total: 1)
+
+    assert {:ok, {:admitted, holder_admission}} =
+             Redis.enqueue_or_return_existing(holder, options)
+
+    assert {:ok, {:queued, abandoned}} =
+             Redis.enqueue_or_return_existing(abandoned_request, options)
+
+    assert {:ok, {:queued, tail}} = Redis.enqueue_or_return_existing(tail_request, options)
+
+    keys = keys_for(abandoned_request, scope)
+    tail_keys = keys_for(tail_request, scope)
+
+    assert {:ok, {:abandoned, result}} =
+             Redis.abandon(
+               reference_for(abandoned_request, abandoned),
+               :trusted_pre_reservation_abandonment,
+               lookup_opts(scope)
+             )
+
+    assert result.state == :abandoned
+    assert {:ok, "ABANDONED"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "ABANDONED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, nil} = redis(["ZSCORE", keys.variant_queue_order, abandoned.member])
+    assert {:ok, nil} = redis(["ZSCORE", keys.global_queue_dispatch, abandoned.member])
+    assert {:ok, nil} = redis(["ZSCORE", keys.global_queue_expiry, abandoned.member])
+
+    tail_sequence = Integer.to_string(tail.sequence)
+
+    assert {:ok, ^tail_sequence} =
+             redis(["ZSCORE", tail_keys.variant_queue_order, tail.member])
+
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+
+    holder_member = holder_admission.member
+
+    assert {:ok, ^holder_member} =
+             redis(["HGET", keys.variant_active, "member"])
+
+    delete_active(holder, scope)
+
+    assert {:ok, {:admitted, promoted}} =
+             Redis.promote_queued(tail_request, promotion_opts(scope, 1))
+
+    assert promoted.operation_id == tail.operation_id
+  end
+
+  test "typed abandon repeats idempotently and rejects mismatched ownership", %{scope: scope} do
+    holder = request(UUIDv7.generate(), @variant_id)
+    queued_request = request()
+
+    assert {:ok, {:admitted, _holder_admission}} =
+             Redis.enqueue_or_return_existing(holder, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, queued}} =
+             Redis.enqueue_or_return_existing(queued_request, opts(scope, b_total: 1))
+
+    reference = reference_for(queued_request, queued)
+    keys = keys_for(queued_request, scope)
+
+    assert {:ok, {:abandoned, _}} =
+             Redis.abandon(reference, :trusted_pre_reservation_abandonment, lookup_opts(scope))
+
+    assert {:ok, sequence_before} = redis(["GET", keys.global_sequence])
+
+    assert {:ok, {:already_abandoned, repeated}} =
+             Redis.abandon(reference, :trusted_pre_reservation_abandonment, lookup_opts(scope))
+
+    assert repeated.operation_id == queued.operation_id
+    assert repeated.operation_epoch == queued.operation_epoch
+    assert {:ok, ^sequence_before} = redis(["GET", keys.global_sequence])
+
+    live_request = request(UUIDv7.generate(), @second_variant_id)
+
+    assert {:ok, {:queued, live}} =
+             Redis.enqueue_or_return_existing(live_request, opts(scope, b_total: 1))
+
+    forged = %{reference_for(live_request, live) | request_fingerprint: String.duplicate("e", 64)}
+
+    assert {:ok, :mismatch} =
+             Redis.abandon(forged, :trusted_pre_reservation_abandonment, lookup_opts(scope))
+  end
+
+  test "typed abandon freezes admitted and recovery states without releasing capacity", %{
+    scope: scope
+  } do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    assert {:ok, :frozen} =
+             Redis.abandon(
+               reference_for(admitted_request, admitted),
+               :trusted_pre_reservation_abandonment,
+               lookup_opts(scope)
+             )
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, "ADMITTED"} = redis(["HGET", keys.request_meta, "state"])
+    admitted_member = admitted.member
+    assert {:ok, ^admitted_member} = redis(["HGET", keys.variant_active, "member"])
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+  end
+
+  test "typed abandon cannot affect reserving or unresolved lifecycle states", %{scope: scope} do
+    holder = request(UUIDv7.generate(), @variant_id)
+
+    assert {:ok, {:admitted, _holder_admission}} =
+             Redis.enqueue_or_return_existing(holder, opts(scope, b_total: 1))
+
+    for state <- ["RESERVING", "UNKNOWN_DB_OUTCOME", "RECOVERING", "UNRESOLVED"] do
+      request = request(UUIDv7.generate(), @variant_id)
+
+      assert {:ok, {:queued, queued}} =
+               Redis.enqueue_or_return_existing(request, opts(scope, b_total: 1))
+
+      keys = keys_for(request, scope)
+
+      assert {:ok, 1} = redis(["ZREM", keys.variant_queue_order, queued.member])
+      assert {:ok, 1} = redis(["ZREM", keys.global_queue_dispatch, queued.member])
+      assert {:ok, 1} = redis(["ZREM", keys.global_queue_expiry, queued.member])
+      assert {:ok, _} = redis(["HSET", keys.request_meta, "state", state])
+      assert {:ok, _} = redis(["HSET", keys.reservation_fence, "state", state])
+
+      assert {:ok, :frozen} =
+               Redis.abandon(
+                 reference_for(request, queued),
+                 :trusted_pre_reservation_abandonment,
+                 lookup_opts(scope)
+               )
+
+      assert {:ok, ^state} = redis(["HGET", keys.request_meta, "state"])
+      assert {:ok, ^state} = redis(["HGET", keys.reservation_fence, "state"])
+      assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+    end
+  end
+
+  defp reference_for(request, admission) do
+    %Reference{
+      reservation_key: request.reservation_key,
+      variant_id: request.variant_id,
+      identity_digest: request.identity_digest,
+      request_fingerprint: request.request_fingerprint,
+      member:
+        if(is_map(admission),
+          do: admission.member,
+          else: Redis.admission_member(request.identity_digest, @hmac_key)
+        ),
+      operation_id: if(is_map(admission), do: admission.operation_id, else: @operation_id),
+      operation_epoch: if(is_map(admission), do: admission.operation_epoch, else: 1)
+    }
+  end
+
+  defp lookup_opts(scope), do: [hmac_key: @hmac_key, scope: scope]
 
   defp request(order_id \\ @order_id, variant_id \\ @variant_id, quantity \\ 1) do
     assert {:ok, request} =
