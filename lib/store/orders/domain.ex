@@ -178,6 +178,53 @@ defmodule Store.Orders do
     InventoryReservations.reserve_inventory_for_checkout(order_id, items, opts)
   end
 
+  @spec reserve_exact_generation(String.t(), String.t(), String.t(), non_neg_integer(), keyword()) ::
+          {:ok,
+           %{
+             reservation: InventoryReservation.t(),
+             inventory_item: Store.Catalog.InventoryItem.t(),
+             replayed?: boolean()
+           }}
+          | {:error, term()}
+  def reserve_exact_generation(order_id, variant_id, reservation_key, quantity, opts \\ [])
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             is_integer(quantity) and is_list(opts) do
+    InventoryReservations.reserve_exact_generation(
+      order_id,
+      variant_id,
+      reservation_key,
+      quantity,
+      opts
+    )
+  end
+
+  @spec recover_exact_generation(String.t(), String.t(), String.t()) ::
+          :not_found
+          | {:ok, {:found, map()}}
+          | {:error, :contradictory_evidence | :database_unavailable | :invalid_identity}
+  def recover_exact_generation(order_id, variant_id, reservation_key)
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) do
+    InventoryReservations.recover_exact_generation(order_id, variant_id, reservation_key)
+  end
+
+  @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
+          | {:error, term()}
+  def release_exact_generation(order_id, variant_id, reservation_key, opts \\ [])
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             is_list(opts) do
+    InventoryReservations.release_exact_generation(order_id, variant_id, reservation_key, opts)
+  end
+
+  @spec consume_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
+          | {:error, term()}
+  def consume_exact_generation(order_id, variant_id, reservation_key, opts \\ [])
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             is_list(opts) do
+    InventoryReservations.consume_exact_generation(order_id, variant_id, reservation_key, opts)
+  end
+
   @spec consume_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{consumed_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}

@@ -22,6 +22,8 @@ defmodule Store.Orders.InventoryAdmission.Request do
                   "expiry_policy"
                 ])
 
+  @renewal_option_keys MapSet.new([:mutation_kind, :expiry_policy])
+
   @server_owned_keys [
     {:reservation_key, "reservation_key", :reservation_key_is_server_derived},
     {:operation_id, "operation_id", :operation_id_is_server_generated},
@@ -41,6 +43,8 @@ defmodule Store.Orders.InventoryAdmission.Request do
   defstruct [
     :order_id,
     :variant_id,
+    :collection_attempt_id,
+    :reservation_generation_id,
     :quantity,
     :reservation_key,
     :identity_digest,
@@ -55,6 +59,8 @@ defmodule Store.Orders.InventoryAdmission.Request do
   @type t :: %__MODULE__{
           order_id: Ecto.UUID.t(),
           variant_id: Ecto.UUID.t(),
+          collection_attempt_id: Ecto.UUID.t() | nil,
+          reservation_generation_id: Ecto.UUID.t() | nil,
           quantity: non_neg_integer(),
           reservation_key: String.t(),
           identity_digest: String.t(),
@@ -108,6 +114,83 @@ defmodule Store.Orders.InventoryAdmission.Request do
 
   def new(_params), do: {:error, :params_must_be_a_map}
 
+  @spec new_renewal_generation(term(), term(), term(), term(), term(), keyword()) ::
+          {:ok, t()} | {:error, atom()}
+  def new_renewal_generation(
+        order_id,
+        variant_id,
+        collection_attempt_id,
+        reservation_generation_id,
+        quantity,
+        opts \\ []
+      )
+
+  def new_renewal_generation(
+        order_id,
+        variant_id,
+        collection_attempt_id,
+        reservation_generation_id,
+        quantity,
+        opts
+      )
+      when is_list(opts) do
+    params = Map.new(opts)
+
+    with true <- Keyword.keyword?(opts) || {:error, :options_must_be_a_keyword_list},
+         :ok <- validate_renewal_options(params),
+         {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
+         {:ok, normalized_variant_id} <- normalize_uuid(variant_id, :variant_id),
+         {:ok, normalized_collection_attempt_id} <-
+           normalize_uuid(collection_attempt_id, :collection_attempt_id),
+         {:ok, normalized_reservation_generation_id} <-
+           normalize_uuid(reservation_generation_id, :reservation_generation_id),
+         :ok <- ensure_uuidv7(normalized_order_id, :order_id),
+         :ok <- ensure_uuidv7(normalized_variant_id, :variant_id),
+         :ok <- ensure_uuidv7(normalized_collection_attempt_id, :collection_attempt_id),
+         :ok <- ensure_uuidv7(normalized_reservation_generation_id, :reservation_generation_id),
+         :ok <- validate_quantity(quantity),
+         {:ok, mutation_kind} <- fetch_mutation_kind(params),
+         {:ok, expiry_policy} <- fetch_expiry_policy(params) do
+      reservation_key =
+        build_renewal_generation_key(
+          normalized_order_id,
+          normalized_variant_id,
+          normalized_collection_attempt_id,
+          normalized_reservation_generation_id
+        )
+
+      {:ok,
+       %__MODULE__{
+         order_id: normalized_order_id,
+         variant_id: normalized_variant_id,
+         collection_attempt_id: normalized_collection_attempt_id,
+         reservation_generation_id: normalized_reservation_generation_id,
+         quantity: quantity,
+         reservation_key: reservation_key,
+         identity_digest: build_identity_digest(reservation_key),
+         request_fingerprint:
+           build_fingerprint(reservation_key, quantity, mutation_kind, expiry_policy),
+         mutation_kind: mutation_kind,
+         expiry_policy: expiry_policy
+       }}
+    else
+      {:error, _reason} = error -> error
+      false -> {:error, :options_must_be_a_keyword_list}
+    end
+  rescue
+    ArgumentError -> {:error, :options_must_be_a_keyword_list}
+  end
+
+  def new_renewal_generation(
+        _order_id,
+        _variant_id,
+        _collection_attempt_id,
+        _reservation_generation_id,
+        _quantity,
+        _opts
+      ),
+      do: {:error, :options_must_be_a_keyword_list}
+
   @spec new(term(), term(), term()) :: {:ok, t()} | {:error, atom()}
   def new(order_id, variant_id, quantity), do: new(order_id, variant_id, quantity, [])
 
@@ -135,6 +218,47 @@ defmodule Store.Orders.InventoryAdmission.Request do
       {:ok, build_reservation_key(normalized_order_id, normalized_variant_id)}
     end
   end
+
+  @spec classify_reservation_key(term()) ::
+          {:ok,
+           {:generic, %{order_id: String.t(), variant_id: String.t()}}
+           | {:renewal_generation,
+              %{
+                order_id: String.t(),
+                variant_id: String.t(),
+                collection_attempt_id: String.t(),
+                reservation_generation_id: String.t()
+              }}}
+          | {:error, :invalid_reservation_key | :reservation_key_not_normalized}
+  def classify_reservation_key(reservation_key) when is_binary(reservation_key) do
+    case String.split(reservation_key, ":") do
+      ["order", order_id, "sku", variant_id] ->
+        classify_uuid_components(reservation_key, :generic, [order_id, variant_id])
+
+      [
+        "order",
+        order_id,
+        "sku",
+        variant_id,
+        "renewal_collection",
+        collection_id,
+        "generation",
+        generation_id
+      ] ->
+        classify_uuid_components(reservation_key, :renewal_generation, [
+          order_id,
+          variant_id,
+          collection_id,
+          generation_id
+        ])
+
+      _parts ->
+        {:error, :invalid_reservation_key}
+    end
+  end
+
+  def classify_reservation_key(_reservation_key),
+    do: {:error, :invalid_reservation_key}
 
   @spec identity_digest(t()) :: String.t() | nil
   def identity_digest(%__MODULE__{identity_digest: identity_digest}), do: identity_digest
@@ -174,8 +298,9 @@ defmodule Store.Orders.InventoryAdmission.Request do
          :ok <- validate_mutation_kind(request.mutation_kind),
          :ok <- validate_expiry_policy(request.expiry_policy),
          :ok <- validate_reservation_key(request, order_id, variant_id),
-         :ok <- validate_identity_digest(request, order_id, variant_id) do
-      validate_fingerprint(request, order_id, variant_id)
+         :ok <- validate_identity_digest(request),
+         :ok <- validate_generation_identity(request, order_id, variant_id) do
+      validate_fingerprint(request)
     end
   end
 
@@ -288,6 +413,46 @@ defmodule Store.Orders.InventoryAdmission.Request do
 
   defp normalize_uuid(_value, :variant_id), do: {:error, :invalid_variant_id}
 
+  defp normalize_uuid(value, :collection_attempt_id) when is_binary(value) do
+    case UUIDv7.decode(value) do
+      {:ok, raw16} -> {:ok, UUIDv7.encode!(raw16)}
+      :error -> {:error, :invalid_collection_attempt_id}
+    end
+  end
+
+  defp normalize_uuid(_value, :collection_attempt_id),
+    do: {:error, :invalid_collection_attempt_id}
+
+  defp normalize_uuid(value, :reservation_generation_id) when is_binary(value) do
+    case UUIDv7.decode(value) do
+      {:ok, raw16} -> {:ok, UUIDv7.encode!(raw16)}
+      :error -> {:error, :invalid_reservation_generation_id}
+    end
+  end
+
+  defp normalize_uuid(_value, :reservation_generation_id),
+    do: {:error, :invalid_reservation_generation_id}
+
+  defp ensure_uuidv7(value, field) do
+    if uuidv7?(value) do
+      :ok
+    else
+      {:error, uuid_error(field)}
+    end
+  end
+
+  defp uuid_error(:order_id), do: :invalid_order_id
+  defp uuid_error(:variant_id), do: :invalid_variant_id
+  defp uuid_error(:collection_attempt_id), do: :invalid_collection_attempt_id
+  defp uuid_error(:reservation_generation_id), do: :invalid_reservation_generation_id
+
+  defp uuidv7?(value) when is_binary(value) do
+    case UUIDv7.decode(value) do
+      {:ok, <<_timestamp::48, 7::4, _rand_a::12, 2::2, _rand_b::62>>} -> true
+      _ -> false
+    end
+  end
+
   defp validate_quantity(quantity) when is_integer(quantity) and quantity >= 0, do: :ok
   defp validate_quantity(_quantity), do: {:error, :quantity_must_be_non_negative_integer}
 
@@ -303,6 +468,19 @@ defmodule Store.Orders.InventoryAdmission.Request do
   defp validate_expiry_policy(_policy), do: {:error, :invalid_expiry_policy}
 
   defp validate_reservation_key(request, order_id, variant_id) do
+    case {is_nil(request.collection_attempt_id), is_nil(request.reservation_generation_id)} do
+      {true, true} ->
+        validate_generic_reservation_key(request, order_id, variant_id)
+
+      {false, false} ->
+        validate_renewal_reservation_key(request, order_id, variant_id)
+
+      _partial_identity ->
+        {:error, :reservation_key_mismatch}
+    end
+  end
+
+  defp validate_generic_reservation_key(request, order_id, variant_id) do
     if request.reservation_key == build_reservation_key(order_id, variant_id) do
       :ok
     else
@@ -310,8 +488,27 @@ defmodule Store.Orders.InventoryAdmission.Request do
     end
   end
 
-  defp validate_identity_digest(request, order_id, variant_id) do
-    expected_digest = build_identity_digest(build_reservation_key(order_id, variant_id))
+  defp validate_renewal_reservation_key(request, order_id, variant_id) do
+    case classify_reservation_key(request.reservation_key) do
+      {:ok,
+       {:renewal_generation,
+        %{
+          order_id: ^order_id,
+          variant_id: ^variant_id,
+          collection_attempt_id: collection_attempt_id,
+          reservation_generation_id: reservation_generation_id
+        }}}
+      when collection_attempt_id == request.collection_attempt_id and
+             reservation_generation_id == request.reservation_generation_id ->
+        :ok
+
+      _ ->
+        {:error, :reservation_key_mismatch}
+    end
+  end
+
+  defp validate_identity_digest(request) do
+    expected_digest = build_identity_digest(request.reservation_key)
 
     if request.identity_digest == expected_digest do
       :ok
@@ -320,12 +517,10 @@ defmodule Store.Orders.InventoryAdmission.Request do
     end
   end
 
-  defp validate_fingerprint(request, order_id, variant_id) do
-    expected_key = build_reservation_key(order_id, variant_id)
-
+  defp validate_fingerprint(request) do
     expected_fingerprint =
       build_fingerprint(
-        expected_key,
+        request.reservation_key,
         request.quantity,
         request.mutation_kind,
         request.expiry_policy
@@ -341,24 +536,145 @@ defmodule Store.Orders.InventoryAdmission.Request do
   defp required_reason(:order_id), do: :order_id_required
   defp required_reason(:variant_id), do: :variant_id_required
 
+  defp validate_generation_identity(request, order_id, variant_id) do
+    if is_nil(request.collection_attempt_id) and is_nil(request.reservation_generation_id) do
+      :ok
+    else
+      validate_generation_key(request, order_id, variant_id)
+    end
+  end
+
+  defp validate_generation_key(request, order_id, variant_id) do
+    with {:ok, collection_id} <-
+           normalize_uuid(request.collection_attempt_id, :collection_attempt_id),
+         {:ok, generation_id} <-
+           normalize_uuid(request.reservation_generation_id, :reservation_generation_id),
+         true <- collection_id == request.collection_attempt_id,
+         true <- generation_id == request.reservation_generation_id,
+         {:ok,
+          {:renewal_generation,
+           %{
+             order_id: ^order_id,
+             variant_id: ^variant_id,
+             collection_attempt_id: ^collection_id,
+             reservation_generation_id: ^generation_id
+           }}} <- classify_reservation_key(request.reservation_key) do
+      :ok
+    else
+      _ -> {:error, :reservation_key_mismatch}
+    end
+  end
+
+  defp validate_renewal_options(params) do
+    with :ok <- validate_server_owned_keys(params),
+         true <- Enum.all?(Map.keys(params), &MapSet.member?(@renewal_option_keys, &1)) do
+      :ok
+    else
+      false -> {:error, :unknown_request_key}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp build_reservation_key(order_id, variant_id),
     do: "order:#{order_id}:sku:#{variant_id}"
 
-  defp canonicalize_reservation_key(reservation_key) when is_binary(reservation_key) do
-    case String.split(reservation_key, ":") do
-      ["order", order_id, "sku", variant_id] ->
-        case canonical_reservation_key(order_id, variant_id) do
-          {:ok, ^reservation_key} -> {:ok, reservation_key}
-          {:ok, _canonical_key} -> {:error, :reservation_key_not_normalized}
-          {:error, _reason} -> {:error, :invalid_reservation_key}
-        end
+  defp build_renewal_generation_key(order_id, variant_id, collection_attempt_id, generation_id) do
+    "order:#{order_id}:sku:#{variant_id}:renewal_collection:#{collection_attempt_id}:generation:#{generation_id}"
+  end
 
-      _parts ->
-        {:error, :invalid_reservation_key}
+  defp canonicalize_reservation_key(reservation_key) when is_binary(reservation_key) do
+    case classify_reservation_key(reservation_key) do
+      {:ok, _identity} -> {:ok, reservation_key}
+      {:error, _reason} = error -> error
     end
   end
 
   defp canonicalize_reservation_key(_reservation_key), do: {:error, :invalid_reservation_key}
+
+  defp classify_uuid_components(reservation_key, :generic, [order_id, variant_id]) do
+    with true <- uuidv7?(order_id),
+         true <- uuidv7?(variant_id),
+         {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
+         {:ok, normalized_variant_id} <- normalize_uuid(variant_id, :variant_id),
+         ^reservation_key <- build_reservation_key(normalized_order_id, normalized_variant_id) do
+      {:ok, {:generic, %{order_id: normalized_order_id, variant_id: normalized_variant_id}}}
+    else
+      _ -> normalized_key_error(reservation_key, build_reservation_key_safe(order_id, variant_id))
+    end
+  end
+
+  defp classify_uuid_components(
+         reservation_key,
+         :renewal_generation,
+         [order_id, variant_id, collection_id, generation_id]
+       ) do
+    with true <- uuidv7?(order_id),
+         true <- uuidv7?(variant_id),
+         true <- uuidv7?(collection_id),
+         true <- uuidv7?(generation_id),
+         {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
+         {:ok, normalized_variant_id} <- normalize_uuid(variant_id, :variant_id),
+         {:ok, normalized_collection_id} <- normalize_uuid(collection_id, :collection_attempt_id),
+         {:ok, normalized_generation_id} <-
+           normalize_uuid(generation_id, :reservation_generation_id),
+         ^reservation_key <-
+           build_renewal_generation_key(
+             normalized_order_id,
+             normalized_variant_id,
+             normalized_collection_id,
+             normalized_generation_id
+           ) do
+      {:ok,
+       {:renewal_generation,
+        %{
+          order_id: normalized_order_id,
+          variant_id: normalized_variant_id,
+          collection_attempt_id: normalized_collection_id,
+          reservation_generation_id: normalized_generation_id
+        }}}
+    else
+      _ ->
+        normalized_key_error(
+          reservation_key,
+          build_renewal_generation_key_safe(order_id, variant_id, collection_id, generation_id)
+        )
+    end
+  end
+
+  defp normalized_key_error(reservation_key, canonical_key) do
+    if is_binary(canonical_key) and reservation_key != canonical_key do
+      {:error, :reservation_key_not_normalized}
+    else
+      {:error, :invalid_reservation_key}
+    end
+  end
+
+  defp build_reservation_key_safe(order_id, variant_id) do
+    with {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
+         {:ok, normalized_variant_id} <- normalize_uuid(variant_id, :variant_id) do
+      build_reservation_key(normalized_order_id, normalized_variant_id)
+    else
+      _ -> nil
+    end
+  end
+
+  defp build_renewal_generation_key_safe(order_id, variant_id, collection_id, generation_id) do
+    with {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
+         {:ok, normalized_variant_id} <- normalize_uuid(variant_id, :variant_id),
+         {:ok, normalized_collection_id} <-
+           normalize_uuid(collection_id, :collection_attempt_id),
+         {:ok, normalized_generation_id} <-
+           normalize_uuid(generation_id, :reservation_generation_id) do
+      build_renewal_generation_key(
+        normalized_order_id,
+        normalized_variant_id,
+        normalized_collection_id,
+        normalized_generation_id
+      )
+    else
+      _ -> nil
+    end
+  end
 
   defp build_identity_digest(reservation_key) do
     {:inventory_admission_identity_v1, reservation_key}

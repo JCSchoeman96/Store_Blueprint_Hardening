@@ -615,6 +615,7 @@ defmodule Store.Orders.InventoryAdmissionStateTest do
                    id: @reservation_id,
                    quantity: 1,
                    state: :active,
+                   reservation_key: "order:#{@order_id}:sku:#{@variant_id}",
                    expires_at: @expires_at,
                    version: 1
                  },

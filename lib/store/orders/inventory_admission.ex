@@ -217,13 +217,8 @@ defmodule Store.Orders.InventoryAdmission do
   def reserve(input, opts \\ [])
 
   def reserve(input, opts) when is_list(opts) do
-    with {:ok, request} <- trusted_request(input),
-         {:ok, redis_result} <- Redis.enqueue_or_return_existing(request, opts),
-         result <- map_reserve_result(redis_result, request) do
-      result
-    else
-      {:error, :unavailable} -> {:error, unavailable_error()}
-      {:error, :invalid_input} -> {:error, validation_error(:invalid_options)}
+    case trusted_request(input) do
+      {:ok, request} -> reserve_request(request, opts)
       {:error, {:invalid_request, reason}} -> {:error, validation_error(reason)}
     end
   rescue
@@ -231,6 +226,56 @@ defmodule Store.Orders.InventoryAdmission do
   end
 
   def reserve(_input, _opts), do: {:error, validation_error(:invalid_options)}
+
+  @spec reserve_renewal_generation(
+          term(),
+          term(),
+          term(),
+          term(),
+          term(),
+          keyword()
+        ) :: {:ok, map()} | {:error, Error.t()}
+  def reserve_renewal_generation(
+        order_id,
+        variant_id,
+        collection_attempt_id,
+        reservation_generation_id,
+        quantity,
+        opts \\ []
+      )
+
+  def reserve_renewal_generation(
+        order_id,
+        variant_id,
+        collection_attempt_id,
+        reservation_generation_id,
+        quantity,
+        opts
+      )
+      when is_list(opts) do
+    case Request.new_renewal_generation(
+           order_id,
+           variant_id,
+           collection_attempt_id,
+           reservation_generation_id,
+           quantity
+         ) do
+      {:ok, request} -> reserve_request(request, opts)
+      {:error, reason} -> {:error, validation_error(reason)}
+    end
+  rescue
+    _error -> {:error, unavailable_error()}
+  end
+
+  def reserve_renewal_generation(
+        _order_id,
+        _variant_id,
+        _collection_attempt_id,
+        _reservation_generation_id,
+        _quantity,
+        _opts
+      ),
+      do: {:error, validation_error(:invalid_options)}
 
   @spec status(Reference.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def status(reference, opts \\ [])
@@ -293,6 +338,16 @@ defmodule Store.Orders.InventoryAdmission do
   end
 
   defp trusted_request(_input), do: {:error, {:invalid_request, :invalid_request}}
+
+  defp reserve_request(request, opts) do
+    with {:ok, redis_result} <- Redis.enqueue_or_return_existing(request, opts),
+         result <- map_reserve_result(redis_result, request) do
+      result
+    else
+      {:error, :unavailable} -> {:error, unavailable_error()}
+      {:error, :invalid_input} -> {:error, validation_error(:invalid_options)}
+    end
+  end
 
   defp map_reserve_result({kind, admission}, request)
        when kind in [:existing, :queued, :admitted] and is_map(admission) do
@@ -395,11 +450,23 @@ defmodule Store.Orders.InventoryAdmission do
     mutation = operation.mutation
     deadline = operation.deadline
 
+    renewal_generation? =
+      case Request.classify_reservation_key(operation.reservation_key) do
+        {:ok, {:renewal_generation, _identity}} -> true
+        _ -> false
+      end
+
     mutation.variant_id == lease.variant_id and
+      matching_lease_reservation_key?(lease, operation.reservation_key, renewal_generation?) and
       operation.identity_digest == lease.identity_digest and
       deadline.db_deadline == lease.db_deadline and
       deadline.lease_deadline == lease.lease_deadline and
       deadline.safety_margin == lease.safety_margin
+  end
+
+  defp matching_lease_reservation_key?(lease, reservation_key, renewal_generation?) do
+    lease.reservation_key == reservation_key or
+      (not renewal_generation? and is_nil(lease.reservation_key))
   end
 
   defp live_replay_decision(operation, request) do
