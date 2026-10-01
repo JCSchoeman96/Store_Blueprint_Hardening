@@ -936,6 +936,67 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
              )
   end
 
+  test "typed status and abandon reject queued evidence owning the active variant member", %{
+    scope: scope
+  } do
+    holder = request()
+    queued_request = request(@second_order_id, @variant_id)
+    options = opts(scope, b_total: 1)
+
+    assert {:ok, {:admitted, _holder}} = Redis.enqueue_or_return_existing(holder, options)
+    assert {:ok, {:queued, queued}} = Redis.enqueue_or_return_existing(queued_request, options)
+
+    keys = keys_for(queued_request, scope)
+    assert {:ok, 0} = redis(["HSET", keys.variant_active, "member", queued.member])
+
+    reference = reference_for(queued_request, queued)
+
+    assert {:error, :unavailable} = Redis.status(reference, lookup_opts(scope))
+
+    assert {:error, :unavailable} =
+             Redis.abandon(reference, :trusted_pre_reservation_abandonment, lookup_opts(scope))
+
+    assert {:ok, "QUEUED"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "QUEUED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert_queue_indexes(keys, queued.member)
+    queued_member = queued.member
+    assert {:ok, ^queued_member} = redis(["HGET", keys.variant_active, "member"])
+  end
+
+  test "typed status and repeated abandon reject abandoned evidence owning the active member", %{
+    scope: scope
+  } do
+    holder = request()
+    abandoned_request = request(@second_order_id, @variant_id)
+    options = opts(scope, b_total: 1)
+
+    assert {:ok, {:admitted, _holder}} = Redis.enqueue_or_return_existing(holder, options)
+
+    assert {:ok, {:queued, abandoned}} =
+             Redis.enqueue_or_return_existing(abandoned_request, options)
+
+    reference = reference_for(abandoned_request, abandoned)
+
+    assert {:ok, {:abandoned, _}} =
+             Redis.abandon(reference, :trusted_pre_reservation_abandonment, lookup_opts(scope))
+
+    keys = keys_for(abandoned_request, scope)
+    assert {:ok, 0} = redis(["HSET", keys.variant_active, "member", abandoned.member])
+
+    assert {:error, :unavailable} = Redis.status(reference, lookup_opts(scope))
+
+    assert {:error, :unavailable} =
+             Redis.abandon(reference, :trusted_pre_reservation_abandonment, lookup_opts(scope))
+
+    assert {:ok, "ABANDONED"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "ABANDONED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, nil} = redis(["ZSCORE", keys.variant_queue_order, abandoned.member])
+    assert {:ok, nil} = redis(["ZSCORE", keys.global_queue_dispatch, abandoned.member])
+    assert {:ok, nil} = redis(["ZSCORE", keys.global_queue_expiry, abandoned.member])
+    abandoned_member = abandoned.member
+    assert {:ok, ^abandoned_member} = redis(["HGET", keys.variant_active, "member"])
+  end
+
   test "typed abandon removes only the exact queued member and never promotes", %{scope: scope} do
     holder = request()
     abandoned_request = request(@second_order_id, @variant_id)

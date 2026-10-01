@@ -239,7 +239,7 @@ defmodule Store.Orders.InventoryAdmission do
     with :ok <- validate_reference(reference),
          {:ok, redis_result} <- Redis.status(reference, opts) do
       case redis_result do
-        {:status, status} -> {:ok, Map.put(status, :reference, reference)}
+        {:status, status} -> {:ok, project_admission(status, reference)}
         :mismatch -> {:error, mismatch_error()}
         :frozen -> {:error, unavailable_error()}
       end
@@ -262,8 +262,8 @@ defmodule Store.Orders.InventoryAdmission do
          {:ok, redis_result} <-
            Redis.abandon(reference, :trusted_pre_reservation_abandonment, opts) do
       case redis_result do
-        {:abandoned, result} -> {:ok, Map.put(result, :reference, reference)}
-        {:already_abandoned, result} -> {:ok, Map.put(result, :reference, reference)}
+        {:abandoned, result} -> {:ok, project_admission(result, reference)}
+        {:already_abandoned, result} -> {:ok, project_admission(result, reference)}
         :mismatch -> {:error, mismatch_error()}
         :frozen -> {:error, unsupported_error()}
       end
@@ -296,7 +296,7 @@ defmodule Store.Orders.InventoryAdmission do
 
   defp map_reserve_result({kind, admission}, request)
        when kind in [:existing, :queued, :admitted] and is_map(admission) do
-    {:ok, Map.put(admission, :reference, reference_from(request, admission))}
+    {:ok, project_admission(admission, reference_from(request, admission))}
   end
 
   defp map_reserve_result(:busy, _request),
@@ -315,6 +315,16 @@ defmodule Store.Orders.InventoryAdmission do
       member: admission.member,
       operation_id: admission.operation_id,
       operation_epoch: admission.operation_epoch
+    }
+  end
+
+  defp project_admission(admission, reference) do
+    %{
+      status: admission.status,
+      state: admission.state,
+      operation_id: admission.operation_id,
+      operation_epoch: admission.operation_epoch,
+      reference: reference
     }
   end
 

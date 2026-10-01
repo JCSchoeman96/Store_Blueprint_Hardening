@@ -1461,6 +1461,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or variant_score == false
       or global_dispatch_score == false
       or global_queue_expiry_score == false
+      or active_member == member
       or global_active_score ~= false
       or tonumber(variant_score) ~= sequence
       or tonumber(global_dispatch_score) ~= sequence
@@ -1508,6 +1509,15 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
 
     return reply(metadata)
+  end
+
+  local terminal_state = metadata[2] == "COMPLETED"
+    or metadata[2] == "REJECTED"
+    or metadata[2] == "EXPIRED"
+    or metadata[2] == "ABANDONED"
+
+  if terminal_state and active_member == member then
+    return unavailable()
   end
 
   if variant_score ~= false
@@ -1676,6 +1686,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     if variant_score ~= false
       or global_dispatch_score ~= false
       or global_queue_expiry_score ~= false
+      or active_member == member
       or global_active_score ~= false then
       return unavailable()
     end
@@ -1703,6 +1714,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or variant_score == false
     or global_dispatch_score == false
     or global_queue_expiry_score == false
+    or active_member == member
     or global_active_score ~= false
     or tonumber(variant_score) ~= sequence
     or tonumber(global_dispatch_score) ~= sequence

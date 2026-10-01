@@ -33,6 +33,9 @@ defmodule Store.Orders.InventoryAdmissionTest do
     assert result.reference.operation_id == result.operation_id
     assert result.reference.operation_epoch == result.operation_epoch
     assert result.reference.reservation_key == "order:#{@order_id}:sku:#{@variant_id}"
+    refute Map.has_key?(result, :lease_token)
+    refute Map.has_key?(result, :owner_epoch)
+    refute Map.has_key?(result, :member)
   end
 
   test "same-variant capacity queues immediately and another variant uses global headroom", %{
@@ -122,6 +125,9 @@ defmodule Store.Orders.InventoryAdmissionTest do
     assert queued_status.state == :queued
     assert queued_status.operation_id == queued.operation_id
     assert queued_stats.query_count == 0
+    refute Map.has_key?(queued_status, :lease_token)
+    refute Map.has_key?(queued_status, :owner_epoch)
+    refute Map.has_key?(queued_status, :member)
 
     {admitted_result, admitted_stats} =
       RepoStats.capture(fn ->
@@ -153,6 +159,9 @@ defmodule Store.Orders.InventoryAdmissionTest do
     assert abandoned_result.state == :abandoned
     assert abandoned_result.operation_id == abandoned.operation_id
     assert stats.query_count == 0
+    refute Map.has_key?(abandoned_result, :lease_token)
+    refute Map.has_key?(abandoned_result, :owner_epoch)
+    refute Map.has_key?(abandoned_result, :member)
 
     assert {:ok, tail_status} = InventoryAdmission.status(tail.reference, lookup_opts(scope))
     assert tail_status.state == :queued
