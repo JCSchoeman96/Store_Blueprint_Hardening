@@ -4424,8 +4424,12 @@ assigned. `EXTERNALIZED` means the surface remains owned outside SUBS and the
 task must not modify it. `SBH-10-01`, `SBH-60-01`, `SBH-10-02`, `SBH-20-01`,
 `SBH-10-06`, and `SBH-10-03` retain `AUTHORITY_ASSIGNED` as completed
 task-specific provenance only. SBH-50-06 authority applies only to its named
-row and expires when that row closes. No authority grant is reusable outside
-its named row and surfaces.
+row and expires when that row closes. Authority applies only to the explicitly
+named row or rows and surfaces. PR #98 is one exceptional common-seam grant,
+jointly assigned to `SBH-50-02` and `SBH-50-03` for the exact bounded
+Entitlements convergence seam described in the canonical main amendment. It
+is not a programme-wide Entitlements grant and does not assign generic
+Entitlements modification authority to `SBH-50-04` or `SBH-50-05`.
 
 | Row | Shared surface or boundary | Shared-authority status | Execution consequence |
 |---|---|---|---|
@@ -4446,10 +4450,10 @@ its named row and surfaces.
 | `SBH-30-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-40-02` | no shared modification identified in this contract | `NONE` | Durable worker path remains dependency-blocked. |
 | `SBH-40-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-50-06` | Subscription-owned `Store.Subscriptions.AccessEffect` resource and optional task-local status/value type; registration in `Store.Subscriptions`; bounded `Store.Subscriptions.Facade` create/reuse and transition functions; focused Subscription fixtures/tests; one AccessEffect PostgreSQL migration with indexes and its Ash/Postgres snapshot; Phase 27 implementation evidence | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.28/v0.1.29 task-specific AccessEffect migration, Ash snapshot, and Facade authority is exhausted and non-reusable. No Entitlements changes and no authority for SBH-50-02 through SBH-50-05. |
-| `SBH-50-07` | Future bounded `Store.Entitlements` issue/revoke primitive supporting caller-owned PostgreSQL transactions, immutable AccessEffect evidence, exact-source convergence, complete results, and after-commit cache/PubSub work | `AUTHORITY_ASSIGNED` | Current unused bounded Entitlements grant consumed from canonical main PR #98. It supports a later separately admitted implementation only; it does not make SBH-50-07, JC-300, JC-245, or JC-246 executable and is not completed provenance. |
-| `SBH-50-02` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
-| `SBH-50-03` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
+| `SBH-50-06` | Subscription-owned `Store.Subscriptions.AccessEffect` resource and optional task-local status/value type; registration in `Store.Subscriptions`; bounded `Store.Subscriptions.Facade` create/reuse and transition functions; focused Subscription fixtures/tests; one AccessEffect PostgreSQL migration with indexes and its Ash/Postgres snapshot; Phase 27 implementation evidence | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.28/v0.1.29 task-specific AccessEffect migration, Ash snapshot, and Facade authority is exhausted and non-reusable. That completed grant authorized no Entitlements changes or authority for SBH-50-02 through SBH-50-05; the later PR #98 common-seam grant is separate. |
+| `SBH-50-07` | Future bounded `Store.Entitlements` issue/revoke primitive supporting caller-owned PostgreSQL transactions, immutable AccessEffect evidence, exact-source convergence, complete results, and after-commit cache/PubSub work | `AUTHORITY_ASSIGNED` | Current unused PR #98 grant records that the common Entitlements seam required by SBH-50-07 has authority. SBH-50-07 owns coverage and cutover proof, not implementation of that seam. `SBH-50-02` / JC-245 and `SBH-50-03` / JC-246 are the executor rows authorized to use the exact common seam under later separate admission. This does not make SBH-50-07, JC-300, JC-245, or JC-246 executable and is not completed provenance. |
+| `SBH-50-02` | Common PR #98 bounded `Store.Entitlements` Subscription-source convergence seam for active/effective JC-245 execution and recovery | `AUTHORITY_ASSIGNED` | Current unused bounded grant. A later separately admitted JC-245 implementation may use only this exact common seam; the row remains `BLOCKED_DEPENDENCY` / non-executable and gains no Subscription lifecycle, target-selection, source-ordering, policy, or generic Entitlements authority. |
+| `SBH-50-03` | Common PR #98 bounded `Store.Entitlements` Subscription-source convergence seam for non-effective JC-246 execution and recovery | `AUTHORITY_ASSIGNED` | Current unused bounded grant. A later separately admitted JC-246 implementation may use only this exact common seam; the row remains `BLOCKED_DEPENDENCY` / non-executable and gains no Subscription lifecycle, target-selection, source-ordering, policy, or generic Entitlements authority. |
 | `SBH-50-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-05` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-60-01` | PlanRevision migration: per-SubscriptionPlan `EFFECTIVE` uniqueness only; corresponding `plan_revisions` Ash snapshot only | `AUTHORITY_ASSIGNED` | Completed task-specific PlanRevision migration/snapshot authority. The authority was used only for `SBH-60-01` and grants no further execution authority after closure. |
@@ -6442,8 +6446,14 @@ transaction-composable exact-source convergence primitive and the post-outer-
 commit Cachex/PubSub projection helper described in the canonical amendment.
 It does not transfer Subscription lifecycle, target selection, source ordering,
 current-AccessEffect selection, or policy authority to Entitlements. It does
-not admit implementation. It becomes completed or exhausted provenance only
-after the authorized implementation has actually closed.
+not admit implementation. The grant is jointly assigned to `SBH-50-02` /
+JC-245 for active/effective execution and recovery through the common fence and
+to `SBH-50-03` / JC-246 for non-effective execution and recovery through the
+same fence. SBH-50-07 / JC-300 consumes proof that this required common seam
+has authority; it does not own implementation of the seam. This is one
+explicit common-seam exception to the row-specific authority rule, not a
+programme-wide Entitlements grant. It becomes completed or exhausted
+provenance only after the authorized implementation has actually closed.
 
 ### Current task and issue state
 
@@ -6465,6 +6475,12 @@ SBH-50-07 implementation/proof state
 
 SBH-50-07 Entitlements shared-authority gate
 = AUTHORITY_ASSIGNED / current bounded grant
+
+SBH-50-02 / JC-245 shared-authority gate
+= AUTHORITY_ASSIGNED / current unused common PR #98 bounded grant
+
+SBH-50-03 / JC-246 shared-authority gate
+= AUTHORITY_ASSIGNED / current unused common PR #98 bounded grant
 
 JC-300
 = Backlog / CONTRACT_FROZEN / non-executable

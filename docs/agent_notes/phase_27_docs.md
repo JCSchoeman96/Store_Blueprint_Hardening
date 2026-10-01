@@ -1441,7 +1441,13 @@ JC-300, JC-245, and JC-246 non-executable.
    post-outer-commit Cachex/PubSub projection helper. It does not move
    Subscription lifecycle, target selection, source ordering,
    current-AccessEffect selection, or policy authority to Entitlements. It is
-   not completed provenance and does not admit implementation.
+   not completed provenance and does not admit implementation. It is jointly
+   assigned to `SBH-50-02` / JC-245 for active/effective execution and recovery
+   through the common fence and to `SBH-50-03` / JC-246 for non-effective
+   execution and recovery through the same fence. SBH-50-07 / JC-300 consumes
+   proof that the required common seam has authority; it does not own
+   implementation of that seam. This is one explicit common-seam exception to
+   the row-specific authority rule, not a programme-wide Entitlements grant.
 5. The state transition is:
 
    ```text
@@ -1486,6 +1492,30 @@ JC-300, JC-245, and JC-246 non-executable.
     serial-admission review against the then-current repository. The JC-229 to
     JC-230 chain may be the most consequential blocker, but no admission is
     made here.
+
+### Shared-authority reconciliation
+
+Section 24 now records the PR #98 grant as a current unused bounded common-seam
+authority on both executor rows:
+
+```text
+SBH-50-02 / JC-245
+shared authority = AUTHORITY_ASSIGNED
+scope = exact PR #98 bounded Entitlements convergence seam
+execution consequence = BLOCKED_DEPENDENCY / non-executable
+
+SBH-50-03 / JC-246
+shared authority = AUTHORITY_ASSIGNED
+scope = exact same common PR #98 convergence seam
+execution consequence = BLOCKED_DEPENDENCY / non-executable
+```
+
+The authority applies only to these explicitly named rows and the bounded
+surface. It is not reusable as a programme-wide Entitlements grant. SBH-50-07
+/ JC-300 remains `AUTHORITY_ASSIGNED` only as proof that the required common
+seam has authority; it does not own seam implementation. SBH-50-04 and
+SBH-50-05 remain `EXTERNALIZED` and must still stop if their work would require
+Entitlements core modification.
 
 ### Plan
 
