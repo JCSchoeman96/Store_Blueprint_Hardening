@@ -1402,3 +1402,151 @@ authority from this governance record.
 - No Oban worker or idempotency policy changes are made. Missing enqueue must
   be recoverable from durable AccessEffect state; queue order is not authority.
 - No telemetry or logging changes are made.
+
+## v0.1.33 Entitlements shared-authority consumption
+
+### Goal
+
+Consume the bounded Entitlements shared-authority grant that became canonical
+on `main` after PR #98. This update removes the separate shared-authority
+blocker from SBH-50-07 while keeping its source-capability blocker and keeping
+JC-300, JC-245, and JC-246 non-executable.
+
+### Links consulted
+
+- [Repository instructions](../../AGENTS.md), read from canonical `origin/main`.
+- [Current active-workstream registry](../agent_rules/active_workstreams.md), read from canonical `origin/main`.
+- [Subscription Hardening Master Register](../hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md), v0.1.32 §52 at exact SUBS base `ec3a4d75175732b6ce95f3f288783591a1b1504b`.
+- [Canonical Entitlements authority amendment](../governance/sbh_50_access_effect_entitlements_authority_amendment.md) from canonical main `a57d359ffe8fba0435d23d68d6243173d194f243`.
+- [PR #98](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/98), merged as `a57d359ffe8fba0435d23d68d6243173d194f243` from certified head `e43f760934bd62071d3ee079420d21a229e37cec`.
+- Live tracker records for [JC-300](https://linear.app/jc-dev/issue/JC-300/sbh-50-07-access-source-coverage-and-executor-production-cutover), [JC-245](https://linear.app/jc-dev/issue/JC-245/sbh-50-02-durable-active-entitlement-issuance-recovery), [JC-246](https://linear.app/jc-dev/issue/JC-246/sbh-50-03-durable-terminal-entitlement-revocation-recovery), [JC-230](https://linear.app/jc-dev/issue/JC-230/sbh-10-05-reconciliation-applies-charged-contract-only), [JC-229](https://linear.app/jc-dev/issue/JC-229/sbh-10-04-renewal-initiation-uses-bound-contract), [JC-228](https://linear.app/jc-dev/issue/JC-228/sbh-10-03-immutable-renewalattempt-charged-contract-snapshot), [JC-239](https://linear.app/jc-dev/issue/JC-239/sbh-30-04-enforce-failed-payment-suspension-boundary), and [JC-242](https://linear.app/jc-dev/issue/JC-242/sbh-40-02-durable-period-boundary-terminalization).
+
+### Decisions / pins
+
+1. The governance branch starts from exact SUBS authority
+   `ec3a4d75175732b6ce95f3f288783591a1b1504b`. Canonical main is
+   `a57d359ffe8fba0435d23d68d6243173d194f243`.
+2. PR #98's certified head `e43f760934bd62071d3ee079420d21a229e37cec` and
+   merge commit have the identical tree
+   `277d6c898da068c109f4bc8d42b8ce5e45abb9a5`. Exact-head CI run
+   `36773404741` passed all five required jobs, and the repository evidence is
+   3 properties, 605 tests, and 0 failures.
+3. PR #98 is governance/docs-only. It adds no shared runtime, dependency,
+   schema, configuration, provider, or CI integration requirement. SUBS reads
+   the canonical amendment by reference and does not merge `main` merely to
+   obtain it. Future implementation admission must inspect current `main`
+   again.
+4. The consumed grant is a current unused bounded Entitlements authority for
+   the common Subscription-source exact convergence primitive and its
+   post-outer-commit Cachex/PubSub projection helper. It does not move
+   Subscription lifecycle, target selection, source ordering,
+   current-AccessEffect selection, or policy authority to Entitlements. It is
+   not completed provenance and does not admit implementation. It is jointly
+   assigned to `SBH-50-02` / JC-245 for active/effective execution and recovery
+   through the common fence and to `SBH-50-03` / JC-246 for non-effective
+   execution and recovery through the same fence. SBH-50-07 / JC-300 consumes
+   proof that the required common seam has authority; it does not own
+   implementation of that seam. This is one explicit common-seam exception to
+   the row-specific authority rule, not a programme-wide Entitlements grant.
+5. The state transition is:
+
+   ```text
+   SBH-50-07 implementation/proof: BLOCKED_DEPENDENCY / No
+   SBH-50-07 Entitlements shared-authority gate:
+     BLOCKED_SHARED_AUTHORITY / unassigned
+     → AUTHORITY_ASSIGNED / current bounded grant
+   ```
+
+   This removes only the shared-authority blocker. Source capabilities remain
+   incomplete, so SBH-50-07 remains `BLOCKED_DEPENDENCY`.
+6. JC-300 remains `Backlog / CONTRACT_FROZEN / READY No` with no formal
+   `blocks` or `blockedBy` edge. JC-245 and JC-246 remain Backlog and
+   non-executable. Canonical READY implementation/proof rows remain zero, and
+   `implementation task_base_sha = none`.
+7. JC-230 remains Backlog and blocked by JC-229; JC-228 is Done. JC-239
+   remains blocked by JC-230 and its other recorded lifecycle prerequisites.
+   JC-242 remains blocked by JC-229, JC-230, and its other recorded
+   prerequisites. JC-247 remains the policy-target owner. No JC-300 formal
+   dependency edge is added, and historical JC-223 edges are unchanged.
+8. The source-capability blockers remain explicit: exact paid-renewal truth
+   from JC-230, suspension lifecycle from JC-239, period-boundary
+   terminalization from JC-242, policy-driven target establishment from JC-247,
+   and the later JC-245/JC-246 executor work. The combined state is:
+
+   ```text
+   CONTRACT_FROZEN
+   + Entitlements authority assigned
+   + source capabilities incomplete
+   = still non-executable
+   ```
+
+9. AccessEffect persists `valid_until_at` but has no explicit target
+   `valid_from_at`. Future Entitlements work must preserve an existing durable
+   start when correct and require exact durable start evidence for a new grant.
+   It must not use worker execution time. If a covered case needs a historical
+   start that AccessEffect cannot represent or deterministically provide, stop
+   at SUBS target authority and request the smallest upstream contract change.
+   This amendment does not authorize an AccessEffect schema change.
+10. This update does not select JC-245, JC-246, or the next upstream task. Once
+    this governance PR is merged and independently verified, run a fresh
+    serial-admission review against the then-current repository. The JC-229 to
+    JC-230 chain may be the most consequential blocker, but no admission is
+    made here.
+
+### Shared-authority reconciliation
+
+Section 24 now records the PR #98 grant as a current unused bounded common-seam
+authority on both executor rows:
+
+```text
+SBH-50-02 / JC-245
+shared authority = AUTHORITY_ASSIGNED
+scope = exact PR #98 bounded Entitlements convergence seam
+execution consequence = BLOCKED_DEPENDENCY / non-executable
+
+SBH-50-03 / JC-246
+shared authority = AUTHORITY_ASSIGNED
+scope = exact same common PR #98 convergence seam
+execution consequence = BLOCKED_DEPENDENCY / non-executable
+```
+
+The authority applies only to these explicitly named rows and the bounded
+surface. It is not reusable as a programme-wide Entitlements grant. SBH-50-07
+/ JC-300 remains `AUTHORITY_ASSIGNED` only as proof that the required common
+seam has authority; it does not own seam implementation. SBH-50-04 and
+SBH-50-05 remain `EXTERNALIZED` and must still stop if their work would require
+Entitlements core modification.
+
+### Plan
+
+1. Update the Master Register to v0.1.33, preserve §52 as historical evidence,
+   record the current Entitlements authority assignment, and keep all source
+   and validity blockers explicit.
+2. Append this Phase 27 evidence with the authority pins, live issue state,
+   validity-start stop rule, main-to-SUBS integration decision, and performance
+   review.
+3. Check the exact-base diff and changed paths. Verify PR #98 provenance,
+   certified/merge tree equality, zero READY rows, no task base, unchanged
+   JC-223 edges, no formal JC-300 dependency edge, and no production
+   integration from main.
+4. Run `git diff --check`, documentation/governance checks, and full `mix check`
+   where the local environment supports them. Open a PR against
+   `hardening/subscriptions`; do not merge or update Linear.
+
+### Performance & Scaling Review
+
+- Hot paths: This docs-only update adds no runtime path or application query. Future source and executor work must report source-write, current-target, and Entitlements query counts and N+1 risk.
+- Warm paths: Cachex and PubSub remain read projections. Invalidation follows the outer transaction commit. The existing 60-second `EntitlementSet` TTL, cache keys, and stampede behavior are unchanged.
+- Cold paths: Projection failure after a committed grant mutation must be repaired by the idempotent post-commit helper without rerunning grant truth. No generic outbox is added.
+- Indexes: Future exact-source locking must use the existing EntitlementGrant source index and avoid a broad user scan. No index or migration is authorized here.
+- Oban and idempotency: No worker uniqueness changes are made. Projection retries must remain safe after an already-`APPLIED` AccessEffect and must not repeat the grant mutation.
+- Telemetry and logging: This amendment adds no instrumentation. Future implementation must record source identity, target fingerprint, convergence result, outer-transaction result, cache invalidation result, broadcast result, and projection retry outcome.
+
+### Verification record
+
+- Worktree: `.worktrees/governance-sbh-50-entitlements-authority-consumption`.
+- Branch: `subs-governance/sbh-50-entitlements-authority-consumption`.
+- Exact task base: `ec3a4d75175732b6ce95f3f288783591a1b1504b`.
+- Changed paths are limited to the Master Register and this Phase 27 note.
+- PR review, exact-head CI, human merge, and post-merge tree verification are
+  pending. This note does not claim implementation admission or final PASS.
