@@ -183,3 +183,51 @@ Implement the Phase 27 variable-subscription spine without violating the existin
 - `STORE_TEST_DB_SUFFIX=sbh1004 mix check`: PASS; 576 tests, 0 failures, Credo clean, and documentation generated. Existing low-confidence Sobelow findings and generated-documentation warnings are outside this docs-only change.
 - `git diff --check`: PASS.
 - Changed files are governance and agent-note Markdown only; no runtime code, tests, migration, or Ash snapshot changed.
+
+## SBH-50 Entitlements shared-authority amendment (2026-09-30)
+
+### Links consulted
+
+- [`SBH-50 Entitlements shared-authority amendment`](../governance/sbh_50_access_effect_entitlements_authority_amendment.md)
+- [`SBH-10-04 cross-domain authority amendment`](../governance/sbh_10_04_cross_domain_authority_amendment.md)
+- [`Side Effects Quarantine`](../governance/side_effects_quarantine.md)
+- [`Subscription invariant registry`](../hardening/03_invariant_registry.md)
+- Official [`Ecto.Repo.in_transaction?/0`](https://ecto.hexdocs.pm/Ecto.Repo.html#in_transaction?/0), [`Ash actions`](https://ash.hexdocs.pm/actions.html), [`Ash create actions`](https://ash.hexdocs.pm/create-actions.html), and [`AshPostgres.Repo`](https://ash-postgres.hexdocs.pm/AshPostgres.Repo.html) documentation
+- Accepted SUBS evidence `ec3a4d75175732b6ce95f3f288783591a1b1504b`, Master Register v0.1.32 §52
+- Live Linear records for JC-300, JC-245, and JC-246, checked 2026-09-30
+
+### Decisions and pins
+
+- The governance branch is based on canonical main `a74d3f05a5f250300d0c2293f294e77785f6818f` and consumes accepted SUBS evidence at `ec3a4d75175732b6ce95f3f288783591a1b1504b`.
+- The grant is limited to the common Subscription-source Entitlements convergence seam used by JC-245 and JC-246. It does not transfer Subscription lifecycle, target policy, or generic Entitlements ownership.
+- The future function requires an explicit caller-owned `Store.Repo` PostgreSQL transaction and must fail closed outside it. It does not start or commit the outer transaction. An Ash action transaction or `after_transaction` hook is not proof that the outer source/effect transaction committed.
+- The caller supplies immutable target evidence. Entitlements does not load mutable Plan or Subscription state, choose policy, determine current AccessEffect, or mark an AccessEffect `APPLIED`.
+- The function converges the complete exact source `(source_kind = :subscription, source_id = subscription_id)`. An effective target leaves only its exact kind/scope active, and a non-effective target leaves no active grant for that source. Other sources remain untouched.
+- `valid_from_at` may not come from worker execution time. Existing durable starts may be preserved; new grants require durable source evidence. A missing historical start boundary stops implementation at SUBS target authority.
+- Grant mutation returns complete success or an error that prevents the outer transaction from committing. Partial counts and swallowed per-row errors are not success.
+- Cachex invalidation and PubSub happen only after the successful outer commit. Projection failure is visible and retryable; retry repairs projections without repeating grant truth.
+- JC-300, JC-245, and JC-246 remain non-READY. No task base, Linear update, SUBS register edit, or JC-223 edge change is part of this amendment.
+
+### Plan
+
+1. Independently review the new governance document against canonical main and the accepted SUBS evidence.
+2. Run exact-base, changed-path, documentation, governance, and repository checks.
+3. Open a PR against `main`; do not merge it.
+4. After human merge and independent merge-tree verification, let SUBS consume the canonical authority in a separate bounded register/admission update.
+5. Only a later implementation admission may add the typed input/result and focused Entitlements tests within the granted paths.
+
+### Performance & Scaling Review
+
+- **Hot:** The future executor locks the exact Subscription-source grant set and performs bounded convergence writes in the caller-owned transaction. Implementation evidence must include query counts, lock scope, and N+1 risk. No runtime query is added here.
+- **Warm:** EntitlementSet remains a Cachex read projection with the existing 60-second TTL. Invalidation is post-commit only. No Redis, ETS, or authorization-cache authority is added.
+- **Cold:** A committed grant mutation with failed cache or PubSub projection is retried through an idempotent projection helper. Projection repair does not rerun grant mutation. No generic outbox is authorized.
+- **Indexes:** The later implementation must use the existing source index and grant identity without a migration or broad user scan. It must report whether exact-source locks use those indexes.
+- **Oban and idempotency:** This amendment changes no worker uniqueness. A projection retry must remain safe after an already-`APPLIED` AccessEffect.
+- **Telemetry and logging:** Future implementation must record source identity, target fingerprint, convergence result, transaction result, cache result, broadcast result, and projection retry outcome.
+
+### Verification
+
+- `git diff --check`: required and run before PR.
+- Exact-base diff and changed-path audit: required. Only the new governance document and this Phase 27 note may change.
+- Runtime, test, dependency, schema, migration, Ash snapshot, worker, configuration, SUBS register, Linear, and JC-223 edge audits: required to remain unchanged.
+- `MIX_DEPS_PATH=/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions/deps MIX_BUILD_PATH=/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions/.worktrees/governance-sbh-50-entitlements-shared-authority/_build mix check`: static and documentation gates passed (`check.req_usage`, web-boundary gates, naming, API, moduledoc, docs notes, and subscriptions docs sync). The command then failed while creating `Store.Repo` because the test database connection lacked the `:password` credential. Full test execution remains pending a configured database environment.
