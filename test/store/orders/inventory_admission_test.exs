@@ -1,0 +1,252 @@
+defmodule Store.Orders.InventoryAdmissionTest do
+  use ExUnit.Case, async: false
+
+  alias Store.Orders.InventoryAdmission
+  alias Store.Orders.InventoryAdmission.{Redis, Reference, Request}
+  alias Store.Support.Errors.Error
+  alias Store.Support.ID.UUIDv7
+  alias Store.Support.RateLimit.RedixClient
+  alias Store.Support.Telemetry.RepoStats
+
+  @hmac_key "ia03-test-only-trusted-key-material"
+  @order_id "018ecb40-c457-73e6-a400-000398daddd7"
+  @second_order_id "018ecb40-c457-73e6-a400-000398daddd8"
+  @variant_id "018ecb40-c457-73e6-a400-000398daddd9"
+  @second_variant_id "018ecb40-c457-73e6-a400-000398dadda0"
+  @operation_id "018ecb40-c457-73e6-a400-000398daddaa"
+
+  setup do
+    scope =
+      "ia03_orchestration_#{System.system_time(:nanosecond)}_#{System.unique_integer([:positive])}"
+
+    {:ok, scope: scope}
+  end
+
+  test "valid generic reserve returns admitted coordination state", %{scope: scope} do
+    request = params()
+
+    assert {:ok, result} = InventoryAdmission.reserve(request, opts(scope, b_total: 2))
+    assert result.state == :admitted
+    assert result.status == :admitted
+    assert is_binary(result.operation_id)
+    assert result.operation_epoch == 1
+    assert result.reference.operation_id == result.operation_id
+    assert result.reference.operation_epoch == result.operation_epoch
+    assert result.reference.reservation_key == "order:#{@order_id}:sku:#{@variant_id}"
+    refute Map.has_key?(result, :lease_token)
+    refute Map.has_key?(result, :owner_epoch)
+    refute Map.has_key?(result, :member)
+  end
+
+  test "same-variant capacity queues immediately and another variant uses global headroom", %{
+    scope: scope
+  } do
+    options = opts(scope, b_total: 2)
+
+    assert {:ok, first} = InventoryAdmission.reserve(params(), options)
+
+    assert {:ok, queued} =
+             InventoryAdmission.reserve(params(@second_order_id, @variant_id), options)
+
+    assert queued.state == :queued
+    assert queued.status == :queued
+    assert queued.operation_id != first.operation_id
+
+    assert {:ok, other_variant} =
+             InventoryAdmission.reserve(params(@second_order_id, @second_variant_id), options)
+
+    assert other_variant.state == :admitted
+    assert other_variant.operation_epoch == 3
+  end
+
+  test "exact live replay returns the same operation identity and epoch", %{scope: scope} do
+    options = opts(scope, b_total: 2)
+
+    assert {:ok, first} = InventoryAdmission.reserve(params(), options)
+    assert {:ok, replay} = InventoryAdmission.reserve(params(), options)
+
+    assert replay.state == :admitted
+    assert replay.operation_id == first.operation_id
+    assert replay.operation_epoch == first.operation_epoch
+    assert replay.reference == first.reference
+  end
+
+  test "changed live fingerprint fails with the idempotency mismatch code", %{scope: scope} do
+    options = opts(scope, b_total: 2)
+    assert {:ok, _first} = InventoryAdmission.reserve(params(), options)
+
+    assert {:error, %Error{code: "IDEMPOTENCY_KEY_REUSE_MISMATCH"}} =
+             InventoryAdmission.reserve(params(@order_id, @variant_id, 2), options)
+  end
+
+  test "definite capacity backpressure maps to governed busy", %{scope: scope} do
+    options = opts(scope, b_total: 1, q_variant_max: 0)
+    assert {:ok, _first} = InventoryAdmission.reserve(params(), options)
+
+    assert {:error, %Error{code: "INVENTORY_ADMISSION_BUSY"}} =
+             InventoryAdmission.reserve(params(@second_order_id, @variant_id), options)
+  end
+
+  test "Redis uncertainty maps to admission unavailable", %{scope: scope} do
+    assert {:error, %Error{code: "INVENTORY_ADMISSION_UNAVAILABLE"}} =
+             InventoryAdmission.reserve(params(), Keyword.delete(opts(scope), :hmac_key))
+  end
+
+  test "status on a missing reference does not create or admit state", %{scope: scope} do
+    request = request(@second_order_id, @second_variant_id)
+    reference = reference_for(request, nil)
+
+    {result, stats} =
+      RepoStats.capture(fn ->
+        InventoryAdmission.status(reference, lookup_opts(scope))
+      end)
+
+    assert {:error, %Error{code: "INVENTORY_ADMISSION_UNAVAILABLE"}} = result
+    assert stats.query_count == 0
+
+    keys = keys_for(request, scope)
+    assert {:ok, 0} = redis(["EXISTS", keys.global_sequence])
+    assert {:ok, 0} = redis(["EXISTS", keys.request_meta, keys.reservation_fence])
+  end
+
+  test "queued and admitted status report current coordination without Repo work", %{
+    scope: scope
+  } do
+    options = opts(scope, b_total: 1)
+    assert {:ok, admitted} = InventoryAdmission.reserve(params(), options)
+
+    assert {:ok, queued} =
+             InventoryAdmission.reserve(params(@second_order_id, @variant_id), options)
+
+    {queued_result, queued_stats} =
+      RepoStats.capture(fn -> InventoryAdmission.status(queued.reference, lookup_opts(scope)) end)
+
+    assert {:ok, queued_status} = queued_result
+    assert queued_status.state == :queued
+    assert queued_status.operation_id == queued.operation_id
+    assert queued_stats.query_count == 0
+    refute Map.has_key?(queued_status, :lease_token)
+    refute Map.has_key?(queued_status, :owner_epoch)
+    refute Map.has_key?(queued_status, :member)
+
+    {admitted_result, admitted_stats} =
+      RepoStats.capture(fn ->
+        InventoryAdmission.status(admitted.reference, lookup_opts(scope))
+      end)
+
+    assert {:ok, admitted_status} = admitted_result
+    assert admitted_status.state == :admitted
+    assert admitted_status.operation_id == admitted.operation_id
+    assert admitted_stats.query_count == 0
+  end
+
+  test "queued abandon is idempotent and does not promote the next waiter", %{scope: scope} do
+    options = opts(scope, b_total: 1)
+    assert {:ok, _holder} = InventoryAdmission.reserve(params(), options)
+
+    assert {:ok, abandoned} =
+             InventoryAdmission.reserve(params(@second_order_id, @variant_id), options)
+
+    assert {:ok, tail} =
+             InventoryAdmission.reserve(params(UUIDv7.generate(), @variant_id), options)
+
+    {result, stats} =
+      RepoStats.capture(fn ->
+        InventoryAdmission.abandon(abandoned.reference, lookup_opts(scope))
+      end)
+
+    assert {:ok, abandoned_result} = result
+    assert abandoned_result.state == :abandoned
+    assert abandoned_result.operation_id == abandoned.operation_id
+    assert stats.query_count == 0
+    refute Map.has_key?(abandoned_result, :lease_token)
+    refute Map.has_key?(abandoned_result, :owner_epoch)
+    refute Map.has_key?(abandoned_result, :member)
+
+    assert {:ok, tail_status} = InventoryAdmission.status(tail.reference, lookup_opts(scope))
+    assert tail_status.state == :queued
+  end
+
+  test "abandon of admitted state fails closed and preserves its permit", %{scope: scope} do
+    options = opts(scope, b_total: 1)
+    assert {:ok, admitted} = InventoryAdmission.reserve(params(), options)
+
+    assert {:error, %Error{code: "INVENTORY_ADMISSION_UNSUPPORTED"}} =
+             InventoryAdmission.abandon(admitted.reference, lookup_opts(scope))
+
+    assert {:ok, queued} =
+             InventoryAdmission.reserve(params(@second_order_id, @variant_id), options)
+
+    assert queued.state == :queued
+  end
+
+  test "invalid generic input is rejected without bypassing Request validation", %{scope: scope} do
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} =
+             InventoryAdmission.reserve(%{order_id: "not-a-uuid"}, opts(scope))
+  end
+
+  test "server-owned admission evidence cannot be supplied by the caller", %{scope: scope} do
+    input = Map.merge(params(), %{member: String.duplicate("f", 64), operation_epoch: 99})
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} =
+             InventoryAdmission.reserve(input, opts(scope))
+  end
+
+  defp params(order_id \\ @order_id, variant_id \\ @variant_id, quantity \\ 1) do
+    %{order_id: order_id, variant_id: variant_id, quantity: quantity}
+  end
+
+  defp request(order_id, variant_id), do: request(order_id, variant_id, 1)
+
+  defp request(order_id, variant_id, quantity) do
+    assert {:ok, request} = Request.new(params(order_id, variant_id, quantity))
+    request
+  end
+
+  defp opts(scope, overrides \\ []) do
+    Keyword.merge(
+      [
+        hmac_key: @hmac_key,
+        scope: scope,
+        b_total: 1,
+        q_variant_max: 10,
+        q_global_max: 20,
+        queue_window_ms: 10_000,
+        db_window_ms: 2_000,
+        lease_window_ms: 3_000,
+        safety_margin_ms: 500,
+        cleanup_limit: 2
+      ],
+      overrides
+    )
+  end
+
+  defp lookup_opts(scope), do: [hmac_key: @hmac_key, scope: scope]
+
+  defp reference_for(request, admission) do
+    %Reference{
+      reservation_key: request.reservation_key,
+      variant_id: request.variant_id,
+      identity_digest: request.identity_digest,
+      request_fingerprint: request.request_fingerprint,
+      member:
+        if(is_map(admission),
+          do: admission.member,
+          else: Redis.admission_member(request.identity_digest, @hmac_key)
+        ),
+      operation_id: if(is_map(admission), do: admission.operation_id, else: @operation_id),
+      operation_epoch: if(is_map(admission), do: admission.operation_epoch, else: 1)
+    }
+  end
+
+  defp keys_for(request, scope) do
+    member = Redis.admission_member(request.identity_digest, @hmac_key)
+
+    assert {:ok, keys} =
+             Redis.key_set(request.variant_id, member, request.identity_digest, scope: scope)
+
+    keys
+  end
+
+  defp redis(command), do: Redix.command(RedixClient.connection_name(), command)
+end
