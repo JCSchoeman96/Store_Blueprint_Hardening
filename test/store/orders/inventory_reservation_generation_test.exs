@@ -71,6 +71,22 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
     end
   end
 
+  test "zero quantity exact reserve does not create an active generation row" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 8)
+    key = generation_key(order.id, variant_id)
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Orders.reserve_exact_generation(order.id, variant_id, key, 0)
+
+    assert reservation_count(order.id, variant_id) == 0
+    assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 0
+
+    assert {:ok, %{reservation: %{state: :active}}} =
+             Store.Orders.reserve_exact_generation(order.id, variant_id, key, 1)
+  end
+
   test "generic and renewal reservations cannot both be active for one pair" do
     order = create_order!()
     variant_id = UUIDv7.generate()
@@ -99,6 +115,81 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
       assert Enum.count(results, fn {:ok, result} -> result.replayed? end) == 1
       assert reservation_count(order.id, variant_id) == 1
       assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 2
+    end)
+  end
+
+  test "generic consume fails closed if a selected reservation turns terminal before its lock" do
+    with_committed_fixture(fn order, variant_id ->
+      assert {:ok, _} =
+               Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
+
+      parent = self()
+
+      lock_task =
+        Task.async(fn ->
+          Sandbox.unboxed_run(Store.Repo, fn ->
+            Repo.transaction(fn ->
+              Repo.one!(
+                from item in InventoryItem,
+                  where: item.variant_id == ^variant_id,
+                  lock: "FOR UPDATE"
+              )
+
+              send(parent, :inventory_item_locked)
+
+              receive do
+                :release_inventory -> Store.Orders.release_reservations_for_order(order.id)
+              after
+                10_000 -> Repo.rollback(:timed_out_waiting_to_release_inventory)
+              end
+            end)
+          end)
+        end)
+
+      assert_receive :inventory_item_locked, 10_000
+
+      handler_id = "reservation_generation_consume_race_#{System.unique_integer([:positive])}"
+      query_ref = make_ref()
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:store, :repo, :query],
+          fn _event, _measurements, metadata, {test_pid, ref} ->
+            query = metadata[:query]
+            normalized_query = if is_binary(query), do: String.upcase(query), else: ""
+
+            if String.contains?(normalized_query, "FROM \"INVENTORY_RESERVATIONS\"") and
+                 String.contains?(normalized_query, "ORDER BY") and
+                 not String.contains?(normalized_query, "FOR UPDATE") do
+              send(test_pid, {:generic_reservation_candidates_selected, ref})
+            end
+          end,
+          {parent, query_ref}
+        )
+
+      consume_task =
+        Task.async(fn ->
+          Sandbox.unboxed_run(Store.Repo, fn ->
+            Store.Orders.consume_reservations_for_order(order.id)
+          end)
+        end)
+
+      try do
+        assert_receive {:generic_reservation_candidates_selected, ^query_ref}, 10_000
+        send(lock_task.pid, :release_inventory)
+        assert {:error, %Error{code: "RESERVATION_CONFLICT"}} = Task.await(consume_task, 10_000)
+        assert {:ok, _release_result} = Task.await(lock_task, 10_000)
+
+        reservation =
+          Repo.get_by!(InventoryReservation, order_id: order.id, variant_id: variant_id)
+
+        assert reservation.state == :cancelled
+        assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 0
+      after
+        send(lock_task.pid, :release_inventory)
+        :telemetry.detach(handler_id)
+      end
     end)
   end
 

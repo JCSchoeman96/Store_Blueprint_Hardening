@@ -592,9 +592,7 @@ defmodule Store.Orders.InventoryAdmission.Request do
   defp canonicalize_reservation_key(_reservation_key), do: {:error, :invalid_reservation_key}
 
   defp classify_uuid_components(reservation_key, :generic, [order_id, variant_id]) do
-    with true <- uuidv7?(order_id),
-         true <- uuidv7?(variant_id),
-         {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
+    with {:ok, normalized_order_id} <- normalize_uuid(order_id, :order_id),
          {:ok, normalized_variant_id} <- normalize_uuid(variant_id, :variant_id),
          ^reservation_key <- build_reservation_key(normalized_order_id, normalized_variant_id) do
       {:ok, {:generic, %{order_id: normalized_order_id, variant_id: normalized_variant_id}}}

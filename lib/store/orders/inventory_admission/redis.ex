@@ -298,7 +298,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         "owner_epoch",
         "db_deadline_ms",
         "lease_deadline_ms",
-        "safety_margin_ms"
+        "safety_margin_ms",
+        "reservation_key"
       )
       local active_score = redis.pcall("ZSCORE", KEYS[6], meta[5])
 
@@ -319,6 +320,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         and active_values[11] == meta[14]
         and active_values[12] == meta[15]
         and active_values[13] == meta[13]
+        and active_values[14] == meta[20]
         and active_score ~= false
         and tonumber(active_score) == tonumber(meta[15])
     end

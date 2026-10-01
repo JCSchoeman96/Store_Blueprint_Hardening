@@ -37,6 +37,19 @@ defmodule Store.Orders.InventoryAdmissionRenewalGenerationTest do
              })
   end
 
+  test "legacy generic UUID versions remain valid canonical keys" do
+    order_id = "550e8400-e29b-41d4-a716-446655440000"
+    variant_id = "550e8400-e29b-41d4-a716-446655440001"
+
+    assert {:ok, request} =
+             Request.new(%{order_id: order_id, variant_id: variant_id, quantity: 1})
+
+    assert {:ok, {:generic, %{order_id: ^order_id, variant_id: ^variant_id}}} =
+             Request.classify_reservation_key(request.reservation_key)
+
+    assert Request.valid?(request)
+  end
+
   test "renewal constructor derives exact key and stable identity evidence" do
     assert {:ok, request} = renewal_request()
     assert {:ok, replay} = renewal_request()
@@ -423,6 +436,39 @@ defmodule Store.Orders.InventoryAdmissionRenewalGenerationTest do
 
     assert {:error, %Error{code: "INVENTORY_ADMISSION_UNAVAILABLE"}} =
              InventoryAdmission.status(result.reference, lookup_options(scope))
+  end
+
+  test "renewal enqueue replay fails closed when the active key disagrees", %{scope: scope} do
+    assert {:ok, request} = renewal_request()
+
+    assert {:ok, result} =
+             InventoryAdmission.reserve_renewal_generation(
+               @order_id,
+               @variant_id,
+               @collection_attempt_id,
+               @generation_id,
+               2,
+               admission_options(scope)
+             )
+
+    assert {:ok, keys} =
+             Redis.key_set(
+               request.variant_id,
+               result.reference.member,
+               request.identity_digest,
+               scope: scope
+             )
+
+    assert {:ok, 0} =
+             Redix.command(RedixClient.connection_name(), [
+               "HSET",
+               keys.variant_active,
+               "reservation_key",
+               "order:#{@order_id}:sku:#{@variant_id}"
+             ])
+
+    assert {:error, :unavailable} =
+             Redis.enqueue_or_return_existing(request, admission_options(scope))
   end
 
   defp renewal_request(generation_id \\ @generation_id) do

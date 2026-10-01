@@ -189,13 +189,17 @@ defmodule Store.Orders do
   def reserve_exact_generation(order_id, variant_id, reservation_key, quantity, opts \\ [])
       when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
              is_integer(quantity) and is_list(opts) do
-    InventoryReservations.reserve_exact_generation(
-      order_id,
-      variant_id,
-      reservation_key,
-      quantity,
-      opts
-    )
+    if quantity > 0 do
+      InventoryReservations.reserve_exact_generation(
+        order_id,
+        variant_id,
+        reservation_key,
+        quantity,
+        opts
+      )
+    else
+      {:error, Error.new("RESERVATION_CONFLICT", "Invalid exact reservation input", %{})}
+    end
   end
 
   @spec recover_exact_generation(String.t(), String.t(), String.t()) ::

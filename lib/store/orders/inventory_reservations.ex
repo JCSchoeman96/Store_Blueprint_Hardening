@@ -79,7 +79,7 @@ defmodule Store.Orders.InventoryReservations do
       {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
   end
 
-  @spec reserve_exact_generation(String.t(), String.t(), String.t(), non_neg_integer(), keyword()) ::
+  @spec reserve_exact_generation(String.t(), String.t(), String.t(), pos_integer(), keyword()) ::
           {:ok,
            %{
              reservation: InventoryReservation.t(),
@@ -91,7 +91,7 @@ defmodule Store.Orders.InventoryReservations do
 
   def reserve_exact_generation(order_id, variant_id, reservation_key, quantity, opts)
       when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
-             is_integer(quantity) and quantity >= 0 and is_list(opts) do
+             is_integer(quantity) and quantity > 0 and is_list(opts) do
     with {:ok, identity} <- exact_generation_identity(order_id, variant_id, reservation_key),
          {:ok, _now, expires_at} <- exact_reservation_window(opts) do
       reserve_exact_generation_transactional(identity, quantity, expires_at)
@@ -820,13 +820,25 @@ defmodule Store.Orders.InventoryReservations do
 
     rows =
       InventoryReservation
-      |> where([r], r.reservation_key in ^reservation_keys and r.state == :active)
+      |> where([r], r.reservation_key in ^reservation_keys)
       |> where_generic_reservation_key()
       |> order_by([r], asc: r.variant_id, asc: r.id)
       |> lock("FOR UPDATE")
       |> Repo.all()
 
-    {:ok, rows}
+    candidate_evidence =
+      MapSet.new(candidates, &{&1.id, &1.order_id, &1.variant_id, &1.reservation_key})
+
+    locked_evidence =
+      MapSet.new(rows, &{&1.id, &1.order_id, &1.variant_id, &1.reservation_key})
+
+    if MapSet.equal?(candidate_evidence, locked_evidence) and
+         Enum.all?(rows, &(&1.state == :active)) do
+      {:ok, rows}
+    else
+      {:error,
+       Error.new("RESERVATION_CONFLICT", "Generic reservations changed before mutation", %{})}
+    end
   end
 
   defp apply_inventory_counter_deltas([], [], _reserved_multiplier, _stock_multiplier),
