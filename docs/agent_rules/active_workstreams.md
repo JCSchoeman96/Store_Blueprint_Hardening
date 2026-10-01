@@ -1088,7 +1088,7 @@ This section records dynamic status only. It does not override the accepted PLAT
 - `origin/main` = `a57d359ffe8fba0435d23d68d6243173d194f243` at this refresh (canonical main before this governance PR); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
 - `origin/hardening/s0-baseline` = `f122b24bcf78f48f2954d372cef38c06ebcc1e5e` (current fetched persistent S0 tip after PR #115)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip after PR #91 reconciliation)
-- `origin/hardening/subscriptions` = `f621d2db355d3ef2c1531f73b0c698a323cc768e` (current fetched persistent SUBS tip after PR #88 reconciliation)
+- `origin/hardening/subscriptions` = `bd0555c41bb014326b0754329f2ca5fbf0f8911b` (current persistent SUBS tip after PR #99 / v0.1.33 authority consumption)
 - PR #90 = MERGED / ACCEPTED into `main`
 - PR #91 = MERGED / ACCEPTED into `hardening/platform-security`
 - PR #6 = MERGED into `hardening/s0-baseline`
