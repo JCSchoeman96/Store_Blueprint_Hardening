@@ -390,11 +390,69 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
     create_inventory_item!(variant_id, 4)
     key = generation_key(order.id, variant_id)
 
-    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+    assert {:error, :invalid_identity} =
              Store.Orders.reserve_exact_generation(order.id, other_variant, key, 1)
 
     assert {:error, :invalid_identity} =
              Store.Orders.recover_exact_generation(order.id, other_variant, key)
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.release_exact_generation(order.id, other_variant, key)
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.consume_exact_generation(order.id, other_variant, key)
+
+    assert reservation_count(order.id, variant_id) == 0
+    assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 0
+  end
+
+  test "exact reserve reports a database lock timeout as an ambiguous outcome" do
+    with_committed_fixture(fn order, variant_id ->
+      key = generation_key(order.id, variant_id)
+
+      result =
+        with_inventory_item_locked(variant_id, fn ->
+          Store.Orders.reserve_exact_generation(order.id, variant_id, key, 1)
+        end)
+
+      assert {:error, :ambiguous_database_outcome} = result
+      refute match?({:error, %Error{code: "RESERVATION_CONFLICT"}}, result)
+      assert :not_found == Store.Orders.recover_exact_generation(order.id, variant_id, key)
+      assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 0
+    end)
+  end
+
+  test "exact release and consume report database lock timeouts as ambiguous outcomes" do
+    with_committed_fixture(fn order, variant_id ->
+      key = generation_key(order.id, variant_id)
+
+      assert {:ok, %{reservation: %{state: :active}}} =
+               Store.Orders.reserve_exact_generation(order.id, variant_id, key, 1)
+
+      release_result =
+        with_inventory_item_locked(variant_id, fn ->
+          Store.Orders.release_exact_generation(order.id, variant_id, key)
+        end)
+
+      assert {:error, :ambiguous_database_outcome} = release_result
+      refute match?({:error, %Error{code: "RESERVATION_CONFLICT"}}, release_result)
+
+      assert {:ok, {:found, %{state: :active}}} =
+               Store.Orders.recover_exact_generation(order.id, variant_id, key)
+
+      consume_result =
+        with_inventory_item_locked(variant_id, fn ->
+          Store.Orders.consume_exact_generation(order.id, variant_id, key)
+        end)
+
+      assert {:error, :ambiguous_database_outcome} = consume_result
+      refute match?({:error, %Error{code: "RESERVATION_CONFLICT"}}, consume_result)
+
+      assert {:ok, {:found, %{state: :active}}} =
+               Store.Orders.recover_exact_generation(order.id, variant_id, key)
+
+      assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 1
+    end)
   end
 
   test "reservation paths keep fixed operations and bounded enumeration queries" do
@@ -585,6 +643,57 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
         Repo.delete_all(from r in InventoryReservation, where: r.order_id == ^order.id)
         Repo.delete_all(from i in InventoryItem, where: i.variant_id == ^variant_id)
         Repo.delete_all(from o in Order, where: o.id == ^order.id)
+      end
+    end)
+  end
+
+  defp with_inventory_item_locked(variant_id, fun) do
+    parent = self()
+
+    lock_task =
+      Task.async(fn ->
+        Sandbox.unboxed_run(Store.Repo, fn ->
+          lock_inventory_item_in_transaction(variant_id, parent)
+        end)
+      end)
+
+    assert_receive {:exact_inventory_item_locked, lock_backend_pid}, 10_000
+
+    try do
+      mutation_task =
+        Task.async(fn ->
+          Sandbox.unboxed_run(Store.Repo, fn ->
+            {:ok, %{rows: [[mutation_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
+            Repo.query!("SET lock_timeout = '100ms'")
+            {mutation_backend_pid, fun.()}
+          end)
+        end)
+
+      {mutation_backend_pid, result} = Task.await(mutation_task, 10_000)
+      refute lock_backend_pid == mutation_backend_pid
+      result
+    after
+      send(lock_task.pid, :release_exact_inventory_lock)
+      Task.await(lock_task, 10_000)
+    end
+  end
+
+  defp lock_inventory_item_in_transaction(variant_id, parent) do
+    Repo.transaction(fn ->
+      {:ok, %{rows: [[backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
+
+      Repo.one!(
+        from item in InventoryItem,
+          where: item.variant_id == ^variant_id,
+          lock: "FOR UPDATE"
+      )
+
+      send(parent, {:exact_inventory_item_locked, backend_pid})
+
+      receive do
+        :release_exact_inventory_lock -> :ok
+      after
+        10_000 -> Repo.rollback(:timed_out_waiting_to_release_inventory)
       end
     end)
   end

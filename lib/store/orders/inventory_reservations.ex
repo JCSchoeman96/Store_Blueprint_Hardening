@@ -13,6 +13,10 @@ defmodule Store.Orders.InventoryReservations do
 
   @default_reservation_ttl_seconds 15 * 60
   @default_expiry_batch_size 500
+  @exact_reservation_unique_constraints [
+    "inventory_reservations_unique_active_order_variant_index",
+    "inventory_reservations_unique_reservation_key_index"
+  ]
 
   @spec reserve_inventory(String.t(), [map()], keyword()) ::
           {:ok, %{reservations: [InventoryReservation.t()], inventory_items: [InventoryItem.t()]}}
@@ -86,7 +90,7 @@ defmodule Store.Orders.InventoryReservations do
              inventory_item: InventoryItem.t(),
              replayed?: boolean()
            }}
-          | {:error, term()}
+          | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
   def reserve_exact_generation(order_id, variant_id, reservation_key, quantity, opts \\ [])
 
   def reserve_exact_generation(order_id, variant_id, reservation_key, quantity, opts)
@@ -96,9 +100,12 @@ defmodule Store.Orders.InventoryReservations do
          {:ok, _now, expires_at} <- exact_reservation_window(opts) do
       reserve_exact_generation_transactional(identity, quantity, expires_at)
     end
-  rescue
-    _error -> {:error, Error.new("RESERVATION_CONFLICT", "Exact reservation failed", %{})}
   end
+
+  def reserve_exact_generation(order_id, variant_id, reservation_key, _quantity, _opts)
+      when not is_binary(order_id) or not is_binary(variant_id) or
+             not is_binary(reservation_key),
+      do: {:error, :invalid_identity}
 
   def reserve_exact_generation(_order_id, _variant_id, _reservation_key, _quantity, _opts),
     do: {:error, Error.new("RESERVATION_CONFLICT", "Invalid exact reservation input", %{})}
@@ -122,7 +129,7 @@ defmodule Store.Orders.InventoryReservations do
 
   @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
-          | {:error, term()}
+          | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
   def release_exact_generation(order_id, variant_id, reservation_key, opts \\ [])
 
   def release_exact_generation(order_id, variant_id, reservation_key, opts)
@@ -132,16 +139,19 @@ defmodule Store.Orders.InventoryReservations do
          {:ok, now} <- exact_operation_now(opts) do
       mutate_exact_generation(identity, now, :release)
     end
-  rescue
-    _error -> {:error, Error.new("RESERVATION_CONFLICT", "Exact reservation release failed", %{})}
   end
+
+  def release_exact_generation(order_id, variant_id, reservation_key, _opts)
+      when not is_binary(order_id) or not is_binary(variant_id) or
+             not is_binary(reservation_key),
+      do: {:error, :invalid_identity}
 
   def release_exact_generation(_order_id, _variant_id, _reservation_key, _opts),
     do: {:error, Error.new("RESERVATION_CONFLICT", "Invalid exact release input", %{})}
 
   @spec consume_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
-          | {:error, term()}
+          | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
   def consume_exact_generation(order_id, variant_id, reservation_key, opts \\ [])
 
   def consume_exact_generation(order_id, variant_id, reservation_key, opts)
@@ -151,9 +161,12 @@ defmodule Store.Orders.InventoryReservations do
          {:ok, now} <- exact_operation_now(opts) do
       mutate_exact_generation(identity, now, :consume)
     end
-  rescue
-    _error -> {:error, Error.new("RESERVATION_CONFLICT", "Exact reservation consume failed", %{})}
   end
+
+  def consume_exact_generation(order_id, variant_id, reservation_key, _opts)
+      when not is_binary(order_id) or not is_binary(variant_id) or
+             not is_binary(reservation_key),
+      do: {:error, :invalid_identity}
 
   def consume_exact_generation(_order_id, _variant_id, _reservation_key, _opts),
     do: {:error, Error.new("RESERVATION_CONFLICT", "Invalid exact consume input", %{})}
@@ -172,16 +185,7 @@ defmodule Store.Orders.InventoryReservations do
          reservation_key: reservation_key
        }}
     else
-      _ ->
-        {:error,
-         Error.new(
-           "RESERVATION_CONFLICT",
-           "Exact key does not match expected order and variant",
-           %{
-             order_id: order_id,
-             variant_id: variant_id
-           }
-         )}
+      _ -> {:error, :invalid_identity}
     end
   end
 
@@ -246,12 +250,15 @@ defmodule Store.Orders.InventoryReservations do
     case result do
       {:ok, {reservation, inventory_item, replayed?}} ->
         unless replayed?, do: invalidate_variant_availability([identity.variant_id])
-
         {:ok, %{reservation: reservation, inventory_item: inventory_item, replayed?: replayed?}}
 
       {:error, error} ->
-        {:error, error}
+        exact_mutation_transaction_error(error)
     end
+  rescue
+    error in Postgrex.Error -> exact_mutation_database_error(error)
+    error in DBConnection.ConnectionError -> exact_mutation_database_error(error)
+    error in Ecto.ConstraintError -> exact_mutation_database_error(error)
   end
 
   defp mutate_exact_generation(identity, now, action) do
@@ -269,8 +276,12 @@ defmodule Store.Orders.InventoryReservations do
         {:ok, %{reservation: reservation, changed?: changed?}}
 
       {:error, error} ->
-        {:error, error}
+        exact_mutation_transaction_error(error)
     end
+  rescue
+    error in Postgrex.Error -> exact_mutation_database_error(error)
+    error in DBConnection.ConnectionError -> exact_mutation_database_error(error)
+    error in Ecto.ConstraintError -> exact_mutation_database_error(error)
   end
 
   defp exact_generation_transaction(identity, now, :release),
@@ -476,6 +487,47 @@ defmodule Store.Orders.InventoryReservations do
   defp exact_reservation_conflict(message, details) do
     Error.new("RESERVATION_CONFLICT", message, details)
   end
+
+  # Call recover_exact_generation/3 before another mutation after this result.
+  # The failed database call may have happened on either side of the commit.
+  defp exact_mutation_transaction_error(%Postgrex.Error{} = error),
+    do: exact_mutation_database_error(error)
+
+  defp exact_mutation_transaction_error(%DBConnection.ConnectionError{} = error),
+    do: exact_mutation_database_error(error)
+
+  defp exact_mutation_transaction_error(%Ecto.ConstraintError{} = error),
+    do: exact_mutation_database_error(error)
+
+  defp exact_mutation_transaction_error(error), do: {:error, error}
+
+  defp exact_mutation_database_error(%Postgrex.Error{
+         postgres: %{code: code, constraint: constraint}
+       })
+       when code in [:unique_violation, "23505"] and
+              constraint in @exact_reservation_unique_constraints do
+    {:error,
+     Error.new("RESERVATION_CONFLICT", "Exact reservation uniqueness conflict", %{
+       constraint: constraint
+     })}
+  end
+
+  defp exact_mutation_database_error(%Ecto.ConstraintError{type: :unique, constraint: constraint})
+       when constraint in @exact_reservation_unique_constraints do
+    {:error,
+     Error.new("RESERVATION_CONFLICT", "Exact reservation uniqueness conflict", %{
+       constraint: constraint
+     })}
+  end
+
+  defp exact_mutation_database_error(%Postgrex.Error{}),
+    do: {:error, :ambiguous_database_outcome}
+
+  defp exact_mutation_database_error(%DBConnection.ConnectionError{}),
+    do: {:error, :ambiguous_database_outcome}
+
+  defp exact_mutation_database_error(%Ecto.ConstraintError{}),
+    do: {:error, :ambiguous_database_outcome}
 
   defp run_checkout_reservation_transaction(order_id, requests, expires_at, now) do
     Repo.transaction(fn ->

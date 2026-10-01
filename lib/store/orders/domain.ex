@@ -185,7 +185,7 @@ defmodule Store.Orders do
              inventory_item: Store.Catalog.InventoryItem.t(),
              replayed?: boolean()
            }}
-          | {:error, term()}
+          | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
   def reserve_exact_generation(order_id, variant_id, reservation_key, quantity, opts \\ [])
       when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
              is_integer(quantity) and is_list(opts) do
@@ -213,7 +213,7 @@ defmodule Store.Orders do
 
   @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
-          | {:error, term()}
+          | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
   def release_exact_generation(order_id, variant_id, reservation_key, opts \\ [])
       when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
              is_list(opts) do
@@ -222,7 +222,7 @@ defmodule Store.Orders do
 
   @spec consume_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
-          | {:error, term()}
+          | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
   def consume_exact_generation(order_id, variant_id, reservation_key, opts \\ [])
       when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
              is_list(opts) do
