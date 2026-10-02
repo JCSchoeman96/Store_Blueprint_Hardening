@@ -573,8 +573,8 @@ propagation only as above.
 migrations/schema/dependency changes; Redis stock truth; SBH-10-04 subscription
 orchestration; Checkout/Payment/provider redesign.
 
-Resulting state after this governance record (implementation not started until a
-separate coding task on `hardening/s0-baseline`):
+State recorded by PR #120 when IA-04 was admitted, before implementation started
+(historical provenance):
 
 ```text
 S0 lifecycle = READY
@@ -584,6 +584,84 @@ accepted S0 tip = f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
 IA-04 = AUTHORIZED / NOT STARTED
 IA-05+ = NOT AUTHORIZED
 ```
+
+### IA-04 implementation-state transition and PR #123 provenance (2026-10-02)
+
+PR #120 merged and was post-merge verified. It admitted the full IA-04 task on
+the accepted S0 task base but left execution `AUTHORIZED / NOT STARTED`. This
+governance change records the execution transition:
+
+```text
+AUTHORIZED / NOT STARTED
+        ↓
+AUTHORIZED / IMPLEMENTING
+```
+
+Transition guards and provenance:
+
+- PR #120 admitted full-scope IA-04 and was merged and post-merge verified.
+- PR #120 merge commit: `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`; its candidate
+  and merge trees both equal `b7473e6b73eb1a3bb8bdbd7131ef6a1ac58ea070`.
+- The implementation branch was created from the exact accepted task base.
+- The first bounded coding task was issued, producing the initial Slice-1 candidate.
+- The independent Slice-1 review returned `CHANGES REQUIRED`.
+- PR #123 merged the post-admission configuration and startup-authority correction.
+- Implementation remains serial and paused until this governance transition is
+  merged and independently verified.
+
+```text
+Task base: f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+Implementation branch: hardening/s0-ia04
+Initial Slice-1 candidate HEAD: 0a03f1898dc3eec80f255db4e03cd6bb7cfc1fc7
+Slice 1: CHANGES REQUIRED / PAUSED FOR GOVERNANCE RECONCILIATION
+```
+
+PR #123 provenance:
+
+```text
+Reviewed head: d5f4052fcae4ccbb4e8345070ba63985a22cae3d
+Merge: c6aabd412fe66ce778a51ecba5361dfebdbc2052
+Reviewed/merge tree: 801a744a49100eb20e63f3be48a2566f8dd6b282
+Exact-head CI run: 36989453282 (PASS)
+```
+
+PR #123 added the typed configuration fields `database_safety_window_ms`,
+`recovery_retry_budget`, `recovery_deadline_ms`, and
+`redis_restart_quarantine_ms`, with validation requiring a positive safety window,
+retry budget, and restart quarantine, and `recovery_deadline_ms` greater than
+`database_safety_window_ms`. These fields remain configuration only.
+
+`lib/store/application.ex` is conditionally writable only for IA-04 ENFORCED
+startup validation after the supervised Redis child is available. No other
+`Store.Application` authority exists.
+
+The resumed Slice-1 correction may modify exactly these files:
+
+```text
+lib/store/orders/inventory_admission/config.ex
+lib/store/application.ex
+config/config.exs
+config/runtime.exs
+config/test.exs
+test/store/orders/inventory_admission_test.exs
+```
+
+This boundary does not add behavior beyond PR #123's authority. Slice 1 has not
+passed review. It may resume on the existing `hardening/s0-ia04` branch only after
+this governance PR merges and is independently verified.
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = ACTIVE NEXT STEP, NOT YET ACCEPTED
+Slice 2 = NOT STARTED / BLOCKED ON SLICE-1 PASS
+IA-05+ = NOT AUTHORIZED
+```
+
+No parallel IA-04 coding agents are authorized. `hardening/s0-ia04` remains the
+sole implementation branch. Do not begin Redis claim/fence Slice 2 until corrected
+Slice 1 receives independent `PASS`. Slice 2 includes `claim_reserving`, shared
+reservation mutation fences, `release_known_outcome`, and `mark_unknown_and_fence`.
+Recording IA-04 as `IMPLEMENTING` does not start Slice 2 or mean Slice 1 passed.
 
 ### PLATFORM
 
@@ -1137,7 +1215,7 @@ No lane requires another lane to finish first unless its exact task declares a v
 
 Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS has completed the activation recorded by SUB-ACT-03 and remains `READY`; S0 is `READY` under its S0-specific activation record; PLATFORM is `READY` under the activation record above.
 
-S0 `READY` does not itself authorize production implementation. S0 tasks require separate explicit task admission. As of the IA-04 admission record below, GitHub #101 IA-04 is `AUTHORIZED / NOT STARTED` on accepted S0 tip `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; IA-05+ remains `NOT AUTHORIZED`. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
+S0 `READY` does not itself authorize production implementation. S0 tasks require separate explicit task admission. PR #120 admitted GitHub #101 IA-04 on accepted S0 task base `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; the later implementation-state transition records IA-04 as `AUTHORIZED / IMPLEMENTING`. IA-05+ remains `NOT AUTHORIZED`. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
 
 ---
 
@@ -1244,7 +1322,7 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `c6aabd412fe66ce778a51ecba5361dfebdbc2052` at this refresh (canonical main after PR #123); resolve with `git fetch origin && git rev-parse origin/main` before work.
+- `origin/main` = `ddc59e42941a859eeb6ae72e311c87fff10d7996` at this refresh (canonical main after PR #124); resolve with `git fetch origin && git rev-parse origin/main` before work.
 - `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
@@ -1269,6 +1347,8 @@ This section records dynamic status only. It does not override accepted lifecycl
   merge tree `e4728ccb132041e73d80e0247707af2544ca7c9b` equals the reviewed head tree
 - PR #123 = MERGED / ACCEPTED into `main` as
   `c6aabd412fe66ce778a51ecba5361dfebdbc2052`; S0 IA-04 configuration/startup-authority correction preserved by this reconciliation
+- PR #124 = MERGED / ACCEPTED into `main` as
+  `ddc59e42941a859eeb6ae72e311c87fff10d7996`; IA-04 implementation-state transition to `AUTHORIZED / IMPLEMENTING` and its Slice-1/Slice-2 guards are preserved by this reconciliation
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 - PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (historical SUBS main reconciliation; see record above)
 - PR #89 = MERGED / ACCEPTED into `main`
@@ -1281,8 +1361,9 @@ Current JC-229 / SBH-10-04 serial-admission evidence:
 - the human has explicitly selected JC-229 / SBH-10-04 for implementation in owner-authored PR #122 comment `#5950367213`, posted after PR #121 merged and explicitly approving `8a21739555de1dde8f448bfd7e1172b1caeb54c3` as the exact JC-229 `task_base_sha` subject to PR #122 merge and post-merge verification
 - accepted post-governance SUBS tip = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
 - candidate JC-229 `task_base_sha` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
-- production implementation branch = not created by this registry refresh
-- Phase B may create one fresh `subs-task/sbh-10-04-*` branch from that exact SHA only after this registry refresh is human-merged and independently post-merge verified
+- fresh post-readmission Phase-B implementation branch = not created
+- stale pre-readmission branch `subs-task/sbh-10-04-bound-renewal-initiation` still exists at `08b28937c001b4f35350bcf5de6fdd052fc7a4c3` as PR #78 evidence; it is not the fresh Phase-B branch and must not be resumed
+- Phase B may create one fresh `subs-task/sbh-10-04-*` branch from the exact task base only after this registry refresh is human-merged and independently post-merge verified
 - PR #78 remains stale partial evidence and must not be resumed
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
