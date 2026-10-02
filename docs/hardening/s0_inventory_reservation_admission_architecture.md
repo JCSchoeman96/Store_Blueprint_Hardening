@@ -1754,14 +1754,28 @@ lib/store/orders/inventory_admission/config.ex
 Typed loader/validator only. Governs server-owned `DISABLED | ENFORCED`, `B_total`,
 `Q_variant_max`, `Q_global_max`, DB/admission deadlines, lease window, safety margin,
 queue window, terminal/evidence retention, cleanup bounds, HMAC/key version material,
-and quarantine/fail-closed controls required by the frozen plan. Production default
-`DISABLED` unless deployment explicitly supplies reviewed ENFORCED settings. `ENFORCED`
-with invalid/missing Redis/budget/deadline configuration fails closed. `B_total` must
-preserve reviewed Store.Repo headroom; never infer `B_total = pool_size`. `K_v` remains
-`1`. No request/client mode selection. Mode change requires deployment drain of live
-protected operations. No arbitrary production capacity numbers. No Redis server
-deployment change. `Store.Application` changes are not authorized unless later
-implementation review proves them strictly necessary.
+and quarantine/fail-closed controls required by the frozen plan. The typed contract
+also owns `database_safety_window_ms`, `recovery_retry_budget`,
+`recovery_deadline_ms`, and `redis_restart_quarantine_ms`. Validate
+`database_safety_window_ms > 0`, `recovery_retry_budget > 0`,
+`recovery_deadline_ms > database_safety_window_ms`, and
+`redis_restart_quarantine_ms > 0`. These values are configuration only. They do
+not authorize IA-05 recovery execution or IA-06 reaper behavior and are not passed to
+the current IA-03 Redis options.
+
+Production default `DISABLED` unless deployment explicitly supplies reviewed
+ENFORCED settings. `ENFORCED` with invalid or missing static configuration, or
+without the existing admission Redis capability, must fail application startup.
+After the supervised Redis child is available, a narrowly scoped
+`Store.Application` startup hook loads the typed configuration and checks the
+existing supervised Redis connection. DISABLED startup does not require admission
+Redis validation. `config/runtime.exs` must not perform Redis network side effects.
+The startup hook must not perform queue operations, reservation mutation, recovery,
+retries, reaping, topology inference, or capacity derivation. `B_total` must
+preserve reviewed Store.Repo headroom; never infer `B_total = pool_size`. `K_v`
+remains `1`. No request/client mode selection. Mode change requires deployment
+drain of live protected operations. No arbitrary production capacity numbers. No
+Redis server deployment change.
 
 Registry-backed admission error codes already exist; `error_codes.ex` need not change.
 
@@ -1794,6 +1808,12 @@ lib/store/workers/expire_pending_provider_setup_orders_worker.ex
 Preserve commercial/lifecycle semantics; propagate governed admission/fence outcomes
 only.
 
+### Conditionally writable startup file
+
+`lib/store/application.ex` is conditionally writable only for the IA-04 ENFORCED
+startup validation hook described above. This correction grants no other supervision,
+domain, queue, reservation, recovery, retry, reaper, topology, or capacity behavior.
+
 ### Frozen read-only production files
 
 ```text
@@ -1802,7 +1822,6 @@ lib/store/orders/inventory_admission/lease.ex
 lib/store/orders/inventory_reservation.ex
 lib/store/catalog/inventory_item.ex
 lib/store/catalog/product.ex
-lib/store/application.ex
 ```
 
 If implementation proves any must change, STOP for independent scope review.
