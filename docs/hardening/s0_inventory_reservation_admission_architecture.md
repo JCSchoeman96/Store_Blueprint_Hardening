@@ -4,7 +4,8 @@ Status: FROZEN architecture. The accepted architecture decisions remain unchange
 Canonical task authority is tracked in `active_workstreams.md`; section 20 records
 the completed generic IA-03 admission, section 21 records the separate
 PR #80 renewal-generation prerequisite admission, and section 22 records the full-scope
-IA-04 task admission and its implementation-state transition. IA-01, IA-02, and generic
+IA-04 task admission and its implementation-state transition; section 23 records the
+independent Slice-1 acceptance and Slice-2 serial activation. IA-01, IA-02, and generic
 IA-03 are complete and frozen. The historical S0-IA-AUTH-03 record documented the prior
 bounded IA-03 authorization. S0-IA-AUTH-03R1 corrected only that record's Redis
 support file boundary for typed `status` and `abandon` primitives.
@@ -1942,19 +1943,142 @@ config/test.exs
 test/store/orders/inventory_admission_test.exs
 ```
 
-This correction boundary is not new scope. After this governance PR merges and is
-independently verified, Slice 1 may resume on the existing branch. Slice 1 has not
-passed review.
+This correction boundary and paused state describe authority before the independent
+Slice-1 review. They are historical provenance and are superseded by the acceptance
+and serial activation record below.
+
+### 23. IA-04 Slice-1 acceptance and Slice-2 serial activation
+
+This section records a bounded execution transition within IA-04. It does not record
+IA-04 phase completion, change the frozen implementation plan, or authorize IA-05+.
+
+Accepted Slice-1 evidence:
+
+```text
+Task base: f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+Implementation branch: hardening/s0-ia04
+Accepted Slice-1 HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
+Accepted Slice-1 tree: 96d6145fbdfb2650dc63726b75e757374251a26f
+Independent review verdict: PASS
+```
+
+The accepted Slice-1 branch diff contains exactly:
+
+```text
+config/config.exs
+config/runtime.exs
+config/test.exs
+lib/store/application.ex
+lib/store/orders/inventory_admission/config.ex
+test/store/orders/inventory_admission_test.exs
+```
+
+Accepted Slice-1 outcomes:
+
+```text
+typed InventoryAdmission configuration = ACCEPTED
+DISABLED / ENFORCED server-owned gate = ACCEPTED
+capacity/headroom validation = ACCEPTED
+queue/deadline configuration = ACCEPTED
+recovery/quarantine configuration fields = ACCEPTED
+ENFORCED startup Redis readiness gate = ACCEPTED
+terminal replay-retention invariant = ACCEPTED
+```
+
+Freeze the terminal replay-retention rule:
+
+```text
+evidence_handoff_window_ms =
+  max(
+    queue_window_ms,
+    lease_window_ms + safety_margin_ms
+  )
+
+metadata_retention_ms > evidence_handoff_window_ms
+```
+
+The comparison is strict. Retain these configuration invariants:
+
+```text
+database_safety_window_ms > 0
+recovery_retry_budget > 0
+recovery_deadline_ms > database_safety_window_ms
+redis_restart_quarantine_ms > 0
+
+lease_window_ms >= db_window_ms + safety_margin_ms
+
+B_total <= reviewed_repo_capacity - reviewed_headroom
+```
+
+The current IA-04 slice state is:
 
 ```text
 IA-04 overall = AUTHORIZED / IMPLEMENTING
-Slice 1 = ACTIVE NEXT STEP, NOT YET ACCEPTED
-Slice 2 = NOT STARTED / BLOCKED ON SLICE-1 PASS
+
+Slice 1 = PASS / ACCEPTED / FROZEN
+accepted head = 75674e4104c61c198a09fcbb3026df27a71f62fd
+
+Slice 2 = ACTIVE NEXT STEP / NOT STARTED
+
+Slice 3+ = NOT STARTED / SERIAL-BLOCKED
+
 IA-05+ = NOT AUTHORIZED
 ```
 
-No parallel IA-04 coding agents are authorized. `hardening/s0-ia04` remains the
-sole implementation branch. Do not begin Redis claim/fence Slice 2 until corrected
-Slice 1 receives independent `PASS`. Slice 2 includes `claim_reserving`, shared
-reservation mutation fences, `release_known_outcome`, and `mark_unknown_and_fence`.
-Recording IA-04 as `IMPLEMENTING` does not start Slice 2 or mean Slice 1 passed.
+Slice 2 may start only from exact accepted Slice-1 HEAD
+`75674e4104c61c198a09fcbb3026df27a71f62fd`. Slice 2 is Redis coordination only.
+Its entire writable production/test scope is exactly:
+
+```text
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+Authorized Slice-2 Redis primitives:
+
+```text
+claim_reserving
+renew_lease
+release_known_outcome
+mark_unknown_and_fence
+
+acquire_shared_mutation_fence
+release_shared_mutation_fence_known_outcome
+mark_shared_mutation_unknown
+```
+
+Slice 2 does not authorize `operation.ex` changes, `lease.ex` changes,
+InventoryAdmission service wiring, PostgreSQL reservation execution, Orders routing,
+Checkout/Payments/SUBS changes, workers, migrations, schema changes, or IA-05 recovery
+execution.
+
+Preserve the lifecycle boundary:
+
+```text
+ADMITTED -> RESERVING
+
+RESERVING -> COMPLETED
+RESERVING -> REJECTED
+RESERVING -> UNKNOWN_DB_OUTCOME
+```
+
+Do not authorize `UNKNOWN_DB_OUTCOME -> RECOVERING` or `RECOVERING -> ...`.
+
+Shared lifecycle fences do not enqueue, acquire `K_v`, or acquire `B_total`; each
+operation must acquire its complete target set atomically or acquire none. For an
+unknown database outcome, retain capacity, the exact reservation fence, and operation
+evidence. Do not promote a waiter or release on lease expiry. Redis remains
+coordination only; PostgreSQL remains durable truth.
+
+A fresh coding agent may perform Slice 2 only on the existing sole IA-04 line:
+
+```text
+branch: hardening/s0-ia04
+worktree: the existing sole IA-04 implementation worktree
+starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
+```
+
+No parallel Slice-2 agent or second IA-04 branch is authorized. Slice 3+ remains
+serial-blocked, and IA-05+ remains not authorized. Issue #101 is aligned to this
+accepted Slice-1 head and records Slice 2 as selected next, pending this canonical
+governance transition; this section does not modify the issue.
