@@ -2,9 +2,10 @@
 
 Status: FROZEN architecture. The accepted architecture decisions remain unchanged.
 Canonical task authority is tracked in `active_workstreams.md`; section 20 records
-the completed generic IA-03 admission and section 21 records the separate
-PR #80 renewal-generation prerequisite admission. IA-01, IA-02, and generic IA-03
-are complete and frozen. The historical S0-IA-AUTH-03 record documented the prior
+the completed generic IA-03 admission, section 21 records the separate
+PR #80 renewal-generation prerequisite admission, and section 22 records the current
+full-scope IA-04 task admission. IA-01, IA-02, and generic IA-03 are complete and
+frozen. The historical S0-IA-AUTH-03 record documented the prior
 bounded IA-03 authorization. S0-IA-AUTH-03R1 corrected only that record's Redis
 support file boundary for typed `status` and `abandon` primitives.
 
@@ -39,22 +40,24 @@ The separately admitted renewal-generation prerequisite is also now complete:
 - Certified-head to merge comparison: one commit ahead with zero changed files.
 - Independent post-merge verification: `PASS`.
 
-S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. The PR #80
-renewal-generation prerequisite is `COMPLETE / FROZEN` under the admission and closure
-evidence in section 21. Completion is bounded to that prerequisite and is not
-continuation authority for another S0 slice. The reconciliation prerequisite for the
-generic admission was satisfied by PR #83:
+At completion of the PR #117 prerequisite closure (before section 22), S0 remained
+`READY` and IA-04 and later were `NOT AUTHORIZED`. The PR #80 renewal-generation
+prerequisite is `COMPLETE / FROZEN` under the admission and closure evidence in
+section 21. Completion is bounded to that prerequisite and is not continuation
+authority for another S0 slice. Current IA-04 authority is recorded in section 22.
+The reconciliation prerequisite for the generic admission was satisfied by PR #83:
 
 - Canonical main reconciled: `d78a916472a75c9ffebea33acf6b07f41ffe07f3`.
 - Accepted S0 integration: `f4127902c3f328b76674724faa6a473c629c01ef`.
 - Exact-head CI run `36250010176`, attempt 1: `PASS`.
 - Independent post-integration review: `PASS`.
 
-S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. The PR #80
-renewal-generation prerequisite is separately `COMPLETE / FROZEN` under section 21.
-This completion does not reopen the integration prerequisite or authorize IA-04+.
-Section 20 records the completed generic IA-03 contract; section 21 records the
-renewal task admission and completion boundary.
+At that same historical point, S0 remained `READY`, IA-04 and later were
+`NOT AUTHORIZED`, and the PR #80 renewal-generation prerequisite was separately
+`COMPLETE / FROZEN` under section 21. That completion did not reopen the integration
+prerequisite or authorize IA-04+. Section 20 records the completed generic IA-03
+contract; section 21 records the renewal task admission and completion boundary;
+section 22 records current IA-04 authority.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1094,6 +1097,10 @@ IA-03 COMPLETE / FROZEN
 PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite
 COMPLETE / FROZEN
 
+IA-04 AUTHORIZED / NOT STARTED (GitHub #101; section 22; governance on `main`)
+
+IA-05+ NOT AUTHORIZED
+
 Accepted S0 tip: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`
 
 S0-CLOSE-02 BLOCKED
@@ -1195,10 +1202,11 @@ This addendum does not change `K_v`, `B_total`, Redis structures outside the exa
 
 The following admission governed the generic caller-independent IA-03 Redis
 orchestration against task base
-`f4127902c3f328b76674724faa6a473c629c01ef`. S0 remains `READY`. Generic IA-03 is
+`f4127902c3f328b76674724faa6a473c629c01ef`. S0 remained `READY`. Generic IA-03 is
 now `COMPLETE / FROZEN` under the evidence recorded at the top of this document.
-IA-04 and later remain `NOT AUTHORIZED`, and IA-03 completion did not authorize
-them. This admission added no lifecycle state and did not change the frozen lifecycle.
+At generic IA-03 completion, IA-04 and later remained `NOT AUTHORIZED`, and IA-03
+completion did not authorize them. Current authority is recorded in section 22. This
+admission added no lifecycle state and did not change the frozen lifecycle.
 
 Generic IA-03 uses only the existing identity form:
 
@@ -1547,15 +1555,18 @@ new reservation Resource
 Redis inventory authority
 ```
 
-IA-04 and later remain `NOT AUTHORIZED`. PR #78 remains stale draft evidence and is
-not modified or resumed. PR #117 has now satisfied the S0-side implementation,
+At completion of the PR #117 prerequisite closure recorded in this section, IA-04 and
+later remained `NOT AUTHORIZED`. PR #78 remains stale draft evidence and is not
+modified or resumed. PR #117 has now satisfied the S0-side implementation,
 independent review, merge, and post-merge verification prerequisite. That completion
 does not itself transition JC-229 or SBH-10-04. The current accepted SUBS tip
 `bd0555c41bb014326b0754329f2ca5fbf0f8911b` does not contain the exact-key runtime,
 so a bounded S0-to-SUBS integration must be accepted before the separate SUBS
 re-admission may decide readiness or assign an implementation `task_base_sha`.
 
-### Resulting authority state
+### Resulting authority state at PR #117 prerequisite closure
+
+Before the fresh full-scope IA-04 task-admission decision in section 22:
 
 ```text
 S0 lifecycle
@@ -1602,3 +1613,253 @@ exact-head CI `36968312583`. PostgreSQL row locks and database uniqueness remain
 concurrency controls. No cache stampede path, Redis stock ledger, recovery worker,
 IA-04+ behavior, or 100,000-user certification claim is introduced or authorized by
 this closure.
+
+## 22. Full-scope IA-04 task admission (GitHub #101)
+
+This section records the fresh post-PR-117 task-admission authority for IA-04. It
+supersedes for current execution authority only the historical `IA-04 and later
+remain NOT AUTHORIZED` / `IA-04+ = NOT AUTHORIZED` statements at the top of this
+document, in section 20, and in section 21. Historical provenance in those sections
+remains unchanged.
+
+Issue `#101` is a roadmap record; this section and the matching
+`active_workstreams.md` admission are authoritative. The frozen implementation plan
+(`S0-PLAN-01`) PHASE IA-04 and capable-writer matrix remain normative and are not
+modified by the governance PR that introduces this section.
+
+### Readiness outcome
+
+Task base: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+
+Historical IA-04 contract: `PARTIALLY_STALE` — PR #117 completed renewal-generation /
+exact-key prerequisites; the full canonical protection boundary remains required.
+No IA-04A / IA-04B split.
+
+### PR #117 frozen prerequisites (do not reimplement)
+
+Renewal-generation Request identity; reservation-key parser/classifier; exact
+reservation key through Operation and Lease; Redis exact-key metadata/fence
+compatibility; global `reservation_key` uniqueness; partial active
+`(order_id, variant_id)` uniqueness; historical terminal generations;
+exact-generation reserve, recovery read, release, and consume; generic/renewal
+disambiguation; renewal exclusion from generic order-wide lifecycle mutations;
+exact-generation `:ambiguous_database_outcome` classification.
+
+### Operation identity law
+
+```text
+one logical InventoryAdmission operation
+= Redis operation_id / operation_epoch
+= Operation descriptor operation_id / operation_epoch
+```
+
+Redis admission owns initial server generation. Exact live replay retains the same
+pair. The IA-04 settlement path must not use `Operation.new/2` to manufacture a second
+identity. Authorize a narrow trusted internal constructor in
+`lib/store/orders/inventory_admission/operation.ex` that accepts operation ID and epoch
+only from trusted server-owned Redis admission evidence, validates UUIDv7, positive
+epoch, reservation key, identity digest, request fingerprint, variant, mutation, PRE
+facts, expected POST facts, and deadline coherence. `Operation.new/2` continues to
+reject caller-selected operation identity.
+
+`lib/store/orders/inventory_admission/lease.ex` remains read-only unless independent
+review proves a missing representation; Redis claim replies must populate the existing
+`Lease` struct.
+
+### Lifecycle authority
+
+Authorized:
+
+```text
+ADMITTED -> RESERVING
+RESERVING -> COMPLETED
+RESERVING -> REJECTED
+RESERVING -> UNKNOWN_DB_OUTCOME
+```
+
+Not authorized in IA-04:
+
+```text
+UNKNOWN_DB_OUTCOME -> RECOVERING
+RECOVERING -> ...
+```
+
+Those remain IA-05 (GitHub #102).
+
+### Redis IA-04 primitives (minimum)
+
+`claim_reserving` — validate member, reservation key (via identity digest),
+request fingerprint, operation ID, operation epoch, variant active ownership, lease
+token, owner epoch, state exactly `ADMITTED`; atomically `ADMITTED -> RESERVING`; no
+re-enqueue, new operation ID, lease replacement, or `K_v` / `B_total` churn;
+contradiction fails closed before PostgreSQL.
+
+`release_known_outcome` — trusted known durable outcome only; `RESERVING -> COMPLETED`
+or `RESERVING -> REJECTED`; release capacities/fence and governed promotion per frozen
+Redis contract.
+
+`mark_unknown_and_fence` — ambiguous DB outcome; `RESERVING -> UNKNOWN_DB_OUTCOME`;
+retain/quarantine capacity and evidence; no promotion; no release on lease expiry alone.
+
+Shared lifecycle fence Redis operations required by the capable-writer matrix
+(`acquire_shared_mutation_fence` and related release/unknown helpers per frozen plan
+§10) are authorized in IA-04 because IA-05 recovers ambiguous **already-fenced**
+operations and does not introduce initial writer fences.
+
+### Capable-writer / ENFORCED boundary
+
+Normative source: frozen `S0-PLAN-01` PHASE IA-04 and section 6 capable-writer matrix.
+
+- `Store.Orders.reserve_inventory/3` — in `ENFORCED`, exactly one normalized variant
+  through `InventoryAdmission`, `K_v = 1`, `B_total`, PostgreSQL only in `RESERVING`;
+  multi-variant input returns governed unsupported result.
+- `reserve_inventory_for_checkout/3` — in `ENFORCED`, `INVENTORY_ADMISSION_UNSUPPORTED`
+  before the checkout CTE; no admission bypass (Checkout and Subscription call paths).
+- `consume_reservations_for_order/2`, `release_reservations_for_order/2`,
+  `expire_reservations/2` — shared exact reservation fence before PostgreSQL; no admission
+  queue; no `B_total` claim; busy/unavailable means no mutation.
+- Pending-provider cleanup — fenced release; order cancellation rolls back if release
+  cannot proceed.
+- Direct `InventoryReservation` Ash maintenance and unversioned `InventoryItem`
+  maintenance — not valid ENFORCED production writer entry points; enforce at governed
+  application call sites and tests; do **not** modify `inventory_reservation.ex` or
+  `inventory_item.ex` resource definitions merely to add Ash-policy machinery.
+  `InventoryItem.create` for a newly created variant remains allowed.
+
+### Durable reservation seam
+
+Generic key `order:<order_id>:sku:<variant_id>` — narrow outcome-preserving
+single-variant seam over the existing transaction; distinguish known success, known
+rejection/rollback, and ambiguous database outcome.
+
+Renewal-generation key
+`order:<order_id>:sku:<variant_id>:renewal_collection:<attempt>:generation:<generation>`
+— reuse PR #117 `reserve_exact_generation` transaction; do not rebuild it.
+
+Both remain single-variant. Bounded PRE read and expected POST descriptor before the
+transaction; queued work performs zero PostgreSQL work; PRE only while admitted
+capacity is held. Full recovery comparison/execution is IA-05.
+
+### Rollout configuration (Option B)
+
+Authorized:
+
+```text
+config/config.exs
+config/runtime.exs
+config/test.exs
+lib/store/orders/inventory_admission/config.ex
+```
+
+Typed loader/validator only. Governs server-owned `DISABLED | ENFORCED`, `B_total`,
+`Q_variant_max`, `Q_global_max`, DB/admission deadlines, lease window, safety margin,
+queue window, terminal/evidence retention, cleanup bounds, HMAC/key version material,
+and quarantine/fail-closed controls required by the frozen plan. Production default
+`DISABLED` unless deployment explicitly supplies reviewed ENFORCED settings. `ENFORCED`
+with invalid/missing Redis/budget/deadline configuration fails closed. `B_total` must
+preserve reviewed Store.Repo headroom; never infer `B_total = pool_size`. `K_v` remains
+`1`. No request/client mode selection. Mode change requires deployment drain of live
+protected operations. No arbitrary production capacity numbers. No Redis server
+deployment change. `Store.Application` changes are not authorized unless later
+implementation review proves them strictly necessary.
+
+Registry-backed admission error codes already exist; `error_codes.ex` need not change.
+
+### Required implementation files
+
+```text
+lib/store/orders/inventory_admission/config.ex
+lib/store/orders/inventory_admission/operation.ex
+lib/store/orders/inventory_admission/redis.ex
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+config/config.exs
+config/runtime.exs
+config/test.exs
+```
+
+### Conditionally writable shared-boundary files
+
+Authorized only if focused tests prove current propagation is insufficient:
+
+```text
+lib/store/checkout/domain.ex
+lib/store/payments/interlocks.ex
+lib/store/subscriptions/facade.ex
+lib/store/workers/expire_inventory_reservations_worker.ex
+lib/store/workers/expire_pending_provider_setup_orders_worker.ex
+```
+
+Preserve commercial/lifecycle semantics; propagate governed admission/fence outcomes
+only.
+
+### Frozen read-only production files
+
+```text
+lib/store/orders/inventory_admission/request.ex
+lib/store/orders/inventory_admission/lease.ex
+lib/store/orders/inventory_reservation.ex
+lib/store/catalog/inventory_item.ex
+lib/store/catalog/product.ex
+lib/store/application.ex
+```
+
+If implementation proves any must change, STOP for independent scope review.
+
+### Test authority
+
+Minimum tests to prove canonical IA-04:
+
+```text
+test/store/orders/inventory_admission_test.exs
+test/store/orders/inventory_admission_redis_test.exs
+test/store/orders/inventory_admission_recovery_test.exs
+test/store/governance/inventory_reservations_test.exs
+test/store/orders/inventory_admission_renewal_generation_test.exs
+test/store/workers/expire_inventory_reservations_worker_test.exs
+test/store/workers/expire_pending_provider_setup_orders_worker_test.exs
+```
+
+`inventory_admission_recovery_test.exs` in IA-04 is limited to bounded PRE/POST/outcome/
+fence evidence required by the IA-04 completion gate; it does not authorize recovery
+worker execution (IA-05). Relevant Checkout/Payments/SUBS tests may change only to
+prove caller propagation.
+
+### Shared authority
+
+Orders: REQUIRED. Checkout, Payments, SUBS: conditional error/fence propagation only.
+Workers: bounded fence retry/rollback semantics only. No broader domain ownership
+transfer.
+
+### IA-04 exclusions
+
+Multi-variant admission; IA-05 recovery service/worker; `UNKNOWN_DB_OUTCOME ->
+RECOVERING`; `UNRESOLVED` execution; IA-06 reaper; IA-07 multi-node certification;
+IA-08 performance certification; migrations/schema/dependency changes; Redis stock
+truth; SBH-10-04 subscription orchestration; Checkout/Payment/provider redesign.
+
+### Resulting authority state
+
+```text
+S0 lifecycle = READY
+generic IA-03 = COMPLETE / FROZEN
+renewal-generation / exact-key prerequisite = COMPLETE / FROZEN
+accepted S0 tip = f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+IA-04 = AUTHORIZED / NOT STARTED
+IA-05+ = NOT AUTHORIZED
+```
+
+### Performance & Scaling Review (IA-04 admission record)
+
+HOT: Redis admission/claim/fence coordination. COLD: PostgreSQL remains durable stock
+and reservation truth. Redis: existing HASH/ZSET/O(1) sequencing and bounded fence
+structures only. Store.Repo: queued/busy/unsupported = zero reservation DB entrants;
+same-variant active DB entrants `<= K_v = 1`; aggregate admitted reserve entrants
+`<= B_total`. Indexes: reuse PR #117 reservation-key and partial active-pair
+uniqueness. Row-lock order: preserve inventory-item then reservation locking.
+N+1: none (single variant only). TTL: finite queue/lease/evidence/terminal/fence
+windows. PubSub: no correctness authority. Oban: no IA recovery worker in this phase.
+100k: no certification claim.
+
+This governance section adds no production runtime behavior.

@@ -242,7 +242,7 @@ Explicit exclusion:
 
 S0 is **not** the mandatory development parent of PLATFORM or SUBS.
 
-**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. READY itself does not automatically start implementation or authorize IA-03 or IA-04+. Current implementation authority is recorded by the bounded task-admission records below.
+**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. READY itself does not automatically start implementation. Current implementation authority is recorded by the bounded task-admission records below (including IA-04 for GitHub #101 when accepted on `main`).
 
 ### S0 activation record
 
@@ -353,8 +353,9 @@ Task base: `f4127902c3f328b76674724faa6a473c629c01ef`.
 
 At admission time, S0 lifecycle remained `READY` and generic IA-03 was
 `AUTHORIZED / NOT STARTED`. PR #115 later completed this bounded task, and generic
-IA-03 is now `COMPLETE / FROZEN`. IA-04 and later remain `NOT AUTHORIZED`; completing
-IA-03 did not authorize a later slice.
+IA-03 is now `COMPLETE / FROZEN`. At completion of generic IA-03, IA-04 and later
+remained `NOT AUTHORIZED`; completing IA-03 did not itself authorize a later slice.
+Current IA-04 authority is recorded in the fresh full-scope admission below.
 
 The exact coding boundary is:
 
@@ -430,7 +431,8 @@ The admitted S0 prerequisite is now `COMPLETE / FROZEN`:
 - Independent post-merge verification: `PASS`.
 
 This closure exhausts only the bounded renewal-generation / exact-key prerequisite
-implementation authority. Generic IA-03 remains frozen. IA-04+ remains unauthorized.
+implementation authority. Generic IA-03 remains frozen. At completion of this PR #117
+prerequisite closure, IA-04+ remained unauthorized.
 `S0-CLOSE-02` and overall S0 merge readiness remain blocked under their separate
 programme gates.
 
@@ -443,7 +445,8 @@ Only then may the separate SUBS re-admission required by the canonical cross-dom
 authority decide JC-229 readiness and assign a new implementation `task_base_sha`.
 PR #78 remains stale draft evidence and is not resumed by this closure.
 
-Resulting state:
+State at completion of the PR #117 prerequisite closure, before the fresh full-scope
+IA-04 task-admission decision:
 
 ```text
 S0 lifecycle = READY
@@ -462,6 +465,108 @@ accepted development tip does not yet contain the capability, and the canonical
 cross-domain authority requires a separate SUBS re-admission after accepted runtime
 integration. This governance closure assigns no SUBS implementation branch or
 `task_base_sha` and grants no Subscription, Payments, provider, or IA-04+ authority.
+That closure state remains historical provenance. Current IA-04 authority is recorded
+in the fresh full-scope task admission below and in section 22 of
+`s0_inventory_reservation_admission_architecture.md`.
+
+### Fresh full-scope IA-04 task admission (GitHub #101) (2026-10-02)
+
+Issue: `#101` — S0 IA-04: integrate single-variant admission with the durable
+reservation transaction.
+
+Readiness review (post-PR-117, task base `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`):
+the historical IA-04 phase is `PARTIALLY_STALE` because PR #117 completed the
+renewal-generation / exact-key prerequisites; the canonical IA-04 protection boundary
+(writer matrix, lifecycle-fence introduction, ENFORCED rollout configuration, and
+single-variant durable settlement) remains required. There is no IA-04A / IA-04B split.
+
+Task base (implementation parent): `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+
+Issue existence alone grants no implementation authority. This admission record is the
+authority. Normative detail: section 22 of
+`docs/hardening/s0_inventory_reservation_admission_architecture.md` and frozen
+`S0-PLAN-01` PHASE IA-04 / capable-writer matrix (implementation plan is not modified
+by this governance PR).
+
+**PR #117 — COMPLETE / FROZEN (IA-04 must not reimplement):** renewal-generation
+Request identity; reservation-key parser/classifier; exact key through Operation and
+Lease validation paths; Redis exact-key metadata/fence compatibility; global
+`reservation_key` uniqueness; partial active `(order_id, variant_id)` uniqueness;
+historical terminal reservation generations; exact-generation reserve, recovery read,
+release, and consume; generic/renewal key disambiguation; renewal exclusion from
+generic order-wide release/consume/expiry; exact-generation
+`:ambiguous_database_outcome` classification.
+
+**Operation identity law (frozen):** one logical InventoryAdmission operation equals
+Redis `operation_id` / `operation_epoch` equals Operation descriptor
+`operation_id` / `operation_epoch`. Redis owns initial server generation; exact replay
+retains the same pair. The IA-04 settlement path must not use `Operation.new/2` to
+manufacture a second identity. Authorize a narrow trusted internal constructor in
+`lib/store/orders/inventory_admission/operation.ex` only.
+
+**Lifecycle authorized in IA-04:** `ADMITTED -> RESERVING`; `RESERVING -> COMPLETED |
+REJECTED | UNKNOWN_DB_OUTCOME`. Not authorized: `UNKNOWN_DB_OUTCOME -> RECOVERING` or
+recovery execution (IA-05 / GitHub #102).
+
+**Redis IA-04 primitives (minimum):** `claim_reserving`; `release_known_outcome`;
+`mark_unknown_and_fence` — per frozen plan §10 and section 22.
+
+**Capable-writer / ENFORCED boundary:** full frozen matrix (single-variant
+`reserve_inventory/3` through admission; checkout CTE blocked in ENFORCED; shared
+exact reservation fences on consume/release/expiry; fenced pending-provider release
+with rollback on failure; direct Ash/maintenance writers closed at governed call sites
+without changing `inventory_reservation.ex` or `inventory_item.ex` resource definitions).
+
+**Rollout configuration (Option B):** `config/config.exs`, `config/runtime.exs`,
+`config/test.exs`, and new `lib/store/orders/inventory_admission/config.ex` (typed
+loader/validator only). Production default `DISABLED` until reviewed ENFORCED settings.
+`Store.Application` changes are not authorized unless a later implementation review
+proves them strictly necessary.
+
+**Required implementation files:**
+
+```text
+lib/store/orders/inventory_admission/config.ex
+lib/store/orders/inventory_admission/operation.ex
+lib/store/orders/inventory_admission/redis.ex
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+config/config.exs
+config/runtime.exs
+config/test.exs
+```
+
+**Conditionally writable (only if focused tests prove propagation insufficient):**
+`lib/store/checkout/domain.ex`, `lib/store/payments/interlocks.ex`,
+`lib/store/subscriptions/facade.ex`,
+`lib/store/workers/expire_inventory_reservations_worker.ex`,
+`lib/store/workers/expire_pending_provider_setup_orders_worker.ex` — governed error
+propagation only; no Checkout/Payments/SUBS commercial redesign.
+
+**Frozen / read-only for IA-04 (STOP for independent review if implementation requires
+change):** `request.ex`, `lease.ex`, `inventory_reservation.ex`, `inventory_item.ex`,
+`product.ex`, `application.ex`.
+
+**Shared authority:** Orders REQUIRED; Checkout/Payments/SUBS/workers conditional
+propagation only as above.
+
+**IA-04 exclusions:** multi-variant admission; IA-05 recovery service/worker;
+`RECOVERING` / `UNRESOLVED` execution; IA-06 reaper; IA-07/IA-08 certification;
+migrations/schema/dependency changes; Redis stock truth; SBH-10-04 subscription
+orchestration; Checkout/Payment/provider redesign.
+
+Resulting state after this governance record (implementation not started until a
+separate coding task on `hardening/s0-baseline`):
+
+```text
+S0 lifecycle = READY
+generic IA-03 = COMPLETE / FROZEN
+renewal-generation / exact-key prerequisite = COMPLETE / FROZEN
+accepted S0 tip = f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+IA-04 = AUTHORIZED / NOT STARTED
+IA-05+ = NOT AUTHORIZED
+```
 
 ### PLATFORM
 
@@ -1015,7 +1120,7 @@ No lane requires another lane to finish first unless its exact task declares a v
 
 Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS has completed the activation recorded by SUB-ACT-03 and remains `READY`; S0 is `READY` under its S0-specific activation record; PLATFORM is `READY` under the activation record above.
 
-S0 `READY` does not itself admit IA-03 or authorize other production implementation. S0 tasks require separate explicit task admission. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
+S0 `READY` does not itself authorize production implementation. S0 tasks require separate explicit task admission. As of the IA-04 admission record below, GitHub #101 IA-04 is `AUTHORIZED / NOT STARTED` on accepted S0 tip `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; IA-05+ remains `NOT AUTHORIZED`. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
 
 ---
 
