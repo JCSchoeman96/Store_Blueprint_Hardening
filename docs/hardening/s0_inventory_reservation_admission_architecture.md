@@ -3,9 +3,9 @@
 Status: FROZEN architecture. The accepted architecture decisions remain unchanged.
 Canonical task authority is tracked in `active_workstreams.md`; section 20 records
 the completed generic IA-03 admission, section 21 records the separate
-PR #80 renewal-generation prerequisite admission, and section 22 records the current
-full-scope IA-04 task admission. IA-01, IA-02, and generic IA-03 are complete and
-frozen. The historical S0-IA-AUTH-03 record documented the prior
+PR #80 renewal-generation prerequisite admission, and section 22 records the full-scope
+IA-04 task admission and its implementation-state transition. IA-01, IA-02, and generic
+IA-03 are complete and frozen. The historical S0-IA-AUTH-03 record documented the prior
 bounded IA-03 authorization. S0-IA-AUTH-03R1 corrected only that record's Redis
 support file boundary for typed `status` and `abandon` primitives.
 
@@ -1097,7 +1097,7 @@ IA-03 COMPLETE / FROZEN
 PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite
 COMPLETE / FROZEN
 
-IA-04 AUTHORIZED / NOT STARTED (GitHub #101; section 22; governance on `main`)
+IA-04 AUTHORIZED / IMPLEMENTING (GitHub #101; section 22; governance on `main`)
 
 IA-05+ NOT AUTHORIZED
 
@@ -1858,7 +1858,7 @@ RECOVERING`; `UNRESOLVED` execution; IA-06 reaper; IA-07 multi-node certificatio
 IA-08 performance certification; migrations/schema/dependency changes; Redis stock
 truth; SBH-10-04 subscription orchestration; Checkout/Payment/provider redesign.
 
-### Resulting authority state
+### State at PR #120 admission (historical, before the execution transition)
 
 ```text
 S0 lifecycle = READY
@@ -1882,3 +1882,79 @@ windows. PubSub: no correctness authority. Oban: no IA recovery worker in this p
 100k: no certification claim.
 
 This governance section adds no production runtime behavior.
+
+### IA-04 implementation-state transition and PR #123 provenance
+
+PR #120 merged and was post-merge verified. It admitted the full IA-04 task on
+the accepted S0 task base but left execution `AUTHORIZED / NOT STARTED`. This
+governance change records the transition. PR #120's merge commit is
+`aa90dd56a0325b0ada0df610067f9b9549bd4e5f`; its candidate and merge trees both
+equal `b7473e6b73eb1a3bb8bdbd7131ef6a1ac58ea070`.
+
+```text
+AUTHORIZED / NOT STARTED
+        ↓
+AUTHORIZED / IMPLEMENTING
+```
+
+The transition is guarded by the merged and verified PR #120 admission, creation of
+the implementation branch from the exact task base, issuance of the first bounded
+coding task, and the existence of the initial Slice-1 candidate. Independent review
+returned `CHANGES REQUIRED` because recovery/quarantine configuration fields and
+ENFORCED startup validation were missing. PR #123 then supplied the required
+post-admission authority correction and passed exact-head CI. Implementation remains
+serial and paused until this governance transition merges and is independently verified.
+
+```text
+Task base: f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+Implementation branch: hardening/s0-ia04
+Initial Slice-1 candidate HEAD: 0a03f1898dc3eec80f255db4e03cd6bb7cfc1fc7
+Slice 1: CHANGES REQUIRED / PAUSED FOR GOVERNANCE RECONCILIATION
+```
+
+PR #123 provenance:
+
+```text
+Reviewed head: d5f4052fcae4ccbb4e8345070ba63985a22cae3d
+Merge: c6aabd412fe66ce778a51ecba5361dfebdbc2052
+Reviewed/merge tree: 801a744a49100eb20e63f3be48a2566f8dd6b282
+Exact-head CI run: 36989453282 (PASS)
+```
+
+PR #123 added the configuration-only fields `database_safety_window_ms`,
+`recovery_retry_budget`, `recovery_deadline_ms`, and
+`redis_restart_quarantine_ms`. The typed configuration must require a positive
+safety window, retry budget, and restart quarantine, and
+`recovery_deadline_ms > database_safety_window_ms`.
+
+`lib/store/application.ex` is conditionally writable only for IA-04 ENFORCED
+startup validation after the existing supervised Redis child is available. No other
+`Store.Application` authority exists.
+
+The resumed Slice-1 correction may modify exactly these files:
+
+```text
+lib/store/orders/inventory_admission/config.ex
+lib/store/application.ex
+config/config.exs
+config/runtime.exs
+config/test.exs
+test/store/orders/inventory_admission_test.exs
+```
+
+This correction boundary is not new scope. After this governance PR merges and is
+independently verified, Slice 1 may resume on the existing branch. Slice 1 has not
+passed review.
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = ACTIVE NEXT STEP, NOT YET ACCEPTED
+Slice 2 = NOT STARTED / BLOCKED ON SLICE-1 PASS
+IA-05+ = NOT AUTHORIZED
+```
+
+No parallel IA-04 coding agents are authorized. `hardening/s0-ia04` remains the
+sole implementation branch. Do not begin Redis claim/fence Slice 2 until corrected
+Slice 1 receives independent `PASS`. Slice 2 includes `claim_reserving`, shared
+reservation mutation fences, `release_known_outcome`, and `mark_unknown_and_fence`.
+Recording IA-04 as `IMPLEMENTING` does not start Slice 2 or mean Slice 1 passed.
