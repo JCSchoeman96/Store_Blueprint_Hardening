@@ -175,10 +175,10 @@ defmodule Store.Orders.InventoryAdmission.Config do
 
   defp validate_structural_values(config) do
     with :ok <- validate_positive_fields(config),
-         :ok <- validate_non_negative(config.safety_margin_ms) do
-      with :ok <- validate_lease_window(config) do
-        validate_recovery_deadline(config)
-      end
+         :ok <- validate_non_negative(config.safety_margin_ms),
+         :ok <- validate_lease_window(config),
+         :ok <- validate_recovery_deadline(config) do
+      validate_terminal_retention(config)
     end
   end
 
@@ -214,6 +214,21 @@ defmodule Store.Orders.InventoryAdmission.Config do
       :ok
     else
       invalid(:recovery_deadline_ms)
+    end
+  end
+
+  defp validate_terminal_retention(%__MODULE__{
+         metadata_retention_ms: metadata_retention_ms,
+         queue_window_ms: queue_window_ms,
+         lease_window_ms: lease_window_ms,
+         safety_margin_ms: safety_margin_ms
+       }) do
+    evidence_handoff_window_ms = max(queue_window_ms, lease_window_ms + safety_margin_ms)
+
+    if metadata_retention_ms > evidence_handoff_window_ms do
+      :ok
+    else
+      invalid(:metadata_retention_ms)
     end
   end
 

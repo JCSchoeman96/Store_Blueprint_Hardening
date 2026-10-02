@@ -318,6 +318,53 @@ defmodule Store.Orders.InventoryAdmissionTest do
       assert_config_error(metadata_retention_ms: 0)
     end
 
+    test "terminal retention shorter than or equal to the queue evidence window fails" do
+      assert_config_error(
+        queue_window_ms: 10_000,
+        lease_window_ms: 3_000,
+        safety_margin_ms: 500,
+        metadata_retention_ms: 9_999
+      )
+
+      assert_config_error(
+        queue_window_ms: 10_000,
+        lease_window_ms: 3_000,
+        safety_margin_ms: 500,
+        metadata_retention_ms: 10_000
+      )
+    end
+
+    test "terminal retention shorter than or equal to the lease evidence window fails" do
+      assert_config_error(
+        queue_window_ms: 1_000,
+        lease_window_ms: 3_000,
+        safety_margin_ms: 500,
+        metadata_retention_ms: 3_499
+      )
+
+      assert_config_error(
+        queue_window_ms: 1_000,
+        lease_window_ms: 3_000,
+        safety_margin_ms: 500,
+        metadata_retention_ms: 3_500
+      )
+    end
+
+    test "terminal retention one millisecond above the queue evidence window is accepted" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.merge(enforced_config(),
+          queue_window_ms: 10_000,
+          lease_window_ms: 3_000,
+          safety_margin_ms: 500,
+          metadata_retention_ms: 10_001
+        )
+      )
+
+      assert {:ok, %Config{metadata_retention_ms: 10_001}} = Config.load()
+    end
+
     test "positive database safety window is accepted" do
       Application.put_env(
         :store,
