@@ -105,7 +105,11 @@ if config_env() == :prod do
     lease_window_ms: 3_000,
     safety_margin_ms: 500,
     cleanup_limit: 100,
-    metadata_retention_ms: 86_400_000
+    metadata_retention_ms: 86_400_000,
+    database_safety_window_ms: 1_000,
+    recovery_retry_budget: 3,
+    recovery_deadline_ms: 5_000,
+    redis_restart_quarantine_ms: 2_000
   }
 
   inventory_admission_integer = fn env, key ->
@@ -158,6 +162,26 @@ if config_env() == :prod do
       inventory_admission_integer.(
         "STORE_INVENTORY_ADMISSION_METADATA_RETENTION_MS",
         :metadata_retention_ms
+      ),
+    database_safety_window_ms:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_DATABASE_SAFETY_WINDOW_MS",
+        :database_safety_window_ms
+      ),
+    recovery_retry_budget:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_RECOVERY_RETRY_BUDGET",
+        :recovery_retry_budget
+      ),
+    recovery_deadline_ms:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_RECOVERY_DEADLINE_MS",
+        :recovery_deadline_ms
+      ),
+    redis_restart_quarantine_ms:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_REDIS_RESTART_QUARANTINE_MS",
+        :redis_restart_quarantine_ms
       ),
     hmac_key: inventory_admission_hmac_key,
     hmac_key_version: inventory_admission_hmac_key_version

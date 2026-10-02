@@ -40,7 +40,11 @@ defmodule Store.Orders.InventoryAdmission.Config do
     :cleanup_limit,
     :metadata_retention_ms,
     :hmac_key,
-    :hmac_key_version
+    :hmac_key_version,
+    :database_safety_window_ms,
+    :recovery_retry_budget,
+    :recovery_deadline_ms,
+    :redis_restart_quarantine_ms
   ]
 
   @default_values [
@@ -58,7 +62,11 @@ defmodule Store.Orders.InventoryAdmission.Config do
     cleanup_limit: 100,
     metadata_retention_ms: 86_400_000,
     hmac_key: nil,
-    hmac_key_version: "v1"
+    hmac_key_version: "v1",
+    database_safety_window_ms: 1_000,
+    recovery_retry_budget: 3,
+    recovery_deadline_ms: 5_000,
+    redis_restart_quarantine_ms: 2_000
   ]
 
   @enforced_capacity_fields [:repo_pool_capacity, :repo_headroom, :b_total]
@@ -69,7 +77,11 @@ defmodule Store.Orders.InventoryAdmission.Config do
     :db_window_ms,
     :lease_window_ms,
     :cleanup_limit,
-    :metadata_retention_ms
+    :metadata_retention_ms,
+    :database_safety_window_ms,
+    :recovery_retry_budget,
+    :recovery_deadline_ms,
+    :redis_restart_quarantine_ms
   ]
 
   @type mode :: :disabled | :enforced
@@ -89,7 +101,11 @@ defmodule Store.Orders.InventoryAdmission.Config do
           cleanup_limit: pos_integer(),
           metadata_retention_ms: pos_integer(),
           hmac_key: binary() | nil,
-          hmac_key_version: String.t()
+          hmac_key_version: String.t(),
+          database_safety_window_ms: pos_integer(),
+          recovery_retry_budget: pos_integer(),
+          recovery_deadline_ms: pos_integer(),
+          redis_restart_quarantine_ms: pos_integer()
         }
 
   defstruct @default_values
@@ -160,7 +176,9 @@ defmodule Store.Orders.InventoryAdmission.Config do
   defp validate_structural_values(config) do
     with :ok <- validate_positive_fields(config),
          :ok <- validate_non_negative(config.safety_margin_ms) do
-      validate_lease_window(config)
+      with :ok <- validate_lease_window(config) do
+        validate_recovery_deadline(config)
+      end
     end
   end
 
@@ -185,6 +203,17 @@ defmodule Store.Orders.InventoryAdmission.Config do
       :ok
     else
       invalid(:lease_window_ms)
+    end
+  end
+
+  defp validate_recovery_deadline(%__MODULE__{
+         database_safety_window_ms: safety_window_ms,
+         recovery_deadline_ms: recovery_deadline_ms
+       }) do
+    if recovery_deadline_ms > safety_window_ms do
+      :ok
+    else
+      invalid(:recovery_deadline_ms)
     end
   end
 

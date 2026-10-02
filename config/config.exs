@@ -28,6 +28,7 @@ config :store,
   ],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
+# Deterministic local defaults; production ENFORCED values come from runtime env.
 config :store, :inventory_admission,
   mode: :disabled,
   scope: "default",
@@ -42,6 +43,10 @@ config :store, :inventory_admission,
   safety_margin_ms: 500,
   cleanup_limit: 100,
   metadata_retention_ms: 86_400_000,
+  database_safety_window_ms: 1_000,
+  recovery_retry_budget: 3,
+  recovery_deadline_ms: 5_000,
+  redis_restart_quarantine_ms: 2_000,
   hmac_key: nil,
   hmac_key_version: "v1"
 

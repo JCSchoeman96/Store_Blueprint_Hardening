@@ -318,6 +318,63 @@ defmodule Store.Orders.InventoryAdmissionTest do
       assert_config_error(metadata_retention_ms: 0)
     end
 
+    test "positive database safety window is accepted" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.put(enforced_config(), :database_safety_window_ms, 1_000)
+      )
+
+      assert {:ok, config} = Config.load()
+      assert Map.get(config, :database_safety_window_ms) == 1_000
+    end
+
+    test "zero and negative database safety windows fail" do
+      assert_config_error(database_safety_window_ms: 0)
+      assert_config_error(database_safety_window_ms: -1)
+    end
+
+    test "positive recovery retry budget is accepted" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.put(enforced_config(), :recovery_retry_budget, 1)
+      )
+
+      assert {:ok, config} = Config.load()
+      assert Map.get(config, :recovery_retry_budget) == 1
+    end
+
+    test "zero and negative recovery retry budgets fail" do
+      assert_config_error(recovery_retry_budget: 0)
+      assert_config_error(recovery_retry_budget: -1)
+    end
+
+    test "recovery deadline must exceed the database safety window" do
+      assert_config_error(recovery_deadline_ms: 1_000)
+      assert_config_error(recovery_deadline_ms: 999)
+    end
+
+    test "recovery deadline one millisecond above the safety window is accepted" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.merge(enforced_config(),
+          database_safety_window_ms: 1_000,
+          recovery_deadline_ms: 1_001
+        )
+      )
+
+      assert {:ok, config} = Config.load()
+      assert Map.get(config, :database_safety_window_ms) == 1_000
+      assert Map.get(config, :recovery_deadline_ms) == 1_001
+    end
+
+    test "zero and negative Redis restart quarantine windows fail" do
+      assert_config_error(redis_restart_quarantine_ms: 0)
+      assert_config_error(redis_restart_quarantine_ms: -1)
+    end
+
     test "redis options contain only the IA-03 option set" do
       Application.put_env(:store, :inventory_admission, enforced_config())
       assert {:ok, config} = Config.load()
@@ -342,6 +399,10 @@ defmodule Store.Orders.InventoryAdmissionTest do
       refute Keyword.has_key?(options, :repo_pool_capacity)
       refute Keyword.has_key?(options, :repo_headroom)
       refute Keyword.has_key?(options, :hmac_key_version)
+      refute Keyword.has_key?(options, :database_safety_window_ms)
+      refute Keyword.has_key?(options, :recovery_retry_budget)
+      refute Keyword.has_key?(options, :recovery_deadline_ms)
+      refute Keyword.has_key?(options, :redis_restart_quarantine_ms)
     end
 
     test "validation failures do not expose the HMAC secret" do
@@ -352,6 +413,123 @@ defmodule Store.Orders.InventoryAdmissionTest do
       assert {:error, reason} = Config.load()
       assert :nomatch == :binary.match(:erlang.term_to_binary(reason), secret)
       refute String.contains?(inspect(reason), secret)
+    end
+  end
+
+  describe "startup validation" do
+    @describetag :startup_validation
+
+    setup do
+      previous = Application.get_env(:store, :inventory_admission)
+
+      on_exit(fn ->
+        if is_nil(previous) do
+          Application.delete_env(:store, :inventory_admission)
+        else
+          Application.put_env(:store, :inventory_admission, previous)
+        end
+      end)
+
+      :ok
+    end
+
+    test "disabled validation does not require Redis readiness" do
+      Application.put_env(:store, :inventory_admission,
+        mode: :disabled,
+        scope: "test"
+      )
+
+      assert :ok =
+               Store.Application.validate_inventory_admission_startup(:disabled, fn ->
+                 flunk()
+               end)
+    end
+
+    test "invalid enforced static configuration fails before Redis readiness" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.put(enforced_config(), :b_total, 0)
+      )
+
+      assert {:error, :invalid_enforced_config} =
+               Store.Application.validate_inventory_admission_startup(:enforced, fn -> flunk() end)
+    end
+
+    test "valid enforced configuration succeeds when existing Redis is available" do
+      Application.put_env(:store, :inventory_admission, enforced_config())
+      test_pid = self()
+
+      assert :ok =
+               Store.Application.validate_inventory_admission_startup(:enforced, fn ->
+                 send(test_pid, :redis_readiness_checked)
+                 :ok
+               end)
+
+      assert_received :redis_readiness_checked
+    end
+
+    test "valid enforced configuration fails closed when Redis is unavailable" do
+      secret = "redis-password-never-return-this"
+      Application.put_env(:store, :inventory_admission, enforced_config())
+
+      result =
+        Store.Application.validate_inventory_admission_startup(:enforced, fn ->
+          {:error, {:connection_failed, secret}}
+        end)
+
+      assert {:error, :redis_unavailable} = result
+      refute String.contains?(inspect(result), secret)
+    end
+
+    test "Redis unavailability does not switch enforced mode to disabled" do
+      Application.put_env(:store, :inventory_admission, enforced_config())
+
+      assert {:error, :redis_unavailable} =
+               Store.Application.validate_inventory_admission_startup(:enforced, fn ->
+                 {:error, :connection_failed}
+               end)
+
+      assert Application.get_env(:store, :inventory_admission)[:mode] == :enforced
+    end
+
+    test "startup readiness validation creates no admission Redis state", %{scope: scope} do
+      config = Keyword.put(enforced_config(), :scope, scope)
+      Application.put_env(:store, :inventory_admission, config)
+
+      request = request(@order_id, @variant_id)
+      keys = keys_for(request, scope)
+
+      admission_keys = [
+        keys.global_sequence,
+        keys.variant_queue_order,
+        keys.global_queue_dispatch,
+        keys.global_queue_expiry,
+        keys.variant_active,
+        keys.global_active_expiry,
+        keys.request_meta,
+        keys.reservation_fence
+      ]
+
+      assert {:ok, 0} = redis(["EXISTS" | admission_keys])
+      assert :ok = Store.Application.validate_inventory_admission_startup(:enforced)
+      assert {:ok, 0} = redis(["EXISTS" | admission_keys])
+    end
+
+    test "startup validation errors do not expose HMAC material" do
+      secret = "startup-hmac-never-return-this"
+
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.merge(enforced_config(), hmac_key: secret, b_total: 0)
+      )
+
+      result =
+        Store.Application.validate_inventory_admission_startup(:enforced, fn -> flunk() end)
+
+      assert {:error, :invalid_enforced_config} = result
+      refute String.contains?(inspect(result), secret)
     end
   end
 
@@ -401,6 +579,10 @@ defmodule Store.Orders.InventoryAdmissionTest do
       safety_margin_ms: 500,
       cleanup_limit: 2,
       metadata_retention_ms: 60_000,
+      database_safety_window_ms: 1_000,
+      recovery_retry_budget: 3,
+      recovery_deadline_ms: 5_000,
+      redis_restart_quarantine_ms: 2_000,
       hmac_key: "ia04-test-only-trusted-key-material",
       hmac_key_version: "v1"
     ]
