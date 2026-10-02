@@ -1604,6 +1604,10 @@ Entitlements core modification.
 7. SBH-10-04 transitions `BLOCKED_SHARED_AUTHORITY → READY` with a bounded
    `AUTHORITY_ASSIGNED` grant. SBH-10-05 remains `BLOCKED_DEPENDENCY / No`.
    No other row is promoted, and the JC-223 dependency graph is unchanged.
+8. The dynamic SHA lines in `active_workstreams.md` are older status evidence,
+   not a path, branch, upstream, ownership, or lifecycle conflict. Live refs
+   were fetched and independently verified for this amendment. Before Phase B,
+   refresh that registry and record the accepted post-governance SUBS tip.
 
 ### Plan
 
@@ -1644,6 +1648,16 @@ Entitlements core modification.
   identity, dispatch epoch, financial outcome, exact PaymentIntent attribution,
   and unresolved age without provider secrets.
 
+### Validation completed before PR creation
+
+- `git diff --check`: PASS.
+- `mix check.static`: PASS, including formatting, governance/documentation
+  checks, Credo, Sobelow, and documentation generation.
+- Full `mix check`: static and documentation gates passed, but the test phase
+  could not create the local database because `STORE_TEST_DATABASE_PASSWORD` is
+  unset and PostgreSQL authentication raised `key :password not found`.
+  Exact-head PR CI remains the required full-suite authority.
+
 ### Verification record
 
 - Worktree: `.worktrees/governance-subs-sbh-10-04-readmission`.
@@ -1651,5 +1665,6 @@ Entitlements core modification.
 - Exact governance base: `bf56afdd4d329a95c1739cce327b19fb1777815f`.
 - Canonical main observed: `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`.
 - Changed paths are limited to this Phase 27 note and the Master Register.
+- Governance commit before PR creation: `00c2428020d1f6c8d1a0b02ae93917f946cdee6a`.
 - PR review, exact-head CI, human merge, and independent post-merge tree
   verification remain required. This note does not claim runtime completion.

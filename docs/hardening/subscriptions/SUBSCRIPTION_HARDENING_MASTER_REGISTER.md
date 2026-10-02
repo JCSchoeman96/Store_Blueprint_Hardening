@@ -6570,7 +6570,11 @@ exact-head CI, human merge, and post-merge tree verification gates pass.
 - Exact SUBS base and canonical main authority were rechecked before editing.
 - PR #98 merge provenance and certified-head/tree equality were checked above.
 - The changed paths are limited to this Master Register and the Phase 27 note.
-- `git diff --check`, documentation/governance checks, and full `mix check` remain required before the PR is opened; an unavailable local database/toolchain will be recorded as a limitation rather than hidden.
+- `git diff --check` and `mix check.static` passed. Full `mix check`
+  reached the static and documentation gates but could not create the local
+  test database because `STORE_TEST_DATABASE_PASSWORD` is unset and PostgreSQL
+  authentication raised `key :password not found`; exact-head CI remains
+  required. The limitation is recorded in the PR body and Phase 27 note.
 
 # 54. v0.1.34 JC-229 / SBH-10-04 renewal initiation re-admission
 
@@ -6734,7 +6738,8 @@ following future implementation boundary:
 | Subscription | One Subscription-owned durable collection-attempt resource under `RenewalAttempt`; its state axes, monotonic collection identity, exact PaymentIntent association, exact reservation-generation association, focused tests, one migration, and one Ash/Postgres snapshot. No new Domain. |
 | Subscription facade and workers | Collection creation/replay, dispatch fencing, exact-success evidence validation, and a reconciliation handoff carrying `order_id`, `renewal_attempt_id`, `collection_attempt_id`, and `payment_intent_id`. |
 | Orders boundary | Use the already accepted exact-generation reserve/recover/release/consume APIs and validate the exact generation at the existing PaymentApplication boundary. No new Orders migration, snapshot, generic reservation redesign, or second stock authority. |
-| Payments and providers | Use a distinct deterministic local and provider idempotency identity per collection, carry the required collection metadata, and normalize exact provider evidence. Changes remain renewal-scoped and adapter-only unless a separate Payments authority is required. |
+| Payments | Add the typed renewal create-or-reuse path using the collection-derived key, bounded `requires_action` handling, renewal-only provider retrieve/reconcile and cancel wrappers, and the renewal-specific paid transaction that validates through Subscriptions and consumes exact Orders keys without the generic order-wide consume operation. Reuse PaymentIntent and PaymentApplication; no new Payments resource or schema migration; generic checkout remains unchanged. |
+| Provider adapters | Carry the six renewal identities, use the collection-derived idempotency key, and add exact renewal-collection status retrieval and cancellation only for adapters that support it. No general intent lookup/cancel API, Repo/Ash/Oban access, business transitions, or unrelated provider expansion. |
 
 This grant is current only after the human merges this governance PR and an
 independent verifier confirms its exact merge commit and tree. It assigns no
