@@ -311,6 +311,112 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              )
   end
 
+  test "worker consumes physical renewal inventory exactly once on recurring payment success" do
+    customer = SubscriptionsFixtures.create_customer!("phase27_webhook_consume")
+
+    %{variant: base_variant} =
+      SubscriptionsFixtures.create_subscription_sellable!(%{
+        base_variant_stock_on_hand: 1
+      })
+
+    variant = set_variant_weight!(base_variant, 250)
+
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription, order: source_order} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider: :stripe,
+        provider_billing_ref: "pm_phase27_webhook_consume",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    configure_shipping_profile!(source_order, variant)
+
+    assert {:ok, :processed} =
+             Store.Subscriptions.Facade.process_due_subscription_renewal_for_system(
+               subscription.id,
+               now: now
+             )
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+    reservation = fetch_reservation!(attempt.order_id, variant.id)
+    assert reservation.state == :active
+
+    inventory = Repo.get_by!(InventoryItem, variant_id: variant.id)
+    assert inventory.reserved_count == 1
+    assert inventory.stock_on_hand == 1
+
+    raw_body =
+      Jason.encode!(%{
+        "id" => "evt_worker_renewal_succeeded_001",
+        "type" => "payment_intent.succeeded",
+        "data" => %{
+          "object" => %{
+            "id" => payment_intent.provider_payment_id,
+            "amount_received" => payment_intent.amount_received_minor,
+            "currency" => String.downcase(payment_intent.currency || "USD"),
+            "metadata" => %{"local_intent_id" => payment_intent.id}
+          }
+        }
+      })
+
+    receipt =
+      WebhookReceipt
+      |> Ash.Changeset.for_create(
+        :ingest,
+        %{
+          provider: "stripe",
+          provider_event_id: "evt_worker_renewal_succeeded_001",
+          event_type: "payment_intent.succeeded",
+          verification_status: "verified",
+          processing_status: "new",
+          raw_body: raw_body,
+          headers: %{"content-type" => ["application/json"]}
+        }
+      )
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    assert :ok =
+             perform_job(ProcessWebhookReceiptWorker, %{"webhook_receipt_id" => receipt.id})
+
+    assert fetch_payment_intent!(payment_intent.id).state == :succeeded
+    assert fetch_order!(attempt.order_id).state == :paid
+
+    consumed = fetch_reservation!(attempt.order_id, variant.id)
+    assert consumed.id == reservation.id
+    assert consumed.state == :consumed
+
+    inventory_after_success = Repo.get_by!(InventoryItem, variant_id: variant.id)
+    assert inventory_after_success.reserved_count == 0
+    assert inventory_after_success.stock_on_hand == 0
+
+    assert 1 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^attempt.order_id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+    assert :ok =
+             perform_job(ProcessWebhookReceiptWorker, %{"webhook_receipt_id" => receipt.id})
+
+    replayed = fetch_reservation!(attempt.order_id, variant.id)
+    assert replayed.id == reservation.id
+    assert replayed.state == :consumed
+
+    inventory_after_replay = Repo.get_by!(InventoryItem, variant_id: variant.id)
+    assert inventory_after_replay.reserved_count == 0
+    assert inventory_after_replay.stock_on_hand == 0
+
+    assert 1 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^attempt.order_id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+  end
+
   test "worker releases renewal inventory when a recurring payment webhook fails" do
     customer = SubscriptionsFixtures.create_customer!("phase27_webhook_release")
 
