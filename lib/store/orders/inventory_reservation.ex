@@ -86,7 +86,6 @@ defmodule Store.Orders.InventoryReservation do
   end
 
   identities do
-    identity(:unique_order_variant, [:order_id, :variant_id])
     identity(:unique_reservation_key, [:reservation_key])
   end
 
@@ -177,6 +176,12 @@ defmodule Store.Orders.InventoryReservation do
     repo(Store.Repo)
 
     custom_indexes do
+      index([:order_id, :variant_id],
+        unique: true,
+        where: "state = 'active'",
+        name: "inventory_reservations_unique_active_order_variant_index"
+      )
+
       index([:order_id, :state], name: "inventory_reservations_order_state_index")
       index([:variant_id, :state], name: "inventory_reservations_variant_state_index")
       index([:state, :expires_at], name: "inventory_reservations_state_expires_at_index")
