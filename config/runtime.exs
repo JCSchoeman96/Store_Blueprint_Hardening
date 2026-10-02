@@ -36,6 +36,132 @@ if config_env() == :prod do
     end
   end
 
+  parse_integer! = fn env, value ->
+    case Integer.parse(value) do
+      {parsed, ""} -> parsed
+      _ -> raise "environment variable #{env} must be an integer"
+    end
+  end
+
+  parse_optional_integer! = fn env ->
+    case System.get_env(env) do
+      nil -> nil
+      value -> parse_integer!.(env, value)
+    end
+  end
+
+  parse_required_integer! = fn env ->
+    case System.get_env(env) do
+      nil -> raise "environment variable #{env} is missing"
+      value -> parse_integer!.(env, value)
+    end
+  end
+
+  parse_mode! = fn env ->
+    case System.get_env(env, "disabled") |> String.trim() |> String.downcase() do
+      "disabled" -> :disabled
+      "enforced" -> :enforced
+      value -> raise "invalid #{env} value: #{value}"
+    end
+  end
+
+  parse_bounded_string! = fn env, default, regex ->
+    value = System.get_env(env, default) |> String.trim()
+
+    if Regex.match?(regex, value) do
+      value
+    else
+      raise "environment variable #{env} has an invalid value"
+    end
+  end
+
+  inventory_admission_mode = parse_mode!.("STORE_INVENTORY_ADMISSION_MODE")
+
+  inventory_admission_scope =
+    parse_bounded_string!.(
+      "STORE_INVENTORY_ADMISSION_SCOPE",
+      "default",
+      ~r/\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\z/
+    )
+
+  inventory_admission_hmac_key = System.get_env("STORE_INVENTORY_ADMISSION_HMAC_KEY")
+
+  if inventory_admission_mode == :enforced and is_nil(inventory_admission_hmac_key) do
+    raise "environment variable STORE_INVENTORY_ADMISSION_HMAC_KEY is missing"
+  end
+
+  inventory_admission_hmac_key_version =
+    parse_bounded_string!.(
+      "STORE_INVENTORY_ADMISSION_HMAC_KEY_VERSION",
+      "v1",
+      ~r/\Av[0-9]+\z/
+    )
+
+  inventory_admission_defaults = %{
+    q_variant_max: 10,
+    q_global_max: 100,
+    queue_window_ms: 10_000,
+    db_window_ms: 2_000,
+    lease_window_ms: 3_000,
+    safety_margin_ms: 500,
+    cleanup_limit: 100,
+    metadata_retention_ms: 86_400_000
+  }
+
+  inventory_admission_integer = fn env, key ->
+    if inventory_admission_mode == :enforced do
+      parse_required_integer!.(env)
+    else
+      case System.get_env(env) do
+        nil -> Map.fetch!(inventory_admission_defaults, key)
+        value -> parse_integer!.(env, value)
+      end
+    end
+  end
+
+  inventory_admission_capacity = fn env ->
+    if inventory_admission_mode == :enforced do
+      parse_required_integer!.(env)
+    else
+      parse_optional_integer!.(env)
+    end
+  end
+
+  config :store, :inventory_admission,
+    mode: inventory_admission_mode,
+    scope: inventory_admission_scope,
+    repo_pool_capacity:
+      inventory_admission_capacity.("STORE_INVENTORY_ADMISSION_REPO_POOL_CAPACITY"),
+    repo_headroom: inventory_admission_capacity.("STORE_INVENTORY_ADMISSION_REPO_HEADROOM"),
+    b_total: inventory_admission_capacity.("STORE_INVENTORY_ADMISSION_B_TOTAL"),
+    q_variant_max:
+      inventory_admission_integer.("STORE_INVENTORY_ADMISSION_Q_VARIANT_MAX", :q_variant_max),
+    q_global_max:
+      inventory_admission_integer.("STORE_INVENTORY_ADMISSION_Q_GLOBAL_MAX", :q_global_max),
+    queue_window_ms:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_QUEUE_WINDOW_MS",
+        :queue_window_ms
+      ),
+    db_window_ms:
+      inventory_admission_integer.("STORE_INVENTORY_ADMISSION_DB_WINDOW_MS", :db_window_ms),
+    lease_window_ms:
+      inventory_admission_integer.("STORE_INVENTORY_ADMISSION_LEASE_WINDOW_MS", :lease_window_ms),
+    safety_margin_ms:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_SAFETY_MARGIN_MS",
+        :safety_margin_ms
+      ),
+    cleanup_limit:
+      inventory_admission_integer.("STORE_INVENTORY_ADMISSION_CLEANUP_LIMIT", :cleanup_limit),
+    metadata_retention_ms:
+      inventory_admission_integer.(
+        "STORE_INVENTORY_ADMISSION_METADATA_RETENTION_MS",
+        :metadata_retention_ms
+      ),
+    hmac_key: inventory_admission_hmac_key,
+    hmac_key_version: inventory_admission_hmac_key_version
+
   token_signing_secret =
     System.get_env("STORE_TOKEN_SIGNING_SECRET") ||
       raise "environment variable STORE_TOKEN_SIGNING_SECRET is missing."

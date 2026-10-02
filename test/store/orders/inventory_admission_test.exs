@@ -2,7 +2,7 @@ defmodule Store.Orders.InventoryAdmissionTest do
   use ExUnit.Case, async: false
 
   alias Store.Orders.InventoryAdmission
-  alias Store.Orders.InventoryAdmission.{Redis, Reference, Request}
+  alias Store.Orders.InventoryAdmission.{Config, Redis, Reference, Request}
   alias Store.Support.Errors.Error
   alias Store.Support.ID.UUIDv7
   alias Store.Support.RateLimit.RedixClient
@@ -192,6 +192,169 @@ defmodule Store.Orders.InventoryAdmissionTest do
              InventoryAdmission.reserve(input, opts(scope))
   end
 
+  describe "typed configuration" do
+    @describetag :inventory_admission_config
+    setup do
+      previous = Application.get_env(:store, :inventory_admission)
+
+      on_exit(fn ->
+        if is_nil(previous) do
+          Application.delete_env(:store, :inventory_admission)
+        else
+          Application.put_env(:store, :inventory_admission, previous)
+        end
+      end)
+
+      :ok
+    end
+
+    test "default configured mode is disabled" do
+      assert {:ok, %Config{mode: :disabled}} = Config.load()
+    end
+
+    test "explicit disabled configuration does not require capacity or HMAC" do
+      Application.put_env(:store, :inventory_admission, mode: :disabled, scope: "test_scope")
+
+      assert {:ok, %Config{mode: :disabled, hmac_key: nil}} = Config.load()
+    end
+
+    test "valid enforced configuration loads" do
+      Application.put_env(:store, :inventory_admission, enforced_config())
+
+      assert {:ok, %Config{mode: :enforced} = config} = Config.load()
+      assert Config.enforced?(config)
+    end
+
+    test "invalid mode fails" do
+      assert_config_error(mode: :invalid)
+    end
+
+    test "missing enforced HMAC fails" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.delete(enforced_config(), :hmac_key)
+      )
+
+      assert {:error, {:invalid_configuration, :hmac_key}} = Config.load()
+    end
+
+    test "empty HMAC fails" do
+      assert_config_error(hmac_key: "")
+    end
+
+    test "invalid HMAC key version fails" do
+      assert_config_error(hmac_key_version: "version-1")
+    end
+
+    test "invalid scope fails" do
+      assert_config_error(scope: "invalid scope")
+    end
+
+    test "non-positive repository capacity fails" do
+      assert_config_error(repo_pool_capacity: 0)
+    end
+
+    test "non-positive repository headroom fails" do
+      assert_config_error(repo_headroom: 0)
+    end
+
+    test "repository headroom at or above capacity fails" do
+      assert_config_error(repo_headroom: 100)
+    end
+
+    test "non-positive total budget fails" do
+      assert_config_error(b_total: 0)
+    end
+
+    test "budget above reviewed capacity fails" do
+      assert_config_error(b_total: 91)
+    end
+
+    test "budget equal to reviewed capacity after headroom is accepted" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.put(enforced_config(), :b_total, 80)
+      )
+
+      assert {:ok, %Config{b_total: 80}} = Config.load()
+    end
+
+    test "non-positive queue bounds fail" do
+      assert_config_error(q_variant_max: 0)
+      assert_config_error(q_global_max: 0)
+    end
+
+    test "non-positive queue, DB, or lease windows fail" do
+      assert_config_error(queue_window_ms: 0)
+      assert_config_error(db_window_ms: 0)
+      assert_config_error(lease_window_ms: 0)
+    end
+
+    test "negative safety margin fails" do
+      assert_config_error(safety_margin_ms: -1)
+    end
+
+    test "lease window below DB window plus safety margin fails" do
+      assert_config_error(lease_window_ms: 2_499)
+    end
+
+    test "lease window equal to DB window plus safety margin is accepted" do
+      Application.put_env(
+        :store,
+        :inventory_admission,
+        Keyword.put(enforced_config(), :lease_window_ms, 2_500)
+      )
+
+      assert {:ok, %Config{lease_window_ms: 2_500}} = Config.load()
+    end
+
+    test "non-positive cleanup limit fails" do
+      assert_config_error(cleanup_limit: 0)
+    end
+
+    test "non-positive metadata retention fails" do
+      assert_config_error(metadata_retention_ms: 0)
+    end
+
+    test "redis options contain only the IA-03 option set" do
+      Application.put_env(:store, :inventory_admission, enforced_config())
+      assert {:ok, config} = Config.load()
+
+      options = Config.redis_options(config)
+
+      assert Keyword.keys(options) == [
+               :hmac_key,
+               :scope,
+               :b_total,
+               :q_variant_max,
+               :q_global_max,
+               :queue_window_ms,
+               :db_window_ms,
+               :lease_window_ms,
+               :safety_margin_ms,
+               :cleanup_limit,
+               :metadata_retention_ms
+             ]
+
+      refute Keyword.has_key?(options, :mode)
+      refute Keyword.has_key?(options, :repo_pool_capacity)
+      refute Keyword.has_key?(options, :repo_headroom)
+      refute Keyword.has_key?(options, :hmac_key_version)
+    end
+
+    test "validation failures do not expose the HMAC secret" do
+      secret = "do-not-expose-this-secret"
+      config = Keyword.merge(enforced_config(), hmac_key: secret, b_total: 0)
+      Application.put_env(:store, :inventory_admission, config)
+
+      assert {:error, reason} = Config.load()
+      assert :nomatch == :binary.match(:erlang.term_to_binary(reason), secret)
+      refute String.contains?(inspect(reason), secret)
+    end
+  end
+
   defp params(order_id \\ @order_id, variant_id \\ @variant_id, quantity \\ 1) do
     %{order_id: order_id, variant_id: variant_id, quantity: quantity}
   end
@@ -222,6 +385,33 @@ defmodule Store.Orders.InventoryAdmissionTest do
   end
 
   defp lookup_opts(scope), do: [hmac_key: @hmac_key, scope: scope]
+
+  defp enforced_config do
+    [
+      mode: :enforced,
+      scope: "ia04_test",
+      repo_pool_capacity: 100,
+      repo_headroom: 20,
+      b_total: 80,
+      q_variant_max: 10,
+      q_global_max: 20,
+      queue_window_ms: 10_000,
+      db_window_ms: 2_000,
+      lease_window_ms: 3_000,
+      safety_margin_ms: 500,
+      cleanup_limit: 2,
+      metadata_retention_ms: 60_000,
+      hmac_key: "ia04-test-only-trusted-key-material",
+      hmac_key_version: "v1"
+    ]
+  end
+
+  defp assert_config_error(overrides) when is_list(overrides) do
+    Application.put_env(:store, :inventory_admission, Keyword.merge(enforced_config(), overrides))
+    assert {:error, {:invalid_configuration, _field}} = Config.load()
+  end
+
+  defp assert_config_error(overrides), do: assert_config_error([overrides])
 
   defp reference_for(request, admission) do
     %Reference{
