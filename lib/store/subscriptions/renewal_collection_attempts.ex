@@ -257,7 +257,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       end
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
@@ -348,7 +347,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       collection
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
@@ -402,7 +400,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
       false -> Repo.rollback(invalid_transition("dispatch requires its exact PaymentIntent"))
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
@@ -413,7 +410,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       result
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
@@ -509,8 +505,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       Map.get(facts, :state) == :active
   end
 
-  defp exact_active_generation_facts?(_facts, _attempt, _expected_key), do: false
-
   defp resume_in_transaction(input) do
     with {:ok, collection} <- lock_collection(input.collection_attempt_id),
          {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
@@ -518,7 +512,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       resumed
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
@@ -598,7 +591,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       attached
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
@@ -659,7 +651,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       updated
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
     end
   end
 
