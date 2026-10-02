@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.33
-**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, v0.1.29 JC-289 NewYou-conformance contract clarification, v0.1.30 JC-289 / SBH-50-06 post-implementation closure, v0.1.31 SBH-50 access-convergence rollout-order correction, v0.1.32 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze, and v0.1.33 consumption of the canonical Entitlements shared-authority grant
-**Verified:** 2026-10-01
+**Version:** v0.1.34
+**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, v0.1.29 JC-289 NewYou-conformance contract clarification, v0.1.30 JC-289 / SBH-50-06 post-implementation closure, v0.1.31 SBH-50 access-convergence rollout-order correction, v0.1.32 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze, v0.1.33 consumption of the canonical Entitlements shared-authority grant, and the v0.1.34 JC-229 / SBH-10-04 re-admission
+**Verified:** 2026-10-02
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the v0.1.31 rollout-order correction; section 52 preserves the v0.1.32 post-JC-223 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze; section 53 records the current v0.1.33 consumption of the canonical Entitlements shared-authority grant. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the v0.1.31 rollout-order correction; section 52 preserves the v0.1.32 post-JC-223 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze; section 53 records the v0.1.33 consumption of the canonical Entitlements shared-authority grant; section 54 records the current v0.1.34 JC-229 / SBH-10-04 re-admission. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
@@ -2880,12 +2880,12 @@ the complete grant and exclusions.
 ## SBH-10-04 — Renewal Initiation Uses Bound Contract
 
 **Linear issue:** JC-229.
-**State:** `BLOCKED_SHARED_AUTHORITY`.
-**Shared-authority status:** `BLOCKED_SHARED_AUTHORITY`.
+**State:** `READY`.
+**Shared-authority status:** `AUTHORITY_ASSIGNED` (current bounded grant recorded in section 54).
 **Loop eligible:** No.
-**Implementation selection:** Previously selected. Work stopped at PR #78,
-which remains open and draft as partial implementation evidence. This
-amendment assigns no implementation branch or `task_base_sha`.
+**Implementation selection:** Not selected. PR #78 remains open and draft as
+partial implementation evidence. This amendment assigns no implementation
+branch or `task_base_sha`.
 
 Invariant:
 
@@ -4492,7 +4492,7 @@ implementation.
 | `SBH-20-01` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-06` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-03` | foundational spine | — | `CLOSED` | No |
-| `SBH-10-04` | foundational spine | — | `BLOCKED_SHARED_AUTHORITY` | No |
+| `SBH-10-04` | foundational spine | — | `READY` | No |
 | `SBH-10-05` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-02` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-03` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
@@ -6570,4 +6570,264 @@ exact-head CI, human merge, and post-merge tree verification gates pass.
 - Exact SUBS base and canonical main authority were rechecked before editing.
 - PR #98 merge provenance and certified-head/tree equality were checked above.
 - The changed paths are limited to this Master Register and the Phase 27 note.
-- `git diff --check`, documentation/governance checks, and full `mix check` remain required before the PR is opened; an unavailable local database/toolchain will be recorded as a limitation rather than hidden.
+- `git diff --check` and `mix check.static` passed. Full `mix check`
+  reached the static and documentation gates but could not create the local
+  test database because `STORE_TEST_DATABASE_PASSWORD` is unset and PostgreSQL
+  authentication raised `key :password not found`; exact-head CI remains
+  required. The limitation is recorded in the PR body and Phase 27 note.
+
+# 54. v0.1.34 JC-229 / SBH-10-04 renewal initiation re-admission
+
+This governance-only amendment re-admits JC-229 / SBH-10-04 after the exact-key
+renewal-generation prerequisite was integrated into the current SUBS development
+line. It changes no runtime code, tests, migrations, Ash snapshots, dependencies,
+configuration, provider implementation, worker, Linear state, or JC-223 edge.
+The earlier blocked verdicts remain historical evidence where they appear in
+sections 47, 48, and 50. This section is the current verdict after this PR is
+human-merged and independently verified.
+
+### Authority and live Git evidence
+
+The governance branch and worktree for this amendment are based on the exact
+current accepted SUBS tip:
+
+```text
+governance branch = governance/subs-sbh-10-04-readmission
+governance base / current SUBS tip = bf56afdd4d329a95c1739cce327b19fb1777815f
+current SUBS tree = 7c3b5b3fd5367edf965e3b48b5128a9dd73d8dc4
+canonical main = aa90dd56a0325b0ada0df610067f9b9549bd4e5f
+previous register = v0.1.33
+target = hardening/subscriptions
+```
+
+The live GitHub records were inspected before editing:
+
+- PR #78 remains open and draft at `08b28937c001b4f35350bcf5de6fdd052fc7a4c3`.
+  It is partial proof from the old base `0016237646f9fddfc2364680b8cc9ddeb7c10655`,
+  not a resumable implementation branch. Its exact-head CI run was
+  `36144853740`.
+- PR #117 merged the certified S0 exact-generation implementation at
+  `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`. Its certified head was
+  `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`, and exact-head CI run
+  `36968312583` passed all five required jobs with 3 properties, 625 tests,
+  and 0 failures.
+- PR #118 merged the S0 prerequisite closure at
+  `e99237aa3a4a46d9ed7250d3eb9426bd9f2bee4f`. It explicitly kept JC-229
+  blocked and did not assign a SUBS task base.
+- PR #119 merged the accepted S0 runtime into SUBS. Its corrected certified
+  head is `b29d03596ee848677301d6478354d5d61b75180f`; its merge commit is
+  `bf56afdd4d329a95c1739cce327b19fb1777815f`; both trees are
+  `7c3b5b3fd5367edf965e3b48b5128a9dd73d8dc4`. Exact-head CI run
+  `36977385707` passed all five required jobs with 3 properties, 789 tests,
+  and 0 failures.
+
+The PR #119 merge used a normal merge. Its accepted S0 source was authoritative
+for the fifteen exact-generation paths, and the SUBS-side integration added only
+the two reviewed composition-proof test commits after the candidate merge.
+No Subscription, Payments, provider, Entitlements, or JC-229 implementation
+was included.
+
+### S0 and Orders prerequisite re-check
+
+The accepted SUBS source now contains the bounded renewal-generation capability
+required by JC-229:
+
+```text
+order:<order_id>:sku:<variant_id>:renewal_collection:<collection_attempt_id>:generation:<reservation_generation_id>
+```
+
+The current typed entry points are:
+
+```text
+Store.Orders.InventoryAdmission.reserve_renewal_generation/6
+Store.Orders.reserve_exact_generation/5
+Store.Orders.recover_exact_generation/3
+Store.Orders.release_exact_generation/4
+Store.Orders.consume_exact_generation/4
+```
+
+`Store.Orders.InventoryAdmission.Request.new_renewal_generation/6` derives the
+key from normalized server-owned UUIDv7 identities. Generic request construction
+still derives only `order:<order_id>:sku:<variant_id>` and rejects caller-supplied
+renewal fields. The exact key, identity digest, and request fingerprint travel
+through the InventoryAdmission operation and lease evidence. Redis is used only
+for bounded admission coordination and fencing.
+
+`Store.Orders.InventoryReservations` keeps PostgreSQL as the reservation and
+stock authority. Exact reserve, recovery, release, and consume operations use
+the full key, lock the inventory row, and recover by that key after an ambiguous
+database result. The migration
+`20261001180741_s0_task_renewal_generation_exact_key.exs` enforces a partial
+unique index on active `(order_id, variant_id)` pairs while retaining terminal
+history and the global unique `reservation_key` identity. A later generation
+therefore inserts a new row. It cannot reactivate a cancelled, expired, or
+consumed row.
+
+Generic checkout reserve, release, consume, and expiry paths select only the
+canonical four-part generic key. They exclude renewal-generation rows from
+generic enumeration and TTL cleanup. Exact reserve rejects a second active
+generation for the same Order and variant. The current PR #119 proof covers
+same-generation replay, different-generation contention, generic/exact
+exclusion, exact-key recovery, checkout CTE rollback, and apply-once physical
+consumption. No generic IA-04+ work is authorized by this re-admission.
+
+The S0 architecture remains unchanged: PostgreSQL decides stock, durable
+reservation state, and commit outcome. Redis cannot decide availability,
+reservation existence, or whether PostgreSQL committed. Lease expiry, Redis
+loss, local timeout, and missing recovery evidence fail closed.
+
+### Current-source compatibility review
+
+Checkpoint-B evidence already exists on `RenewalAttempt`: the bound PlanRevision,
+variant, quantity, amount, currency, period, contract-change reference, expected
+Subscription version, and versioned charged-contract snapshot. The initiation
+path creates or reuses one RenewalAttempt and one renewal Order, and
+`effective_renewal_contract/1` reconstructs payment inputs from that attempt.
+Later collection attempts must reuse that Order's finalized totals and must not
+re-quote mutable Subscription or Plan state as commercial authority.
+
+The current source also proves the remaining handoff is not yet implemented and
+must be bounded before runtime work starts:
+
+- `ReconcilePaidSubscriptionRenewalWorker` currently carries only `order_id` and
+  `renewal_attempt_id`.
+- `reconcile_paid_subscription_renewal_for_system/2` eventually uses the legacy
+  `RenewalAttempt.payment_intent_id` and only checks that the attempt belongs to
+  the Order. Sequential collections would make that evidence insufficient.
+- `reconcile_paid_renewal_attempt/3` still promotes mutable pending/current
+  Subscription fields. JC-229 must not redefine that commercial reconciliation
+  algorithm; the later SBH-10-05 boundary remains its owner.
+- The current Stripe renewal adapter passes `renewal_key` as its provider
+  idempotency key and metadata identity. JC-229 must add collection-specific
+  identity without changing generic checkout idempotency.
+
+This is a compatible bounded re-admission because the existing
+PaymentApplication resource already stores both `order_id` and
+`payment_intent_id`, and the existing Payments boundary can create a distinct
+PaymentIntent key after a prior same-Order intent is terminal. The implementation
+must persist and validate the exact successful collection evidence before it
+reaches the existing reconciliation boundary:
+
+```text
+order_id
+renewal_attempt_id
+collection_attempt_id
+payment_intent_id
+```
+
+The exact successful PaymentIntent is authoritative through durable collection
+and PaymentApplication evidence. Any disagreement among collection,
+PaymentIntent, PaymentApplication, RenewalAttempt, or Order evidence fails
+closed. The implementation may persist exact successful collection evidence,
+validate the PaymentApplication `payment_intent_id`, and carry the exact
+collection and PaymentIntent IDs through the reconciliation handoff.
+
+It may not promote arbitrary pending Subscription state, redefine the frozen
+charged contract, change the JC-223 dependency edge, change the commercial
+rules owned by SBH-10-05, or silently redefine the legacy
+`RenewalAttempt.payment_intent_id`. Do not overwrite that legacy pointer merely
+to make a replay pass.
+
+### Bounded authority assignment
+
+The shared-authority blocker is resolved only for this row and only for the
+following future implementation boundary:
+
+| Surface | Bounded authority granted to SBH-10-04 |
+|---|---|
+| Subscription | One Subscription-owned durable collection-attempt resource under `RenewalAttempt`; its state axes, monotonic collection identity, exact PaymentIntent association, exact reservation-generation association, focused tests, one migration, and one Ash/Postgres snapshot. No new Domain. |
+| Subscription facade and workers | Collection creation/replay, dispatch fencing, exact-success evidence validation, and a reconciliation handoff carrying `order_id`, `renewal_attempt_id`, `collection_attempt_id`, and `payment_intent_id`. |
+| Orders boundary | Use the already accepted exact-generation reserve/recover/release/consume APIs and validate the exact generation at the existing PaymentApplication boundary. No new Orders migration, snapshot, generic reservation redesign, or second stock authority. |
+| Payments | Add the typed renewal create-or-reuse path using the collection-derived key, bounded `requires_action` handling, renewal-only provider retrieve/reconcile and cancel wrappers, and the renewal-specific paid transaction that validates through Subscriptions and consumes exact Orders keys without the generic order-wide consume operation. Reuse PaymentIntent and PaymentApplication; no new Payments resource or schema migration; generic checkout remains unchanged. |
+| Provider adapters | Carry the six renewal identities, use the collection-derived idempotency key, and add exact renewal-collection status retrieval and cancellation only for adapters that support it. No general intent lookup/cancel API, Repo/Ash/Oban access, business transitions, or unrelated provider expansion. |
+
+This grant is current only after the human merges this governance PR and an
+independent verifier confirms its exact merge commit and tree. It assigns no
+implementation `task_base_sha`, does not resume PR #78, and does not create the
+Phase B task branch.
+
+### Preserved boundaries and non-promotions
+
+The JC-223 graph is unchanged:
+
+```text
+SBH-10-03 → SBH-10-04 → SBH-10-05
+```
+
+`SBH-10-05` remains `BLOCKED_DEPENDENCY / No`. No other row is promoted, and
+JC-230 is not selected. The following remain outside this grant:
+
+- commercial reconciliation rules owned by SBH-10-05;
+- generic checkout PaymentIntent idempotency;
+- generic Orders or InventoryAdmission behavior;
+- IA-04 and later generic S0 work;
+- new Entitlements authority or access-effect execution;
+- arbitrary mutable Subscription or SubscriptionPlan state as payment proof;
+- legacy `RenewalAttempt.payment_intent_id` semantic redefinition;
+- a replacement renewal Order or RenewalAttempt occurrence;
+- provider business rules, Repo/Ash access, Oban enqueue, or domain transitions
+  inside provider adapters.
+
+The current serial verdict is:
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+SBH-10-04 = READY / No
+SBH-10-04 shared authority = AUTHORITY_ASSIGNED (current bounded grant)
+SBH-10-05 = BLOCKED_DEPENDENCY / No
+canonical READY implementation/proof rows = 1
+implementation task_base_sha = none
+production implementation branch = none
+```
+
+### Scope and acceptance gates
+
+Only this Master Register and the existing Phase 27 evidence note change in
+this governance PR. The PR targets
+`hardening/subscriptions`. It must pass `git diff --check`, documentation and
+governance checks, exact-head CI, independent review, and the required human
+merge. After merge, independently verify the merge commit and tree, refresh
+`hardening/subscriptions`, and record the accepted post-governance tip before
+creating any `subs-task/sbh-10-04-*` branch.
+
+Until those gates pass, stop. Do not implement the RenewalCollectionAttempt
+resource or change the renewal workers in this branch.
+
+### Performance & Scaling Review
+
+- Hot paths: future collection creation/replay, exact reservation generation
+  reserve/recover/release/consume, provider webhook success, and the exact
+  reconciliation handoff.
+- Warm paths: ambiguous provider recovery and bounded authentication/cancellation
+  reconciliation for one collection identity.
+- Cold paths: governance review and unresolved operator recovery. This amendment
+  adds no runtime query.
+- Query and N+1 evidence: PR #117 measured exact reserve new at 10 queries,
+  exact replay at 4, recovery at 1, release at 9, and consume at 9. The exact
+  paths use row locks and bounded key lookups; no per-item preload loop is added
+  here. Future collection and handoff work must report query counts and N+1 risk.
+- Indexes: the global `reservation_key` uniqueness and partial active
+  `(order_id, variant_id)` index are current authority. PaymentApplication keeps
+  its Order and PaymentIntent indexes. No new index or migration is authorized by
+  this governance PR.
+- Caching and TTL: availability invalidation remains after PostgreSQL mutation;
+  Redis remains coordination only. No TTL, ETS, Redis, Cachex, or stampede policy
+  changes are made here.
+- Oban and idempotency: no worker uniqueness change is made here. Future jobs
+  must use exact collection identity and remain replay-safe; queue order is not
+  payment or inventory authority.
+- Telemetry and logging: no instrumentation changes are made here. Future work
+  must record collection identity, dispatch epoch, financial outcome, exact
+  PaymentIntent attribution, and unresolved age without provider secrets.
+
+### Verification record
+
+- Live refs were fetched before editing. The persistent SUBS branch and worktree
+  remain untouched; this branch starts at `bf56afdd4d329a95c1739cce327b19fb1777815f`.
+- Required governance, checkout, provider, inventory, S0 architecture, register,
+  Subscription, Payments, Orders, and worker sources were inspected.
+- PRs #78, #117, #118, and #119 were inspected through live GitHub state.
+- The only changed paths are this Master Register and the existing Phase 27
+  evidence note. No runtime source, test, migration, snapshot, dependency, or
+  configuration file changed.

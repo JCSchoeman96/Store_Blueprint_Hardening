@@ -1550,3 +1550,121 @@ Entitlements core modification.
 - Changed paths are limited to the Master Register and this Phase 27 note.
 - PR review, exact-head CI, human merge, and post-merge tree verification are
   pending. This note does not claim implementation admission or final PASS.
+
+## v0.1.34 JC-229 / SBH-10-04 renewal initiation re-admission
+
+### Links consulted
+
+- [`AGENTS.md`](../../AGENTS.md), including branch, worktree, authority, and
+  closure rules.
+- [`active_workstreams.md`](../agent_rules/active_workstreams.md), read from
+  canonical `origin/main` and the current SUBS worktree.
+- [`SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`](../hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md),
+  v0.1.33 at the exact SUBS base.
+- [`sbh_10_04_cross_domain_authority_amendment.md`](../governance/sbh_10_04_cross_domain_authority_amendment.md).
+- [`checkout_interlocks.md`](../governance/checkout_interlocks.md),
+  [`payment_provider_contract.md`](../governance/payment_provider_contract.md),
+  and [`inventory_reservations.md`](../governance/inventory_reservations.md).
+- [`s0_inventory_reservation_admission_architecture.md`](../hardening/s0_inventory_reservation_admission_architecture.md).
+- Current source in `lib/store/subscriptions`, `lib/store/payments`,
+  `lib/store/orders`, `lib/store/workers`, the S0 exact-generation migration,
+  and focused exact-generation tests.
+- [PR #78](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/78),
+  [PR #117](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/117),
+  [PR #118](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/118),
+  and [PR #119](https://github.com/JCSchoeman96/Store_Blueprint_Hardening/pull/119).
+
+### Decisions and pins
+
+1. The governance branch is `governance/subs-sbh-10-04-readmission`, based on
+   `bf56afdd4d329a95c1739cce327b19fb1777815f`. The accepted SUBS tree is
+   `7c3b5b3fd5367edf965e3b48b5128a9dd73d8dc4`. Canonical `main` is
+   `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`.
+2. PR #117's certified head is `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`,
+   merged as `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`, with exact-head CI
+   `36968312583` passing all five jobs. PR #118 merged as `e99237aa3a4a46d9ed7250d3eb9426bd9f2bee4f` and kept JC-229 blocked.
+3. PR #119's corrected certified head is
+   `b29d03596ee848677301d6478354d5d61b75180f`, merged as
+   `bf56afdd4d329a95c1739cce327b19fb1777815f`. The certified and merge trees
+   are equal. Exact-head CI `36977385707` passed all five jobs with 3
+   properties, 789 tests, and 0 failures.
+4. PR #78 remains stale open/draft evidence. It is not rebased, resumed, or
+   merged. No implementation `task_base_sha` is assigned by this amendment.
+5. The current SUBS source now has the exact renewal-generation key and the
+   typed `InventoryAdmission` and `Orders` reserve, recover, release, and
+   consume operations. PostgreSQL remains inventory authority. Generic paths
+   exclude renewal-generation keys, terminal rows are not reactivated, and the
+   partial active-pair index prevents two active generations for one Order and
+   variant.
+6. The current reconciliation handoff remains unsafe for sequential
+   collections. The admitted implementation must carry exact `order_id`,
+   `renewal_attempt_id`, `collection_attempt_id`, and `payment_intent_id`, then
+   fail closed on mismatched durable evidence. It must not redefine SBH-10-05,
+   rewrite the legacy RenewalAttempt pointer, or promote mutable pending state.
+7. SBH-10-04 transitions `BLOCKED_SHARED_AUTHORITY → READY` with a bounded
+   `AUTHORITY_ASSIGNED` grant. SBH-10-05 remains `BLOCKED_DEPENDENCY / No`.
+   No other row is promoted, and the JC-223 dependency graph is unchanged.
+8. The dynamic SHA lines in `active_workstreams.md` are older status evidence,
+   not a path, branch, upstream, ownership, or lifecycle conflict. Live refs
+   were fetched and independently verified for this amendment. Before Phase B,
+   refresh that registry and record the accepted post-governance SUBS tip.
+
+### Plan
+
+1. Update the Master Register to v0.1.34, superseding the current blocked
+   verdict with the exact-base source review and bounded authority assignment.
+2. Record the same authority pins, links, handoff boundary, scope, and
+   performance review in this Phase 27 note.
+3. Confirm that the exact-base diff changes only this Master Register and this
+   note. Confirm no runtime, migration, snapshot, dependency, configuration,
+   or task branch changes.
+4. Run `git diff --check`, documentation/governance checks, and full `mix check`.
+   Push the governance branch and open a PR against `hardening/subscriptions`.
+   Request independent review and exact-head CI, then stop. Do not merge or
+   begin Phase B implementation.
+
+### Performance & Scaling Review
+
+- Hot paths: future collection creation/replay, exact reservation generation
+  reserve/recover/release/consume, provider webhook success, and exact
+  reconciliation handoff.
+- Warm paths: ambiguous provider recovery and bounded authentication or
+  cancellation reconciliation for one collection identity.
+- Cold paths: governance review and unresolved operator recovery. This note and
+  its register amendment add no application query.
+- PR #117 measured exact reserve-new at 10 queries, exact replay at 4,
+  recovery at 1, release at 9, and consume at 9. The exact operations use
+  bounded key lookups and row locks. Future collection work must report query
+  counts and N+1 risk.
+- Current authority indexes are the global reservation-key uniqueness,
+  partial active `(order_id, variant_id)` index, and PaymentApplication Order
+  and PaymentIntent indexes. No index or migration is authorized here.
+- Availability invalidation remains after PostgreSQL mutation. Redis remains
+  coordination only. No TTL, ETS, Redis, Cachex, or stampede policy changes.
+- No Oban uniqueness change is made. Future workers must use exact collection
+  identity and remain replay-safe; queue order is not payment or inventory
+  authority.
+- No telemetry changes are made. Future implementation must record collection
+  identity, dispatch epoch, financial outcome, exact PaymentIntent attribution,
+  and unresolved age without provider secrets.
+
+### Validation completed before PR creation
+
+- `git diff --check`: PASS.
+- `mix check.static`: PASS, including formatting, governance/documentation
+  checks, Credo, Sobelow, and documentation generation.
+- Full `mix check`: static and documentation gates passed, but the test phase
+  could not create the local database because `STORE_TEST_DATABASE_PASSWORD` is
+  unset and PostgreSQL authentication raised `key :password not found`.
+  Exact-head PR CI remains the required full-suite authority.
+
+### Verification record
+
+- Worktree: `.worktrees/governance-subs-sbh-10-04-readmission`.
+- Branch: `governance/subs-sbh-10-04-readmission`.
+- Exact governance base: `bf56afdd4d329a95c1739cce327b19fb1777815f`.
+- Canonical main observed: `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`.
+- Changed paths are limited to this Phase 27 note and the Master Register.
+- Governance commit before PR creation: `00c2428020d1f6c8d1a0b02ae93917f946cdee6a`.
+- PR review, exact-head CI, human merge, and independent post-merge tree
+  verification remain required. This note does not claim runtime completion.
