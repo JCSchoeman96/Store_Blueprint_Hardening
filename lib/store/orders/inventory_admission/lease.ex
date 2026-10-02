@@ -6,12 +6,14 @@ defmodule Store.Orders.InventoryAdmission.Lease do
   It does not represent stock ownership, a durable reservation, or a proof of commit.
   """
 
+  alias Store.Orders.InventoryAdmission.Request
   alias Store.Support.ID.UUIDv7
 
   @allowed_keys MapSet.new([
                   :admission_member,
                   :admission_ref,
                   :variant_id,
+                  :reservation_key,
                   :lease_token,
                   :owner_epoch,
                   :identity_digest,
@@ -33,6 +35,7 @@ defmodule Store.Orders.InventoryAdmission.Lease do
   defstruct [
     :admission_member,
     :variant_id,
+    :reservation_key,
     :lease_token,
     :owner_epoch,
     :identity_digest,
@@ -44,6 +47,7 @@ defmodule Store.Orders.InventoryAdmission.Lease do
   @type t :: %__MODULE__{
           admission_member: String.t(),
           variant_id: Ecto.UUID.t(),
+          reservation_key: String.t() | nil,
           lease_token: String.t(),
           owner_epoch: pos_integer(),
           identity_digest: String.t(),
@@ -57,6 +61,7 @@ defmodule Store.Orders.InventoryAdmission.Lease do
           | :admission_member_must_be_non_empty
           | :invalid_lease_variant_id
           | :lease_variant_id_not_normalized
+          | :invalid_lease_reservation_key
           | :lease_token_must_be_non_empty
           | :owner_epoch_must_be_positive
           | :identity_digest_must_be_non_empty
@@ -77,9 +82,11 @@ defmodule Store.Orders.InventoryAdmission.Lease do
     with :ok <- validate_keys(params),
          {:ok, admission_member} <- fetch_admission_member(params),
          {:ok, variant_id} <- fetch_variant_id(params),
+         {:ok, reservation_key} <- fetch_optional_reservation_key(params),
          {:ok, lease_token} <- fetch_non_empty_binary(params, :lease_token),
          {:ok, owner_epoch} <- fetch_positive_integer(params, :owner_epoch),
          {:ok, identity_digest} <- fetch_non_empty_binary(params, :identity_digest),
+         :ok <- validate_reservation_identity(reservation_key, variant_id, identity_digest),
          {:ok, db_deadline} <- fetch_non_negative_integer(params, :db_deadline),
          {:ok, lease_deadline} <- fetch_non_negative_integer(params, :lease_deadline),
          {:ok, safety_margin} <- fetch_non_negative_integer(params, :safety_margin),
@@ -88,6 +95,7 @@ defmodule Store.Orders.InventoryAdmission.Lease do
        %__MODULE__{
          admission_member: admission_member,
          variant_id: variant_id,
+         reservation_key: reservation_key,
          lease_token: lease_token,
          owner_epoch: owner_epoch,
          identity_digest: identity_digest,
@@ -115,8 +123,13 @@ defmodule Store.Orders.InventoryAdmission.Lease do
              lease.db_deadline,
              lease.lease_deadline,
              lease.safety_margin
-           ) do
-      validate_normalized_variant_id(lease.variant_id, normalized_variant_id)
+           ),
+         :ok <- validate_normalized_variant_id(lease.variant_id, normalized_variant_id) do
+      validate_reservation_identity(
+        lease.reservation_key,
+        lease.variant_id,
+        lease.identity_digest
+      )
     end
   end
 
@@ -179,6 +192,26 @@ defmodule Store.Orders.InventoryAdmission.Lease do
     case Map.fetch(params, :variant_id) do
       {:ok, value} -> normalize_variant_id(value)
       :error -> {:error, required_reason(:variant_id)}
+    end
+  end
+
+  defp fetch_optional_reservation_key(params) do
+    case Map.fetch(params, :reservation_key) do
+      {:ok, value} when is_binary(value) -> {:ok, value}
+      {:ok, _value} -> {:error, :invalid_lease_reservation_key}
+      :error -> {:ok, nil}
+    end
+  end
+
+  defp validate_reservation_identity(nil, _variant_id, _identity_digest), do: :ok
+
+  defp validate_reservation_identity(reservation_key, variant_id, identity_digest) do
+    with {:ok, {_kind, %{variant_id: ^variant_id}}} <-
+           Request.classify_reservation_key(reservation_key),
+         {:ok, ^identity_digest} <- Request.identity_digest_for_reservation_key(reservation_key) do
+      :ok
+    else
+      _ -> {:error, :invalid_lease_reservation_key}
     end
   end
 

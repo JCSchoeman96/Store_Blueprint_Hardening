@@ -17,6 +17,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   @namespace_version "v1"
   @record_version "ia02:v1"
+  @renewal_record_version "ia02:v2"
   @default_scope "default"
   @key_prefix_fallback "store"
   @k_v 1
@@ -155,7 +156,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "lease_token",
       "owner_epoch",
       "metadata_ttl_seconds",
-      "terminal_retention_ms"
+      "terminal_retention_ms",
+      "reservation_key"
     )
 
     if failed(values) then
@@ -176,7 +178,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "member",
       "request_fingerprint",
       "operation_id",
-      "operation_epoch"
+      "operation_epoch",
+      "reservation_key"
     )
 
     if failed(values) then
@@ -208,7 +211,24 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or active_member == member
   end
 
-  local function validate_existing(meta, fence, schema, identity, variant_hex, member)
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
+  local function validate_existing(meta, fence, schema, identity, variant_hex, member, reservation_key)
     if meta == nil or fence == nil then
       return false
     end
@@ -225,6 +245,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or meta[6] ~= fence[6]
       or meta[7] ~= fence[7]
       or meta[8] ~= fence[8]
+      or not reservation_key_matches(meta[20], fence[9], reservation_key)
       or meta[6] == false
       or meta[7] == false
       or meta[8] == false
@@ -277,7 +298,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         "owner_epoch",
         "db_deadline_ms",
         "lease_deadline_ms",
-        "safety_margin_ms"
+        "safety_margin_ms",
+        "reservation_key"
       )
       local active_score = redis.pcall("ZSCORE", KEYS[6], meta[5])
 
@@ -298,6 +320,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         and active_values[11] == meta[14]
         and active_values[12] == meta[15]
         and active_values[13] == meta[13]
+        and active_values[14] == meta[20]
         and active_score ~= false
         and tonumber(active_score) == tonumber(meta[15])
     end
@@ -346,7 +369,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "owner_epoch",
       "db_deadline_ms",
       "lease_deadline_ms",
-      "safety_margin_ms"
+      "safety_margin_ms",
+      "reservation_key"
     )
 
     if failed(sequence_value)
@@ -394,6 +418,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local safety_margin_ms = tonumber(ARGV[14])
   local metadata_ttl_seconds = tonumber(ARGV[15])
   local terminal_retention_ms = tonumber(ARGV[16])
+  local reservation_key = ARGV[17]
 
   if schema == nil
     or identity == nil
@@ -411,6 +436,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or safety_margin_ms == nil
     or metadata_ttl_seconds == nil
     or terminal_retention_ms == nil
+    or reservation_key == nil
     or b_total < 1
     or q_variant_max < 0
     or q_global_max < 0
@@ -466,7 +492,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   elseif metadata_state == false or fence_state == false then
     return unavailable()
-  elseif not validate_existing(metadata, fence, schema, identity, variant_hex, member) then
+  elseif not validate_existing(metadata, fence, schema, identity, variant_hex, member, reservation_key) then
     return unavailable()
   else
     if metadata_state == "QUEUED" then
@@ -536,7 +562,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   end
 
   if active_state ~= false then
-    if active_values[1] ~= schema
+    if (active_values[1] ~= "ia02:v1" and active_values[1] ~= "ia02:v2")
       or active_member == false
       or active_values[4] == false
       or active_values[5] == false
@@ -579,7 +605,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "member", member,
       "request_fingerprint", fingerprint,
       "operation_id", operation_id,
-      "operation_epoch", operation_epoch
+      "operation_epoch", operation_epoch,
+      "reservation_key", reservation_key
     )
 
     redis.call(
@@ -593,6 +620,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "request_fingerprint", fingerprint,
       "operation_id", operation_id,
       "operation_epoch", operation_epoch,
+      "reservation_key", reservation_key,
       "sequence", "0",
       "queue_deadline_ms", "",
       "db_window_ms", db_window_ms,
@@ -617,6 +645,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "request_fingerprint", fingerprint,
       "operation_id", operation_id,
       "operation_epoch", operation_epoch,
+      "reservation_key", reservation_key,
       "lease_token", lease_token,
       "owner_epoch", operation_epoch,
       "db_deadline_ms", db_deadline_ms,
@@ -672,7 +701,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member", member,
     "request_fingerprint", fingerprint,
     "operation_id", operation_id,
-    "operation_epoch", operation_epoch
+    "operation_epoch", operation_epoch,
+    "reservation_key", reservation_key
   )
 
   redis.call(
@@ -686,6 +716,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "request_fingerprint", fingerprint,
     "operation_id", operation_id,
     "operation_epoch", operation_epoch,
+    "reservation_key", reservation_key,
     "sequence", sequence_reply,
     "queue_deadline_ms", queue_deadline_ms,
     "db_window_ms", db_window_ms,
@@ -771,7 +802,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "operation_epoch",
     "sequence",
     "queue_deadline_ms",
-    "terminal_retention_ms"
+    "terminal_retention_ms",
+    "reservation_key"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -783,7 +815,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member",
     "request_fingerprint",
     "operation_id",
-    "operation_epoch"
+    "operation_epoch",
+    "reservation_key"
   )
   local variant_score = redis.pcall("ZSCORE", KEYS[1], member)
   local global_dispatch_score = redis.pcall("ZSCORE", KEYS[2], member)
@@ -803,8 +836,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   if metadata[1] == false
     or fence[1] == false
-    or metadata[1] ~= schema
-    or fence[1] ~= schema
+    or (metadata[1] ~= "ia02:v1" and metadata[1] ~= "ia02:v2")
+    or metadata[1] ~= fence[1]
     or metadata[2] == false
     or metadata[2] ~= fence[2]
     or metadata[3] == false
@@ -819,6 +852,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or metadata[7] ~= fence[7]
     or metadata[8] == false
     or metadata[8] ~= fence[8]
+    or (metadata[1] == "ia02:v2" and (metadata[12] == false or fence[9] == false))
+    or ((metadata[12] ~= false or fence[9] ~= false) and metadata[12] ~= fence[9])
     or not known_state(metadata[2]) then
     return unavailable()
   end
@@ -950,12 +985,30 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or state == "ABANDONED"
   end
 
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
   local schema = ARGV[1]
   local identity = ARGV[2]
   local fingerprint = ARGV[3]
   local member = ARGV[4]
   local lease_token = ARGV[5]
   local b_total = tonumber(ARGV[6])
+  local reservation_key = ARGV[7]
 
   if schema == nil
     or identity == nil
@@ -963,6 +1016,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or member == nil
     or lease_token == nil
     or b_total == nil
+    or reservation_key == nil
     or b_total < 1 then
     return unavailable()
   end
@@ -1013,7 +1067,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "lease_token",
     "owner_epoch",
     "metadata_ttl_seconds",
-    "terminal_retention_ms"
+    "terminal_retention_ms",
+    "reservation_key"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -1025,7 +1080,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member",
     "request_fingerprint",
     "operation_id",
-    "operation_epoch"
+    "operation_epoch",
+    "reservation_key"
   )
 
   if failed(sequence_type)
@@ -1067,6 +1123,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or fence[6] ~= fingerprint
     or metadata[7] ~= fence[7]
     or metadata[8] ~= fence[8]
+    or not reservation_key_matches(metadata[20], fence[9], reservation_key)
     or metadata[4] == false
     or metadata[7] == false
     or metadata[8] == false
@@ -1155,7 +1212,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or active_values[11] == false
       or active_values[12] == false
       or active_values[13] == false
-      or active_values[1] ~= schema
+      or (active_values[1] ~= "ia02:v1" and active_values[1] ~= "ia02:v2")
       or not known_state(active_values[2]) then
       return unavailable()
     end
@@ -1197,7 +1254,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member", member,
     "request_fingerprint", fingerprint,
     "operation_id", metadata[7],
-    "operation_epoch", metadata[8]
+    "operation_epoch", metadata[8],
+    "reservation_key", reservation_key
   )
 
   redis.call(
@@ -1211,6 +1269,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "request_fingerprint", fingerprint,
     "operation_id", metadata[7],
     "operation_epoch", metadata[8],
+    "reservation_key", reservation_key,
     "sequence", metadata[9],
     "queue_deadline_ms", metadata[10],
     "db_window_ms", db_window_ms,
@@ -1234,6 +1293,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "request_fingerprint", fingerprint,
     "operation_id", metadata[7],
     "operation_epoch", metadata[8],
+    "reservation_key", reservation_key,
     "lease_token", lease_token,
     "owner_epoch", metadata[8],
     "db_deadline_ms", db_deadline_ms,
@@ -1295,6 +1355,23 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or state == "ABANDONED"
   end
 
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
   local function reply(meta)
     return {
       "IA03_STATUS",
@@ -1339,6 +1416,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local variant_hex = ARGV[5]
   local operation_id = ARGV[6]
   local operation_epoch = ARGV[7]
+  local reservation_key = ARGV[8]
 
   if schema == nil
     or identity == nil
@@ -1346,7 +1424,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or member == nil
     or variant_hex == nil
     or operation_id == nil
-    or operation_epoch == nil then
+    or operation_epoch == nil
+    or reservation_key == nil then
     return unavailable()
   end
 
@@ -1371,7 +1450,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "lease_token",
     "owner_epoch",
     "metadata_ttl_seconds",
-    "terminal_retention_ms"
+    "terminal_retention_ms",
+    "reservation_key"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -1383,7 +1463,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member",
     "request_fingerprint",
     "operation_id",
-    "operation_epoch"
+    "operation_epoch",
+    "reservation_key"
   )
   local variant_score = redis.pcall("ZSCORE", KEYS[2], member)
   local global_dispatch_score = redis.pcall("ZSCORE", KEYS[3], member)
@@ -1405,7 +1486,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "owner_epoch",
     "db_deadline_ms",
     "lease_deadline_ms",
-    "safety_margin_ms"
+    "safety_margin_ms",
+    "reservation_key"
   )
 
   if failed(metadata)
@@ -1436,11 +1518,16 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or fence[7] ~= operation_id
     or metadata[8] ~= operation_epoch
     or fence[8] ~= operation_epoch
+    or not reservation_key_matches(metadata[20], fence[9], reservation_key)
     or not known_state(metadata[2]) then
     return unavailable()
   end
 
-  if metadata[6] ~= fingerprint or fence[6] ~= fingerprint then
+  if metadata[6] ~= fence[6] then
+    return unavailable()
+  end
+
+  if metadata[6] ~= fingerprint then
     return mismatch()
   end
 
@@ -1504,6 +1591,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or active_values[11] ~= metadata[14]
       or active_values[12] ~= metadata[15]
       or active_values[13] ~= metadata[13]
+      or active_values[14] ~= metadata[20]
       or tonumber(global_active_score) ~= tonumber(metadata[15]) then
       return unavailable()
     end
@@ -1588,6 +1676,23 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or state == "ABANDONED"
   end
 
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
   local schema = ARGV[1]
   local identity = ARGV[2]
   local fingerprint = ARGV[3]
@@ -1595,6 +1700,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local variant_hex = ARGV[5]
   local operation_id = ARGV[6]
   local operation_epoch = ARGV[7]
+  local reservation_key = ARGV[8]
 
   if schema == nil
     or identity == nil
@@ -1602,7 +1708,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or member == nil
     or variant_hex == nil
     or operation_id == nil
-    or operation_epoch == nil then
+    or operation_epoch == nil
+    or reservation_key == nil then
     return unavailable()
   end
 
@@ -1627,7 +1734,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "lease_token",
     "owner_epoch",
     "metadata_ttl_seconds",
-    "terminal_retention_ms"
+    "terminal_retention_ms",
+    "reservation_key"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -1639,7 +1747,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member",
     "request_fingerprint",
     "operation_id",
-    "operation_epoch"
+    "operation_epoch",
+    "reservation_key"
   )
   local variant_score = redis.pcall("ZSCORE", KEYS[2], member)
   local global_dispatch_score = redis.pcall("ZSCORE", KEYS[3], member)
@@ -1674,11 +1783,16 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or fence[7] ~= operation_id
     or metadata[8] ~= operation_epoch
     or fence[8] ~= operation_epoch
+    or not reservation_key_matches(metadata[20], fence[9], reservation_key)
     or not known_state(metadata[2]) then
     return unavailable()
   end
 
-  if metadata[6] ~= fingerprint or fence[6] ~= fingerprint then
+  if metadata[6] ~= fence[6] then
+    return unavailable()
+  end
+
+  if metadata[6] ~= fingerprint then
     return mismatch()
   end
 
@@ -1990,13 +2104,21 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          :ok <- validate_digest(reference.request_fingerprint),
          :ok <- validate_member(reference.member),
          :ok <- validate_operation_id(reference.operation_id),
+         {:ok, identities} <- reference_key_identities(reference.reservation_key),
+         true <- identities.variant_id == reference.variant_id,
          {:ok, canonical_digest} <-
            Request.identity_digest_for_reservation_key(reference.reservation_key),
          true <- canonical_digest == reference.identity_digest,
-         {:ok, _variant_hex} <- normalize_variant_key(reference.variant_id),
-         true <- String.contains?(reference.reservation_key, reference.variant_id) do
+         {:ok, _variant_hex} <- normalize_variant_key(reference.variant_id) do
       :ok
     else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp reference_key_identities(reservation_key) do
+    case Request.classify_reservation_key(reservation_key) do
+      {:ok, {_kind, identities}} -> {:ok, identities}
       _ -> {:error, :invalid_input}
     end
   end
@@ -2014,13 +2136,14 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   defp reference_arguments(reference, context) do
     [
-      @record_version,
+      record_version(reference),
       reference.identity_digest,
       reference.request_fingerprint,
       context.member,
       context.variant_hex,
       reference.operation_id,
-      Integer.to_string(reference.operation_epoch)
+      Integer.to_string(reference.operation_epoch),
+      reference.reservation_key
     ]
   end
 
@@ -2283,7 +2406,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   defp enqueue_arguments(request, member, operation_id, lease_token, options) do
     [
-      @record_version,
+      record_version(request),
       request.identity_digest,
       request.request_fingerprint,
       member,
@@ -2298,19 +2421,35 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       Integer.to_string(options.lease_window_ms),
       Integer.to_string(options.safety_margin_ms),
       Integer.to_string(options.metadata_ttl_seconds),
-      Integer.to_string(options.terminal_retention_ms)
+      Integer.to_string(options.terminal_retention_ms),
+      request.reservation_key
     ]
   end
 
   defp promotion_arguments(request, member, lease_token, options) do
     [
-      @record_version,
+      record_version(request),
       request.identity_digest,
       request.request_fingerprint,
       member,
       lease_token,
-      Integer.to_string(options.b_total)
+      Integer.to_string(options.b_total),
+      request.reservation_key
     ]
+  end
+
+  defp record_version(%Request{} = request) do
+    case Request.classify_reservation_key(request.reservation_key) do
+      {:ok, {:renewal_generation, _identities}} -> @renewal_record_version
+      _ -> @record_version
+    end
+  end
+
+  defp record_version(%Reference{} = reference) do
+    case Request.classify_reservation_key(reference.reservation_key) do
+      {:ok, {:renewal_generation, _identities}} -> @renewal_record_version
+      _ -> @record_version
+    end
   end
 
   # Discovery is bounded and read-only; @expire_script revalidates every
