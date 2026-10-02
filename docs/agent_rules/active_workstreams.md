@@ -655,6 +655,7 @@ IA-04 overall = AUTHORIZED / IMPLEMENTING
 Slice 1 = PASS / ACCEPTED / FROZEN
 accepted Slice-1 head = 75674e4104c61c198a09fcbb3026df27a71f62fd
 Slice 2 = ACTIVE NEXT STEP / NOT STARTED
+shared_fence_target_max = 500
 Slice 3+ = NOT STARTED / SERIAL-BLOCKED
 IA-05+ = NOT AUTHORIZED
 ```
@@ -775,9 +776,44 @@ starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
 ```
 
 No parallel Slice-2 agent or second IA-04 branch is authorized. Slice 3+ remains
-serial-blocked and IA-05+ remains not authorized. Issue #101 is aligned to this
-accepted Slice-1 head and records Slice 2 as the selected next slice pending this
-canonical governance transition; this record does not modify the issue.
+serial-blocked and IA-05+ remains not authorized. Issue #101 remains aligned to this
+accepted Slice-1 head and records Slice 2 as selected next. This amendment defines the
+missing target bound and does not modify the issue.
+
+### IA-04 shared lifecycle fence target maximum (2026-10-02)
+
+This amendment defines the finite target-set cardinality required by the frozen
+shared-writer policy. It does not redesign that policy or modify the frozen
+implementation plan.
+
+The bound is a fixed IA-04 constant, not a client, request, node, or deployment setting.
+`lib/store/orders/inventory_reservations.ex` has
+`@default_expiry_batch_size = 500`, which supports the chosen ceiling but did not
+previously authorize shared-fence cardinality. `cleanup_limit` continues to govern
+queue cleanup and does not define this target maximum. Changing the constant later
+requires an explicit governance and performance review.
+
+Each shared lifecycle operation uses one server-derived, valid, normalized, unique,
+deterministically ordered set of reservation identities. Count the set after identity
+validation and normalization. It must contain 1 to 500 targets and match the exact
+snapshot used by its durable mutation. Duplicate targets are invalid; implementations
+must not silently deduplicate them.
+
+For order-scoped consume or release, materialize the exact eligible target snapshot
+first. If it contains more than 500 targets, fail closed before Redis fence acquisition
+and before any PostgreSQL lifecycle mutation. Do not split one operation into chunks or
+partially fence it. Later service/domain mapping uses the existing governed
+`INVENTORY_ADMISSION_UNAVAILABLE` path; this amendment adds no public Store error code.
+
+Expiry remains a repeatable bounded pass. Its effective candidate batch must not exceed
+500. Under ENFORCED, a larger requested batch is capped at 500, and remaining candidates
+are deferred to a later pass.
+
+Slice-2 shared-fence primitives accept 1 to 500 targets and reject empty, oversized,
+duplicate, or invalid target sets before mutation. Acquisition and terminal release
+remain all-or-none. The Redis work is O(N), with N at most 500. This bound does not
+certify Redis or the application for 100,000 concurrent requests. Slice 2 remains
+active next; Slice 3+ remains serial-blocked and IA-05+ remains unauthorized.
 
 ### PLATFORM
 
