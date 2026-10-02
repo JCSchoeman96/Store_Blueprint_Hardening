@@ -664,8 +664,18 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
         Task.async(fn ->
           Sandbox.unboxed_run(Store.Repo, fn ->
             {:ok, %{rows: [[mutation_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
-            Repo.query!("SET lock_timeout = '100ms'")
-            {mutation_backend_pid, fun.()}
+
+            {:ok, %{rows: [[default_lock_timeout]]}} =
+              Repo.query("SELECT reset_val FROM pg_settings WHERE name = 'lock_timeout'", [])
+
+            try do
+              Repo.query!("SET lock_timeout = '100ms'")
+              {mutation_backend_pid, fun.()}
+            after
+              Repo.query!("SET lock_timeout = DEFAULT")
+              {:ok, %{rows: [[lock_timeout]]}} = Repo.query("SHOW lock_timeout", [])
+              assert lock_timeout == default_lock_timeout
+            end
           end)
         end)
 
