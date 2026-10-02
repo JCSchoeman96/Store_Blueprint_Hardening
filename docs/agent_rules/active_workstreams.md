@@ -1259,7 +1259,7 @@ Current JC-229 / SBH-10-04 serial-admission evidence:
 - canonical SUBS register v0.1.34 records `SBH-10-04 = READY / No`
 - bounded shared authority = `AUTHORITY_ASSIGNED`
 - `SBH-10-05 = BLOCKED_DEPENDENCY / No`
-- the human has explicitly selected JC-229 / SBH-10-04 for implementation
+- the human has explicitly selected JC-229 / SBH-10-04 for implementation in owner-authored PR #122 comment `#5950367213`, posted after PR #121 merged and explicitly approving `8a21739555de1dde8f448bfd7e1172b1caeb54c3` as the exact JC-229 `task_base_sha` subject to PR #122 merge and post-merge verification
 - accepted post-governance SUBS tip = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
 - candidate JC-229 `task_base_sha` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
 - production implementation branch = not created by this registry refresh
