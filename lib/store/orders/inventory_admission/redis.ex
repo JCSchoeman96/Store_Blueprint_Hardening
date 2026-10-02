@@ -11,12 +11,13 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   Redis Cluster script.
   """
 
-  alias Store.Orders.InventoryAdmission.Request
+  alias Store.Orders.InventoryAdmission.{Reference, Request}
   alias Store.Support.ID.UUIDv7
   alias Store.Support.RateLimit.RedixClient
 
   @namespace_version "v1"
   @record_version "ia02:v1"
+  @renewal_record_version "ia02:v2"
   @default_scope "default"
   @key_prefix_fallback "store"
   @k_v 1
@@ -155,7 +156,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "lease_token",
       "owner_epoch",
       "metadata_ttl_seconds",
-      "terminal_retention_ms"
+      "terminal_retention_ms",
+      "reservation_key"
     )
 
     if failed(values) then
@@ -176,7 +178,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "member",
       "request_fingerprint",
       "operation_id",
-      "operation_epoch"
+      "operation_epoch",
+      "reservation_key"
     )
 
     if failed(values) then
@@ -208,7 +211,24 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or active_member == member
   end
 
-  local function validate_existing(meta, fence, schema, identity, variant_hex, member)
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
+  local function validate_existing(meta, fence, schema, identity, variant_hex, member, reservation_key)
     if meta == nil or fence == nil then
       return false
     end
@@ -225,6 +245,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or meta[6] ~= fence[6]
       or meta[7] ~= fence[7]
       or meta[8] ~= fence[8]
+      or not reservation_key_matches(meta[20], fence[9], reservation_key)
       or meta[6] == false
       or meta[7] == false
       or meta[8] == false
@@ -277,7 +298,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         "owner_epoch",
         "db_deadline_ms",
         "lease_deadline_ms",
-        "safety_margin_ms"
+        "safety_margin_ms",
+        "reservation_key"
       )
       local active_score = redis.pcall("ZSCORE", KEYS[6], meta[5])
 
@@ -298,6 +320,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         and active_values[11] == meta[14]
         and active_values[12] == meta[15]
         and active_values[13] == meta[13]
+        and active_values[14] == meta[20]
         and active_score ~= false
         and tonumber(active_score) == tonumber(meta[15])
     end
@@ -346,7 +369,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "owner_epoch",
       "db_deadline_ms",
       "lease_deadline_ms",
-      "safety_margin_ms"
+      "safety_margin_ms",
+      "reservation_key"
     )
 
     if failed(sequence_value)
@@ -394,6 +418,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local safety_margin_ms = tonumber(ARGV[14])
   local metadata_ttl_seconds = tonumber(ARGV[15])
   local terminal_retention_ms = tonumber(ARGV[16])
+  local reservation_key = ARGV[17]
 
   if schema == nil
     or identity == nil
@@ -411,6 +436,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or safety_margin_ms == nil
     or metadata_ttl_seconds == nil
     or terminal_retention_ms == nil
+    or reservation_key == nil
     or b_total < 1
     or q_variant_max < 0
     or q_global_max < 0
@@ -466,7 +492,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   elseif metadata_state == false or fence_state == false then
     return unavailable()
-  elseif not validate_existing(metadata, fence, schema, identity, variant_hex, member) then
+  elseif not validate_existing(metadata, fence, schema, identity, variant_hex, member, reservation_key) then
     return unavailable()
   else
     if metadata_state == "QUEUED" then
@@ -536,7 +562,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   end
 
   if active_state ~= false then
-    if active_values[1] ~= schema
+    if (active_values[1] ~= "ia02:v1" and active_values[1] ~= "ia02:v2")
       or active_member == false
       or active_values[4] == false
       or active_values[5] == false
@@ -579,7 +605,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "member", member,
       "request_fingerprint", fingerprint,
       "operation_id", operation_id,
-      "operation_epoch", operation_epoch
+      "operation_epoch", operation_epoch,
+      "reservation_key", reservation_key
     )
 
     redis.call(
@@ -593,6 +620,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "request_fingerprint", fingerprint,
       "operation_id", operation_id,
       "operation_epoch", operation_epoch,
+      "reservation_key", reservation_key,
       "sequence", "0",
       "queue_deadline_ms", "",
       "db_window_ms", db_window_ms,
@@ -617,6 +645,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "request_fingerprint", fingerprint,
       "operation_id", operation_id,
       "operation_epoch", operation_epoch,
+      "reservation_key", reservation_key,
       "lease_token", lease_token,
       "owner_epoch", operation_epoch,
       "db_deadline_ms", db_deadline_ms,
@@ -672,7 +701,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member", member,
     "request_fingerprint", fingerprint,
     "operation_id", operation_id,
-    "operation_epoch", operation_epoch
+    "operation_epoch", operation_epoch,
+    "reservation_key", reservation_key
   )
 
   redis.call(
@@ -686,6 +716,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "request_fingerprint", fingerprint,
     "operation_id", operation_id,
     "operation_epoch", operation_epoch,
+    "reservation_key", reservation_key,
     "sequence", sequence_reply,
     "queue_deadline_ms", queue_deadline_ms,
     "db_window_ms", db_window_ms,
@@ -771,7 +802,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "operation_epoch",
     "sequence",
     "queue_deadline_ms",
-    "terminal_retention_ms"
+    "terminal_retention_ms",
+    "reservation_key"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -783,7 +815,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member",
     "request_fingerprint",
     "operation_id",
-    "operation_epoch"
+    "operation_epoch",
+    "reservation_key"
   )
   local variant_score = redis.pcall("ZSCORE", KEYS[1], member)
   local global_dispatch_score = redis.pcall("ZSCORE", KEYS[2], member)
@@ -803,8 +836,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   if metadata[1] == false
     or fence[1] == false
-    or metadata[1] ~= schema
-    or fence[1] ~= schema
+    or (metadata[1] ~= "ia02:v1" and metadata[1] ~= "ia02:v2")
+    or metadata[1] ~= fence[1]
     or metadata[2] == false
     or metadata[2] ~= fence[2]
     or metadata[3] == false
@@ -819,6 +852,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or metadata[7] ~= fence[7]
     or metadata[8] == false
     or metadata[8] ~= fence[8]
+    or (metadata[1] == "ia02:v2" and (metadata[12] == false or fence[9] == false))
+    or ((metadata[12] ~= false or fence[9] ~= false) and metadata[12] ~= fence[9])
     or not known_state(metadata[2]) then
     return unavailable()
   end
@@ -950,12 +985,30 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or state == "ABANDONED"
   end
 
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
   local schema = ARGV[1]
   local identity = ARGV[2]
   local fingerprint = ARGV[3]
   local member = ARGV[4]
   local lease_token = ARGV[5]
   local b_total = tonumber(ARGV[6])
+  local reservation_key = ARGV[7]
 
   if schema == nil
     or identity == nil
@@ -963,6 +1016,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or member == nil
     or lease_token == nil
     or b_total == nil
+    or reservation_key == nil
     or b_total < 1 then
     return unavailable()
   end
@@ -1013,7 +1067,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "lease_token",
     "owner_epoch",
     "metadata_ttl_seconds",
-    "terminal_retention_ms"
+    "terminal_retention_ms",
+    "reservation_key"
   )
   local fence = redis.pcall(
     "HMGET",
@@ -1025,7 +1080,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member",
     "request_fingerprint",
     "operation_id",
-    "operation_epoch"
+    "operation_epoch",
+    "reservation_key"
   )
 
   if failed(sequence_type)
@@ -1067,6 +1123,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or fence[6] ~= fingerprint
     or metadata[7] ~= fence[7]
     or metadata[8] ~= fence[8]
+    or not reservation_key_matches(metadata[20], fence[9], reservation_key)
     or metadata[4] == false
     or metadata[7] == false
     or metadata[8] == false
@@ -1155,7 +1212,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or active_values[11] == false
       or active_values[12] == false
       or active_values[13] == false
-      or active_values[1] ~= schema
+      or (active_values[1] ~= "ia02:v1" and active_values[1] ~= "ia02:v2")
       or not known_state(active_values[2]) then
       return unavailable()
     end
@@ -1197,7 +1254,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "member", member,
     "request_fingerprint", fingerprint,
     "operation_id", metadata[7],
-    "operation_epoch", metadata[8]
+    "operation_epoch", metadata[8],
+    "reservation_key", reservation_key
   )
 
   redis.call(
@@ -1211,6 +1269,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "request_fingerprint", fingerprint,
     "operation_id", metadata[7],
     "operation_epoch", metadata[8],
+    "reservation_key", reservation_key,
     "sequence", metadata[9],
     "queue_deadline_ms", metadata[10],
     "db_window_ms", db_window_ms,
@@ -1234,6 +1293,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "request_fingerprint", fingerprint,
     "operation_id", metadata[7],
     "operation_epoch", metadata[8],
+    "reservation_key", reservation_key,
     "lease_token", lease_token,
     "owner_epoch", metadata[8],
     "db_deadline_ms", db_deadline_ms,
@@ -1264,6 +1324,530 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   }
   """
 
+  @status_script ~S"""
+  local function failed(reply)
+    return type(reply) == "table" and reply.err ~= nil
+  end
+
+  local function unavailable()
+    return {"IA03_UNAVAILABLE"}
+  end
+
+  local function mismatch()
+    return {"IA03_MISMATCH"}
+  end
+
+  local function frozen()
+    return {"IA03_FROZEN"}
+  end
+
+  local function known_state(state)
+    return state == "REQUESTED"
+      or state == "QUEUED"
+      or state == "ADMITTED"
+      or state == "RESERVING"
+      or state == "UNKNOWN_DB_OUTCOME"
+      or state == "RECOVERING"
+      or state == "UNRESOLVED"
+      or state == "COMPLETED"
+      or state == "REJECTED"
+      or state == "EXPIRED"
+      or state == "ABANDONED"
+  end
+
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
+  local function reply(meta)
+    return {
+      "IA03_STATUS",
+      meta[2],
+      meta[5],
+      meta[4],
+      meta[3],
+      meta[6],
+      meta[7],
+      tostring(meta[8]),
+      meta[9] or "0",
+      meta[10] or "",
+      meta[14] or "",
+      meta[15] or "",
+      meta[13] or "",
+      meta[17] or "",
+      meta[16] or ""
+    }
+  end
+
+  local function server_now_ms()
+    local now_reply = redis.pcall("TIME")
+
+    if failed(now_reply) or now_reply[1] == false or now_reply[2] == false then
+      return nil
+    end
+
+    local seconds = tonumber(now_reply[1])
+    local microseconds = tonumber(now_reply[2])
+
+    if seconds == nil or microseconds == nil then
+      return nil
+    end
+
+    return seconds * 1000 + math.floor(microseconds / 1000)
+  end
+
+  local schema = ARGV[1]
+  local identity = ARGV[2]
+  local fingerprint = ARGV[3]
+  local member = ARGV[4]
+  local variant_hex = ARGV[5]
+  local operation_id = ARGV[6]
+  local operation_epoch = ARGV[7]
+  local reservation_key = ARGV[8]
+
+  if schema == nil
+    or identity == nil
+    or fingerprint == nil
+    or member == nil
+    or variant_hex == nil
+    or operation_id == nil
+    or operation_epoch == nil
+    or reservation_key == nil then
+    return unavailable()
+  end
+
+  local metadata = redis.pcall(
+    "HMGET",
+    KEYS[7],
+    "schema_version",
+    "state",
+    "identity_digest",
+    "variant_hex",
+    "member",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch",
+    "sequence",
+    "queue_deadline_ms",
+    "db_window_ms",
+    "lease_window_ms",
+    "safety_margin_ms",
+    "db_deadline_ms",
+    "lease_deadline_ms",
+    "lease_token",
+    "owner_epoch",
+    "metadata_ttl_seconds",
+    "terminal_retention_ms",
+    "reservation_key"
+  )
+  local fence = redis.pcall(
+    "HMGET",
+    KEYS[8],
+    "schema_version",
+    "state",
+    "identity_digest",
+    "variant_hex",
+    "member",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch",
+    "reservation_key"
+  )
+  local variant_score = redis.pcall("ZSCORE", KEYS[2], member)
+  local global_dispatch_score = redis.pcall("ZSCORE", KEYS[3], member)
+  local global_queue_expiry_score = redis.pcall("ZSCORE", KEYS[4], member)
+  local active_member = redis.pcall("HGET", KEYS[5], "member")
+  local global_active_score = redis.pcall("ZSCORE", KEYS[6], member)
+  local active_values = redis.pcall(
+    "HMGET",
+    KEYS[5],
+    "schema_version",
+    "state",
+    "member",
+    "variant_hex",
+    "identity_digest",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch",
+    "lease_token",
+    "owner_epoch",
+    "db_deadline_ms",
+    "lease_deadline_ms",
+    "safety_margin_ms",
+    "reservation_key"
+  )
+
+  if failed(metadata)
+    or failed(fence)
+    or failed(variant_score)
+    or failed(global_dispatch_score)
+    or failed(global_queue_expiry_score)
+    or failed(active_member)
+    or failed(global_active_score)
+    or failed(active_values) then
+    return unavailable()
+  end
+
+  if metadata[1] == false or fence[1] == false then
+    return unavailable()
+  end
+
+  if metadata[1] ~= schema
+    or fence[1] ~= schema
+    or metadata[2] ~= fence[2]
+    or metadata[3] ~= identity
+    or fence[3] ~= identity
+    or metadata[4] ~= variant_hex
+    or fence[4] ~= variant_hex
+    or metadata[5] ~= member
+    or fence[5] ~= member
+    or metadata[7] ~= operation_id
+    or fence[7] ~= operation_id
+    or metadata[8] ~= operation_epoch
+    or fence[8] ~= operation_epoch
+    or not reservation_key_matches(metadata[20], fence[9], reservation_key)
+    or not known_state(metadata[2]) then
+    return unavailable()
+  end
+
+  if metadata[6] ~= fence[6] then
+    return unavailable()
+  end
+
+  if metadata[6] ~= fingerprint then
+    return mismatch()
+  end
+
+  if metadata[2] == "UNRESOLVED" then
+    return frozen()
+  end
+
+  if metadata[2] == "QUEUED" then
+    local sequence = tonumber(metadata[9])
+    local queue_deadline_ms = tonumber(metadata[10])
+    local retention_ms = tonumber(metadata[19])
+
+    if sequence == nil
+      or sequence < 1
+      or queue_deadline_ms == nil
+      or retention_ms == nil
+      or retention_ms < 1
+      or variant_score == false
+      or global_dispatch_score == false
+      or global_queue_expiry_score == false
+      or active_member == member
+      or global_active_score ~= false
+      or tonumber(variant_score) ~= sequence
+      or tonumber(global_dispatch_score) ~= sequence
+      or tonumber(global_queue_expiry_score) ~= queue_deadline_ms then
+      return unavailable()
+    end
+
+    local now_ms = server_now_ms()
+    if now_ms == nil then
+      return unavailable()
+    end
+
+    if now_ms >= queue_deadline_ms then
+      redis.call("ZREM", KEYS[2], member)
+      redis.call("ZREM", KEYS[3], member)
+      redis.call("ZREM", KEYS[4], member)
+      redis.call("HSET", KEYS[7], "state", "EXPIRED")
+      redis.call("HSET", KEYS[8], "state", "EXPIRED")
+      redis.call("PEXPIRE", KEYS[7], retention_ms)
+      redis.call("PEXPIRE", KEYS[8], retention_ms)
+      metadata[2] = "EXPIRED"
+    end
+
+    return reply(metadata)
+  end
+
+  if metadata[2] == "ADMITTED" then
+    if active_member ~= member
+      or global_active_score == false
+      or active_values[1] ~= schema
+      or active_values[2] ~= "ADMITTED"
+      or active_values[3] ~= member
+      or active_values[4] ~= variant_hex
+      or active_values[5] ~= identity
+      or active_values[6] ~= fingerprint
+      or active_values[7] ~= operation_id
+      or active_values[8] ~= operation_epoch
+      or active_values[9] ~= metadata[16]
+      or active_values[10] ~= metadata[17]
+      or active_values[11] ~= metadata[14]
+      or active_values[12] ~= metadata[15]
+      or active_values[13] ~= metadata[13]
+      or active_values[14] ~= metadata[20]
+      or tonumber(global_active_score) ~= tonumber(metadata[15]) then
+      return unavailable()
+    end
+
+    return reply(metadata)
+  end
+
+  local terminal_state = metadata[2] == "COMPLETED"
+    or metadata[2] == "REJECTED"
+    or metadata[2] == "EXPIRED"
+    or metadata[2] == "ABANDONED"
+
+  if terminal_state and active_member == member then
+    return unavailable()
+  end
+
+  if variant_score ~= false
+    or global_dispatch_score ~= false
+    or global_queue_expiry_score ~= false
+    or global_active_score ~= false then
+    return unavailable()
+  end
+
+  if metadata[2] == "EXPIRED" or metadata[2] == "ABANDONED" then
+    local retention_ms = tonumber(metadata[19])
+    if retention_ms == nil or retention_ms < 1 then
+      return unavailable()
+    end
+  end
+
+  return reply(metadata)
+  """
+
+  @abandon_script ~S"""
+  local function failed(reply)
+    return type(reply) == "table" and reply.err ~= nil
+  end
+
+  local function unavailable()
+    return {"IA03_UNAVAILABLE"}
+  end
+
+  local function mismatch()
+    return {"IA03_MISMATCH"}
+  end
+
+  local function frozen()
+    return {"IA03_FROZEN"}
+  end
+
+  local function reply(tag, meta)
+    return {
+      tag,
+      meta[2],
+      meta[5],
+      meta[4],
+      meta[3],
+      meta[6],
+      meta[7],
+      tostring(meta[8]),
+      meta[9] or "0",
+      meta[10] or "",
+      meta[14] or "",
+      meta[15] or "",
+      meta[13] or "",
+      meta[17] or "",
+      meta[16] or ""
+    }
+  end
+
+  local function known_state(state)
+    return state == "REQUESTED"
+      or state == "QUEUED"
+      or state == "ADMITTED"
+      or state == "RESERVING"
+      or state == "UNKNOWN_DB_OUTCOME"
+      or state == "RECOVERING"
+      or state == "UNRESOLVED"
+      or state == "COMPLETED"
+      or state == "REJECTED"
+      or state == "EXPIRED"
+      or state == "ABANDONED"
+  end
+
+  local function legacy_generic_key(key)
+    if type(key) ~= "string" then
+      return false
+    end
+
+    local order_id, variant_id = string.match(key, "^order:([^:]+):sku:([^:]+)$")
+    return order_id ~= nil and #order_id == 36 and #variant_id == 36
+  end
+
+  local function reservation_key_matches(metadata_key, fence_key, expected_key)
+    if metadata_key == expected_key and fence_key == expected_key then
+      return true
+    end
+
+    return metadata_key == false and fence_key == false and legacy_generic_key(expected_key)
+  end
+
+  local schema = ARGV[1]
+  local identity = ARGV[2]
+  local fingerprint = ARGV[3]
+  local member = ARGV[4]
+  local variant_hex = ARGV[5]
+  local operation_id = ARGV[6]
+  local operation_epoch = ARGV[7]
+  local reservation_key = ARGV[8]
+
+  if schema == nil
+    or identity == nil
+    or fingerprint == nil
+    or member == nil
+    or variant_hex == nil
+    or operation_id == nil
+    or operation_epoch == nil
+    or reservation_key == nil then
+    return unavailable()
+  end
+
+  local metadata = redis.pcall(
+    "HMGET",
+    KEYS[7],
+    "schema_version",
+    "state",
+    "identity_digest",
+    "variant_hex",
+    "member",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch",
+    "sequence",
+    "queue_deadline_ms",
+    "db_window_ms",
+    "lease_window_ms",
+    "safety_margin_ms",
+    "db_deadline_ms",
+    "lease_deadline_ms",
+    "lease_token",
+    "owner_epoch",
+    "metadata_ttl_seconds",
+    "terminal_retention_ms",
+    "reservation_key"
+  )
+  local fence = redis.pcall(
+    "HMGET",
+    KEYS[8],
+    "schema_version",
+    "state",
+    "identity_digest",
+    "variant_hex",
+    "member",
+    "request_fingerprint",
+    "operation_id",
+    "operation_epoch",
+    "reservation_key"
+  )
+  local variant_score = redis.pcall("ZSCORE", KEYS[2], member)
+  local global_dispatch_score = redis.pcall("ZSCORE", KEYS[3], member)
+  local global_queue_expiry_score = redis.pcall("ZSCORE", KEYS[4], member)
+  local active_member = redis.pcall("HGET", KEYS[5], "member")
+  local global_active_score = redis.pcall("ZSCORE", KEYS[6], member)
+
+  if failed(metadata)
+    or failed(fence)
+    or failed(variant_score)
+    or failed(global_dispatch_score)
+    or failed(global_queue_expiry_score)
+    or failed(active_member)
+    or failed(global_active_score) then
+    return unavailable()
+  end
+
+  if metadata[1] == false or fence[1] == false then
+    return unavailable()
+  end
+
+  if metadata[1] ~= schema
+    or fence[1] ~= schema
+    or metadata[2] ~= fence[2]
+    or metadata[3] ~= identity
+    or fence[3] ~= identity
+    or metadata[4] ~= variant_hex
+    or fence[4] ~= variant_hex
+    or metadata[5] ~= member
+    or fence[5] ~= member
+    or metadata[7] ~= operation_id
+    or fence[7] ~= operation_id
+    or metadata[8] ~= operation_epoch
+    or fence[8] ~= operation_epoch
+    or not reservation_key_matches(metadata[20], fence[9], reservation_key)
+    or not known_state(metadata[2]) then
+    return unavailable()
+  end
+
+  if metadata[6] ~= fence[6] then
+    return unavailable()
+  end
+
+  if metadata[6] ~= fingerprint then
+    return mismatch()
+  end
+
+  if metadata[2] == "ABANDONED" then
+    if variant_score ~= false
+      or global_dispatch_score ~= false
+      or global_queue_expiry_score ~= false
+      or active_member == member
+      or global_active_score ~= false then
+      return unavailable()
+    end
+
+    if tonumber(metadata[19]) == nil or tonumber(metadata[19]) < 1 then
+      return unavailable()
+    end
+
+    return reply("IA03_ALREADY_ABANDONED", metadata)
+  end
+
+  if metadata[2] ~= "QUEUED" then
+    return frozen()
+  end
+
+  local sequence = tonumber(metadata[9])
+  local queue_deadline_ms = tonumber(metadata[10])
+  local retention_ms = tonumber(metadata[19])
+
+  if sequence == nil
+    or sequence < 1
+    or queue_deadline_ms == nil
+    or retention_ms == nil
+    or retention_ms < 1
+    or variant_score == false
+    or global_dispatch_score == false
+    or global_queue_expiry_score == false
+    or active_member == member
+    or global_active_score ~= false
+    or tonumber(variant_score) ~= sequence
+    or tonumber(global_dispatch_score) ~= sequence
+    or tonumber(global_queue_expiry_score) ~= queue_deadline_ms then
+    return unavailable()
+  end
+
+  redis.call("ZREM", KEYS[2], member)
+  redis.call("ZREM", KEYS[3], member)
+  redis.call("ZREM", KEYS[4], member)
+  redis.call("HSET", KEYS[7], "state", "ABANDONED")
+  redis.call("HSET", KEYS[8], "state", "ABANDONED")
+  redis.call("PEXPIRE", KEYS[7], retention_ms)
+  redis.call("PEXPIRE", KEYS[8], retention_ms)
+  metadata[2] = "ABANDONED"
+
+  return reply("IA03_ABANDONED", metadata)
+  """
+
   @type status :: :existing | :queued | :admitted | :busy | :mismatch | :frozen
   @type failure :: :unavailable | :invalid_input
 
@@ -1291,6 +1875,17 @@ defmodule Store.Orders.InventoryAdmission.Redis do
           | {:ok, {:queued, admission()}}
           | {:ok, {:admitted, admission()}}
           | {:ok, :busy | :mismatch | :frozen}
+          | {:error, failure()}
+
+  @type status_result ::
+          {:ok, {:status, admission()}}
+          | {:ok, :mismatch | :frozen}
+          | {:error, failure()}
+
+  @type abandon_result ::
+          {:ok, {:abandoned, admission()}}
+          | {:ok, {:already_abandoned, admission()}}
+          | {:ok, :mismatch | :frozen}
           | {:error, failure()}
 
   @spec namespace_version() :: String.t()
@@ -1446,6 +2041,112 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   def promote_queued(_request, _opts), do: {:error, :invalid_input}
 
+  @spec status(Reference.t(), keyword()) :: status_result()
+  def status(reference, opts \\ [])
+
+  def status(%Reference{} = reference, opts) when is_list(opts) do
+    with {:ok, context} <- reference_context(reference, opts),
+         {:ok, reply} <-
+           eval(
+             @status_script,
+             script_keys(context.keys),
+             reference_arguments(reference, context)
+           ) do
+      decode_status_result(reply)
+    else
+      {:error, :unavailable} -> {:error, :unavailable}
+      {:error, :invalid_input} -> {:error, :invalid_input}
+    end
+  rescue
+    _error -> {:error, :unavailable}
+  end
+
+  def status(_reference, _opts), do: {:error, :invalid_input}
+
+  @spec abandon(Reference.t(), atom(), keyword()) :: abandon_result()
+  def abandon(reference, guard, opts \\ [])
+
+  def abandon(%Reference{} = reference, :trusted_pre_reservation_abandonment, opts)
+      when is_list(opts) do
+    with {:ok, context} <- reference_context(reference, opts),
+         {:ok, reply} <-
+           eval(
+             @abandon_script,
+             script_keys(context.keys),
+             reference_arguments(reference, context)
+           ) do
+      decode_abandon_result(reply)
+    else
+      {:error, :unavailable} -> {:error, :unavailable}
+      {:error, :invalid_input} -> {:error, :invalid_input}
+    end
+  rescue
+    _error -> {:error, :unavailable}
+  end
+
+  def abandon(_reference, _guard, _opts), do: {:error, :invalid_input}
+
+  defp reference_context(%Reference{} = reference, opts) do
+    with :ok <- validate_reference(reference),
+         {:ok, options} <- reference_options(opts),
+         {:ok, member} <- derive_admission_member(reference.identity_digest, options.hmac_key),
+         :ok <- validate_reference_member(reference, member),
+         {:ok, variant_hex} <- normalize_variant_key(reference.variant_id),
+         {:ok, keys} <-
+           key_set(reference.variant_id, member, reference.identity_digest, scope: options.scope) do
+      {:ok, %{keys: keys, member: member, variant_hex: variant_hex}}
+    end
+  end
+
+  defp validate_reference(%Reference{} = reference) do
+    with true <- Reference.valid?(reference),
+         :ok <- validate_digest(reference.identity_digest),
+         :ok <- validate_digest(reference.request_fingerprint),
+         :ok <- validate_member(reference.member),
+         :ok <- validate_operation_id(reference.operation_id),
+         {:ok, identities} <- reference_key_identities(reference.reservation_key),
+         true <- identities.variant_id == reference.variant_id,
+         {:ok, canonical_digest} <-
+           Request.identity_digest_for_reservation_key(reference.reservation_key),
+         true <- canonical_digest == reference.identity_digest,
+         {:ok, _variant_hex} <- normalize_variant_key(reference.variant_id) do
+      :ok
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp reference_key_identities(reservation_key) do
+    case Request.classify_reservation_key(reservation_key) do
+      {:ok, {_kind, identities}} -> {:ok, identities}
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp validate_reference_member(%Reference{member: expected}, expected), do: :ok
+  defp validate_reference_member(_reference, _derived), do: {:error, :unavailable}
+
+  defp reference_options(opts) do
+    with :ok <- validate_keyword_options(opts, [:hmac_key, :scope]),
+         {:ok, hmac_key} <- fetch_hmac_key(opts),
+         {:ok, scope} <- fetch_scope(opts) do
+      {:ok, %{hmac_key: hmac_key, scope: scope}}
+    end
+  end
+
+  defp reference_arguments(reference, context) do
+    [
+      record_version(reference),
+      reference.identity_digest,
+      reference.request_fingerprint,
+      context.member,
+      context.variant_hex,
+      reference.operation_id,
+      Integer.to_string(reference.operation_epoch),
+      reference.reservation_key
+    ]
+  end
+
   @spec decode_result(term()) :: result()
   def decode_result(["IA02_BUSY"]), do: {:ok, :busy}
   def decode_result(["IA02_MISMATCH"]), do: {:ok, :mismatch}
@@ -1468,6 +2169,36 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   @spec decode(term()) :: result()
   def decode(reply), do: decode_result(reply)
+
+  defp decode_status_result(["IA03_STATUS" | fields]) when length(fields) == @reply_field_count do
+    case decode_admission("IA02_EXISTING", fields) do
+      {:ok, admission} -> {:ok, {:status, admission}}
+      {:error, :unavailable} -> {:error, :unavailable}
+    end
+  end
+
+  defp decode_status_result(["IA03_MISMATCH"]), do: {:ok, :mismatch}
+  defp decode_status_result(["IA03_FROZEN"]), do: {:ok, :frozen}
+  defp decode_status_result(["IA03_UNAVAILABLE"]), do: {:error, :unavailable}
+  defp decode_status_result(_reply), do: {:error, :unavailable}
+
+  defp decode_abandon_result([tag | fields])
+       when tag in ["IA03_ABANDONED", "IA03_ALREADY_ABANDONED"] and
+              length(fields) == @reply_field_count do
+    case decode_admission("IA02_EXISTING", fields) do
+      {:ok, admission} ->
+        result_tag = if tag == "IA03_ABANDONED", do: :abandoned, else: :already_abandoned
+        {:ok, {result_tag, admission}}
+
+      {:error, :unavailable} ->
+        {:error, :unavailable}
+    end
+  end
+
+  defp decode_abandon_result(["IA03_MISMATCH"]), do: {:ok, :mismatch}
+  defp decode_abandon_result(["IA03_FROZEN"]), do: {:ok, :frozen}
+  defp decode_abandon_result(["IA03_UNAVAILABLE"]), do: {:error, :unavailable}
+  defp decode_abandon_result(_reply), do: {:error, :unavailable}
 
   defp status_for_tag("IA02_EXISTING"), do: :existing
   defp status_for_tag("IA02_QUEUED"), do: :queued
@@ -1675,7 +2406,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   defp enqueue_arguments(request, member, operation_id, lease_token, options) do
     [
-      @record_version,
+      record_version(request),
       request.identity_digest,
       request.request_fingerprint,
       member,
@@ -1690,19 +2421,35 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       Integer.to_string(options.lease_window_ms),
       Integer.to_string(options.safety_margin_ms),
       Integer.to_string(options.metadata_ttl_seconds),
-      Integer.to_string(options.terminal_retention_ms)
+      Integer.to_string(options.terminal_retention_ms),
+      request.reservation_key
     ]
   end
 
   defp promotion_arguments(request, member, lease_token, options) do
     [
-      @record_version,
+      record_version(request),
       request.identity_digest,
       request.request_fingerprint,
       member,
       lease_token,
-      Integer.to_string(options.b_total)
+      Integer.to_string(options.b_total),
+      request.reservation_key
     ]
+  end
+
+  defp record_version(%Request{} = request) do
+    case Request.classify_reservation_key(request.reservation_key) do
+      {:ok, {:renewal_generation, _identities}} -> @renewal_record_version
+      _ -> @record_version
+    end
+  end
+
+  defp record_version(%Reference{} = reference) do
+    case Request.classify_reservation_key(reference.reservation_key) do
+      {:ok, {:renewal_generation, _identities}} -> @renewal_record_version
+      _ -> @record_version
+    end
   end
 
   # Discovery is bounded and read-only; @expire_script revalidates every

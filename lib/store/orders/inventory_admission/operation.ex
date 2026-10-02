@@ -256,12 +256,14 @@ end
 defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
   @moduledoc false
 
+  alias Store.Orders.InventoryAdmission.Request
   alias Store.Support.ID.UUIDv7
 
   @allowed_keys MapSet.new([
                   :id,
                   :quantity,
                   :state,
+                  :reservation_key,
                   :expires_at,
                   :consumed_at,
                   :expired_at,
@@ -270,11 +272,12 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
                 ])
   @states [:active, :consumed, :expired, :cancelled]
 
-  @enforce_keys [:id, :quantity, :state, :expires_at, :version]
+  @enforce_keys [:id, :quantity, :state, :reservation_key, :expires_at, :version]
   defstruct [
     :id,
     :quantity,
     :state,
+    :reservation_key,
     :expires_at,
     :consumed_at,
     :expired_at,
@@ -286,6 +289,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
           id: Ecto.UUID.t() | nil,
           quantity: non_neg_integer(),
           state: :active | :consumed | :expired | :cancelled,
+          reservation_key: String.t(),
           expires_at: DateTime.t(),
           consumed_at: DateTime.t() | nil,
           expired_at: DateTime.t() | nil,
@@ -299,6 +303,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
           | :reservation_id_not_normalized
           | :invalid_reservation_quantity
           | :invalid_reservation_state
+          | :invalid_reservation_key
           | :invalid_reservation_expiry
           | :invalid_reservation_timestamp
           | :invalid_reservation_version
@@ -318,6 +323,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
          {:ok, id} <- fetch_id(params),
          {:ok, quantity} <- fetch_non_negative_integer(params, :quantity),
          {:ok, state} <- fetch_state(params),
+         {:ok, reservation_key} <- fetch_reservation_key(params),
          {:ok, expires_at} <- fetch_datetime(params, :expires_at),
          {:ok, consumed_at} <- fetch_optional_datetime(params, :consumed_at),
          {:ok, expired_at} <- fetch_optional_datetime(params, :expired_at),
@@ -328,6 +334,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
          id: id,
          quantity: quantity,
          state: state,
+         reservation_key: reservation_key,
          expires_at: expires_at,
          consumed_at: consumed_at,
          expired_at: expired_at,
@@ -344,6 +351,7 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
     with {:ok, normalized_id} <- normalize_id(facts.id),
          :ok <- validate_quantity(facts.quantity),
          :ok <- validate_state(facts.state),
+         :ok <- validate_reservation_key(facts.reservation_key),
          :ok <- validate_datetime(facts.expires_at),
          :ok <- validate_optional_datetime(facts.consumed_at),
          :ok <- validate_optional_datetime(facts.expired_at),
@@ -411,6 +419,26 @@ defmodule Store.Orders.InventoryAdmission.Operation.ReservationFacts do
       {:ok, state} when state in @states -> {:ok, state}
       {:ok, _state} -> {:error, :invalid_reservation_state}
       :error -> {:error, :reservation_state_required}
+    end
+  end
+
+  defp fetch_reservation_key(params) do
+    case Map.fetch(params, :reservation_key) do
+      {:ok, value} ->
+        case validate_reservation_key(value) do
+          :ok -> {:ok, value}
+          {:error, _reason} = error -> error
+        end
+
+      :error ->
+        {:error, :reservation_key_required}
+    end
+  end
+
+  defp validate_reservation_key(value) do
+    case Request.classify_reservation_key(value) do
+      {:ok, _identity} -> :ok
+      {:error, _reason} -> {:error, :invalid_reservation_key}
     end
   end
 
@@ -832,6 +860,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   @fingerprint_regex ~r/\A[0-9a-f]{64}\z/
 
   @enforce_keys [
+    :order_id,
+    :variant_id,
     :reservation_key,
     :identity_digest,
     :operation_id,
@@ -843,6 +873,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
     :deadline
   ]
   defstruct [
+    :order_id,
+    :variant_id,
     :reservation_key,
     :identity_digest,
     :operation_id,
@@ -855,6 +887,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   ]
 
   @type t :: %__MODULE__{
+          order_id: Ecto.UUID.t(),
+          variant_id: Ecto.UUID.t(),
           reservation_key: String.t(),
           identity_digest: String.t(),
           operation_id: Ecto.UUID.t(),
@@ -914,7 +948,9 @@ defmodule Store.Orders.InventoryAdmission.Operation do
 
   @spec validate(term()) :: :ok | {:error, atom()}
   def validate(%__MODULE__{} = operation) do
-    with :ok <- validate_reservation_key(operation.reservation_key),
+    with {:ok, identity} <- validate_reservation_key(operation.reservation_key),
+         :ok <- validate_order(identity.order_id, operation.order_id),
+         :ok <- validate_variant(:operation, identity.variant_id, operation.variant_id),
          :ok <- validate_operation_id(operation.operation_id, operation.reservation_key),
          :ok <- validate_operation_epoch(operation.operation_epoch),
          :ok <- validate_fingerprint(operation.request_fingerprint),
@@ -960,6 +996,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
          {:ok, deadline} <- Deadline.new(Keyword.get(opts, :deadline)),
          {:ok, mutation} <- Mutation.new(request, Keyword.take(opts, [:expires_at, :now])) do
       operation = %__MODULE__{
+        order_id: request.order_id,
+        variant_id: request.variant_id,
         reservation_key: request.reservation_key,
         identity_digest: request.identity_digest,
         operation_id: UUIDv7.generate(),
@@ -979,8 +1017,8 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   end
 
   defp validate_reservation_key(value) do
-    case Request.identity_digest_for_reservation_key(value) do
-      {:ok, _identity_digest} -> :ok
+    case Request.classify_reservation_key(value) do
+      {:ok, {_kind, identities}} -> {:ok, identities}
       {:error, _reason} -> {:error, :invalid_reservation_key}
     end
   end
@@ -1012,21 +1050,24 @@ defmodule Store.Orders.InventoryAdmission.Operation do
     with {:ok, expected_identity_digest} <-
            Request.identity_digest_for_reservation_key(operation.reservation_key),
          :ok <- validate_identity_digest(operation.identity_digest, expected_identity_digest),
-         {:ok, reservation_variant_id} <- reservation_key_variant_id(operation.reservation_key),
          :ok <-
-           validate_variant(:operation, reservation_variant_id, operation.mutation.variant_id),
+           validate_variant(:mutation, operation.variant_id, operation.mutation.variant_id),
          :ok <-
            validate_variant(
              :pre_inventory,
-             operation.mutation.variant_id,
+             operation.variant_id,
              operation.pre.inventory.variant_id
            ),
          :ok <-
            validate_variant(
              :post_inventory,
-             operation.mutation.variant_id,
+             operation.variant_id,
              operation.post.inventory.variant_id
            ),
+         :ok <-
+           validate_reservation_fact_key(operation.pre.reservation, operation.reservation_key),
+         :ok <-
+           validate_reservation_fact_key(operation.post.reservation, operation.reservation_key),
          {:ok, expected_fingerprint} <-
            Request.fingerprint_for(
              operation.reservation_key,
@@ -1043,17 +1084,25 @@ defmodule Store.Orders.InventoryAdmission.Operation do
   defp validate_identity_digest(_identity_digest, _expected_identity_digest),
     do: {:error, :operation_identity_digest_mismatch}
 
-  defp reservation_key_variant_id(reservation_key) do
-    case String.split(reservation_key, ":") do
-      ["order", _order_id, "sku", variant_id] -> {:ok, variant_id}
-      _parts -> {:error, :invalid_reservation_key}
-    end
-  end
+  defp validate_order(expected_order_id, expected_order_id), do: :ok
+
+  defp validate_order(_expected_order_id, _actual_order_id),
+    do: {:error, :operation_order_mismatch}
+
+  defp validate_reservation_fact_key(:absent, _expected_key), do: :ok
+
+  defp validate_reservation_fact_key(%{reservation_key: expected_key}, expected_key), do: :ok
+
+  defp validate_reservation_fact_key(_reservation, _expected_key),
+    do: {:error, :operation_reservation_key_mismatch}
 
   defp validate_variant(_field, expected_variant_id, expected_variant_id), do: :ok
 
   defp validate_variant(:operation, _expected_variant_id, _actual_variant_id),
     do: {:error, :operation_variant_mismatch}
+
+  defp validate_variant(:mutation, _expected_variant_id, _actual_variant_id),
+    do: {:error, :operation_mutation_variant_mismatch}
 
   defp validate_variant(:pre_inventory, _expected_variant_id, _actual_variant_id),
     do: {:error, :pre_inventory_variant_mismatch}
