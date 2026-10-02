@@ -646,22 +646,138 @@ config/test.exs
 test/store/orders/inventory_admission_test.exs
 ```
 
-This boundary does not add behavior beyond PR #123's authority. Slice 1 has not
-passed review. It may resume on the existing `hardening/s0-ia04` branch only after
-this governance PR merges and is independently verified.
+After PR #123, the pre-acceptance state was `Slice 1 = ACTIVE NEXT STEP, NOT YET
+ACCEPTED` and `Slice 2 = NOT STARTED / BLOCKED ON SLICE-1 PASS`. This is historical
+provenance. The state below records the accepted current state and supersedes it.
 
 ```text
 IA-04 overall = AUTHORIZED / IMPLEMENTING
-Slice 1 = ACTIVE NEXT STEP, NOT YET ACCEPTED
-Slice 2 = NOT STARTED / BLOCKED ON SLICE-1 PASS
+Slice 1 = PASS / ACCEPTED / FROZEN
+accepted Slice-1 head = 75674e4104c61c198a09fcbb3026df27a71f62fd
+Slice 2 = ACTIVE NEXT STEP / NOT STARTED
+Slice 3+ = NOT STARTED / SERIAL-BLOCKED
 IA-05+ = NOT AUTHORIZED
 ```
 
-No parallel IA-04 coding agents are authorized. `hardening/s0-ia04` remains the
-sole implementation branch. Do not begin Redis claim/fence Slice 2 until corrected
-Slice 1 receives independent `PASS`. Slice 2 includes `claim_reserving`, shared
-reservation mutation fences, `release_known_outcome`, and `mark_unknown_and_fence`.
-Recording IA-04 as `IMPLEMENTING` does not start Slice 2 or mean Slice 1 passed.
+### IA-04 Slice-1 acceptance and Slice-2 serial activation (2026-10-02)
+
+This is a bounded slice transition within IA-04. It does not record IA-04 phase
+completion or authorize IA-05+.
+
+Accepted Slice-1 evidence:
+
+```text
+Task base: f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+Implementation branch: hardening/s0-ia04
+Accepted Slice-1 HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
+Accepted Slice-1 tree: 96d6145fbdfb2650dc63726b75e757374251a26f
+Independent review verdict: PASS
+```
+
+The accepted branch diff contains exactly:
+
+```text
+config/config.exs
+config/runtime.exs
+config/test.exs
+lib/store/application.ex
+lib/store/orders/inventory_admission/config.ex
+test/store/orders/inventory_admission_test.exs
+```
+
+Accepted Slice-1 outcomes:
+
+```text
+typed InventoryAdmission configuration = ACCEPTED
+DISABLED / ENFORCED server-owned gate = ACCEPTED
+capacity/headroom validation = ACCEPTED
+queue/deadline configuration = ACCEPTED
+recovery/quarantine configuration fields = ACCEPTED
+ENFORCED startup Redis readiness gate = ACCEPTED
+terminal replay-retention invariant = ACCEPTED
+```
+
+The terminal replay-retention rule is frozen:
+
+```text
+evidence_handoff_window_ms =
+  max(
+    queue_window_ms,
+    lease_window_ms + safety_margin_ms
+  )
+
+metadata_retention_ms > evidence_handoff_window_ms
+```
+
+The comparison is strict. Retain these configuration invariants:
+
+```text
+database_safety_window_ms > 0
+recovery_retry_budget > 0
+recovery_deadline_ms > database_safety_window_ms
+redis_restart_quarantine_ms > 0
+
+lease_window_ms >= db_window_ms + safety_margin_ms
+
+B_total <= reviewed_repo_capacity - reviewed_headroom
+```
+
+Slice 2 may start only from the exact accepted Slice-1 HEAD
+`75674e4104c61c198a09fcbb3026df27a71f62fd`. Slice 2 is Redis coordination only.
+Its complete writable production/test scope is exactly:
+
+```text
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+Authorized Slice-2 primitives:
+
+```text
+claim_reserving
+renew_lease
+release_known_outcome
+mark_unknown_and_fence
+
+acquire_shared_mutation_fence
+release_shared_mutation_fence_known_outcome
+mark_shared_mutation_unknown
+```
+
+Slice 2 does not authorize `operation.ex`, `lease.ex`, InventoryAdmission service
+wiring, PostgreSQL reservation execution, Orders routing, Checkout/Payments/SUBS,
+workers, migrations, schema changes, or IA-05 recovery execution.
+
+Preserve these lifecycle transitions:
+
+```text
+ADMITTED -> RESERVING
+
+RESERVING -> COMPLETED
+RESERVING -> REJECTED
+RESERVING -> UNKNOWN_DB_OUTCOME
+```
+
+`UNKNOWN_DB_OUTCOME -> RECOVERING` and `RECOVERING -> ...` remain unauthorized.
+
+Shared lifecycle fences do not enqueue, acquire `K_v`, or acquire `B_total`; a fence
+operation acquires its complete target set atomically or acquires none. For an unknown
+database outcome, retain capacity, the exact reservation fence, and operation evidence.
+Do not promote a waiter or release on lease expiry. Redis remains coordination only;
+PostgreSQL remains durable truth.
+
+A fresh coding agent may perform Slice 2 only on the existing sole IA-04 line:
+
+```text
+branch: hardening/s0-ia04
+worktree: the existing sole IA-04 implementation worktree
+starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
+```
+
+No parallel Slice-2 agent or second IA-04 branch is authorized. Slice 3+ remains
+serial-blocked and IA-05+ remains not authorized. Issue #101 is aligned to this
+accepted Slice-1 head and records Slice 2 as the selected next slice pending this
+canonical governance transition; this record does not modify the issue.
 
 ### PLATFORM
 
