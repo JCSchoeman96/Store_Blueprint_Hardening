@@ -1,0 +1,334 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"uuid_generate_v7()\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "collection_ordinal",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"not_started\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "dispatch_state",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"unresolved\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "financial_outcome",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "reservation_generation_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": false,
+      "default": "1",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "dispatch_epoch",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "0",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "fenced_through_epoch",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "last_fence_event_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "last_fenced_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "inserted_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "updated_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_collection_attempts_renewal_attempt_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "renewal_attempts"
+      },
+      "scale": null,
+      "size": null,
+      "source": "renewal_attempt_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_collection_attempts_payment_intent_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "payment_intents"
+      },
+      "scale": null,
+      "size": null,
+      "source": "payment_intent_id",
+      "type": "uuid"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [
+    {
+      "attribute": [
+        "dispatch_state"
+      ],
+      "base_filter": null,
+      "check": "dispatch_state IN ('not_started', 'may_have_been_reached', 'not_submitted')",
+      "name": "renewal_collection_attempts_dispatch_state_check"
+    },
+    {
+      "attribute": [
+        "financial_outcome"
+      ],
+      "base_filter": null,
+      "check": "financial_outcome IN ('unresolved', 'requires_action', 'verified_success', 'verified_terminal_financial_non_success')",
+      "name": "renewal_collection_attempts_financial_outcome_check"
+    },
+    {
+      "attribute": [
+        "collection_ordinal"
+      ],
+      "base_filter": null,
+      "check": "collection_ordinal > 0",
+      "name": "renewal_collection_attempts_collection_ordinal_positive_check"
+    },
+    {
+      "attribute": [
+        "dispatch_epoch"
+      ],
+      "base_filter": null,
+      "check": "dispatch_epoch > 0\nAND fenced_through_epoch >= 0\nAND fenced_through_epoch <= dispatch_epoch\nAND (\n  (dispatch_state = 'not_submitted' AND fenced_through_epoch = dispatch_epoch)\n  OR\n  (dispatch_state <> 'not_submitted' AND fenced_through_epoch + 1 = dispatch_epoch)\n)\nAND (\n  (fenced_through_epoch = 0 AND last_fence_event_id IS NULL AND last_fenced_at IS NULL)\n  OR\n  (fenced_through_epoch > 0 AND last_fence_event_id IS NOT NULL AND last_fenced_at IS NOT NULL)\n)\nAND (\n  (dispatch_state = 'may_have_been_reached')\n  OR\n  (dispatch_state IN ('not_started', 'not_submitted') AND financial_outcome = 'unresolved')\n)\n",
+      "name": "renewal_collection_attempts_epoch_evidence_check"
+    },
+    {
+      "attribute": [
+        "financial_outcome"
+      ],
+      "base_filter": null,
+      "check": "financial_outcome = 'unresolved' OR payment_intent_id IS NOT NULL",
+      "name": "renewal_collection_attempts_outcome_payment_intent_check"
+    }
+  ],
+  "create_table_options": null,
+  "custom_indexes": [
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "renewal_attempt_id",
+        "collection_ordinal"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "renewal_attempt_id"
+        },
+        {
+          "type": "atom",
+          "value": "collection_ordinal"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_attempt_ordinal_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "renewal_attempt_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "renewal_attempt_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_one_active_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "financial_outcome IN ('unresolved', 'requires_action')"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "payment_intent_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "payment_intent_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_payment_intent_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "payment_intent_id IS NOT NULL"
+    }
+  ],
+  "custom_statements": [],
+  "has_create_action": true,
+  "hash": "B333CA41249B682BD6629EA2FAA297273B1A9D5911FBE0E9EC0CC43CCD14EB8C",
+  "identities": [],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.Store.Repo",
+  "schema": null,
+  "table": "renewal_collection_attempts"
+}
