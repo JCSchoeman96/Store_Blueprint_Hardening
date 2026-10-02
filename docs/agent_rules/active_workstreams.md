@@ -353,8 +353,9 @@ Task base: `f4127902c3f328b76674724faa6a473c629c01ef`.
 
 At admission time, S0 lifecycle remained `READY` and generic IA-03 was
 `AUTHORIZED / NOT STARTED`. PR #115 later completed this bounded task, and generic
-IA-03 is now `COMPLETE / FROZEN`. IA-04 and later remain `NOT AUTHORIZED`; completing
-IA-03 did not authorize a later slice.
+IA-03 is now `COMPLETE / FROZEN`. At completion of generic IA-03, IA-04 and later
+remained `NOT AUTHORIZED`; completing IA-03 did not itself authorize a later slice.
+Current IA-04 authority is recorded in the fresh full-scope admission below.
 
 The exact coding boundary is:
 
@@ -430,7 +431,8 @@ The admitted S0 prerequisite is now `COMPLETE / FROZEN`:
 - Independent post-merge verification: `PASS`.
 
 This closure exhausts only the bounded renewal-generation / exact-key prerequisite
-implementation authority. Generic IA-03 remains frozen. IA-04+ remains unauthorized.
+implementation authority. Generic IA-03 remains frozen. At completion of this PR #117
+prerequisite closure, IA-04+ remained unauthorized.
 `S0-CLOSE-02` and overall S0 merge readiness remain blocked under their separate
 programme gates.
 
@@ -443,7 +445,8 @@ Only then may the separate SUBS re-admission required by the canonical cross-dom
 authority decide JC-229 readiness and assign a new implementation `task_base_sha`.
 PR #78 remains stale draft evidence and is not resumed by this closure.
 
-Resulting state:
+State at completion of the PR #117 prerequisite closure, before the fresh full-scope
+IA-04 task-admission decision:
 
 ```text
 S0 lifecycle = READY

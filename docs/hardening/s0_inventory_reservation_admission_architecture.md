@@ -2,9 +2,10 @@
 
 Status: FROZEN architecture. The accepted architecture decisions remain unchanged.
 Canonical task authority is tracked in `active_workstreams.md`; section 20 records
-the completed generic IA-03 admission and section 21 records the separate
-PR #80 renewal-generation prerequisite admission. IA-01, IA-02, and generic IA-03
-are complete and frozen. The historical S0-IA-AUTH-03 record documented the prior
+the completed generic IA-03 admission, section 21 records the separate
+PR #80 renewal-generation prerequisite admission, and section 22 records the current
+full-scope IA-04 task admission. IA-01, IA-02, and generic IA-03 are complete and
+frozen. The historical S0-IA-AUTH-03 record documented the prior
 bounded IA-03 authorization. S0-IA-AUTH-03R1 corrected only that record's Redis
 support file boundary for typed `status` and `abandon` primitives.
 
@@ -39,22 +40,24 @@ The separately admitted renewal-generation prerequisite is also now complete:
 - Certified-head to merge comparison: one commit ahead with zero changed files.
 - Independent post-merge verification: `PASS`.
 
-S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. The PR #80
-renewal-generation prerequisite is `COMPLETE / FROZEN` under the admission and closure
-evidence in section 21. Completion is bounded to that prerequisite and is not
-continuation authority for another S0 slice. The reconciliation prerequisite for the
-generic admission was satisfied by PR #83:
+At completion of the PR #117 prerequisite closure (before section 22), S0 remained
+`READY` and IA-04 and later were `NOT AUTHORIZED`. The PR #80 renewal-generation
+prerequisite is `COMPLETE / FROZEN` under the admission and closure evidence in
+section 21. Completion is bounded to that prerequisite and is not continuation
+authority for another S0 slice. Current IA-04 authority is recorded in section 22.
+The reconciliation prerequisite for the generic admission was satisfied by PR #83:
 
 - Canonical main reconciled: `d78a916472a75c9ffebea33acf6b07f41ffe07f3`.
 - Accepted S0 integration: `f4127902c3f328b76674724faa6a473c629c01ef`.
 - Exact-head CI run `36250010176`, attempt 1: `PASS`.
 - Independent post-integration review: `PASS`.
 
-S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. The PR #80
-renewal-generation prerequisite is separately `COMPLETE / FROZEN` under section 21.
-This completion does not reopen the integration prerequisite or authorize IA-04+.
-Section 20 records the completed generic IA-03 contract; section 21 records the
-renewal task admission and completion boundary.
+At that same historical point, S0 remained `READY`, IA-04 and later were
+`NOT AUTHORIZED`, and the PR #80 renewal-generation prerequisite was separately
+`COMPLETE / FROZEN` under section 21. That completion did not reopen the integration
+prerequisite or authorize IA-04+. Section 20 records the completed generic IA-03
+contract; section 21 records the renewal task admission and completion boundary;
+section 22 records current IA-04 authority.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1199,10 +1202,11 @@ This addendum does not change `K_v`, `B_total`, Redis structures outside the exa
 
 The following admission governed the generic caller-independent IA-03 Redis
 orchestration against task base
-`f4127902c3f328b76674724faa6a473c629c01ef`. S0 remains `READY`. Generic IA-03 is
+`f4127902c3f328b76674724faa6a473c629c01ef`. S0 remained `READY`. Generic IA-03 is
 now `COMPLETE / FROZEN` under the evidence recorded at the top of this document.
-IA-04 and later remain `NOT AUTHORIZED`, and IA-03 completion did not authorize
-them. This admission added no lifecycle state and did not change the frozen lifecycle.
+At generic IA-03 completion, IA-04 and later remained `NOT AUTHORIZED`, and IA-03
+completion did not authorize them. Current authority is recorded in section 22. This
+admission added no lifecycle state and did not change the frozen lifecycle.
 
 Generic IA-03 uses only the existing identity form:
 
@@ -1551,15 +1555,18 @@ new reservation Resource
 Redis inventory authority
 ```
 
-IA-04 and later remain `NOT AUTHORIZED`. PR #78 remains stale draft evidence and is
-not modified or resumed. PR #117 has now satisfied the S0-side implementation,
+At completion of the PR #117 prerequisite closure recorded in this section, IA-04 and
+later remained `NOT AUTHORIZED`. PR #78 remains stale draft evidence and is not
+modified or resumed. PR #117 has now satisfied the S0-side implementation,
 independent review, merge, and post-merge verification prerequisite. That completion
 does not itself transition JC-229 or SBH-10-04. The current accepted SUBS tip
 `bd0555c41bb014326b0754329f2ca5fbf0f8911b` does not contain the exact-key runtime,
 so a bounded S0-to-SUBS integration must be accepted before the separate SUBS
 re-admission may decide readiness or assign an implementation `task_base_sha`.
 
-### Resulting authority state
+### Resulting authority state at PR #117 prerequisite closure
+
+Before the fresh full-scope IA-04 task-admission decision in section 22:
 
 ```text
 S0 lifecycle
@@ -1610,8 +1617,10 @@ this closure.
 ## 22. Full-scope IA-04 task admission (GitHub #101)
 
 This section records the fresh post-PR-117 task-admission authority for IA-04. It
-supersedes section 21's `IA-04 and later remain NOT AUTHORIZED` statement for current
-execution authority only. Historical section 21 provenance remains unchanged.
+supersedes for current execution authority only the historical `IA-04 and later
+remain NOT AUTHORIZED` / `IA-04+ = NOT AUTHORIZED` statements at the top of this
+document, in section 20, and in section 21. Historical provenance in those sections
+remains unchanged.
 
 Issue `#101` is a roadmap record; this section and the matching
 `active_workstreams.md` admission are authoritative. The frozen implementation plan
