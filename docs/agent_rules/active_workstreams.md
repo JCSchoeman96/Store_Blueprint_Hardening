@@ -1225,12 +1225,12 @@ When updating:
 
 ### Current status / candidate development-base evidence (refresh when tips move)
 
-This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
+This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `35bc644e91a07b262b471cfb718572e590f926f7` at this refresh (canonical main before this governance PR); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
-- `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip after PR #117 renewal-generation prerequisite merge)
-- `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip after PR #91 reconciliation)
-- `origin/hardening/subscriptions` = `bd0555c41bb014326b0754329f2ca5fbf0f8911b` (current persistent SUBS tip after PR #99 / v0.1.33 authority consumption)
+- `origin/main` = `aa90dd56a0325b0ada0df610067f9b9549bd4e5f` at this refresh (canonical main before this governance PR); resolve with `git fetch origin && git rev-parse origin/main` before work.
+- `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip)
+- `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
+- `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
 - PR #90 = MERGED / ACCEPTED into `main`
 - PR #91 = MERGED / ACCEPTED into `hardening/platform-security`
 - PR #6 = MERGED into `hardening/s0-baseline`
@@ -1240,9 +1240,31 @@ This section records dynamic status only. It does not override the accepted PLAT
   `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; certified head
   `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`; exact-head CI `36968312583` PASS;
   certified-head to merge comparison has zero changed files
+- PR #119 = MERGED / POST-MERGE VERIFIED into `hardening/subscriptions` as
+  `bf56afdd4d329a95c1739cce327b19fb1777815f`; corrected certified head
+  `b29d03596ee848677301d6478354d5d61b75180f`; exact-head CI `36977385707` PASS;
+  merge tree equals the corrected certified head tree
+- PR #120 = MERGED / ACCEPTED into `main` as
+  `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`
+- PR #121 = MERGED / POST-MERGE VERIFIED into `hardening/subscriptions` as
+  `8a21739555de1dde8f448bfd7e1172b1caeb54c3`; certified governance head
+  `f9714a800907d41e3fb72f8a44fccafc1d276ed3`; exact-head CI `36982244253` PASS;
+  merge tree `e4728ccb132041e73d80e0247707af2544ca7c9b` equals the reviewed head tree
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
-- PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (SUBS main reconciliation complete; see SUBS main-to-branch reconciliation record)
+- PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (historical SUBS main reconciliation; see record above)
 - PR #89 = MERGED / ACCEPTED into `main`
+
+Current JC-229 / SBH-10-04 serial-admission evidence:
+
+- canonical SUBS register v0.1.34 records `SBH-10-04 = READY / No`
+- bounded shared authority = `AUTHORITY_ASSIGNED`
+- `SBH-10-05 = BLOCKED_DEPENDENCY / No`
+- the human has explicitly selected JC-229 / SBH-10-04 for implementation
+- accepted post-governance SUBS tip = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
+- candidate JC-229 `task_base_sha` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
+- production implementation branch = not created by this registry refresh
+- Phase B may create one fresh `subs-task/sbh-10-04-*` branch from that exact SHA only after this registry refresh is human-merged and independently post-merge verified
+- PR #78 remains stale partial evidence and must not be resumed
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
