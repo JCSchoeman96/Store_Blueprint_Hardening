@@ -520,8 +520,21 @@ without changing `inventory_reservation.ex` or `inventory_item.ex` resource defi
 **Rollout configuration (Option B):** `config/config.exs`, `config/runtime.exs`,
 `config/test.exs`, and new `lib/store/orders/inventory_admission/config.ex` (typed
 loader/validator only). Production default `DISABLED` until reviewed ENFORCED settings.
-`Store.Application` changes are not authorized unless a later implementation review
-proves them strictly necessary.
+The typed contract also owns `database_safety_window_ms`,
+`recovery_retry_budget`, `recovery_deadline_ms`, and
+`redis_restart_quarantine_ms`. They are configuration only and must validate
+`database_safety_window_ms > 0`, `recovery_retry_budget > 0`,
+`recovery_deadline_ms > database_safety_window_ms`, and
+`redis_restart_quarantine_ms > 0`. These fields are not IA-05 recovery or IA-06
+reaper authority and are not passed to the current IA-03 Redis options.
+
+`Store.Application` is conditionally writable only for the IA-04 ENFORCED startup
+validation hook. After the supervised Redis child is available, that hook must load
+and validate the typed configuration and fail application startup when ENFORCED
+configuration or the existing admission Redis capability is unavailable. DISABLED
+startup must not require admission Redis validation. The hook must not perform queue
+operations, reservation mutation, recovery, retries, reaping, topology inference, or
+capacity derivation. `config/runtime.exs` must not perform Redis network side effects.
 
 **Required implementation files:**
 
@@ -546,7 +559,11 @@ propagation only; no Checkout/Payments/SUBS commercial redesign.
 
 **Frozen / read-only for IA-04 (STOP for independent review if implementation requires
 change):** `request.ex`, `lease.ex`, `inventory_reservation.ex`, `inventory_item.ex`,
-`product.ex`, `application.ex`.
+`product.ex`.
+
+**Conditionally writable for IA-04 only:** `lib/store/application.ex`, solely for the
+ENFORCED startup validation hook described above. No other application-supervision or
+domain behavior is authorized by this correction.
 
 **Shared authority:** Orders REQUIRED; Checkout/Payments/SUBS/workers conditional
 propagation only as above.
