@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `f122b24bcf78f48f2954d372cef38c06ebcc1e5e` (accepted tip after PR #115; prior replacement base and PR #83 reconciliation remain historical) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (accepted tip after PR #117; PR #115 task base remains historical provenance) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -288,8 +288,8 @@ Convergence with current `main` remains a later integration obligation.
 
 ### Current accepted S0 development base
 
-Current accepted S0 development base: `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`.
-The prior reconciled S0 base was `f4127902c3f328b76674724faa6a473c629c01ef`.
+Current accepted S0 development base: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+The prior accepted S0 task base was `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`; the prior reconciled S0 base was `f4127902c3f328b76674724faa6a473c629c01ef`.
 
 Provenance:
 
@@ -309,6 +309,14 @@ Provenance:
 - PR #115 exact-head CI run `36885741940`: `PASS`, with 3 properties, 598 tests,
   and 0 failures; independent implementation verdict:
   `PASS WITH NON-BLOCKING CORRECTIONS`.
+- PR #117 certified renewal-generation implementation head:
+  `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`.
+- PR #117 exact-head CI run `36968312583`: `PASS`; all five required jobs passed,
+  with 3 properties, 625 tests, and 0 failures.
+- PR #117 merged into `hardening/s0-baseline` as
+  `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+- GitHub comparison from the certified head to the merge commit is one commit ahead
+  with zero changed files; independent post-merge verification: `PASS`.
 
 ### S0 main-to-branch reconciliation record
 
@@ -393,11 +401,11 @@ exposure through the facade, no abandon promotion, no PostgreSQL reservation
 execution, no operational admitted-expiry or release, no recovery/reaper/workers,
 unchanged `K_v = 1`, and unchanged global `B_total`.
 
-Separately, the PR #80 renewal-generation InventoryAdmission / exact-key reservation
-prerequisite is `AUTHORIZED / NOT STARTED` against task base
-`f122b24bcf78f48f2954d372cef38c06ebcc1e5e`. This admission is independent from the
-IA-03 closure. It is supported by the canonical PR #80 cross-domain authority and a
-fresh review of the current S0 source at that exact tip.
+Separately, at the 2026-10-01 admission point, the PR #80 renewal-generation
+InventoryAdmission / exact-key reservation prerequisite was `AUTHORIZED / NOT STARTED`
+against task base `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`. That admission was
+independent from the IA-03 closure. It was supported by the canonical PR #80
+cross-domain authority and a fresh review of the S0 source at that exact tip.
 
 The authorized implementation boundary is recorded in section 21 of
 `s0_inventory_reservation_admission_architecture.md`. It includes only the listed
@@ -409,22 +417,51 @@ key disambiguation, and renewal cleanup exclusion. It does not authorize any
 Subscription, Payments, provider, PR #78, IA-04+, recovery-worker, reaper, or Redis
 authority work.
 
+### PR #117 renewal-generation prerequisite closure (2026-10-02)
+
+The admitted S0 prerequisite is now `COMPLETE / FROZEN`:
+
+- Implementation task base: `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`.
+- Certified implementation head: `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`.
+- Exact-head CI run `36968312583`: `PASS`; all five required jobs passed, with
+  3 properties, 625 tests, and 0 failures.
+- PR #117 merge commit: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+- Certified-head to merge comparison: one merge commit, zero changed files.
+- Independent post-merge verification: `PASS`.
+
+This closure exhausts only the bounded renewal-generation / exact-key prerequisite
+implementation authority. Generic IA-03 remains frozen. IA-04+ remains unauthorized.
+`S0-CLOSE-02` and overall S0 merge readiness remain blocked under their separate
+programme gates.
+
+The current accepted SUBS tip `bd0555c41bb014326b0754329f2ca5fbf0f8911b`
+does not contain the exact-key runtime capability. Therefore this closure does not
+make JC-229 / SBH-10-04 executable by itself. A bounded S0-to-SUBS integration must
+first place the accepted runtime into the SUBS development base and pass its own
+validation, exact-head CI, independent review, merge, and post-merge verification.
+Only then may the separate SUBS re-admission required by the canonical cross-domain
+authority decide JC-229 readiness and assign a new implementation `task_base_sha`.
+PR #78 remains stale draft evidence and is not resumed by this closure.
+
 Resulting state:
 
 ```text
 S0 lifecycle = READY
 generic IA-03 = COMPLETE / FROZEN
-PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite = AUTHORIZED / NOT STARTED
-renewal implementation task base = f122b24bcf78f48f2954d372cef38c06ebcc1e5e
+PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite = COMPLETE / FROZEN
+renewal implementation task base = f122b24bcf78f48f2954d372cef38c06ebcc1e5e (completed provenance)
+accepted S0 tip = f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
 IA-04+ = NOT AUTHORIZED
 S0-CLOSE-02 = BLOCKED
 S0 merge readiness = BLOCKED
+JC-229 / SBH-10-04 implementation readiness = NOT GRANTED BY THIS CLOSURE
 ```
 
-SUBS remains blocked until the admitted S0 runtime work is implemented, independently
-reviewed, merged into `hardening/s0-baseline`, and post-merge verified. The governance
-commit does not require merging `main` into S0 and does not invalidate the exact
-implementation task base.
+The S0-side runtime prerequisite is satisfied. SUBS is not thereby READY: its current
+accepted development tip does not yet contain the capability, and the canonical
+cross-domain authority requires a separate SUBS re-admission after accepted runtime
+integration. This governance closure assigns no SUBS implementation branch or
+`task_base_sha` and grants no Subscription, Payments, provider, or IA-04+ authority.
 
 ### PLATFORM
 
@@ -1085,8 +1122,8 @@ When updating:
 
 This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
 
-- `origin/main` = `a57d359ffe8fba0435d23d68d6243173d194f243` at this refresh (canonical main before this governance PR); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
-- `origin/hardening/s0-baseline` = `f122b24bcf78f48f2954d372cef38c06ebcc1e5e` (current fetched persistent S0 tip after PR #115)
+- `origin/main` = `35bc644e91a07b262b471cfb718572e590f926f7` at this refresh (canonical main before this governance PR); resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
+- `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip after PR #117 renewal-generation prerequisite merge)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip after PR #91 reconciliation)
 - `origin/hardening/subscriptions` = `bd0555c41bb014326b0754329f2ca5fbf0f8911b` (current persistent SUBS tip after PR #99 / v0.1.33 authority consumption)
 - PR #90 = MERGED / ACCEPTED into `main`
@@ -1094,6 +1131,10 @@ This section records dynamic status only. It does not override the accepted PLAT
 - PR #6 = MERGED into `hardening/s0-baseline`
 - PR #115 = MERGED / ACCEPTED into `hardening/s0-baseline`; exact merge tree equals
   the certified generic IA-03 tree `b4e3bf388433d7f7b17931c777ad0e33fb318102`
+- PR #117 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline` as
+  `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; certified head
+  `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`; exact-head CI `36968312583` PASS;
+  certified-head to merge comparison has zero changed files
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 - PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (SUBS main reconciliation complete; see SUBS main-to-branch reconciliation record)
 - PR #89 = MERGED / ACCEPTED into `main`

@@ -29,10 +29,20 @@ facade, no abandon promotion, no PostgreSQL reservation execution, no operationa
 admitted-expiry or release, no recovery/reaper/workers, unchanged `K_v = 1`, and
 unchanged global `B_total`.
 
+The separately admitted renewal-generation prerequisite is also now complete:
+
+- Renewal implementation task base: `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`.
+- Certified implementation head: `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`.
+- Exact-head CI run `36968312583`: `PASS`; all five required jobs passed, with
+  3 properties, 625 tests, and 0 failures.
+- PR #117 merge commit: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+- Certified-head to merge comparison: one commit ahead with zero changed files.
+- Independent post-merge verification: `PASS`.
+
 S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. The PR #80
-renewal-generation prerequisite is separately admitted in section 21 and is
-`AUTHORIZED / NOT STARTED`; this is an explicit task decision, not continuation by
-implication from generic IA-03 completion. The reconciliation prerequisite for the
+renewal-generation prerequisite is `COMPLETE / FROZEN` under the admission and closure
+evidence in section 21. Completion is bounded to that prerequisite and is not
+continuation authority for another S0 slice. The reconciliation prerequisite for the
 generic admission was satisfied by PR #83:
 
 - Canonical main reconciled: `d78a916472a75c9ffebea33acf6b07f41ffe07f3`.
@@ -41,10 +51,10 @@ generic admission was satisfied by PR #83:
 - Independent post-integration review: `PASS`.
 
 S0 remains `READY`. IA-04 and later remain `NOT AUTHORIZED`. The PR #80
-renewal-generation prerequisite is separately `AUTHORIZED / NOT STARTED` under
-section 21. This admission does not reopen the integration prerequisite. Section 20
-records the completed generic IA-03 contract; section 21 records the separate
-renewal task boundary.
+renewal-generation prerequisite is separately `COMPLETE / FROZEN` under section 21.
+This completion does not reopen the integration prerequisite or authorize IA-04+.
+Section 20 records the completed generic IA-03 contract; section 21 records the
+renewal task admission and completion boundary.
 
 This decision addresses the confirmed Store.Repo saturation in the domain reservation
 thundering-herd scenario. It evaluates exactly two bounded admission designs and keeps
@@ -1082,7 +1092,9 @@ IA-02 COMPLETE / FROZEN
 IA-03 COMPLETE / FROZEN
 
 PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite
-AUTHORIZED / NOT STARTED
+COMPLETE / FROZEN
+
+Accepted S0 tip: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`
 
 S0-CLOSE-02 BLOCKED
 S0 merge readiness BLOCKED
@@ -1157,7 +1169,7 @@ of IA-03 does not authorize IA-04 or any later slice.
 
 This addendum amends S0-ARCH-01 only to admit server-derived reservation generations for physical subscription renewals. In the base architecture, generic checkout uses `order_id + variant_id` as its logical identity and recovery-fence identity. For a physical renewal generation, the full server-derived `reservation_key` is the logical durable-operation and recovery-fence identity. `INV-ADM-004` continues to require at most one durable effect per logical identity: the generic key remains one `(order_id, variant_id)` pair, while each renewal generation has its own exact key. `K_v` still serializes entrants by variant and `B_total` still bounds total database entrants. All other lease, PostgreSQL, ambiguity, recovery, and fail-closed requirements remain in force. This section grants no runtime implementation authority by itself.
 
-The renewal contract requires the exact key through a server-owned typed request, operation descriptor, Lease, recovery fence, and PostgreSQL lookup. It does not authorize adding caller-supplied keys to the existing generic request. The S0 implementation plan still freezes the IA-01 `Request`, `Operation`, and `Lease` contracts as generic contracts; section 21 separately authorizes the minimum renewal-specific typed path and exact-key propagation/recovery changes needed for PR #80. That admission preserves the generic path and the invariants below. If implementation cannot preserve them, stop and return to governance. SBH-10-04 remains blocked until this admitted S0 runtime work is implemented, independently reviewed, merged into `hardening/s0-baseline`, and post-merge verified.
+The renewal contract requires the exact key through a server-owned typed request, operation descriptor, Lease, recovery fence, and PostgreSQL lookup. It does not authorize adding caller-supplied keys to the existing generic request. The S0 implementation plan still freezes the IA-01 `Request`, `Operation`, and `Lease` contracts as generic contracts; section 21 separately authorized the minimum renewal-specific typed path and exact-key propagation/recovery changes needed for PR #80. PR #117 implemented that bounded path and passed independent review, merge, and post-merge verification. The generic path and the invariants below remain preserved. SBH-10-04 is still non-executable on the current SUBS development base until the accepted S0 runtime is integrated there and the separate governed SUBS re-admission succeeds.
 
 Generic checkout continues to derive:
 
@@ -1536,9 +1548,12 @@ Redis inventory authority
 ```
 
 IA-04 and later remain `NOT AUTHORIZED`. PR #78 remains stale draft evidence and is
-not modified or resumed. This admission does not transition JC-229 or SBH-10-04.
-SUBS remains blocked until the admitted S0 runtime work is implemented, independently
-reviewed, merged into `hardening/s0-baseline`, and post-merge verified.
+not modified or resumed. PR #117 has now satisfied the S0-side implementation,
+independent review, merge, and post-merge verification prerequisite. That completion
+does not itself transition JC-229 or SBH-10-04. The current accepted SUBS tip
+`bd0555c41bb014326b0754329f2ca5fbf0f8911b` does not contain the exact-key runtime,
+so a bounded S0-to-SUBS integration must be accepted before the separate SUBS
+re-admission may decide readiness or assign an implementation `task_base_sha`.
 
 ### Resulting authority state
 
@@ -1550,10 +1565,13 @@ generic IA-03
 = COMPLETE / FROZEN
 
 PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite
-= AUTHORIZED / NOT STARTED
+= COMPLETE / FROZEN
 
 renewal implementation task base
-= f122b24bcf78f48f2954d372cef38c06ebcc1e5e
+= f122b24bcf78f48f2954d372cef38c06ebcc1e5e (completed provenance)
+
+accepted S0 tip
+= f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
 
 IA-04+
 = NOT AUTHORIZED
@@ -1563,19 +1581,24 @@ S0-CLOSE-02
 
 S0 merge readiness
 = BLOCKED
+
+JC-229 / SBH-10-04 implementation readiness
+= NOT GRANTED BY THIS S0 CLOSURE
 ```
 
-The governance-only commit does not change the implementation task base, does not
-require merging `main` into S0, and does not invalidate the bounded S0 task base.
-Future unrelated `main` movement remains subject to normal task-level dependency
-and synchronization rules.
+The implementation task base is completed provenance. This closure changes no runtime
+code and grants no new S0 slice. The next lawful dependency step is bounded integration
+of the accepted S0 runtime into the current SUBS development line, followed by the
+separate SUBS re-admission required by the canonical cross-domain authority. Future
+unrelated `main` movement remains subject to normal task-level dependency and
+synchronization rules.
 
 ### Performance & Scaling Review
 
-This admission adds no production query, cache, Redis record, Oban job, or runtime
-telemetry. The later implementation PR must report hot, warm, and cold paths; query
-count and N+1 risk; the partial and global indexes; cache and invalidation decisions;
-Redis and database contention; Oban uniqueness and recovery idempotency; and the
-telemetry needed to distinguish exact-key recovery outcomes. PostgreSQL row locks and
-database uniqueness remain the concurrency controls. No cache stampede path, Redis
-stock ledger, or 100,000-user certification claim is authorized.
+This governance closure adds no production query, cache, Redis record, Oban job, or
+runtime telemetry. PR #117 was certified with focused exact-key, concurrency,
+migration, recovery, generic/renewal separation, and bounded-query evidence under
+exact-head CI `36968312583`. PostgreSQL row locks and database uniqueness remain the
+concurrency controls. No cache stampede path, Redis stock ledger, recovery worker,
+IA-04+ behavior, or 100,000-user certification claim is introduced or authorized by
+this closure.
