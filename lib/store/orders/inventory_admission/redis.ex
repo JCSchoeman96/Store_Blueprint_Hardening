@@ -4540,7 +4540,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       values.lease_token,
       Integer.to_string(values.owner_epoch),
       outcome,
-      Integer.to_string(values.b_total || 1),
+      Integer.to_string(values.b_total),
       if(promotion.present, do: "1", else: "0")
     ] ++ promotion_arguments
   end
