@@ -75,6 +75,28 @@ config :store, Store.DirectRepo,
 
 config :store, :token_signing_secret, "test-store-token-signing-secret"
 
+# Deterministic test defaults; production ENFORCED values come from runtime env.
+config :store, :inventory_admission,
+  mode: :disabled,
+  scope: "test",
+  repo_pool_capacity: nil,
+  repo_headroom: nil,
+  b_total: nil,
+  q_variant_max: 10,
+  q_global_max: 100,
+  queue_window_ms: 10_000,
+  db_window_ms: 2_000,
+  lease_window_ms: 3_000,
+  safety_margin_ms: 500,
+  cleanup_limit: 100,
+  metadata_retention_ms: 86_400_000,
+  database_safety_window_ms: 1_000,
+  recovery_retry_budget: 3,
+  recovery_deadline_ms: 5_000,
+  redis_restart_quarantine_ms: 2_000,
+  hmac_key: nil,
+  hmac_key_version: "v1"
+
 config :store, Oban,
   repo: Store.DirectRepo,
   testing: :manual,

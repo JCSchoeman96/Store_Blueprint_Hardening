@@ -1139,6 +1139,843 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     end
   end
 
+  test "claims an admitted lease exactly once", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, "RESERVING"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "RESERVING"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, "RESERVING"} = redis(["HGET", keys.variant_active, "state"])
+
+    metadata = hgetall(keys.request_meta)
+    fence = hgetall(keys.reservation_fence)
+    active = hgetall(keys.variant_active)
+    assert metadata["mutation_kind"] == descriptor.mutation_kind
+    assert metadata["desired_quantity"] == Integer.to_string(descriptor.desired_quantity)
+    assert metadata["expiry_policy"] == descriptor.expiry_policy
+    assert metadata["recovery_deadline_ms"] == Integer.to_string(descriptor.recovery_deadline_ms)
+    assert fence["mutation_kind"] == descriptor.mutation_kind
+    assert active["mutation_kind"] == descriptor.mutation_kind
+
+    assert {:ok, :already_reserving} =
+             Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+  end
+
+  test "claim rejects every contradictory owner field without changing capacity", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    keys = keys_for(admitted_request, scope)
+    {:ok, sequence_before} = redis(["GET", keys.global_sequence])
+    {:ok, active_before} = redis(["ZCARD", keys.global_active_expiry])
+
+    for {field, value} <- [
+          {:lease_token, "wrong-token"},
+          {:owner_epoch, admitted.owner_epoch + 1},
+          {:operation_id, UUIDv7.generate()},
+          {:operation_epoch, admitted.operation_epoch + 1},
+          {:request_fingerprint, String.duplicate("f", 64)},
+          {:reservation_key,
+           "order:018ecb40-c457-73e6-a400-000398daddd8:sku:018ecb40-c457-73e6-a400-000398daddd9"},
+          {:variant_id, @second_variant_id}
+        ] do
+      result =
+        Redis.claim_reserving(
+          reference,
+          Map.put(descriptor, field, value),
+          lookup_opts(scope)
+        )
+
+      assert result in [{:ok, :stale_owner}, {:error, :invalid_input}]
+    end
+
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+    assert {:ok, ^active_before} = redis(["ZCARD", keys.global_active_expiry])
+    assert {:ok, ^sequence_before} = redis(["GET", keys.global_sequence])
+
+    assert {:ok, 0} = redis(["HSET", keys.request_meta, "state", "QUEUED"])
+    assert {:ok, 0} = redis(["HSET", keys.reservation_fence, "state", "QUEUED"])
+    assert {:ok, 0} = redis(["HSET", keys.variant_active, "state", "QUEUED"])
+    assert {:ok, :frozen} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+  end
+
+  test "renewal uses Redis time, preserves identity, and stops at the DB deadline", %{
+    scope: scope
+  } do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(
+               admitted_request,
+               opts(scope, b_total: 1, db_window_ms: 2_000, lease_window_ms: 3_000)
+             )
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    keys = keys_for(admitted_request, scope)
+    {:ok, original_deadline} = redis(["HGET", keys.request_meta, "lease_deadline_ms"])
+    {:ok, server_time} = redis(["TIME"])
+
+    now_ms =
+      String.to_integer(Enum.at(server_time, 0)) * 1_000 +
+        div(String.to_integer(Enum.at(server_time, 1)), 1_000)
+
+    assert {:ok, {:renewed, renewed_deadline}} =
+             Redis.renew_lease(reference, descriptor, lookup_opts(scope))
+
+    assert renewed_deadline <= String.to_integer(original_deadline)
+    assert renewed_deadline == admitted.db_deadline_ms
+    assert {:ok, stored_deadline} = redis(["HGET", keys.request_meta, "lease_deadline_ms"])
+    assert String.to_integer(stored_deadline) == renewed_deadline
+    assert renewed_deadline <= admitted.db_deadline_ms
+    assert renewed_deadline >= now_ms
+
+    assert redis(["ZSCORE", keys.global_active_expiry, admitted.member]) ==
+             {:ok, stored_deadline}
+
+    for {field, value} <- [
+          {:lease_token, "wrong-token"},
+          {:owner_epoch, admitted.owner_epoch + 1},
+          {:operation_id, UUIDv7.generate()},
+          {:operation_epoch, admitted.operation_epoch + 1},
+          {:variant_id, @second_variant_id},
+          {:reservation_key,
+           "order:018ecb40-c457-73e6-a400-000398daddd8:sku:018ecb40-c457-73e6-a400-000398daddd9"}
+        ] do
+      result = Redis.renew_lease(reference, Map.put(descriptor, field, value), lookup_opts(scope))
+      assert result in [{:ok, :stale_owner}, {:error, :invalid_input}]
+    end
+
+    assert {:ok, 0} = redis(["HSET", keys.request_meta, "state", "ADMITTED"])
+    assert {:ok, 0} = redis(["HSET", keys.reservation_fence, "state", "ADMITTED"])
+    assert {:ok, 0} = redis(["HSET", keys.variant_active, "state", "ADMITTED"])
+    assert {:ok, :not_reserving} = Redis.renew_lease(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, 0} = redis(["HSET", keys.request_meta, "state", "RESERVING"])
+    assert {:ok, 0} = redis(["HSET", keys.reservation_fence, "state", "RESERVING"])
+    assert {:ok, 0} = redis(["HSET", keys.variant_active, "state", "RESERVING"])
+
+    assert {:ok, 0} =
+             redis([
+               "HSET",
+               keys.request_meta,
+               "db_deadline_ms",
+               Integer.to_string(now_ms - 1)
+             ])
+
+    assert {:ok, :deadline_reached} = Redis.renew_lease(reference, descriptor, lookup_opts(scope))
+  end
+
+  test "known outcomes release exact ownership and promote the next variant head atomically", %{
+    scope: scope
+  } do
+    holder_request = request()
+    waiter_request = request(@second_order_id, @variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, waiter}} =
+             Redis.enqueue_or_return_existing(waiter_request, opts(scope, b_total: 1))
+
+    holder_reference = reference_for(holder_request, holder)
+    holder_descriptor = claim_descriptor(holder_request, holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(holder_reference, holder_descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               holder_reference,
+               holder_descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    holder_keys = keys_for(holder_request, scope)
+    waiter_keys = keys_for(waiter_request, scope)
+    assert {:ok, "COMPLETED"} = redis(["HGET", holder_keys.request_meta, "state"])
+    assert {:ok, holder_active_member} = redis(["HGET", holder_keys.variant_active, "member"])
+    assert holder_active_member == waiter.member
+    assert {:ok, 1} = redis(["ZCARD", holder_keys.global_active_expiry])
+    assert {:ok, "ADMITTED"} = redis(["HGET", waiter_keys.request_meta, "state"])
+    assert {:ok, waiter_member} = redis(["HGET", waiter_keys.variant_active, "member"])
+    assert waiter_member == waiter.member
+
+    assert {:ok, :already_resolved} =
+             Redis.release_known_outcome(
+               holder_reference,
+               holder_descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.release_known_outcome(
+               holder_reference,
+               holder_descriptor,
+               :rejected,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    {:ok, promoted_db_deadline} = redis(["HGET", waiter_keys.request_meta, "db_deadline_ms"])
+
+    {:ok, promoted_lease_deadline} =
+      redis(["HGET", waiter_keys.request_meta, "lease_deadline_ms"])
+
+    {:ok, promoted_lease_token} = redis(["HGET", waiter_keys.request_meta, "lease_token"])
+    {:ok, promoted_owner_epoch} = redis(["HGET", waiter_keys.request_meta, "owner_epoch"])
+    {:ok, promoted_safety_margin} = redis(["HGET", waiter_keys.request_meta, "safety_margin_ms"])
+
+    promoted_waiter =
+      Map.merge(waiter, %{
+        db_deadline_ms: String.to_integer(promoted_db_deadline),
+        lease_deadline_ms: String.to_integer(promoted_lease_deadline),
+        lease_token: promoted_lease_token,
+        owner_epoch: String.to_integer(promoted_owner_epoch),
+        safety_margin_ms: String.to_integer(promoted_safety_margin)
+      })
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(
+               reference_for(waiter_request, promoted_waiter),
+               claim_descriptor(waiter_request, promoted_waiter),
+               lookup_opts(scope)
+             )
+  end
+
+  test "known rejected outcome releases exact ownership and replays only itself", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :rejected,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, "REJECTED"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "REJECTED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, nil} = redis(["HGET", keys.variant_active, "member"])
+    assert {:ok, 0} = redis(["ZCARD", keys.global_active_expiry])
+
+    assert {:ok, :already_resolved} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :rejected,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+  end
+
+  test "unknown outcome retains capacity, fence, descriptor, and does not promote", %{
+    scope: scope
+  } do
+    holder_request = request()
+    waiter_request = request(@second_order_id, @variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, _waiter}} =
+             Redis.enqueue_or_return_existing(waiter_request, opts(scope, b_total: 1))
+
+    reference = reference_for(holder_request, holder)
+
+    descriptor =
+      claim_descriptor(holder_request, holder)
+      |> Map.put(:recovery_deadline_ms, holder.lease_deadline_ms + 120_000)
+
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    recovery_deadline = descriptor.recovery_deadline_ms
+    unknown_descriptor = descriptor
+
+    assert {:ok, :fenced} =
+             Redis.mark_unknown_and_fence(
+               reference,
+               descriptor,
+               unknown_descriptor,
+               lookup_opts(scope)
+             )
+
+    keys = keys_for(holder_request, scope)
+    waiter_keys = keys_for(waiter_request, scope)
+    assert {:ok, "UNKNOWN_DB_OUTCOME"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "UNKNOWN_DB_OUTCOME"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, holder_member} = redis(["HGET", keys.variant_active, "member"])
+    assert holder_member == holder.member
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+    assert {:ok, "QUEUED"} = redis(["HGET", waiter_keys.request_meta, "state"])
+
+    assert {:ok, stored_recovery_deadline} =
+             redis(["HGET", keys.request_meta, "recovery_deadline_ms"])
+
+    assert String.to_integer(stored_recovery_deadline) == recovery_deadline
+    assert {:ok, "reserve"} = redis(["HGET", keys.request_meta, "mutation_kind"])
+
+    {:ok, [seconds, microseconds]} = redis(["TIME"])
+
+    now_ms =
+      String.to_integer(seconds) * 1_000 + div(String.to_integer(microseconds), 1_000)
+
+    {:ok, metadata_ttl} = redis(["PTTL", keys.request_meta])
+    {:ok, fence_ttl} = redis(["PTTL", keys.reservation_fence])
+    {:ok, active_ttl} = redis(["PTTL", keys.variant_active])
+    required_recovery_window = recovery_deadline - now_ms
+
+    assert metadata_ttl >= required_recovery_window
+    assert fence_ttl >= required_recovery_window
+    assert active_ttl >= required_recovery_window
+
+    expired_lease_deadline =
+      now_ms - 1
+
+    assert {:ok, 0} =
+             redis([
+               "HSET",
+               keys.request_meta,
+               "lease_deadline_ms",
+               Integer.to_string(expired_lease_deadline)
+             ])
+
+    assert {:ok, 0} =
+             redis([
+               "HSET",
+               keys.variant_active,
+               "lease_deadline_ms",
+               Integer.to_string(expired_lease_deadline)
+             ])
+
+    assert {:ok, 0} =
+             redis([
+               "ZADD",
+               keys.global_active_expiry,
+               Integer.to_string(expired_lease_deadline),
+               holder.member
+             ])
+
+    assert {:ok, :busy} = Redis.promote_queued(waiter_request, promotion_opts(scope, 1))
+    assert {:ok, "UNKNOWN_DB_OUTCOME"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, holder_member} = redis(["HGET", keys.variant_active, "member"])
+    assert holder_member == holder.member
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+
+    assert {:ok, :already_fenced} =
+             Redis.mark_unknown_and_fence(
+               reference,
+               descriptor,
+               unknown_descriptor,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_unknown_and_fence(
+               reference,
+               descriptor,
+               Map.put(unknown_descriptor, :recovery_deadline_ms, recovery_deadline + 1),
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_unknown_and_fence(
+               reference,
+               Map.put(descriptor, :lease_token, "wrong-token"),
+               unknown_descriptor,
+               lookup_opts(scope)
+             )
+  end
+
+  test "shared fences accept one and five hundred targets and reject zero or five hundred one before Redis",
+       %{
+         scope: scope
+       } do
+    one_request = request()
+    owner = shared_owner()
+    target = shared_target(one_request)
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence([target], owner, lookup_opts(scope))
+
+    five_hundred_requests =
+      Enum.map(1..500, fn _index -> request(UUIDv7.generate(), @second_variant_id) end)
+
+    five_hundred_targets = Enum.map(five_hundred_requests, &shared_target/1)
+    five_hundred_owner = shared_owner()
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence(
+               five_hundred_targets,
+               five_hundred_owner,
+               lookup_opts(scope)
+             )
+
+    assert Enum.all?(five_hundred_requests, fn target_request ->
+             fence = keys_for(target_request, scope).reservation_fence
+             redis(["HGET", fence, "state"]) == {:ok, "SHARED_ACTIVE"}
+           end)
+
+    five_hundred_one_request = request(UUIDv7.generate(), @second_variant_id)
+    five_hundred_one_targets = [shared_target(five_hundred_one_request) | five_hundred_targets]
+    five_hundred_one_key = keys_for(five_hundred_one_request, scope).reservation_fence
+
+    assert {:error, :invalid_input} =
+             Redis.acquire_shared_mutation_fence(
+               five_hundred_one_targets,
+               shared_owner(),
+               lookup_opts(scope)
+             )
+
+    assert {:ok, 0} = redis(["EXISTS", five_hundred_one_key])
+
+    zero_key = keys_for(request(UUIDv7.generate(), @second_variant_id), scope).reservation_fence
+
+    assert {:error, :invalid_input} =
+             Redis.acquire_shared_mutation_fence([], shared_owner(), lookup_opts(scope))
+
+    assert {:ok, 0} = redis(["EXISTS", zero_key])
+  end
+
+  test "shared fence validation rejects duplicates and invalid identities without partial state",
+       %{
+         scope: scope
+       } do
+    first = request()
+    second = request(@second_order_id, @second_variant_id)
+    first_target = shared_target(first)
+    second_target = shared_target(second)
+    owner = shared_owner()
+
+    assert {:error, :invalid_input} =
+             Redis.acquire_shared_mutation_fence(
+               [first_target, first_target],
+               owner,
+               lookup_opts(scope)
+             )
+
+    first_keys = keys_for(first, scope)
+    assert {:ok, 0} = redis(["EXISTS", first_keys.reservation_fence])
+
+    invalid_target = Map.put(second_target, :identity_digest, String.duplicate("0", 64))
+
+    assert {:error, :invalid_input} =
+             Redis.acquire_shared_mutation_fence(
+               [first_target, invalid_target],
+               owner,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, 0} = redis(["EXISTS", first_keys.reservation_fence])
+  end
+
+  test "shared fence acquisition blocks a live admission without changing its owner", %{
+    scope: scope
+  } do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    target = shared_target(admitted_request)
+    keys = keys_for(admitted_request, scope)
+
+    assert {:ok, :busy} =
+             Redis.acquire_shared_mutation_fence([target], shared_owner(), lookup_opts(scope))
+
+    assert {:ok, "ADMITTED"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, "ADMITTED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, admitted_member} = redis(["HGET", keys.variant_active, "member"])
+    assert admitted_member == admitted.member
+    assert {:ok, 0} = redis(["EXISTS", keys.shared_mutation_fence])
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+  end
+
+  test "shared fences coexist with retained terminal admission evidence", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    target = shared_target(admitted_request)
+    owner = shared_owner()
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence([target], owner, lookup_opts(scope))
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, "COMPLETED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, "SHARED_ACTIVE"} = redis(["HGET", keys.shared_mutation_fence, "state"])
+
+    assert {:ok, :released} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               [target],
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "COMPLETED"} = redis(["HGET", keys.reservation_fence, "state"])
+    assert {:ok, "SHARED_COMPLETED"} = redis(["HGET", keys.shared_mutation_fence, "state"])
+
+    assert {:ok, {:existing, replayed}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    assert replayed.state == :completed
+    assert replayed.operation_id == admitted.operation_id
+  end
+
+  test "shared fence acquisition and release are all or none with deterministic target identity",
+       %{
+         scope: scope
+       } do
+    first = request()
+    second = request(@second_order_id, @second_variant_id)
+    third = request(@third_variant_id, @second_variant_id)
+    targets = [shared_target(first), shared_target(second)]
+    owner = shared_owner()
+    reversed_owner = shared_owner()
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence(Enum.reverse(targets), owner, lookup_opts(scope))
+
+    assert {:ok, :already_acquired} =
+             Redis.acquire_shared_mutation_fence(targets, owner, lookup_opts(scope))
+
+    assert {:ok, :busy} =
+             Redis.acquire_shared_mutation_fence(
+               [shared_target(second), shared_target(third)],
+               reversed_owner,
+               lookup_opts(scope)
+             )
+
+    second_keys = keys_for(second, scope)
+    third_keys = keys_for(third, scope)
+    assert {:ok, "SHARED_ACTIVE"} = redis(["HGET", second_keys.reservation_fence, "state"])
+    assert {:ok, 0} = redis(["EXISTS", third_keys.reservation_fence])
+
+    assert {:ok, :stale_owner} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               [shared_target(first), shared_target(third)],
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "SHARED_ACTIVE"} =
+             redis(["HGET", keys_for(first, scope).reservation_fence, "state"])
+
+    assert {:ok, :stale_owner} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               Map.put(owner, :owner_token, "stale-owner-token"),
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "SHARED_ACTIVE"} =
+             redis(["HGET", second_keys.reservation_fence, "state"])
+
+    assert {:ok, :released} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :already_resolved} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               owner,
+               :rejected,
+               lookup_opts(scope)
+             )
+  end
+
+  test "shared unknown outcome retains every target fence and never creates queue or capacity state",
+       %{
+         scope: scope
+       } do
+    first = request()
+    second = request(@second_order_id, @second_variant_id)
+    targets = [shared_target(first), shared_target(second)]
+    owner = shared_owner()
+    first_keys = keys_for(first, scope)
+    second_keys = keys_for(second, scope)
+    assert {:ok, nil} = redis(["GET", first_keys.global_sequence])
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence(targets, owner, lookup_opts(scope))
+
+    assert {:error, :unavailable} =
+             Redis.enqueue_or_return_existing(first, opts(scope, b_total: 1))
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_shared_mutation_unknown(
+               targets,
+               Map.put(owner, :recovery_deadline_ms, owner.recovery_deadline_ms + 1),
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "SHARED_ACTIVE"} =
+             redis(["HGET", first_keys.shared_mutation_fence, "state"])
+
+    assert {:ok, :fenced} =
+             Redis.mark_shared_mutation_unknown(targets, owner, lookup_opts(scope))
+
+    assert {:ok, :already_fenced} =
+             Redis.mark_shared_mutation_unknown(targets, owner, lookup_opts(scope))
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", first_keys.reservation_fence, "state"])
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", second_keys.reservation_fence, "state"])
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", first_keys.shared_mutation_fence, "state"])
+
+    assert {:ok, 0} = redis(["ZCARD", first_keys.variant_queue_order])
+    assert {:ok, 0} = redis(["ZCARD", first_keys.global_active_expiry])
+    assert {:ok, nil} = redis(["GET", first_keys.global_sequence])
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_shared_mutation_unknown(
+               targets,
+               Map.put(owner, :owner_token, "stale"),
+               lookup_opts(scope)
+             )
+  end
+
+  test "shared unknown rejects a TTL shorter than its recovery deadline without partial mutation",
+       %{scope: scope} do
+    request = request()
+    target = shared_target(request)
+    owner = shared_owner()
+    keys = keys_for(request, scope)
+    acquire_opts = Keyword.put(lookup_opts(scope), :fence_ttl_ms, 60_000)
+
+    assert {:ok, :acquired} = Redis.acquire_shared_mutation_fence([target], owner, acquire_opts)
+
+    assert {:error, :unavailable} =
+             Redis.mark_shared_mutation_unknown(
+               [target],
+               owner,
+               Keyword.put(lookup_opts(scope), :fence_ttl_ms, 1)
+             )
+
+    assert {:ok, "SHARED_ACTIVE"} = redis(["HGET", keys.reservation_fence, "state"])
+
+    assert {:ok, :fenced} =
+             Redis.mark_shared_mutation_unknown([target], owner, acquire_opts)
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", keys.reservation_fence, "state"])
+  end
+
+  test "overlapping shared fence contenders have one complete owner", %{scope: scope} do
+    first = request()
+    second = request(@second_order_id, @second_variant_id)
+    targets = [shared_target(first), shared_target(second)]
+    owners = [shared_owner(), shared_owner()]
+
+    results =
+      owners
+      |> Task.async_stream(
+        fn owner ->
+          Redis.acquire_shared_mutation_fence(targets, owner, lookup_opts(scope))
+        end,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 5_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.count(results, &(&1 == {:ok, :acquired})) == 1
+    assert Enum.count(results, &(&1 == {:ok, :busy})) == 1
+
+    assert {:ok, "SHARED_ACTIVE"} =
+             redis(["HGET", keys_for(first, scope).reservation_fence, "state"])
+
+    assert {:ok, "SHARED_ACTIVE"} =
+             redis(["HGET", keys_for(second, scope).reservation_fence, "state"])
+  end
+
+  test "two claim contenders leave one exact reserving owner", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    stale_descriptor = Map.put(descriptor, :lease_token, "stale-claim-token")
+    parent = self()
+
+    tasks =
+      [descriptor, stale_descriptor]
+      |> Enum.map(fn contender ->
+        Task.async(fn ->
+          receive do
+            :begin_claim ->
+              send(parent, {:claim_started, self()})
+              Redis.claim_reserving(reference, contender, lookup_opts(scope))
+          end
+        end)
+      end)
+
+    Enum.each(tasks, &send(&1.pid, :begin_claim))
+    assert_receive {:claim_started, _pid}, 1_000
+    assert_receive {:claim_started, _pid}, 1_000
+    results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+    assert Enum.sort(results) == Enum.sort([{:ok, :claimed}, {:ok, :stale_owner}])
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, "RESERVING"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, stored_lease_token} = redis(["HGET", keys.request_meta, "lease_token"])
+    assert stored_lease_token == admitted.lease_token
+    assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+  end
+
+  test "known release wins against a concurrent stale owner", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    stale_descriptor = Map.put(descriptor, :lease_token, "stale-release-token")
+    parent = self()
+
+    tasks =
+      [
+        {:known, descriptor, :completed},
+        {:stale, stale_descriptor, :rejected}
+      ]
+      |> Enum.map(fn {label, owner, outcome} ->
+        Task.async(fn ->
+          receive do
+            :begin_release ->
+              send(parent, {:release_started, label})
+
+              {label,
+               Redis.release_known_outcome(
+                 reference,
+                 owner,
+                 outcome,
+                 Keyword.put(lookup_opts(scope), :b_total, 1)
+               )}
+          end
+        end)
+      end)
+
+    Enum.each(tasks, &send(&1.pid, :begin_release))
+    assert_receive {:release_started, _label}, 1_000
+    assert_receive {:release_started, _label}, 1_000
+    results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+    assert Enum.sort(results) ==
+             Enum.sort([{:known, {:ok, :released}}, {:stale, {:ok, :stale_owner}}])
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, "COMPLETED"} = redis(["HGET", keys.request_meta, "state"])
+    assert {:ok, nil} = redis(["HGET", keys.variant_active, "member"])
+    assert {:ok, 0} = redis(["ZCARD", keys.global_active_expiry])
+  end
+
+  test "opposite-order overlapping shared acquisitions have no partial owner", %{scope: scope} do
+    first = request()
+    second = request(@second_order_id, @second_variant_id)
+    first_target = shared_target(first)
+    second_target = shared_target(second)
+
+    [{first_owner, first_targets}, {second_owner, second_targets}] = [
+      {shared_owner(), [first_target, second_target]},
+      {shared_owner(), [second_target, first_target]}
+    ]
+
+    parent = self()
+
+    tasks =
+      [{first_owner, first_targets}, {second_owner, second_targets}]
+      |> Enum.map(fn {owner, targets} ->
+        Task.async(fn ->
+          receive do
+            :begin_shared_acquire ->
+              send(parent, {:shared_acquire_started, self()})
+              Redis.acquire_shared_mutation_fence(targets, owner, lookup_opts(scope))
+          end
+        end)
+      end)
+
+    Enum.each(tasks, &send(&1.pid, :begin_shared_acquire))
+    assert_receive {:shared_acquire_started, _pid}, 1_000
+    assert_receive {:shared_acquire_started, _pid}, 1_000
+    results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+    assert Enum.sort(results) == Enum.sort([{:ok, :acquired}, {:ok, :busy}])
+
+    for target_request <- [first, second] do
+      fence = keys_for(target_request, scope).reservation_fence
+      assert {:ok, "SHARED_ACTIVE"} = redis(["HGET", fence, "state"])
+    end
+  end
+
   defp reference_for(request, admission) do
     %Reference{
       reservation_key: request.reservation_key,
@@ -1152,6 +1989,52 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
         ),
       operation_id: if(is_map(admission), do: admission.operation_id, else: @operation_id),
       operation_epoch: if(is_map(admission), do: admission.operation_epoch, else: 1)
+    }
+  end
+
+  defp claim_descriptor(request, admission) do
+    %{
+      member: admission.member,
+      variant_id: request.variant_id,
+      reservation_key: request.reservation_key,
+      identity_digest: request.identity_digest,
+      request_fingerprint: request.request_fingerprint,
+      operation_id: admission.operation_id,
+      operation_epoch: admission.operation_epoch,
+      lease_token: admission.lease_token,
+      owner_epoch: admission.owner_epoch,
+      db_deadline_ms: admission.db_deadline_ms,
+      lease_deadline_ms: admission.lease_deadline_ms,
+      safety_margin_ms: admission.safety_margin_ms,
+      mutation_kind: "reserve",
+      desired_quantity: request.quantity,
+      expiry_policy: Atom.to_string(request.expiry_policy),
+      recovery_deadline_ms: admission.lease_deadline_ms + 5_000
+    }
+  end
+
+  defp shared_target(request) do
+    %{
+      reservation_key: request.reservation_key,
+      variant_id: request.variant_id,
+      identity_digest: request.identity_digest
+    }
+  end
+
+  defp shared_owner do
+    {:ok, [seconds, microseconds]} = redis(["TIME"])
+
+    now_ms =
+      String.to_integer(seconds) * 1_000 +
+        div(String.to_integer(microseconds), 1_000)
+
+    %{
+      operation_id: UUIDv7.generate(),
+      operation_epoch: 1,
+      owner_token: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower),
+      owner_epoch: 1,
+      mutation_kind: "release",
+      recovery_deadline_ms: now_ms + 60_000
     }
   end
 
@@ -1286,7 +2169,8 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                 keys.variant_queue_order,
                 keys.variant_active,
                 keys.request_meta,
-                keys.reservation_fence
+                keys.reservation_fence,
+                keys.shared_mutation_fence
               ]
             end)
 
