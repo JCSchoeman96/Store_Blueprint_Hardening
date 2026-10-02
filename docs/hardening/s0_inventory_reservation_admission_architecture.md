@@ -2019,6 +2019,7 @@ Slice 1 = PASS / ACCEPTED / FROZEN
 accepted head = 75674e4104c61c198a09fcbb3026df27a71f62fd
 
 Slice 2 = ACTIVE NEXT STEP / NOT STARTED
+shared_fence_target_max = 500
 
 Slice 3+ = NOT STARTED / SERIAL-BLOCKED
 
@@ -2070,6 +2071,45 @@ unknown database outcome, retain capacity, the exact reservation fence, and oper
 evidence. Do not promote a waiter or release on lease expiry. Redis remains
 coordination only; PostgreSQL remains durable truth.
 
+### Shared lifecycle fence target maximum
+
+The current IA-04 shared lifecycle fence maximum is the `shared_fence_target_max`
+recorded above. This is an architectural constant, not a client, request, node, or
+deployment setting.
+`lib/store/orders/inventory_reservations.ex` has
+`@default_expiry_batch_size = 500`; this supports the choice but did not previously
+authorize shared-fence cardinality. `cleanup_limit` remains a queue-cleanup limit and
+must not be reused. Changing this constant later requires an explicit governance and
+performance review.
+
+Every shared lifecycle operation must use one server-derived set of valid, normalized,
+unique reservation identities in deterministic order. Count the complete set after
+identity validation and normalization. It must be the exact snapshot used by its durable
+lifecycle mutation and must contain 1 to 500 targets. Duplicate targets are invalid
+input; implementations must not silently deduplicate them.
+
+For order-scoped consume or release, the writer first materializes the exact eligible
+target snapshot. If the snapshot exceeds 500 targets, it fails closed before Redis fence
+acquisition and before any PostgreSQL lifecycle mutation. The writer must not chunk one
+consume/release operation or acquire a partial fence set. Later service/domain mapping
+uses the existing governed `INVENTORY_ADMISSION_UNAVAILABLE` path; no public Store error
+code is added here.
+
+Expiry is a repeatable bounded pass. Its effective candidate batch must be at most 500.
+Under ENFORCED, if a caller requests a larger batch, cap it at 500 and defer remaining
+candidates to a later pass.
+
+Slice-2 shared-fence primitives accept 1 to 500 targets. They reject zero targets,
+oversized sets, duplicates, and invalid identities before Redis mutation. Acquisition,
+known-outcome release, and unknown-outcome fencing operate on the complete set or none
+of it in one Redis operation while retaining the existing cluster-safe key locality.
+Their Redis work is O(N) for 1 <= N <= 500, with no nested unbounded scan. This bound
+does not certify 100,000 concurrent requests. Slice-2 tests must cover 1, 500, and 501
+targets and prove that 501 is rejected with no Redis mutation. Oversized-set diagnostics
+may record bounded fields such as target count, mutation kind, and operation ID; they
+must not log reservation identities, raw Redis keys, HMAC material, or owner/fence
+tokens.
+
 A fresh coding agent may perform Slice 2 only on the existing sole IA-04 line:
 
 ```text
@@ -2079,6 +2119,6 @@ starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
 ```
 
 No parallel Slice-2 agent or second IA-04 branch is authorized. Slice 3+ remains
-serial-blocked, and IA-05+ remains not authorized. Issue #101 is aligned to this
-accepted Slice-1 head and records Slice 2 as selected next, pending this canonical
-governance transition; this section does not modify the issue.
+serial-blocked, and IA-05+ remains not authorized. Issue #101 remains aligned to this
+accepted Slice-1 head and records Slice 2 as selected next. This amendment defines the
+missing target bound and does not modify the issue.
