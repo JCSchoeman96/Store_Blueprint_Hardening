@@ -1,11 +1,13 @@
 defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
   use Store.DataCase, async: false
 
+  import ExUnit.CaptureLog
   import Ash.Expr
   import Ecto.Query
   require Ash.Query
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Store.Catalog.InventoryItem
   alias Store.Orders.InventoryReservation
   alias Store.Payments.PaymentIntent
 
@@ -29,6 +31,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
 
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
+  alias Store.Support.Telemetry.RepoStats
   alias Store.TestSupport.StripeAPIStub
 
   setup context do
@@ -41,8 +44,16 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     attempt = renewal_attempt!(fixture)
     input = %StartInput{renewal_attempt_id: attempt.id}
 
-    assert {:ok, first} = RenewalCollectionAttempts.start_for_system(input)
-    assert {:ok, replay} = RenewalCollectionAttempts.start_for_system(input)
+    {first_result, first_stats} =
+      RepoStats.capture(fn -> RenewalCollectionAttempts.start_for_system(input) end)
+
+    {replay_result, replay_stats} =
+      RepoStats.capture(fn -> RenewalCollectionAttempts.start_for_system(input) end)
+
+    assert {:ok, first} = first_result
+    assert {:ok, replay} = replay_result
+    assert first_stats.query_count == 8
+    assert replay_stats.query_count == 7
 
     assert first.id == replay.id
     assert first.renewal_attempt_id == attempt.id
@@ -195,6 +206,32 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     assert collection_count(attempt.id) == 1
   end
 
+  test "local PaymentIntent failed state alone leaves the financial outcome unresolved" do
+    fixture = subscription_fixture!()
+    attempt = renewal_attempt!(fixture)
+    collection = start_collection!(attempt)
+    intent = create_payment_intent!(attempt, collection)
+    assert {:ok, _} = attach_payment_intent(collection, intent)
+    assert {:ok, _} = claim(collection)
+    intent = payment_intent_transition!(intent, :submit)
+    _intent = payment_intent_transition!(intent, :mark_failed)
+
+    assert {:ok, refreshed} =
+             RenewalCollectionAttempts.refresh_financial_outcome_for_system(
+               %RefreshFinancialOutcomeInput{collection_attempt_id: collection.id}
+             )
+
+    assert refreshed.financial_outcome == :unresolved
+
+    assert {:ok, replayed} =
+             RenewalCollectionAttempts.start_for_system(%StartInput{
+               renewal_attempt_id: attempt.id
+             })
+
+    assert replayed.id == collection.id
+    assert collection_count(attempt.id) == 1
+  end
+
   test "verified terminal non-success permits a later ordinal only when dunning is due" do
     fixture = subscription_fixture!()
     attempt = renewal_attempt!(fixture)
@@ -202,15 +239,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     intent = create_payment_intent!(attempt, first)
     assert {:ok, _} = attach_payment_intent(first, intent)
     assert {:ok, _} = claim(first)
-    intent = payment_intent_transition!(intent, :submit)
-    _intent = payment_intent_transition!(intent, :mark_failed)
-
-    assert {:ok, failed} =
-             RenewalCollectionAttempts.refresh_financial_outcome_for_system(
-               %RefreshFinancialOutcomeInput{collection_attempt_id: first.id}
-             )
-
-    assert failed.financial_outcome == :verified_terminal_financial_non_success
+    failed = record_verified_terminal_outcome!(first)
 
     for outcome <- [:unresolved, :requires_action] do
       assert {:error, _} =
@@ -262,11 +291,16 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
       maximum - 1
     )
 
-    assert {:ok, second} =
-             RenewalCollectionAttempts.start_for_system(%StartInput{
-               renewal_attempt_id: attempt.id,
-               now: due_now
-             })
+    {second_result, second_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.start_for_system(%StartInput{
+          renewal_attempt_id: attempt.id,
+          now: due_now
+        })
+      end)
+
+    assert {:ok, second} = second_result
+    assert second_stats.query_count == 9
 
     assert second.collection_ordinal == 2
     assert second.id != first.id
@@ -277,6 +311,33 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
              RenewalCollectionAttempts.payment_intent_key(first.id)
 
     assert collection_count(attempt.id) == 2
+  end
+
+  test "cancel_at_period_end blocks a later dunning collection" do
+    fixture = subscription_fixture!()
+    attempt = renewal_attempt!(fixture)
+    first = start_collection!(attempt)
+    intent = create_payment_intent!(attempt, first)
+    assert {:ok, _} = attach_payment_intent(first, intent)
+    assert {:ok, _} = claim(first)
+    terminal_collection = record_verified_terminal_outcome!(first)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    past_due =
+      set_past_due!(fixture.subscription, DateTime.add(now, -1, :second))
+      |> cancel_at_period_end!()
+
+    assert past_due.cancel_at_period_end
+
+    assert {:error, %Error{code: "INVALID_STATE_TRANSITION"}} =
+             RenewalCollectionAttempts.start_for_system(%StartInput{
+               renewal_attempt_id: attempt.id,
+               now: now
+             })
+
+    assert collection_count(attempt.id) == 1
+    assert terminal_collection.financial_outcome == :verified_terminal_financial_non_success
   end
 
   test "verified success permanently rejects later collection creation" do
@@ -311,7 +372,9 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     intent = create_payment_intent!(attempt, collection)
     assert {:ok, _} = attach_payment_intent(collection, intent)
 
-    assert {:ok, claimed} = claim(collection)
+    {claim_result, claim_stats} = RepoStats.capture(fn -> claim(collection) end)
+    assert {:ok, claimed} = claim_result
+    assert claim_stats.query_count == 7
     assert claimed.dispatch_state == :may_have_been_reached
     assert claimed.dispatch_epoch == 1
 
@@ -329,6 +392,40 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
                expected_dispatch_epoch: 1,
                fence_event_id: Ash.UUIDv7.generate()
              })
+  end
+
+  test "physical dispatch claim counts exact reservation and PaymentIntent checks" do
+    fixture = subscription_fixture!()
+    attempt = renewal_attempt!(fixture)
+    collection = start_collection!(attempt)
+    generation_id = Ash.UUIDv7.generate()
+    key = reservation_key(attempt, collection, generation_id)
+
+    assert {:ok, %{reservation: %{state: :active}}} =
+             Store.Orders.reserve_exact_generation(
+               attempt.order_id,
+               attempt.variant_id,
+               key,
+               attempt.quantity
+             )
+
+    assert {:ok, _} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(
+               %ReservationGenerationInput{
+                 collection_attempt_id: collection.id,
+                 expected_dispatch_epoch: 1,
+                 reservation_generation_id: generation_id
+               }
+             )
+
+    intent = create_payment_intent!(attempt, collection)
+    assert {:ok, _} = attach_payment_intent(collection, intent)
+
+    {claim_result, claim_stats} = RepoStats.capture(fn -> claim(collection) end)
+
+    assert {:ok, claimed} = claim_result
+    assert claimed.dispatch_state == :may_have_been_reached
+    assert claim_stats.query_count == 8
   end
 
   test "pre-submission fence releases only the exact generation and resume increments once" do
@@ -363,7 +460,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
       fence_event_id: Ash.UUIDv7.generate()
     }
 
-    assert {:ok, fenced} = RenewalCollectionAttempts.fence_before_submission_for_system(fence)
+    {fence_result, fence_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.fence_before_submission_for_system(fence)
+      end)
+
+    assert {:ok, fenced} = fence_result
+    assert fence_stats.query_count == 14
     assert fenced.dispatch_state == :not_submitted
     assert fenced.financial_outcome == :unresolved
     assert fenced.fenced_through_epoch == 1
@@ -426,7 +529,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     end
   end
 
-  test "fence fails closed when the collection-owned generation is no longer active" do
+  test "fence fails closed when the exact generation was cancelled before the fence" do
     fixture = subscription_fixture!()
     attempt = renewal_attempt!(fixture)
     collection = start_collection!(attempt)
@@ -466,6 +569,92 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     assert reloaded.fenced_through_epoch == 0
     assert reloaded.reservation_generation_id == generation_id
     assert reloaded.financial_outcome == :unresolved
+  end
+
+  test "ambiguous exact release is recovered before a later fence mutation" do
+    fixture = create_committed_fixture!()
+
+    Sandbox.unboxed_run(Store.Repo, fn ->
+      attempt = renewal_attempt!(fixture)
+      collection = start_collection!(attempt)
+      generation_id = Ash.UUIDv7.generate()
+      key = reservation_key(attempt, collection, generation_id)
+
+      assert {:ok, %{reservation: %{state: :active}}} =
+               Store.Orders.reserve_exact_generation(
+                 attempt.order_id,
+                 attempt.variant_id,
+                 key,
+                 attempt.quantity
+               )
+
+      assert {:ok, _} =
+               RenewalCollectionAttempts.assign_reservation_generation_for_system(
+                 %ReservationGenerationInput{
+                   collection_attempt_id: collection.id,
+                   expected_dispatch_epoch: 1,
+                   reservation_generation_id: generation_id
+                 }
+               )
+
+      fence = %FenceInput{
+        collection_attempt_id: collection.id,
+        expected_dispatch_epoch: 1,
+        fence_event_id: Ash.UUIDv7.generate()
+      }
+
+      Repo.query!("SET lock_timeout = '100ms'")
+
+      capture_ref = make_ref()
+
+      _ambiguous_log =
+        capture_log(fn ->
+          result =
+            with_inventory_item_locked(attempt.variant_id, fn ->
+              RepoStats.capture(fn ->
+                RenewalCollectionAttempts.fence_before_submission_for_system(fence)
+              end)
+            end)
+
+          send(self(), {capture_ref, result})
+        end)
+
+      assert_receive {^capture_ref, {ambiguous_result, ambiguous_stats}}
+
+      Repo.query!("SET lock_timeout = DEFAULT")
+
+      assert {:error, %Error{code: "RESERVATION_CONFLICT"}} = ambiguous_result
+      assert ambiguous_stats.query_count == 8
+
+      assert {:ok, {:found, %{state: :active}}} =
+               Store.Orders.recover_exact_generation(attempt.order_id, attempt.variant_id, key)
+
+      current = fetch_collection!(collection.id)
+      assert current.dispatch_state == :not_started
+      assert current.fenced_through_epoch == 0
+
+      assert {:ok, fenced} = RenewalCollectionAttempts.fence_before_submission_for_system(fence)
+      assert fenced.dispatch_state == :not_submitted
+      assert fenced.fenced_through_epoch == 1
+    end)
+  end
+
+  test "dispatch claim rejects a PaymentIntent with the wrong deterministic key" do
+    fixture = subscription_fixture!()
+    attempt = renewal_attempt!(fixture)
+    collection = start_collection!(attempt)
+    wrong_intent = create_payment_intent_with_key!(attempt, "wrong:#{Ash.UUIDv7.generate()}")
+
+    Repo.query!(
+      "UPDATE renewal_collection_attempts SET payment_intent_id = $1 WHERE id = $2",
+      [Ecto.UUID.dump!(wrong_intent.id), Ecto.UUID.dump!(collection.id)]
+    )
+
+    assert {:error, %Error{code: "INVALID_STATE_TRANSITION"}} = claim(collection)
+
+    reloaded = fetch_collection!(collection.id)
+    assert reloaded.dispatch_state == :not_started
+    assert reloaded.dispatch_epoch == 1
   end
 
   test "PaymentIntent identity is exact and one PaymentIntent cannot attach twice" do
@@ -600,6 +789,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
   end
 
   defp create_payment_intent!(attempt, collection) do
+    create_payment_intent_with_key!(
+      attempt,
+      RenewalCollectionAttempts.payment_intent_key(collection.id)
+    )
+  end
+
+  defp create_payment_intent_with_key!(attempt, key) do
     PaymentIntent
     |> Ash.Changeset.for_create(
       :create_or_reuse,
@@ -608,11 +804,73 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
         amount_received_minor: attempt.amount_minor,
         currency: attempt.currency,
         provider: :stripe,
-        payment_intent_key: RenewalCollectionAttempts.payment_intent_key(collection.id)
+        payment_intent_key: key
       },
       context: %{system?: true}
     )
     |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+  end
+
+  defp record_verified_terminal_outcome!(collection) do
+    collection
+    |> Ash.Changeset.for_update(
+      :record_financial_outcome,
+      %{
+        expected_financial_outcome: :unresolved,
+        financial_outcome: :verified_terminal_financial_non_success
+      },
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp cancel_at_period_end!(subscription) do
+    subscription
+    |> Ash.Changeset.for_update(:cancel_at_period_end_transition, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp with_inventory_item_locked(variant_id, fun) do
+    parent = self()
+
+    lock_task =
+      Task.async(fn ->
+        Sandbox.unboxed_run(Store.Repo, fn ->
+          lock_inventory_item_in_transaction(variant_id, parent)
+        end)
+      end)
+
+    assert_receive {:test_inventory_item_locked, lock_backend_pid}, 10_000
+    {:ok, %{rows: [[mutation_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
+
+    try do
+      refute lock_backend_pid == mutation_backend_pid
+      fun.()
+    after
+      send(lock_task.pid, :release_test_inventory_lock)
+      Task.await(lock_task, 10_000)
+    end
+  end
+
+  defp lock_inventory_item_in_transaction(variant_id, parent) do
+    Repo.transaction(fn ->
+      {:ok, %{rows: [[backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
+
+      Repo.one!(
+        from(item in InventoryItem,
+          where: item.variant_id == ^variant_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+      send(parent, {:test_inventory_item_locked, backend_pid})
+
+      receive do
+        :release_test_inventory_lock -> :ok
+      after
+        10_000 -> Repo.rollback(:timed_out_waiting_to_release_test_lock)
+      end
+    end)
   end
 
   defp attach_payment_intent(collection, intent) do
@@ -688,6 +946,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
       subscription_id = Ecto.UUID.dump!(fixture.subscription.id)
       line_item_id = Ecto.UUID.dump!(fixture.line_item.id)
       order_id = Ecto.UUID.dump!(fixture.order.id)
+      customer_id = Ecto.UUID.dump!(fixture.customer.id)
       variant_id = Ecto.UUID.dump!(fixture.variant.id)
       product_id = Ecto.UUID.dump!(fixture.product.id)
       plan_id = Ecto.UUID.dump!(fixture.plan.id)
@@ -700,6 +959,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])
+      Repo.query!("DELETE FROM inventory_reservations WHERE order_id = $1", [order_id])
       Repo.query!("DELETE FROM order_line_items WHERE id = $1", [line_item_id])
       Repo.query!("DELETE FROM order_adjustments WHERE order_id = $1", [order_id])
       Repo.query!("DELETE FROM fulfillment_orders WHERE order_id = $1", [order_id])
@@ -710,6 +970,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
       Repo.query!("DELETE FROM subscription_plans WHERE id = $1", [plan_id])
       Repo.query!("SET CONSTRAINTS products_default_variant_id_fkey DEFERRED")
       Repo.query!("DELETE FROM products WHERE id = $1", [product_id])
+      Repo.query!("DELETE FROM users WHERE id = $1", [customer_id])
     end)
   end
 

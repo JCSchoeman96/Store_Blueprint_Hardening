@@ -10,10 +10,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   increments by exactly one and records a fresh generation when the old epoch
   owned a physical reservation.
 
-  Financial outcomes are derived from the exact associated PaymentIntent state.
-  `requires_action` is nonterminal. Verified success and verified terminal
-  financial non-success are terminal and cannot regress. A `not_submitted`
-  dispatch state never implies financial non-success.
+  Financial refresh reads the exact associated PaymentIntent. Its local failed
+  state does not prove terminal financial non-success. Verified success and
+  verified terminal financial non-success are terminal and cannot regress. A
+  `not_submitted` dispatch state never implies financial non-success.
 
   Creation locks the Subscription before its RenewalAttempt, matching existing
   renewal binding lock order. The parent lock serializes ordinal allocation; the
@@ -311,6 +311,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp ensure_dunning_retry_permitted(%RenewalAttempt{} = attempt, now) do
     with {:ok, %Subscription{} = subscription} <- fetch_subscription(attempt.subscription_id),
          true <- subscription.status == :past_due,
+         true <- subscription.cancel_at_period_end == false,
          true <- is_nil(subscription.retry_suppressed_at),
          true <- dunning_count_within_bound_policy?(subscription, attempt),
          true <- retry_is_due?(subscription.next_retry_at, now) do
@@ -392,6 +393,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
          :ok <- ensure_current_generation_active(attempt, collection),
          true <- is_binary(collection.payment_intent_id),
+         :ok <- validate_payment_intent(attempt, collection, collection.payment_intent_id),
          {:ok, claimed} <-
            update_collection!(collection, :claim_dispatch, %{
              expected_dispatch_epoch: input.expected_dispatch_epoch
@@ -453,15 +455,50 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     with {:ok, %RenewalAttempt{} = attempt} <-
            fetch_renewal_attempt(collection.renewal_attempt_id),
          true <- is_binary(attempt.order_id) and is_binary(attempt.variant_id),
-         key <- reservation_key(attempt, collection),
-         {:ok, %{reservation: %{state: :cancelled}, changed?: true}} <-
-           Orders.release_exact_generation(attempt.order_id, attempt.variant_id, key) do
-      :ok
+         {:ok, state} <-
+           recover_exact_generation_state(
+             attempt,
+             collection,
+             collection.reservation_generation_id
+           ) do
+      case state do
+        :active -> release_recovered_active_generation(attempt, collection)
+        _ -> exact_generation_release_error()
+      end
     else
       _ ->
-        {:error,
-         reservation_conflict("exact active reservation generation could not be released")}
+        exact_generation_release_error()
     end
+  end
+
+  defp release_recovered_active_generation(attempt, collection) do
+    key = reservation_key(attempt, collection)
+
+    case Orders.release_exact_generation(attempt.order_id, attempt.variant_id, key) do
+      {:ok, %{reservation: %{state: :cancelled}, changed?: true}} ->
+        :ok
+
+      {:error, :ambiguous_database_outcome} ->
+        recover_cancelled_generation(attempt, collection)
+
+      _ ->
+        exact_generation_release_error()
+    end
+  end
+
+  defp recover_cancelled_generation(attempt, collection) do
+    case recover_exact_generation_state(
+           attempt,
+           collection,
+           collection.reservation_generation_id
+         ) do
+      {:ok, :cancelled} -> :ok
+      _ -> exact_generation_release_error()
+    end
+  end
+
+  defp exact_generation_release_error do
+    {:error, reservation_conflict("exact reservation generation release could not be verified")}
   end
 
   defp ensure_current_generation_active(_attempt, %RenewalCollectionAttempt{
@@ -482,13 +519,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          %RenewalCollectionAttempt{} = collection,
          generation_id
        ) do
-    with true <- is_binary(attempt.order_id) and is_binary(attempt.variant_id),
-         key <- reservation_key(attempt, collection, generation_id),
-         {:ok, {:found, facts}} <-
-           Orders.recover_exact_generation(attempt.order_id, attempt.variant_id, key),
-         true <- exact_active_generation_facts?(facts, attempt, key) do
-      :ok
-    else
+    case recover_exact_generation_state(attempt, collection, generation_id) do
+      {:ok, :active} ->
+        :ok
+
       _ ->
         {:error,
          reservation_conflict(
@@ -497,12 +531,25 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp exact_active_generation_facts?(facts, attempt, expected_key) when is_map(facts) do
+  defp recover_exact_generation_state(attempt, collection, generation_id) do
+    with true <- is_binary(attempt.order_id) and is_binary(attempt.variant_id),
+         key <- reservation_key(attempt, collection, generation_id),
+         {:ok, {:found, facts}} <-
+           Orders.recover_exact_generation(attempt.order_id, attempt.variant_id, key),
+         true <- exact_generation_facts?(facts, attempt, key) do
+      {:ok, Map.get(facts, :state)}
+    else
+      _ ->
+        {:error,
+         reservation_conflict("exact reservation generation evidence is missing or contradictory")}
+    end
+  end
+
+  defp exact_generation_facts?(facts, attempt, expected_key) when is_map(facts) do
     Map.get(facts, :reservation_key) == expected_key and
       Map.get(facts, :order_id) == attempt.order_id and
       Map.get(facts, :variant_id) == attempt.variant_id and
-      Map.get(facts, :quantity) == attempt.quantity and
-      Map.get(facts, :state) == :active
+      Map.get(facts, :quantity) == attempt.quantity
   end
 
   defp resume_in_transaction(input) do
@@ -684,9 +731,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
   defp verified_outcome(%PaymentIntent{state: :requires_action}), do: {:ok, :requires_action}
   defp verified_outcome(%PaymentIntent{state: :succeeded}), do: {:ok, :verified_success}
-
-  defp verified_outcome(%PaymentIntent{state: :failed}),
-    do: {:ok, :verified_terminal_financial_non_success}
 
   defp verified_outcome(%PaymentIntent{}), do: {:ok, :unresolved}
 
