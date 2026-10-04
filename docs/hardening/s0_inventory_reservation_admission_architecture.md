@@ -2176,10 +2176,13 @@ The separate PRE/POST finding on PR #128 is an implementation correction, not an
 unresolved architecture choice. Frozen S0-PLAN-01 §10 already requires
 `claim_reserving` to receive the complete server-owned operation PRE/POST descriptor,
 retain it, and atomically move `ADMITTED` to `RESERVING`. PR #128's Redis adapter drops
-`:pre` and `:post`, so it remains non-conforming. The correction is authorized within
-the existing Slice-2 files, `lib/store/orders/inventory_admission/redis.ex` and
-`test/store/orders/inventory_admission_redis_test.exs`. This governance amendment does
-not implement it.
+`:pre` and `:post`, so it remains non-conforming. This amendment authorizes no PR #128
+edits until it passes independent review, exact-head CI, human merge, and post-merge
+verification. Those gates restore authority only for the two existing Slice-2 files,
+`lib/store/orders/inventory_admission/redis.ex` and
+`test/store/orders/inventory_admission_redis_test.exs`, to retain PRE/POST evidence and
+bound promotion discovery as specified above. This amendment does not implement either
+correction.
 
 ### Performance & Scaling Review (IA-04 promotion candidate limit)
 
@@ -2202,7 +2205,10 @@ worktree: the existing sole IA-04 implementation worktree
 starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
 ```
 
-No parallel Slice-2 agent or second IA-04 branch was authorized. The promotion-limit
-amendment below supersedes the initial permission to start Slice 2. Slice 3+ remains
-serial-blocked, and IA-05+ remains not authorized. The amendment does not change issue
-#101.
+No parallel Slice-2 agent or second IA-04 branch was authorized. The earlier Slice-2
+permission is temporarily blocked until the promotion-limit amendment passes independent
+review, exact-head CI, human merge, and post-merge verification. Those gates restore
+correction-only authority on the existing sole IA-04 line for PRE/POST evidence
+retention and bounded promotion discovery in the existing two Slice-2 files. No other
+Slice-2 expansion is authorized. Slice 3+ remains serial-blocked, and IA-05+ remains not
+authorized. The amendment does not change issue #101.
