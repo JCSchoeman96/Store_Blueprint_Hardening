@@ -3484,7 +3484,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       end
 
       terminal_count = terminal_count + 1
-    elseif fence[2] ~= "SHARED_ACTIVE" and fence[2] ~= "SHARED_UNKNOWN_DB_OUTCOME" then
+    elseif fence[2] ~= "SHARED_ACTIVE" then
       return stale()
     elseif marker_targets[index] and marker[2] ~= fence[2] then
       return unavailable()

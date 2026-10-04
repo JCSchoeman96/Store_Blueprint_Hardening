@@ -1866,7 +1866,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
              redis(["HGET", keys.shared_mutation_fence, "state"])
 
-    assert {:ok, :released} =
+    assert {:ok, :stale_owner} =
              Redis.release_shared_mutation_fence_known_outcome(
                [target],
                owner,
@@ -1874,8 +1874,11 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                lookup_opts(scope)
              )
 
-    assert {:ok, :acquired} =
+    assert {:ok, :busy} =
              Redis.acquire_shared_mutation_fence([target], shared_owner(), lookup_opts(scope))
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", keys.shared_mutation_fence, "state"])
   end
 
   test "shared fence acquisition and release are all or none with deterministic target identity",
@@ -1997,6 +2000,29 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
              redis(["HGET", first_keys.shared_mutation_fence, "state"])
 
+    assert {:ok, :stale_owner} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", first_keys.reservation_fence, "state"])
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", second_keys.reservation_fence, "state"])
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", first_keys.shared_mutation_fence, "state"])
+
+    assert {:ok, :busy} =
+             Redis.acquire_shared_mutation_fence(targets, shared_owner(), lookup_opts(scope))
+
+    assert {:ok, :already_fenced} =
+             Redis.mark_shared_mutation_unknown(targets, owner, lookup_opts(scope))
+
     assert {:ok, -1} = redis(["PTTL", first_keys.shared_mutation_fence])
     assert {:ok, -1} = redis(["PTTL", first_keys.reservation_fence])
 
@@ -2008,6 +2034,14 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
              Redis.mark_shared_mutation_unknown(
                targets,
                Map.put(owner, :owner_token, "stale"),
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               Map.put(owner, :owner_token, "stale"),
+               :completed,
                lookup_opts(scope)
              )
   end
