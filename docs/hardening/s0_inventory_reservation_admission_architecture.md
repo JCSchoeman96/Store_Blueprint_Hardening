@@ -2010,7 +2010,7 @@ lease_window_ms >= db_window_ms + safety_margin_ms
 B_total <= reviewed_repo_capacity - reviewed_headroom
 ```
 
-The current IA-04 slice state is:
+The IA-04 slice state at Slice-2 activation on 2026-10-02 was:
 
 ```text
 IA-04 overall = AUTHORIZED / IMPLEMENTING
@@ -2078,9 +2078,11 @@ recorded above. This is an architectural constant, not a client, request, node, 
 deployment setting.
 `lib/store/orders/inventory_reservations.ex` has
 `@default_expiry_batch_size = 500`; this supports the choice but did not previously
-authorize shared-fence cardinality. `cleanup_limit` remains a queue-cleanup limit and
-must not be reused. Changing this constant later requires an explicit governance and
-performance review.
+authorize shared-fence cardinality. `cleanup_limit` remains a queue-maintenance work
+bound and does not define this target maximum. IA-04 promotion candidate inspection may
+use `cleanup_limit` only under the separate rule below. It must not replace
+`shared_fence_target_max = 500`. Changing the shared-fence constant later requires an
+explicit governance and performance review.
 
 Every shared lifecycle operation must use one server-derived set of valid, normalized,
 unique reservation identities in deterministic order. Count the complete set after
@@ -2110,7 +2112,89 @@ may record bounded fields such as target count, mutation kind, and operation ID;
 must not log reservation identities, raw Redis keys, HMAC material, or owner/fence
 tokens.
 
-A fresh coding agent may perform Slice 2 only on the existing sole IA-04 line:
+### IA-04 global promotion candidate limit
+
+The frozen `promote_next` contract requires a bounded candidate limit. This amendment
+defines its derivation from the existing validated, server-owned IA configuration:
+
+```text
+effective_promotion_candidate_limit = min(cleanup_limit, q_global_max)
+```
+
+Both inputs remain their existing positive configuration values. This adds no
+configuration field and chooses no numeric promotion constant. Therefore:
+
+```text
+1 <= effective_promotion_candidate_limit <= q_global_max
+```
+
+`cleanup_limit` remains a queue-maintenance work bound. This amendment also authorizes
+it to bound how many global dispatch candidates one IA-04 promotion attempt inspects.
+It must not define shared lifecycle-fence target cardinality, replace `q_global_max`,
+`q_variant_max`, `B_total`, inventory batch size, or PostgreSQL mutation cardinality.
+`q_global_max` continues to bound the global queued population under its existing IA
+configuration ownership.
+The shared lifecycle-fence bound remains the independent
+`shared_fence_target_max = 500`.
+
+One promotion attempt may inspect at most
+`effective_promotion_candidate_limit` members from the current head of
+`global:queue_dispatch`, in server-derived global sequence order. It may select at most
+one eligible waiter. Within this bounded prefix, it may skip only candidates proven
+stale, expired, ineligible, or blocked. Eligibility must preserve per-variant FIFO,
+`K_v = 1`, and `B_total`.
+
+The final release/promotion mutation must atomically revalidate the selected candidate.
+It must confirm the candidate's global dispatch and queued-expiry membership,
+per-variant queue-head position, request/member identity, fence owner, operation identity,
+schema/version evidence, and live queue deadline. The queued-expiry score and metadata
+deadline must agree, and Redis server time must show the deadline is live. The atomic
+mutation must confirm that the variant is free or is freed by this exact release and
+that global capacity is available after the release. Discovery evidence alone never
+authorizes promotion.
+
+If the bounded prefix contains no eligible waiter, the known-outcome release may still
+complete, no next lease is created, and free capacity may remain temporarily unused.
+This is deliberate bounded-liveness behavior, not a release error. The attempt must
+not inspect beyond the prefix to find a candidate. A later governed
+`promote_next`, status-triggered bounded promotion, or future bounded reaper pass may
+use that capacity. Promotion is not a precondition for successful known-outcome
+release.
+
+Redis errors, timeouts, malformed or inconsistent evidence, and uncertain candidate
+discovery fail closed. They must not be treated as proof that no candidate exists. A
+known durable PostgreSQL outcome remains authoritative if Redis cleanup fails. Retries
+remain idempotent under the same operation identity. Redis remains coordination only;
+its queue and lease records do not establish inventory state or PostgreSQL outcome.
+
+Promotion discovery must not use `ZRANGE global:queue_dispatch 0 -1`, `KEYS`, unbounded
+`SCAN`, or any loop or materialization proportional to total or historical queue depth.
+It must not inspect candidates beyond the bounded prefix, including to replace skipped
+entries. This keeps release work bounded independently of queue history.
+
+The separate PRE/POST finding on PR #128 is an implementation correction, not an
+unresolved architecture choice. Frozen S0-PLAN-01 §10 already requires
+`claim_reserving` to receive the complete server-owned operation PRE/POST descriptor,
+retain it, and atomically move `ADMITTED` to `RESERVING`. PR #128's Redis adapter drops
+`:pre` and `:post`, so it remains non-conforming. The correction is authorized within
+the existing Slice-2 files, `lib/store/orders/inventory_admission/redis.ex` and
+`test/store/orders/inventory_admission_redis_test.exs`. This governance amendment does
+not implement it.
+
+### Performance & Scaling Review (IA-04 promotion candidate limit)
+
+Hot work is global dispatch discovery and the atomic release/promotion mutation. Warm
+work is unchanged. Cold PostgreSQL behavior has no calls or N+1 risk from this
+governance amendment. Database indexes, ETS/Redis caching policy, TTLs, cache
+invalidation, and stampede protection are unchanged. Oban uniqueness and idempotency
+are unchanged; retries retain the existing operation identity. Telemetry and logging
+remain unchanged and must not expose reservation identities, raw Redis keys, HMAC
+material, or owner/fence tokens. Candidate inspection is bounded by the formula above
+regardless of historical queue depth. This does not certify 100,000 concurrent
+requests; IA-08 owns that certification.
+
+At the initial Slice-2 activation, implementation was authorized only on the existing
+sole IA-04 line:
 
 ```text
 branch: hardening/s0-ia04
@@ -2118,7 +2202,7 @@ worktree: the existing sole IA-04 implementation worktree
 starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
 ```
 
-No parallel Slice-2 agent or second IA-04 branch is authorized. Slice 3+ remains
-serial-blocked, and IA-05+ remains not authorized. Issue #101 remains aligned to this
-accepted Slice-1 head and records Slice 2 as selected next. This amendment defines the
-missing target bound and does not modify the issue.
+No parallel Slice-2 agent or second IA-04 branch was authorized. The promotion-limit
+amendment below supersedes the initial permission to start Slice 2. Slice 3+ remains
+serial-blocked, and IA-05+ remains not authorized. The amendment does not change issue
+#101.
