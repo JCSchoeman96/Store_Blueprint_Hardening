@@ -1474,7 +1474,7 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `ddc59e42941a859eeb6ae72e311c87fff10d7996` at this refresh (canonical main after PR #124); resolve with `git fetch origin && git rev-parse origin/main` before work.
+- `origin/main` = `43b2927b3fd4689c68bf8ec4f631d8ab0c5c2d8c` at this refresh, canonical main after PR #126; resolve with `git fetch origin && git rev-parse origin/main` before work.
 - `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
@@ -1533,8 +1533,8 @@ It owns only this bounded registry edit and the amendments in
 `docs/governance/inventory_reservations.md` and
 `docs/governance/sbh_10_04_cross_domain_authority_amendment.md`.
 Runtime, SUBS Master Register, S0 architecture, PR #127, and PR #128 edits are excluded.
-Lifecycle is `IMPLEMENTING` until validation/publication and the subsequent review,
-human merge, and independent target-verification gates complete.
+Lifecycle is `PUSHED`. Full validation remains blocked by local database credentials;
+exact-head CI, human merge, and independent target-verification gates remain required.
 
 The future prerequisite belongs to S0 / Orders concurrency, separately from IA-04.
 Candidate parent is `origin/hardening/s0-baseline` at

@@ -286,7 +286,10 @@ For a physical dispatch, the exact collection epoch N in `not_started`, exact
 PaymentIntent evidence, and the exact active physical generation under the guard
 are all required before the transition to epoch N in `may_have_been_reached`.
 The guard survives the CAS commit or rollback. A virtual renewal without a physical
-generation does not use this guard. The guard alone never authorizes provider work.
+generation does not use this guard. The guard alone never authorizes provider work. The fresh resume path also uses an
+unlocked generation read before its epoch CAS. Resume does not authorize dispatch;
+it remains stopped with PR #127 and must receive an independent fail-closed review
+at JC-229 re-admission. This amendment grants no new resume or recovery semantics.
 
 Accepted exact reserve at lines 293-320, release at 371-389, and consume at 404-427
 lock InventoryItem before the reservation. Generic bulk and expiry paths likewise
