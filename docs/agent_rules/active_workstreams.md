@@ -767,7 +767,8 @@ database outcome, retain capacity, the exact reservation fence, and operation ev
 Do not promote a waiter or release on lease expiry. Redis remains coordination only;
 PostgreSQL remains durable truth.
 
-A fresh coding agent may perform Slice 2 only on the existing sole IA-04 line:
+At the initial Slice-2 activation, implementation was authorized only on the existing
+sole IA-04 line:
 
 ```text
 branch: hardening/s0-ia04
@@ -775,10 +776,11 @@ worktree: the existing sole IA-04 implementation worktree
 starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
 ```
 
-No parallel Slice-2 agent or second IA-04 branch is authorized. Slice 3+ remains
-serial-blocked and IA-05+ remains not authorized. Issue #101 remains aligned to this
-accepted Slice-1 head and records Slice 2 as selected next. This amendment defines the
-missing target bound and does not modify the issue.
+No parallel Slice-2 agent or second IA-04 branch was authorized. The later stop record
+below temporarily blocks the initial permission to start Slice 2 until the stated
+governance gates pass; successful post-merge verification restores correction-only
+authority on the existing IA-04 line. Issue #101's attempted tracker reconciliation is
+not claimed by this record.
 
 ### IA-04 shared lifecycle fence target maximum (2026-10-02)
 
@@ -812,8 +814,95 @@ are deferred to a later pass.
 Slice-2 shared-fence primitives accept 1 to 500 targets and reject empty, oversized,
 duplicate, or invalid target sets before mutation. Acquisition and terminal release
 remain all-or-none. The Redis work is O(N), with N at most 500. This bound does not
-certify Redis or the application for 100,000 concurrent requests. Slice 2 remains
-active next; Slice 3+ remains serial-blocked and IA-05+ remains unauthorized.
+certify Redis or the application for 100,000 concurrent requests. At the time of this
+2026-10-02 amendment, Slice 2 remained active next. The temporary stop and conditional
+resumption are recorded below. Slice 3+ remains serial-blocked and IA-05+ remains
+unauthorized.
+
+### IA-04 promotion candidate limit and temporary Slice-2 stop (2026-10-04)
+
+This amendment supplies the finite candidate limit required by the frozen
+`promote_next` contract. It does not change that contract or approve the current
+Slice-2 implementation candidate before its acceptance gates pass.
+
+```text
+effective_promotion_candidate_limit = min(cleanup_limit, q_global_max)
+new configuration field = NO
+arbitrary numeric promotion constant = NO
+```
+
+Both values are existing positive, validated, server-owned IA configuration. The
+effective limit is at least 1 and no greater than `q_global_max`. `cleanup_limit`
+remains a queue-maintenance work bound and may also bound IA-04 promotion inspection.
+It must not define shared lifecycle-fence target cardinality or replace `q_global_max`,
+`q_variant_max`, `B_total`, inventory batch size, or PostgreSQL mutation cardinality.
+`shared_fence_target_max = 500` remains independent and unchanged.
+
+Historical independent review stop snapshot:
+
+```text
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 candidate = PR #128 at 91807522468a138047fd78408aedcf361ed7a3f0
+Slice 2 = STOPPED pending this governance amendment
+PR #128 = OPEN / UNMERGED
+```
+
+Frozen S0-PLAN-01 §10 already requires `claim_reserving` to receive and retain the
+complete server-owned operation PRE/POST descriptor. PR #128's Redis adapter drops
+`:pre` and `:post`; this is an implementation correction, not a governance question.
+
+At the authorization snapshot for this amendment, PR #128 was open and unmerged at
+`fe9133ec9bac4a5c0e955468fec23ac3f36479f4`. This governance amendment does not
+authorize edits to PR #128 until all four gates pass: independent review, exact-head CI,
+human merge, and successful post-merge verification.
+
+Until all four acceptance gates pass, including human merge and successful post-merge
+verification, the state is:
+
+```text
+Slice 2 = BLOCKED_AUTHORITY -> STOP
+PR #128 = OPEN / CHANGES REQUIRED / NO EDITS AUTHORIZED BY THIS AMENDMENT YET
+```
+
+After PR #130 passes the four gates above, correction-only Slice-2 authority resumes
+on the existing sole IA-04 line:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 2 = IMPLEMENTING / CHANGES REQUIRED
+PR #128 correction work = AUTHORIZED
+branch = hardening/s0-ia04
+worktree = the existing sole IA-04 implementation worktree
+```
+
+That authority covers exactly these files:
+
+```text
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+It covers exactly these corrections:
+
+1. Retain the complete frozen server-owned PRE/POST operation evidence required by
+   `claim_reserving` and the unknown-outcome handoff.
+2. Replace unbounded promotion discovery with the governed
+   `effective_promotion_candidate_limit = min(cleanup_limit, q_global_max)`.
+
+No other Slice-2 expansion is authorized. After both corrections, PR #128 requires
+fresh exact-head CI and independent review and remains non-mergeable until both pass.
+Slice 3+ remains `SERIAL-BLOCKED`; IA-05+ remains `NOT AUTHORIZED`. This amendment does
+not approve or merge PR #128. No issue #101 tracker change is claimed by this record.
+
+The previous permission to start Slice 2 is temporarily blocked pending this amendment's
+acceptance gates. Successful post-merge verification restores only the correction
+authority above. The accepted Slice-1 authority and existing two-file Slice-2 scope do
+not otherwise change.
+
+```text
+Slice 3+ = SERIAL-BLOCKED
+IA-05+ = NOT AUTHORIZED
+```
 
 ### PLATFORM
 
@@ -1376,6 +1465,7 @@ S0 `READY` does not itself authorize production implementation. S0 tasks require
 | PR | Title / subject | Belongs to | Status | Bootstrap note |
 | --- | --- | --- | --- | --- |
 | #2 | Memory / GC / runtime methodology | Platform | OPEN against `main` from older `main` | Requires later Platform reconciliation against current `main`; do not review/rebase/retarget/merge from this registry task |
+| #128 | IA-04 Slice-2 Redis coordination | S0 | BLOCKED_AUTHORITY → STOP before PR #130 gates; IMPLEMENTING / CHANGES REQUIRED after all four gates | Head `fe9133ec9bac4a5c0e955468fec23ac3f36479f4`; after the gates, correction authority covers only PRE/POST retention and bounded promotion discovery in the existing two Slice-2 files; fresh CI and independent review remain required before merge |
 
 ### Recently resolved ownership gates and integrations
 
@@ -1474,7 +1564,7 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `43b2927b3fd4689c68bf8ec4f631d8ab0c5c2d8c` at this refresh, canonical main after PR #126; resolve with `git fetch origin && git rev-parse origin/main` before work.
+- `origin/main` = `982b483fab0f337e5697c74c64e1e2a12dac65a3` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work.
 - `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
@@ -1550,7 +1640,10 @@ authority decision because exposing the guard would require a third file,
 After those gates, exclusive prerequisite scope is
 `lib/store/orders/inventory_reservations.ex` and
 `test/store/orders/inventory_reservation_generation_test.exs` only.
-PR #128 may continue its Redis-only Slice 2 independently. It receives no guard work.
+PR #128 remains independent of this generation-guard prerequisite and receives no
+guard work. Its separate Slice-2 correction remains blocked until the IA-04 amendment
+passes independent review, exact-head CI, human merge, and post-merge verification as
+recorded above. Those gates restore authority only for the two listed corrections.
 Later IA-04 slices touching either file must wait for prerequisite S0 merge and
 independent verification, then reconcile the accepted guard before coding.
 No competing write authority is permitted. If later-slice work already started,
