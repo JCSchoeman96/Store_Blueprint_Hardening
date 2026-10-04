@@ -11,7 +11,17 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   Redis Cluster script.
   """
 
-  alias Store.Orders.InventoryAdmission.{Reference, Request}
+  alias Store.Orders.InventoryAdmission.{Operation, Reference, Request}
+
+  alias Store.Orders.InventoryAdmission.Operation.{
+    Deadline,
+    InventoryFacts,
+    Mutation,
+    Post,
+    Pre,
+    ReservationFacts
+  }
+
   alias Store.Support.ID.UUIDv7
   alias Store.Support.RateLimit.RedixClient
 
@@ -24,6 +34,43 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   @shared_fence_target_max 500
   @shared_terminal_retention_ms 86_400_000
   @slice2_record_version "ia04:v1"
+  @operation_evidence_version "s0-operation:v1"
+  @operation_evidence_fields [
+    :operation_evidence_version,
+    :operation_order_id,
+    :mutation_expires_at_us,
+    :mutation_now_us,
+    :pre_reservation_presence,
+    :pre_reservation_id,
+    :pre_reservation_quantity,
+    :pre_reservation_state,
+    :pre_reservation_reservation_key,
+    :pre_reservation_expires_at_us,
+    :pre_reservation_consumed_at_us,
+    :pre_reservation_expired_at_us,
+    :pre_reservation_cancelled_at_us,
+    :pre_reservation_version,
+    :pre_inventory_variant_id,
+    :pre_inventory_stock_on_hand,
+    :pre_inventory_reserved_count,
+    :pre_inventory_allow_oversell,
+    :pre_inventory_version,
+    :post_reservation_presence,
+    :post_reservation_id,
+    :post_reservation_quantity,
+    :post_reservation_state,
+    :post_reservation_reservation_key,
+    :post_reservation_expires_at_us,
+    :post_reservation_consumed_at_us,
+    :post_reservation_expired_at_us,
+    :post_reservation_cancelled_at_us,
+    :post_reservation_version,
+    :post_inventory_variant_id,
+    :post_inventory_stock_on_hand,
+    :post_inventory_reserved_count,
+    :post_inventory_allow_oversell,
+    :post_inventory_version
+  ]
 
   @member_regex ~r/\A[0-9a-f]{64}\z/
   @digest_regex ~r/\A[0-9a-f]{64}\z/
@@ -61,6 +108,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   @allowed_promotion_options [:hmac_key, :scope, :b_total, :cleanup_limit]
   @allowed_slice2_options [:hmac_key, :scope, :b_total]
+  @allowed_release_options @allowed_slice2_options ++ [:cleanup_limit, :q_global_max]
   @allowed_shared_options [:hmac_key, :scope, :metadata_retention_ms, :fence_ttl_ms]
   @reply_field_count 14
 
@@ -1888,6 +1936,48 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local expiry_policy = ARGV[16]
   local recovery_deadline_ms = ARGV[17]
   local descriptor_version = ARGV[18]
+  local recovery_descriptor_digest = ARGV[19]
+  local recovery_fields = {
+    "operation_evidence_version",
+    "operation_order_id",
+    "mutation_expires_at_us",
+    "mutation_now_us",
+    "pre_reservation_presence",
+    "pre_reservation_id",
+    "pre_reservation_quantity",
+    "pre_reservation_state",
+    "pre_reservation_reservation_key",
+    "pre_reservation_expires_at_us",
+    "pre_reservation_consumed_at_us",
+    "pre_reservation_expired_at_us",
+    "pre_reservation_cancelled_at_us",
+    "pre_reservation_version",
+    "pre_inventory_variant_id",
+    "pre_inventory_stock_on_hand",
+    "pre_inventory_reserved_count",
+    "pre_inventory_allow_oversell",
+    "pre_inventory_version",
+    "post_reservation_presence",
+    "post_reservation_id",
+    "post_reservation_quantity",
+    "post_reservation_state",
+    "post_reservation_reservation_key",
+    "post_reservation_expires_at_us",
+    "post_reservation_consumed_at_us",
+    "post_reservation_expired_at_us",
+    "post_reservation_cancelled_at_us",
+    "post_reservation_version",
+    "post_inventory_variant_id",
+    "post_inventory_stock_on_hand",
+    "post_inventory_reserved_count",
+    "post_inventory_allow_oversell",
+    "post_inventory_version"
+  }
+  local recovery_values = {}
+
+  for i, field in ipairs(recovery_fields) do
+    recovery_values[i] = ARGV[19 + i]
+  end
 
   if schema == nil
     or identity == nil
@@ -1908,6 +1998,16 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or recovery_deadline_ms == nil
     or descriptor_version == nil then
     return unavailable()
+  end
+
+  if recovery_descriptor_digest == nil or #recovery_descriptor_digest ~= 64 then
+    return unavailable()
+  end
+
+  for _, value in ipairs(recovery_values) do
+    if value == nil then
+      return unavailable()
+    end
   end
 
   if tonumber(operation_epoch) == nil
@@ -1949,7 +2049,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "recovery_deadline_ms",
     "descriptor_version",
     "terminal_retention_ms",
-    "lease_window_ms"
+    "lease_window_ms",
+    "recovery_descriptor_digest",
+    unpack(recovery_fields)
   )
   local fence = redis.pcall(
     "HMGET",
@@ -1968,7 +2070,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity",
     "expiry_policy",
     "recovery_deadline_ms",
-    "descriptor_version"
+    "descriptor_version",
+    "recovery_descriptor_digest"
   )
   local active = redis.pcall(
     "HMGET",
@@ -1992,7 +2095,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity",
     "expiry_policy",
     "recovery_deadline_ms",
-    "descriptor_version"
+    "descriptor_version",
+    "recovery_descriptor_digest"
   )
   local global_score = redis.pcall("ZSCORE", KEYS[6], member)
   local variant_queue_score = redis.pcall("ZSCORE", KEYS[2], member)
@@ -2049,6 +2153,15 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     and active[18] == expiry_policy
     and active[19] == recovery_deadline_ms
     and active[20] == descriptor_version
+    and metadata[23] == recovery_descriptor_digest
+    and fence[16] == recovery_descriptor_digest
+    and active[21] == recovery_descriptor_digest
+
+  for i, value in ipairs(recovery_values) do
+    if metadata[23 + i] ~= value then
+      descriptor_matches = false
+    end
+  end
 
   local function blank(value)
     return value == false or value == ""
@@ -2069,6 +2182,15 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     and blank(active[18])
     and blank(active[19])
     and blank(active[20])
+    and active[21] == false
+    and metadata[23] == false
+    and fence[16] == false
+
+  for i = 1, #recovery_fields do
+    if metadata[23 + i] ~= false then
+      descriptor_absent = false
+    end
+  end
 
   local active_matches = active[1] == schema
     and active[3] == member
@@ -2138,8 +2260,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity", desired_quantity,
     "expiry_policy", expiry_policy,
     "recovery_deadline_ms", recovery_deadline_ms,
-    "descriptor_version", descriptor_version
+    "descriptor_version", descriptor_version,
+    "recovery_descriptor_digest", recovery_descriptor_digest
   )
+  for i, field in ipairs(recovery_fields) do
+    redis.call("HSET", KEYS[7], field, recovery_values[i])
+  end
   redis.call(
     "HSET",
     KEYS[8],
@@ -2149,7 +2275,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity", desired_quantity,
     "expiry_policy", expiry_policy,
     "recovery_deadline_ms", recovery_deadline_ms,
-    "descriptor_version", descriptor_version
+    "descriptor_version", descriptor_version,
+    "recovery_descriptor_digest", recovery_descriptor_digest
   )
   redis.call(
     "HSET",
@@ -2160,7 +2287,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity", desired_quantity,
     "expiry_policy", expiry_policy,
     "recovery_deadline_ms", recovery_deadline_ms,
-    "descriptor_version", descriptor_version
+    "descriptor_version", descriptor_version,
+    "recovery_descriptor_digest", recovery_descriptor_digest
   )
 
   return {"IA04_CLAIMED", operation_id, operation_epoch}
@@ -2383,6 +2511,48 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local lease_token = ARGV[9]
   local owner_epoch = ARGV[10]
   local recovery_deadline_ms = ARGV[11]
+  local recovery_descriptor_digest = ARGV[12]
+  local recovery_fields = {
+    "operation_evidence_version",
+    "operation_order_id",
+    "mutation_expires_at_us",
+    "mutation_now_us",
+    "pre_reservation_presence",
+    "pre_reservation_id",
+    "pre_reservation_quantity",
+    "pre_reservation_state",
+    "pre_reservation_reservation_key",
+    "pre_reservation_expires_at_us",
+    "pre_reservation_consumed_at_us",
+    "pre_reservation_expired_at_us",
+    "pre_reservation_cancelled_at_us",
+    "pre_reservation_version",
+    "pre_inventory_variant_id",
+    "pre_inventory_stock_on_hand",
+    "pre_inventory_reserved_count",
+    "pre_inventory_allow_oversell",
+    "pre_inventory_version",
+    "post_reservation_presence",
+    "post_reservation_id",
+    "post_reservation_quantity",
+    "post_reservation_state",
+    "post_reservation_reservation_key",
+    "post_reservation_expires_at_us",
+    "post_reservation_consumed_at_us",
+    "post_reservation_expired_at_us",
+    "post_reservation_cancelled_at_us",
+    "post_reservation_version",
+    "post_inventory_variant_id",
+    "post_inventory_stock_on_hand",
+    "post_inventory_reserved_count",
+    "post_inventory_allow_oversell",
+    "post_inventory_version"
+  }
+  local recovery_values = {}
+
+  for i, field in ipairs(recovery_fields) do
+    recovery_values[i] = ARGV[12 + i]
+  end
 
   if schema == nil
     or identity == nil
@@ -2395,9 +2565,17 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or lease_token == nil
     or owner_epoch == nil
     or recovery_deadline_ms == nil
+    or recovery_descriptor_digest == nil
+    or #recovery_descriptor_digest ~= 64
     or tonumber(recovery_deadline_ms) == nil
     or tonumber(recovery_deadline_ms) < 1 then
     return unavailable()
+  end
+
+  for _, value in ipairs(recovery_values) do
+    if value == nil then
+      return unavailable()
+    end
   end
 
   local metadata = redis.pcall(
@@ -2422,7 +2600,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "mutation_kind",
     "desired_quantity",
     "expiry_policy",
-    "descriptor_version"
+    "descriptor_version",
+    "recovery_descriptor_digest",
+    unpack(recovery_fields)
   )
   local fence = redis.pcall(
     "HMGET",
@@ -2441,7 +2621,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity",
     "expiry_policy",
     "recovery_deadline_ms",
-    "descriptor_version"
+    "descriptor_version",
+    "recovery_descriptor_digest"
   )
   local active = redis.pcall(
     "HMGET",
@@ -2465,7 +2646,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     "desired_quantity",
     "expiry_policy",
     "recovery_deadline_ms",
-    "descriptor_version"
+    "descriptor_version",
+    "recovery_descriptor_digest"
   )
   local global_score = redis.pcall("ZSCORE", KEYS[6], member)
 
@@ -2519,6 +2701,18 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     and active[20] == metadata[20]
     and global_score ~= false
     and tonumber(global_score) == tonumber(metadata[10])
+
+  if metadata[21] ~= recovery_descriptor_digest
+    or fence[16] ~= recovery_descriptor_digest
+    or active[21] ~= recovery_descriptor_digest then
+    exact_owner = false
+  end
+
+  for i, value in ipairs(recovery_values) do
+    if metadata[21 + i] ~= value then
+      exact_owner = false
+    end
+  end
 
   if not exact_owner then
     return stale()
@@ -3994,11 +4188,17 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   def release_known_outcome(%Reference{} = reference, owner, outcome, opts)
       when is_list(opts) do
-    with {:ok, options} <- slice2_options(opts),
+    with {:ok, options} <- release_options(opts),
          {:ok, context} <- reference_context(reference, Keyword.take(opts, [:hmac_key, :scope])),
          {:ok, values} <- lease_values(owner, reference, context),
          {:ok, outcome} <- normalize_known_outcome(outcome),
-         {:ok, promotion} <- release_promotion_context(context.keys, values.member),
+         {:ok, promotion} <-
+           release_promotion_context(
+             context.keys,
+             values.member,
+             options.effective_promotion_candidate_limit,
+             options.hmac_key
+           ),
          {:ok, reply} <-
            eval(
              @release_known_outcome_script,
@@ -4031,7 +4231,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       when is_list(opts) do
     with {:ok, context} <- reference_context(reference, opts),
          {:ok, values} <- lease_values(owner, reference, context),
-         {:ok, descriptor_values} <- recovery_descriptor_values(descriptor, values),
+         {:ok, descriptor_values} <-
+           recovery_descriptor_values(descriptor, values, reference, context),
          {:ok, reply} <-
            eval(
              @mark_unknown_script,
@@ -4141,6 +4342,34 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   end
 
+  defp release_options(opts) do
+    with :ok <- validate_keyword_options(opts, @allowed_release_options),
+         :ok <- validate_unique_release_options(opts),
+         {:ok, hmac_key} <- fetch_hmac_key(opts),
+         {:ok, scope} <- fetch_scope(opts),
+         {:ok, b_total} <- fetch_option_or_default(opts, :b_total, 1),
+         {:ok, cleanup_limit} <- fetch_positive_option(opts, :cleanup_limit),
+         {:ok, q_global_max} <- fetch_positive_option(opts, :q_global_max) do
+      {:ok,
+       %{
+         hmac_key: hmac_key,
+         scope: scope,
+         b_total: b_total,
+         cleanup_limit: cleanup_limit,
+         q_global_max: q_global_max,
+         effective_promotion_candidate_limit: min(cleanup_limit, q_global_max)
+       }}
+    end
+  end
+
+  defp validate_unique_release_options(opts) do
+    option_keys = Keyword.keys(opts)
+
+    if length(option_keys) == length(Enum.uniq(option_keys)),
+      do: :ok,
+      else: {:error, :invalid_input}
+  end
+
   defp shared_options(opts) do
     with :ok <- validate_keyword_options(opts, @allowed_shared_options),
          {:ok, hmac_key} <- fetch_hmac_key(opts),
@@ -4168,14 +4397,14 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     mutation = Map.get(descriptor, :mutation)
 
     descriptor
-    |> Map.drop([:__struct__, :order_id, :mutation, :pre, :post, :deadline])
+    |> Map.drop([:__struct__])
     |> maybe_put(
       :variant_id,
       Map.get(descriptor, :variant_id) || get_field(mutation, :variant_id)
     )
     |> maybe_put(
       :mutation_kind,
-      Map.get(descriptor, :mutation_kind) || get_field(mutation, :kind)
+      encode_mutation_kind(Map.get(descriptor, :mutation_kind) || get_field(mutation, :kind))
     )
     |> maybe_put(
       :desired_quantity,
@@ -4183,7 +4412,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     )
     |> maybe_put(
       :expiry_policy,
-      Map.get(descriptor, :expiry_policy) || get_field(mutation, :expiry_policy)
+      encode_expiry_policy(
+        Map.get(descriptor, :expiry_policy) || get_field(mutation, :expiry_policy)
+      )
     )
     |> maybe_put(
       :db_deadline_ms,
@@ -4219,10 +4450,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     with true <- is_map(descriptor),
          :ok <- validate_descriptor_keys(descriptor),
          {:ok, values} <- descriptor_values(descriptor),
-         :ok <- validate_descriptor_identity(values, reference, context) do
-      {:ok, values}
+         :ok <- validate_descriptor_identity(values, reference, context),
+         {:ok, evidence} <- operation_evidence_values(descriptor, values) do
+      {:ok, Map.merge(values, evidence)}
     else
-      _ -> {:error, :invalid_input}
+      _ ->
+        {:error, :invalid_input}
     end
   end
 
@@ -4254,6 +4487,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   end
 
   defp validate_descriptor_values(descriptor) do
+    descriptor_version = Map.get(descriptor, :descriptor_version, @slice2_record_version)
+
     with :ok <- validate_member(Map.fetch!(descriptor, :member)),
          {:ok, variant_hex} <- normalize_variant_key(Map.fetch!(descriptor, :variant_id)),
          :ok <- validate_digest(Map.fetch!(descriptor, :identity_digest)),
@@ -4275,6 +4510,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          :ok <- validate_non_negative_integer(Map.fetch!(descriptor, :desired_quantity)),
          :ok <- validate_descriptor_text(Map.fetch!(descriptor, :expiry_policy)),
          :ok <- validate_non_negative_integer(Map.fetch!(descriptor, :recovery_deadline_ms)),
+         true <- descriptor_version == @slice2_record_version,
          true <-
            Map.fetch!(descriptor, :recovery_deadline_ms) >=
              Map.fetch!(descriptor, :lease_deadline_ms) do
@@ -4297,7 +4533,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          desired_quantity: Map.fetch!(descriptor, :desired_quantity),
          expiry_policy: Map.fetch!(descriptor, :expiry_policy),
          recovery_deadline_ms: Map.fetch!(descriptor, :recovery_deadline_ms),
-         descriptor_version: Map.get(descriptor, :descriptor_version, @slice2_record_version)
+         descriptor_version: descriptor_version
        }}
     else
       _ -> {:error, :invalid_input}
@@ -4322,13 +4558,435 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       :desired_quantity,
       :expiry_policy,
       :recovery_deadline_ms,
-      :descriptor_version
+      :descriptor_version,
+      :order_id,
+      :mutation,
+      :pre,
+      :post,
+      :deadline
     ]
 
     if Enum.all?(Map.keys(descriptor), &(&1 in allowed)), do: :ok, else: {:error, :invalid_input}
   end
 
   defp validate_descriptor_keys(_descriptor), do: {:error, :invalid_input}
+
+  defp operation_evidence_values(descriptor, values) do
+    with {:ok, operation} <- typed_operation(descriptor),
+         :ok <- validate_operation_descriptor(operation, values),
+         {:ok, evidence_fields} <- encode_operation_evidence(operation),
+         {:ok, digest} <- operation_evidence_digest(operation, values, evidence_fields) do
+      {:ok,
+       %{
+         operation: operation,
+         operation_evidence_fields: evidence_fields,
+         recovery_descriptor_digest: digest
+       }}
+    else
+      _ ->
+        {:error, :invalid_input}
+    end
+  rescue
+    _error ->
+      {:error, :invalid_input}
+  end
+
+  defp typed_operation(descriptor) do
+    required = [
+      :order_id,
+      :variant_id,
+      :reservation_key,
+      :identity_digest,
+      :operation_id,
+      :operation_epoch,
+      :request_fingerprint,
+      :mutation,
+      :pre,
+      :post,
+      :deadline
+    ]
+
+    with true <- Enum.all?(required, &Map.has_key?(descriptor, &1)),
+         {:ok, mutation} <- typed_mutation(Map.fetch!(descriptor, :mutation)),
+         {:ok, pre} <- typed_pre(Map.fetch!(descriptor, :pre)),
+         {:ok, post} <- typed_post(Map.fetch!(descriptor, :post)),
+         {:ok, deadline} <- typed_deadline(Map.fetch!(descriptor, :deadline)) do
+      operation = %Operation{
+        order_id: Map.fetch!(descriptor, :order_id),
+        variant_id: Map.fetch!(descriptor, :variant_id),
+        reservation_key: Map.fetch!(descriptor, :reservation_key),
+        identity_digest: Map.fetch!(descriptor, :identity_digest),
+        operation_id: Map.fetch!(descriptor, :operation_id),
+        operation_epoch: Map.fetch!(descriptor, :operation_epoch),
+        request_fingerprint: Map.fetch!(descriptor, :request_fingerprint),
+        mutation: mutation,
+        pre: pre,
+        post: post,
+        deadline: deadline
+      }
+
+      case Operation.validate(operation) do
+        :ok -> {:ok, operation}
+        {:error, _reason} -> {:error, :invalid_input}
+      end
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp typed_mutation(value) do
+    with {:ok, fields} <-
+           closed_component_map(value, Mutation, [
+             :variant_id,
+             :kind,
+             :desired_quantity,
+             :expiry_policy,
+             :expires_at,
+             :now
+           ]),
+         true <-
+           Enum.all?(
+             [:variant_id, :kind, :desired_quantity, :expiry_policy, :expires_at, :now],
+             &Map.has_key?(fields, &1)
+           ) do
+      mutation = struct(Mutation, fields)
+      if Mutation.validate(mutation) == :ok, do: {:ok, mutation}, else: {:error, :invalid_input}
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp typed_pre(value) do
+    with {:ok, fields} <- closed_component_map(value, Pre, [:reservation, :inventory]),
+         true <- Enum.all?([:reservation, :inventory], &Map.has_key?(fields, &1)),
+         {:ok, reservation} <- typed_reservation(Map.fetch!(fields, :reservation), :pre),
+         {:ok, inventory} <- typed_inventory(Map.fetch!(fields, :inventory)) do
+      pre = %Pre{reservation: reservation, inventory: inventory}
+      if Pre.validate(pre) == :ok, do: {:ok, pre}, else: {:error, :invalid_input}
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp typed_post(value) do
+    with {:ok, fields} <- closed_component_map(value, Post, [:reservation, :inventory]),
+         true <- Enum.all?([:reservation, :inventory], &Map.has_key?(fields, &1)),
+         {:ok, reservation} <- typed_reservation(Map.fetch!(fields, :reservation), :post),
+         {:ok, inventory} <- typed_inventory(Map.fetch!(fields, :inventory)) do
+      post = %Post{reservation: reservation, inventory: inventory}
+      if Post.validate(post) == :ok, do: {:ok, post}, else: {:error, :invalid_input}
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp typed_deadline(value) do
+    with {:ok, fields} <-
+           closed_component_map(value, Deadline, [
+             :db_deadline,
+             :lease_deadline,
+             :recovery_deadline,
+             :safety_margin
+           ]),
+         true <-
+           Enum.all?(
+             [:db_deadline, :lease_deadline, :recovery_deadline, :safety_margin],
+             &Map.has_key?(fields, &1)
+           ),
+         {:ok, deadline} <- Deadline.new(fields) do
+      {:ok, deadline}
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp typed_reservation(:absent, _kind), do: {:ok, :absent}
+
+  defp typed_reservation(value, kind) do
+    with {:ok, fields} <-
+           closed_component_map(value, ReservationFacts, [
+             :id,
+             :quantity,
+             :state,
+             :reservation_key,
+             :expires_at,
+             :consumed_at,
+             :expired_at,
+             :cancelled_at,
+             :version
+           ]),
+         true <-
+           Enum.all?(
+             [
+               :id,
+               :quantity,
+               :state,
+               :reservation_key,
+               :expires_at,
+               :consumed_at,
+               :expired_at,
+               :cancelled_at,
+               :version
+             ],
+             &Map.has_key?(fields, &1)
+           ) do
+      reservation = struct(ReservationFacts, fields)
+
+      validation =
+        if kind == :pre,
+          do: ReservationFacts.validate_existing(reservation),
+          else: ReservationFacts.validate(reservation)
+
+      if validation == :ok, do: {:ok, reservation}, else: {:error, :invalid_input}
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp typed_inventory(value) do
+    with {:ok, fields} <-
+           closed_component_map(value, InventoryFacts, [
+             :variant_id,
+             :stock_on_hand,
+             :reserved_count,
+             :allow_oversell,
+             :version
+           ]),
+         true <-
+           Enum.all?(
+             [:variant_id, :stock_on_hand, :reserved_count, :allow_oversell, :version],
+             &Map.has_key?(fields, &1)
+           ) do
+      inventory = struct(InventoryFacts, fields)
+
+      if InventoryFacts.validate(inventory) == :ok,
+        do: {:ok, inventory},
+        else: {:error, :invalid_input}
+    else
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  defp closed_component_map(%{__struct__: module} = value, module, allowed),
+    do: closed_component_map(Map.from_struct(value), module, allowed)
+
+  defp closed_component_map(value, _module, allowed) when is_map(value) do
+    if MapSet.new(Map.keys(value)) == MapSet.new(allowed) do
+      {:ok, value}
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  defp closed_component_map(_value, _module, _allowed), do: {:error, :invalid_input}
+
+  defp validate_operation_descriptor(operation, values) do
+    with :ok <- validate_operation_identity(operation, values),
+         :ok <- validate_operation_mutation(operation, values) do
+      validate_operation_deadlines(operation.deadline, values)
+    end
+  end
+
+  defp validate_operation_identity(operation, values) do
+    if operation.variant_id == values.variant_id and
+         operation.reservation_key == values.reservation_key and
+         operation.identity_digest == values.identity_digest and
+         operation.request_fingerprint == values.request_fingerprint and
+         operation.operation_id == values.operation_id and
+         operation.operation_epoch == values.operation_epoch do
+      :ok
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  defp validate_operation_mutation(operation, values) do
+    expected_mutation_kind = encode_mutation_kind(operation.mutation.kind)
+    expected_expiry_policy = encode_expiry_policy(operation.mutation.expiry_policy)
+
+    if operation.mutation.variant_id == operation.variant_id and
+         values.mutation_kind == expected_mutation_kind and
+         operation.mutation.desired_quantity == values.desired_quantity and
+         expected_expiry_policy == values.expiry_policy do
+      :ok
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  defp validate_operation_deadlines(deadline, values) do
+    if deadline.db_deadline == values.db_deadline_ms and
+         deadline.lease_deadline == values.lease_deadline_ms and
+         deadline.safety_margin == values.safety_margin_ms and
+         deadline.recovery_deadline == values.recovery_deadline_ms do
+      :ok
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  defp encode_operation_evidence(operation) do
+    fields = %{
+      operation_evidence_version: @operation_evidence_version,
+      operation_order_id: operation.order_id,
+      mutation_expires_at_us: encode_optional_datetime(operation.mutation.expires_at),
+      mutation_now_us: encode_optional_datetime(operation.mutation.now)
+    }
+
+    fields =
+      fields
+      |> Map.merge(reservation_evidence(:pre, operation.pre.reservation))
+      |> Map.merge(inventory_evidence(:pre, operation.pre.inventory))
+      |> Map.merge(reservation_evidence(:post, operation.post.reservation))
+      |> Map.merge(inventory_evidence(:post, operation.post.inventory))
+
+    encoded = Enum.map(@operation_evidence_fields, &{&1, Map.fetch!(fields, &1)})
+    {:ok, encoded}
+  end
+
+  defp reservation_evidence(:pre, :absent) do
+    %{
+      pre_reservation_presence: "absent",
+      pre_reservation_id: "",
+      pre_reservation_quantity: "",
+      pre_reservation_state: "",
+      pre_reservation_reservation_key: "",
+      pre_reservation_expires_at_us: "",
+      pre_reservation_consumed_at_us: "",
+      pre_reservation_expired_at_us: "",
+      pre_reservation_cancelled_at_us: "",
+      pre_reservation_version: ""
+    }
+  end
+
+  defp reservation_evidence(:post, :absent) do
+    %{
+      post_reservation_presence: "absent",
+      post_reservation_id: "",
+      post_reservation_quantity: "",
+      post_reservation_state: "",
+      post_reservation_reservation_key: "",
+      post_reservation_expires_at_us: "",
+      post_reservation_consumed_at_us: "",
+      post_reservation_expired_at_us: "",
+      post_reservation_cancelled_at_us: "",
+      post_reservation_version: ""
+    }
+  end
+
+  defp reservation_evidence(:pre, %ReservationFacts{} = reservation) do
+    %{
+      pre_reservation_presence: "present",
+      pre_reservation_id: encode_optional_uuid(reservation.id),
+      pre_reservation_quantity: Integer.to_string(reservation.quantity),
+      pre_reservation_state: Atom.to_string(reservation.state),
+      pre_reservation_reservation_key: reservation.reservation_key,
+      pre_reservation_expires_at_us: encode_datetime(reservation.expires_at),
+      pre_reservation_consumed_at_us: encode_optional_datetime(reservation.consumed_at),
+      pre_reservation_expired_at_us: encode_optional_datetime(reservation.expired_at),
+      pre_reservation_cancelled_at_us: encode_optional_datetime(reservation.cancelled_at),
+      pre_reservation_version: Integer.to_string(reservation.version)
+    }
+  end
+
+  defp reservation_evidence(:post, %ReservationFacts{} = reservation) do
+    %{
+      post_reservation_presence: "present",
+      post_reservation_id: encode_optional_uuid(reservation.id),
+      post_reservation_quantity: Integer.to_string(reservation.quantity),
+      post_reservation_state: Atom.to_string(reservation.state),
+      post_reservation_reservation_key: reservation.reservation_key,
+      post_reservation_expires_at_us: encode_datetime(reservation.expires_at),
+      post_reservation_consumed_at_us: encode_optional_datetime(reservation.consumed_at),
+      post_reservation_expired_at_us: encode_optional_datetime(reservation.expired_at),
+      post_reservation_cancelled_at_us: encode_optional_datetime(reservation.cancelled_at),
+      post_reservation_version: Integer.to_string(reservation.version)
+    }
+  end
+
+  defp inventory_evidence(:pre, %InventoryFacts{} = inventory) do
+    %{
+      pre_inventory_variant_id: inventory.variant_id,
+      pre_inventory_stock_on_hand: Integer.to_string(inventory.stock_on_hand),
+      pre_inventory_reserved_count: Integer.to_string(inventory.reserved_count),
+      pre_inventory_allow_oversell: Atom.to_string(inventory.allow_oversell),
+      pre_inventory_version: Integer.to_string(inventory.version)
+    }
+  end
+
+  defp inventory_evidence(:post, %InventoryFacts{} = inventory) do
+    %{
+      post_inventory_variant_id: inventory.variant_id,
+      post_inventory_stock_on_hand: Integer.to_string(inventory.stock_on_hand),
+      post_inventory_reserved_count: Integer.to_string(inventory.reserved_count),
+      post_inventory_allow_oversell: Atom.to_string(inventory.allow_oversell),
+      post_inventory_version: Integer.to_string(inventory.version)
+    }
+  end
+
+  defp encode_optional_datetime(nil), do: "nil"
+  defp encode_optional_datetime(%DateTime{} = value), do: encode_datetime(value)
+
+  defp encode_datetime(%DateTime{} = value) do
+    "us:" <> Integer.to_string(DateTime.to_unix(value, :microsecond))
+  end
+
+  defp encode_optional_uuid(nil), do: "nil"
+  defp encode_optional_uuid(value), do: value
+
+  defp operation_evidence_digest(operation, values, evidence_fields) do
+    scalar_values = [
+      values.member,
+      values.variant_id,
+      values.reservation_key,
+      values.identity_digest,
+      values.request_fingerprint,
+      values.operation_id,
+      Integer.to_string(values.operation_epoch),
+      values.lease_token,
+      Integer.to_string(values.owner_epoch),
+      Integer.to_string(values.db_deadline_ms),
+      Integer.to_string(values.lease_deadline_ms),
+      Integer.to_string(values.safety_margin_ms),
+      values.mutation_kind,
+      Integer.to_string(values.desired_quantity),
+      values.expiry_policy,
+      Integer.to_string(values.recovery_deadline_ms),
+      values.descriptor_version,
+      operation.order_id
+    ]
+
+    evidence_values = Enum.map(evidence_fields, fn {_field, value} -> value end)
+    digest_input = Enum.map(scalar_values ++ evidence_values, &length_prefix/1)
+    digest = :crypto.hash(:sha256, digest_input) |> Base.encode16(case: :lower)
+    {:ok, digest}
+  rescue
+    _error -> {:error, :invalid_input}
+  end
+
+  defp length_prefix(value) when is_binary(value),
+    do: <<byte_size(value)::unsigned-big-32, value::binary>>
+
+  defp encode_mutation_kind(kind) when kind in [:reserve, :adjust], do: Atom.to_string(kind)
+  defp encode_mutation_kind(kind) when kind in ["reserve", "adjust"], do: kind
+  defp encode_mutation_kind(_kind), do: nil
+
+  defp encode_expiry_policy(:default), do: "default"
+
+  defp encode_expiry_policy({:ttl_seconds, seconds})
+       when is_integer(seconds) and seconds >= 0,
+       do: "ttl_seconds:" <> Integer.to_string(seconds)
+
+  defp encode_expiry_policy("default"), do: "default"
+
+  defp encode_expiry_policy("ttl_seconds:" <> seconds) do
+    case Integer.parse(seconds) do
+      {value, ""} when value >= 0 -> "ttl_seconds:" <> Integer.to_string(value)
+      _ -> nil
+    end
+  end
+
+  defp encode_expiry_policy(_policy), do: nil
 
   defp validate_descriptor_identity(values, reference, context) do
     if values.member == context.member and
@@ -4383,16 +5041,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     }
   end
 
-  defp recovery_descriptor_values(descriptor, lease_values) do
-    descriptor = descriptor_map(descriptor)
-
-    recovery_deadline_ms =
-      if is_map(descriptor), do: Map.get(descriptor, :recovery_deadline_ms), else: nil
-
-    if is_integer(recovery_deadline_ms) and recovery_deadline_ms > 0 do
-      {:ok, Map.put(lease_values, :recovery_deadline_ms, recovery_deadline_ms)}
+  defp recovery_descriptor_values(descriptor, lease_values, reference, context) do
+    with {:ok, descriptor_values} <- claim_descriptor_values(descriptor, reference, context),
+         true <- descriptor_values.recovery_deadline_ms > 0 do
+      {:ok, Map.merge(descriptor_values, Map.take(lease_values, [:lease_token, :owner_epoch]))}
     else
-      {:error, :invalid_input}
+      _ -> {:error, :invalid_input}
     end
   end
 
@@ -4415,8 +5069,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       Integer.to_string(values.desired_quantity),
       values.expiry_policy,
       Integer.to_string(values.recovery_deadline_ms),
-      values.descriptor_version
-    ]
+      values.descriptor_version,
+      values.recovery_descriptor_digest
+    ] ++ Enum.map(values.operation_evidence_fields, fn {_field, value} -> value end)
   end
 
   defp lease_arguments(reference, _context, values) do
@@ -4446,8 +5101,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       Integer.to_string(values.operation_epoch),
       values.lease_token,
       Integer.to_string(values.owner_epoch),
-      Integer.to_string(values.recovery_deadline_ms)
-    ]
+      Integer.to_string(values.recovery_deadline_ms),
+      values.recovery_descriptor_digest
+    ] ++ Enum.map(values.operation_evidence_fields, fn {_field, value} -> value end)
   end
 
   defp normalize_known_outcome(:completed), do: {:ok, "COMPLETED"}
@@ -4456,166 +5112,331 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   defp normalize_known_outcome("REJECTED"), do: {:ok, "REJECTED"}
   defp normalize_known_outcome(_outcome), do: {:error, :invalid_input}
 
-  defp release_promotion_context(keys, releasing_member) do
+  defp release_promotion_context(keys, releasing_member, candidate_limit, hmac_key) do
     with :ok <- validate_member(releasing_member),
+         :ok <- validate_positive_integer(candidate_limit),
          {:ok, candidate_members} <-
-           redis_command(["ZRANGE", keys.global_queue_dispatch, "0", "-1"]),
-         true <- is_list(candidate_members),
-         {:ok, now_ms} <- redis_server_time() do
-      discover_release_candidate(keys, candidate_members, releasing_member, now_ms)
+           redis_command([
+             "ZRANGE",
+             keys.global_queue_dispatch,
+             "0",
+             Integer.to_string(candidate_limit - 1)
+           ]),
+         true <- is_list(candidate_members) and length(candidate_members) <= candidate_limit do
+      candidate_members = Enum.reject(candidate_members, &(&1 == releasing_member))
+
+      if candidate_members == [] do
+        {:ok, %{keys: [], present: false}}
+      else
+        discover_release_candidate_batch(keys, candidate_members, releasing_member, hmac_key)
+      end
     else
       _ -> {:error, :unavailable}
     end
   end
 
-  defp discover_release_candidate(_keys, [], _releasing_member, _now_ms),
-    do: {:ok, %{keys: [], present: false}}
+  defp discover_release_candidate_batch(keys, members, releasing_member, hmac_key) do
+    metadata_commands =
+      Enum.map(members, fn member ->
+        [
+          "HMGET",
+          request_meta_key(keys, member),
+          "schema_version",
+          "state",
+          "identity_digest",
+          "variant_hex",
+          "request_fingerprint",
+          "operation_id",
+          "operation_epoch",
+          "sequence",
+          "queue_deadline_ms",
+          "reservation_key"
+        ]
+      end)
 
-  defp discover_release_candidate(keys, [member | rest], releasing_member, now_ms) do
-    if member == releasing_member do
-      discover_release_candidate(keys, rest, releasing_member, now_ms)
-    else
-      case promotion_candidate(keys, member, releasing_member, now_ms) do
-        {:ok, :blocked} ->
-          discover_release_candidate(keys, rest, releasing_member, now_ms)
+    with {:ok, [time_reply | metadata_replies]} <-
+           redis_pipeline([["TIME"] | metadata_commands]),
+         true <- length(metadata_replies) == length(members),
+         {:ok, now_ms} <- decode_pipeline_time(time_reply),
+         {:ok, seeds} <-
+           build_release_candidate_seeds(keys, members, metadata_replies, hmac_key),
+         {:ok, candidate_replies} <- redis_pipeline(release_candidate_commands(keys, seeds)),
+         true <- length(candidate_replies) == length(seeds) * 8 do
+      groups = Enum.zip(Enum.chunk_every(candidate_replies, 8), seeds)
 
-        {:ok, candidate} ->
-          {:ok, candidate}
-
-        {:error, :unavailable} = error ->
-          error
+      with {:ok, groups} <- attach_release_active_scores(keys, groups) do
+        discover_release_candidate_results(groups, keys, releasing_member, now_ms)
       end
+    else
+      _ -> {:error, :unavailable}
     end
   end
 
-  defp promotion_candidate(keys, candidate_member, releasing_member, now_ms) do
-    candidate_meta_key = request_meta_key(keys, candidate_member)
+  defp attach_release_active_scores(keys, groups) do
+    active_members =
+      groups
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {{replies, seed}, index}, {:ok, acc} ->
+        active_length = Enum.at(replies, 5)
+        active = Enum.at(replies, 6)
 
-    with :ok <- validate_member(candidate_member),
-         {:ok,
-          [
-            candidate_schema,
-            "QUEUED",
-            candidate_identity,
-            candidate_variant_hex,
-            candidate_fingerprint,
-            candidate_operation_id,
-            candidate_operation_epoch,
-            candidate_sequence,
-            candidate_queue_deadline,
-            candidate_reservation_key
-          ]} <-
-           redis_command([
-             "HMGET",
-             candidate_meta_key,
-             "schema_version",
-             "state",
-             "identity_digest",
-             "variant_hex",
-             "request_fingerprint",
-             "operation_id",
-             "operation_epoch",
-             "sequence",
-             "queue_deadline_ms",
-             "reservation_key"
-           ]),
-         true <- candidate_schema in [@record_version, @renewal_record_version],
-         :ok <- validate_digest(candidate_identity),
-         :ok <- validate_variant_hex(candidate_variant_hex),
-         :ok <- validate_digest(candidate_fingerprint),
-         :ok <- validate_operation_id(candidate_operation_id),
-         {:ok, candidate_epoch} <- parse_positive_integer(candidate_operation_epoch),
-         {:ok, sequence} <- parse_positive_integer(candidate_sequence),
-         {:ok, queue_deadline_ms} <- parse_positive_integer(candidate_queue_deadline),
-         true <- is_binary(candidate_reservation_key) and byte_size(candidate_reservation_key) > 0,
-         {:ok, candidate_variant_id} <- decode_variant_hex(candidate_variant_hex),
+        case release_candidate_active_member(active_length, active) do
+          {:ok, nil} ->
+            {:cont, {:ok, acc}}
+
+          {:ok, member} ->
+            {:cont, {:ok, [{index, member, seed.member} | acc]}}
+
+          {:error, :unavailable} ->
+            {:halt, {:error, :unavailable}}
+        end
+      end)
+
+    with {:ok, active_members} <- active_members,
+         active_members <- Enum.reverse(active_members),
+         commands <-
+           Enum.map(active_members, fn {_index, member, _candidate} ->
+             ["ZSCORE", keys.global_active_expiry, member]
+           end),
+         {:ok, active_scores} <- redis_pipeline(commands),
+         true <- length(active_scores) == length(active_members) do
+      score_by_candidate =
+        Enum.zip(active_members, active_scores)
+        |> Map.new(fn {{index, _active_member, candidate_member}, score} ->
+          {{index, candidate_member}, score}
+        end)
+
+      {:ok,
+       groups
+       |> Enum.with_index()
+       |> Enum.map(fn {{replies, seed}, index} ->
+         active_length = Enum.at(replies, 5)
+
+         holder_score =
+           if active_length == 0,
+             do: nil,
+             else: Map.get(score_by_candidate, {index, seed.member})
+
+         {replies ++ [holder_score], seed}
+       end)}
+    else
+      _ -> {:error, :unavailable}
+    end
+  end
+
+  defp release_candidate_active_member(0, _active), do: {:ok, nil}
+
+  defp release_candidate_active_member(length, [_state, member | _rest])
+       when is_integer(length) and length > 0 do
+    case validate_member(member) do
+      :ok -> {:ok, member}
+      {:error, :invalid_input} -> {:error, :unavailable}
+    end
+  end
+
+  defp release_candidate_active_member(_length, _active), do: {:error, :unavailable}
+
+  defp build_release_candidate_seeds(keys, members, metadata_replies, hmac_key) do
+    members
+    |> Enum.zip(metadata_replies)
+    |> Enum.reduce_while({:ok, []}, fn {member, metadata}, {:ok, seeds} ->
+      case release_candidate_seed(keys, member, metadata, hmac_key) do
+        {:ok, seed} -> {:cont, {:ok, [seed | seeds]}}
+        {:error, :unavailable} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, seeds} -> {:ok, Enum.reverse(seeds)}
+      error -> error
+    end
+  end
+
+  defp release_candidate_seed(keys, member, metadata, hmac_key) do
+    with :ok <- validate_member(member),
+         [
+           schema,
+           "QUEUED",
+           identity,
+           variant_hex,
+           fingerprint,
+           operation_id,
+           operation_epoch,
+           sequence_value,
+           queue_deadline_value,
+           reservation_key
+         ] <- metadata,
+         true <- schema in [@record_version, @renewal_record_version],
+         :ok <- validate_digest(identity),
+         :ok <- validate_variant_hex(variant_hex),
+         :ok <- validate_digest(fingerprint),
+         :ok <- validate_operation_id(operation_id),
+         {:ok, operation_epoch} <- parse_positive_integer(operation_epoch),
+         {:ok, sequence} <- parse_positive_integer(sequence_value),
+         {:ok, queue_deadline_ms} <- parse_positive_integer(queue_deadline_value),
+         true <- is_binary(reservation_key) and byte_size(reservation_key) > 0,
+         {:ok, variant_id} <- decode_variant_hex(variant_hex),
+         {:ok, {_kind, identities}} <- Request.classify_reservation_key(reservation_key),
+         {:ok, expected_identity} <- Request.identity_digest_for_reservation_key(reservation_key),
+         true <- identities.variant_id == variant_id and expected_identity == identity,
+         true <- member == admission_member(identity, hmac_key),
+         true <- schema == schema_for_reservation_key(reservation_key),
          {:ok, candidate_keys} <-
-           key_set(candidate_variant_id, candidate_member, candidate_identity,
-             scope: scope_from_keys(keys)
-           ),
-         {:ok,
-          [
-            fence_schema,
-            "QUEUED",
-            fence_identity,
-            fence_variant_hex,
-            ^candidate_member,
-            fence_fingerprint,
-            fence_operation_id,
-            fence_operation_epoch,
-            fence_reservation_key
-          ]} <-
-           redis_command([
-             "HMGET",
-             candidate_keys.reservation_fence,
-             "schema_version",
-             "state",
-             "identity_digest",
-             "variant_hex",
-             "member",
-             "request_fingerprint",
-             "operation_id",
-             "operation_epoch",
-             "reservation_key"
-           ]),
-         true <- fence_schema == candidate_schema,
-         true <- fence_identity == candidate_identity,
-         true <- fence_variant_hex == candidate_variant_hex,
-         true <- fence_fingerprint == candidate_fingerprint,
-         true <- fence_operation_id == candidate_operation_id,
-         true <- fence_operation_epoch == candidate_operation_epoch,
-         true <- fence_reservation_key == candidate_reservation_key,
-         {:ok, queue_score} <-
-           redis_command(["ZSCORE", candidate_keys.variant_queue_order, candidate_member]),
-         {:ok, dispatch_score} <-
-           redis_command(["ZSCORE", keys.global_queue_dispatch, candidate_member]),
-         {:ok, expiry_score} <-
-           redis_command(["ZSCORE", keys.global_queue_expiry, candidate_member]),
-         {:ok, queue_head} <-
-           redis_command(["ZRANGE", candidate_keys.variant_queue_order, "0", "0"]),
-         {:ok, active_length} <- redis_command(["HLEN", candidate_keys.variant_active]),
-         {:ok, active} <-
-           redis_command([
-             "HMGET",
-             candidate_keys.variant_active,
-             "state",
-             "member",
-             "variant_hex",
-             "identity_digest",
-             "request_fingerprint",
-             "operation_id",
-             "operation_epoch"
-           ]),
-         {:ok, global_active_score} <-
-           redis_command(["ZSCORE", keys.global_active_expiry, candidate_member]) do
-      candidate = %{
-        keys: keys,
-        candidate_keys: candidate_keys,
-        meta_key: candidate_meta_key,
-        member: candidate_member,
+           key_set(variant_id, member, identity, scope: scope_from_keys(keys)) do
+      {:ok,
+       %{
+         keys: keys,
+         candidate_keys: candidate_keys,
+         meta_key: request_meta_key(keys, member),
+         member: member,
+         releasing_member: nil,
+         identity_digest: identity,
+         variant_hex: variant_hex,
+         request_fingerprint: fingerprint,
+         operation_id: operation_id,
+         operation_epoch: operation_epoch,
+         reservation_key: reservation_key,
+         sequence: sequence,
+         queue_deadline_ms: queue_deadline_ms
+       }}
+    else
+      _ -> {:error, :unavailable}
+    end
+  end
+
+  defp schema_for_reservation_key(reservation_key) do
+    case Request.classify_reservation_key(reservation_key) do
+      {:ok, {:renewal_generation, _identities}} -> @renewal_record_version
+      {:ok, {:generic, _identities}} -> @record_version
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp release_candidate_commands(keys, seeds) do
+    Enum.flat_map(seeds, fn seed ->
+      candidate_keys = seed.candidate_keys
+      member = seed.member
+
+      [
+        [
+          "HMGET",
+          candidate_keys.reservation_fence,
+          "schema_version",
+          "state",
+          "identity_digest",
+          "variant_hex",
+          "member",
+          "request_fingerprint",
+          "operation_id",
+          "operation_epoch",
+          "reservation_key"
+        ],
+        ["ZSCORE", candidate_keys.variant_queue_order, member],
+        ["ZSCORE", keys.global_queue_dispatch, member],
+        ["ZSCORE", keys.global_queue_expiry, member],
+        ["ZRANGE", candidate_keys.variant_queue_order, "0", "0"],
+        ["HLEN", candidate_keys.variant_active],
+        [
+          "HMGET",
+          candidate_keys.variant_active,
+          "state",
+          "member",
+          "variant_hex",
+          "identity_digest",
+          "request_fingerprint",
+          "operation_id",
+          "operation_epoch",
+          "lease_deadline_ms"
+        ],
+        ["ZSCORE", keys.global_active_expiry, member]
+      ]
+    end)
+  end
+
+  defp discover_release_candidate_results([], _keys, _releasing_member, _now_ms),
+    do: {:ok, %{keys: [], present: false}}
+
+  defp discover_release_candidate_results(
+         [{replies, seed} | rest],
+         keys,
+         releasing_member,
+         now_ms
+       ) do
+    case candidate_from_replies(seed, replies, releasing_member) do
+      {:error, :unavailable} = error ->
+        error
+
+      candidate ->
+        case validate_release_candidate(candidate, now_ms) do
+          {:ok, :blocked} ->
+            discover_release_candidate_results(rest, keys, releasing_member, now_ms)
+
+          {:ok, candidate} ->
+            {:ok, candidate}
+
+          {:error, :unavailable} = error ->
+            error
+        end
+    end
+  end
+
+  defp candidate_from_replies(
+         seed,
+         [
+           fence,
+           queue_score,
+           dispatch_score,
+           expiry_score,
+           queue_head,
+           active_length,
+           active,
+           global_active_score,
+           holder_active_score
+         ],
+         releasing_member
+       ) do
+    [
+      fence_schema,
+      "QUEUED",
+      fence_identity,
+      fence_variant_hex,
+      fence_member,
+      fence_fingerprint,
+      fence_operation_id,
+      fence_operation_epoch,
+      fence_reservation_key
+    ] = fence
+
+    if fence_schema == schema_for_reservation_key(seed.reservation_key) and
+         fence_identity == seed.identity_digest and fence_variant_hex == seed.variant_hex and
+         fence_member == seed.member and fence_fingerprint == seed.request_fingerprint and
+         fence_operation_id == seed.operation_id and
+         fence_operation_epoch == Integer.to_string(seed.operation_epoch) and
+         fence_reservation_key == seed.reservation_key do
+      Map.merge(seed, %{
         releasing_member: releasing_member,
-        identity_digest: candidate_identity,
-        variant_hex: candidate_variant_hex,
-        request_fingerprint: candidate_fingerprint,
-        operation_id: candidate_operation_id,
-        operation_epoch: candidate_epoch,
-        reservation_key: candidate_reservation_key,
-        sequence: sequence,
-        queue_deadline_ms: queue_deadline_ms,
         queue_score: queue_score,
         dispatch_score: dispatch_score,
         expiry_score: expiry_score,
         queue_head: queue_head,
         active_length: active_length,
         active: active,
-        global_active_score: global_active_score
-      }
-
-      validate_release_candidate(candidate, now_ms)
+        global_active_score: global_active_score,
+        holder_active_score: holder_active_score
+      })
     else
-      _ -> {:error, :unavailable}
+      {:error, :unavailable}
     end
+  rescue
+    _error -> {:error, :unavailable}
   end
+
+  defp candidate_from_replies(_seed, _replies, _releasing_member),
+    do: {:error, :unavailable}
+
+  defp decode_pipeline_time([seconds, microseconds]),
+    do: parse_server_time(seconds, microseconds)
+
+  defp decode_pipeline_time(_reply), do: {:error, :unavailable}
 
   defp validate_release_candidate(candidate, now_ms) do
     cond do
@@ -4625,11 +5446,29 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       candidate.global_active_score != nil ->
         {:error, :unavailable}
 
-      not release_candidate_head_and_live?(candidate, now_ms) ->
+      true ->
+        validate_release_candidate_owner(candidate, now_ms)
+    end
+  end
+
+  defp validate_release_candidate_owner(candidate, now_ms) do
+    case release_candidate_active_state(candidate) do
+      :invalid ->
+        {:error, :unavailable}
+
+      :busy ->
         {:ok, :blocked}
 
-      true ->
-        validate_release_candidate_active(candidate)
+      active_state when active_state in [:free, :releasing] ->
+        select_release_candidate(candidate, now_ms)
+    end
+  end
+
+  defp select_release_candidate(candidate, now_ms) do
+    if release_candidate_head_and_live?(candidate, now_ms) do
+      {:ok, release_promotion(candidate)}
+    else
+      {:ok, :blocked}
     end
   end
 
@@ -4645,33 +5484,68 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     candidate.queue_head == [candidate.member] and candidate.queue_deadline_ms > now_ms
   end
 
-  defp validate_release_candidate_active(candidate) do
-    case release_candidate_active_state(candidate) do
-      :free -> {:ok, release_promotion(candidate)}
-      :releasing -> {:ok, release_promotion(candidate)}
-      :busy -> {:ok, :blocked}
-      :invalid -> {:error, :unavailable}
-    end
-  end
-
   defp release_candidate_active_state(%{active_length: 0}), do: :free
 
   defp release_candidate_active_state(candidate) do
-    cond do
-      candidate.candidate_keys.variant_active == candidate.keys.variant_active and
-          release_active_matches?(
-            candidate.active,
-            candidate.releasing_member,
-            candidate.variant_hex
-          ) ->
-        :releasing
+    case candidate.active do
+      [
+        state,
+        active_member,
+        variant_hex,
+        identity,
+        fingerprint,
+        operation_id,
+        operation_epoch,
+        lease_deadline_ms
+      ]
+      when state in ["ADMITTED", "RESERVING", "UNKNOWN_DB_OUTCOME", "RECOVERING", "UNRESOLVED"] ->
+        validate_release_active_holder(
+          candidate,
+          active_member,
+          variant_hex,
+          identity,
+          fingerprint,
+          operation_id,
+          operation_epoch,
+          lease_deadline_ms
+        )
 
-      Enum.all?(candidate.active, &is_binary/1) ->
-        :busy
-
-      true ->
+      _ ->
         :invalid
     end
+  end
+
+  defp validate_release_active_holder(
+         candidate,
+         active_member,
+         variant_hex,
+         identity,
+         fingerprint,
+         operation_id,
+         operation_epoch,
+         lease_deadline_value
+       ) do
+    with :ok <- validate_member(active_member),
+         true <- variant_hex == candidate.variant_hex,
+         :ok <- validate_digest(identity),
+         :ok <- validate_digest(fingerprint),
+         :ok <- validate_operation_id(operation_id),
+         {:ok, _epoch} <- parse_positive_integer(operation_epoch),
+         {:ok, lease_deadline_ms} <- parse_positive_integer(lease_deadline_value),
+         true <- score_matches?(candidate.holder_active_score, lease_deadline_ms) do
+      if release_active_matches?(candidate, variant_hex) do
+        :releasing
+      else
+        :busy
+      end
+    else
+      _ -> :invalid
+    end
+  end
+
+  defp release_active_matches?(candidate, variant_hex) do
+    candidate.candidate_keys.variant_active == candidate.keys.variant_active and
+      release_active_matches?(candidate.active, candidate.releasing_member, variant_hex)
   end
 
   defp release_active_matches?(
@@ -5602,6 +6476,24 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     case Redix.command(RedixClient.connection_name(), command) do
       {:ok, reply} -> {:ok, reply}
       {:error, _reason} -> {:error, :unavailable}
+    end
+  rescue
+    _error -> {:error, :unavailable}
+  end
+
+  defp redis_pipeline([]), do: {:ok, []}
+
+  defp redis_pipeline(commands) do
+    case Redix.pipeline(RedixClient.connection_name(), commands) do
+      {:ok, replies} ->
+        if Enum.any?(replies, &match?(%Redix.Error{}, &1)) do
+          {:error, :unavailable}
+        else
+          {:ok, replies}
+        end
+
+      {:error, _reason} ->
+        {:error, :unavailable}
     end
   rescue
     _error -> {:error, :unavailable}

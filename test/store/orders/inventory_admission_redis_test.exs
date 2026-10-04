@@ -1,8 +1,8 @@
 defmodule Store.Orders.InventoryAdmissionRedisTest do
   use ExUnit.Case, async: false
 
-  alias Store.Orders.InventoryAdmission.{Redis, Reference}
-  alias Store.Orders.InventoryAdmission.Request
+  alias Store.Orders.InventoryAdmission.{Operation, Redis, Reference, Request}
+  alias Store.Orders.InventoryAdmission.Operation.{Deadline, InventoryFacts, ReservationFacts}
   alias Store.Support.ID.UUIDv7
   alias Store.Support.RateLimit.RedixClient
 
@@ -1166,11 +1166,247 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert metadata["desired_quantity"] == Integer.to_string(descriptor.desired_quantity)
     assert metadata["expiry_policy"] == descriptor.expiry_policy
     assert metadata["recovery_deadline_ms"] == Integer.to_string(descriptor.recovery_deadline_ms)
+    assert metadata["operation_evidence_version"] == "s0-operation:v1"
+    assert metadata["pre_reservation_presence"] == "absent"
+    assert metadata["pre_reservation_id"] == ""
+    assert metadata["post_reservation_presence"] == "present"
+    assert metadata["post_reservation_id"] == @operation_id
+    assert metadata["post_reservation_quantity"] == "1"
+    assert metadata["post_reservation_state"] == "active"
+    assert metadata["post_reservation_reservation_key"] == admitted_request.reservation_key
+    assert metadata["post_reservation_expires_at_us"] == "us:1735689600123456"
+    assert metadata["post_reservation_consumed_at_us"] == "nil"
+    assert metadata["post_reservation_expired_at_us"] == "nil"
+    assert metadata["post_reservation_cancelled_at_us"] == "nil"
+    assert metadata["post_reservation_version"] == "1"
+    assert metadata["pre_inventory_reserved_count"] == "0"
+    assert metadata["pre_inventory_stock_on_hand"] == "9"
+    assert metadata["post_inventory_reserved_count"] == "1"
+    assert metadata["post_inventory_stock_on_hand"] == "9"
+    assert metadata["pre_inventory_variant_id"] == admitted_request.variant_id
+    assert metadata["post_inventory_variant_id"] == admitted_request.variant_id
+    assert metadata["pre_inventory_version"] == "4"
+    assert metadata["post_inventory_version"] == "5"
+    assert metadata["pre_inventory_allow_oversell"] == "false"
+    assert metadata["post_inventory_allow_oversell"] == "false"
+    assert metadata["post_reservation_consumed_at_us"] == "nil"
+    assert metadata["post_reservation_expires_at_us"] == "us:1735689600123456"
+    assert metadata["mutation_expires_at_us"] == "us:1735689600123456"
+    assert metadata["mutation_now_us"] == "us:1735689600123456"
+    assert metadata["recovery_descriptor_digest"] == fence["recovery_descriptor_digest"]
+    assert metadata["recovery_descriptor_digest"] == active["recovery_descriptor_digest"]
     assert fence["mutation_kind"] == descriptor.mutation_kind
     assert active["mutation_kind"] == descriptor.mutation_kind
 
     assert {:ok, :already_reserving} =
              Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+  end
+
+  test "claim replay rejects changed PRE and POST operation facts", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    changed_pre_inventory =
+      put_in(descriptor.pre.inventory.stock_on_hand, descriptor.pre.inventory.stock_on_hand - 1)
+
+    changed_post_reservation =
+      put_in(descriptor.post.reservation.quantity, descriptor.post.reservation.quantity + 1)
+
+    changed_post_inventory =
+      put_in(descriptor.post.inventory.version, descriptor.post.inventory.version + 1)
+
+    assert Redis.claim_reserving(reference, changed_pre_inventory, lookup_opts(scope)) in [
+             {:ok, :stale_owner},
+             {:error, :unavailable}
+           ]
+
+    assert Redis.claim_reserving(reference, changed_post_reservation, lookup_opts(scope)) in [
+             {:ok, :stale_owner},
+             {:error, :unavailable}
+           ]
+
+    assert Redis.claim_reserving(reference, changed_post_inventory, lookup_opts(scope)) in [
+             {:ok, :stale_owner},
+             {:error, :unavailable}
+           ]
+
+    assert {:ok, "RESERVING"} =
+             redis(["HGET", keys_for(admitted_request, scope).request_meta, "state"])
+  end
+
+  test "claim rejects missing or malformed PRE and POST before changing Redis", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    keys = keys_for(admitted_request, scope)
+
+    for malformed <- [
+          Map.delete(descriptor, :pre),
+          Map.delete(descriptor, :post),
+          Map.put(descriptor, :descriptor_version, "unrecognized"),
+          put_in(descriptor.pre.inventory.version, 0),
+          put_in(descriptor.post.reservation.reservation_key, "order:invalid"),
+          put_in(descriptor.pre.inventory.variant_id, @second_variant_id),
+          put_in(descriptor.post.reservation.expires_at, "invalid timestamp")
+        ] do
+      assert {:error, :invalid_input} =
+               Redis.claim_reserving(reference, malformed, lookup_opts(scope))
+
+      assert {:ok, "ADMITTED"} = redis(["HGET", keys.request_meta, "state"])
+      assert {:ok, "ADMITTED"} = redis(["HGET", keys.reservation_fence, "state"])
+      assert {:ok, "ADMITTED"} = redis(["HGET", keys.variant_active, "state"])
+      assert {:ok, nil} = redis(["HGET", keys.request_meta, "recovery_descriptor_digest"])
+    end
+  end
+
+  test "claim retains a present PRE reservation and exact adjustment facts", %{scope: scope} do
+    assert {:ok, adjustment_request} =
+             Request.new(%{
+               order_id: @order_id,
+               variant_id: @variant_id,
+               quantity: 3,
+               mutation_kind: :adjust
+             })
+
+    track_request(adjustment_request, scope)
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(adjustment_request, opts(scope, b_total: 1))
+
+    pre_reservation = %ReservationFacts{
+      id: @other_generation_id,
+      quantity: 2,
+      state: :active,
+      reservation_key: adjustment_request.reservation_key,
+      expires_at: operation_datetime(),
+      consumed_at: operation_datetime(),
+      expired_at: nil,
+      cancelled_at: nil,
+      version: 7
+    }
+
+    post_reservation = %{pre_reservation | quantity: 3, version: 8}
+
+    pre_inventory = %InventoryFacts{
+      variant_id: adjustment_request.variant_id,
+      stock_on_hand: 12,
+      reserved_count: 2,
+      allow_oversell: true,
+      version: 9
+    }
+
+    post_inventory = %{pre_inventory | reserved_count: 3, version: 10}
+
+    descriptor =
+      claim_descriptor_with_facts(
+        adjustment_request,
+        admitted,
+        pre_reservation,
+        post_reservation,
+        pre_inventory,
+        post_inventory
+      )
+
+    reference = reference_for(adjustment_request, admitted)
+    keys = keys_for(adjustment_request, scope)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    metadata = hgetall(keys.request_meta)
+
+    assert metadata["pre_reservation_presence"] == "present"
+    assert metadata["pre_reservation_id"] == @other_generation_id
+    assert metadata["pre_reservation_quantity"] == "2"
+    assert metadata["pre_reservation_state"] == "active"
+    assert metadata["pre_reservation_reservation_key"] == adjustment_request.reservation_key
+    assert metadata["pre_reservation_expires_at_us"] == "us:1735689600123456"
+    assert metadata["pre_reservation_consumed_at_us"] == "us:1735689600123456"
+    assert metadata["pre_reservation_expired_at_us"] == "nil"
+    assert metadata["pre_reservation_cancelled_at_us"] == "nil"
+    assert metadata["pre_reservation_version"] == "7"
+    assert metadata["post_reservation_presence"] == "present"
+    assert metadata["post_reservation_id"] == @other_generation_id
+    assert metadata["post_reservation_quantity"] == "3"
+    assert metadata["post_reservation_state"] == "active"
+    assert metadata["post_reservation_reservation_key"] == adjustment_request.reservation_key
+    assert metadata["post_reservation_expires_at_us"] == "us:1735689600123456"
+    assert metadata["post_reservation_consumed_at_us"] == "us:1735689600123456"
+    assert metadata["post_reservation_expired_at_us"] == "nil"
+    assert metadata["post_reservation_cancelled_at_us"] == "nil"
+    assert metadata["post_reservation_version"] == "8"
+    assert metadata["pre_inventory_stock_on_hand"] == "12"
+    assert metadata["pre_inventory_reserved_count"] == "2"
+    assert metadata["pre_inventory_allow_oversell"] == "true"
+    assert metadata["pre_inventory_variant_id"] == adjustment_request.variant_id
+    assert metadata["pre_inventory_version"] == "9"
+    assert metadata["post_inventory_variant_id"] == adjustment_request.variant_id
+    assert metadata["post_inventory_stock_on_hand"] == "12"
+    assert metadata["post_inventory_reserved_count"] == "3"
+    assert metadata["post_inventory_allow_oversell"] == "true"
+    assert metadata["post_inventory_version"] == "10"
+
+    assert {:ok, :already_reserving} =
+             Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    changed_pre = put_in(descriptor.pre.reservation.version, 6)
+
+    assert Redis.claim_reserving(reference, changed_pre, lookup_opts(scope)) in [
+             {:ok, :stale_owner},
+             {:error, :unavailable}
+           ]
+  end
+
+  test "claim keeps a valid absent POST reservation distinct from missing evidence", %{
+    scope: scope
+  } do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    inventory = %InventoryFacts{
+      variant_id: admitted_request.variant_id,
+      stock_on_hand: 4,
+      reserved_count: 1,
+      allow_oversell: false,
+      version: 3
+    }
+
+    descriptor =
+      claim_descriptor_with_facts(
+        admitted_request,
+        admitted,
+        :absent,
+        :absent,
+        inventory,
+        inventory
+      )
+
+    reference = reference_for(admitted_request, admitted)
+    keys = keys_for(admitted_request, scope)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    metadata = hgetall(keys.request_meta)
+    assert metadata["post_reservation_presence"] == "absent"
+    assert metadata["post_reservation_id"] == ""
+    assert metadata["post_reservation_quantity"] == ""
+    assert metadata["post_reservation_reservation_key"] == ""
+    assert metadata["post_inventory_reserved_count"] == "1"
   end
 
   test "claim rejects every contradictory owner field without changing capacity", %{scope: scope} do
@@ -1307,7 +1543,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                holder_reference,
                holder_descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1, cleanup_limit: 1, q_global_max: 1)
              )
 
     holder_keys = keys_for(holder_request, scope)
@@ -1325,7 +1561,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                holder_reference,
                holder_descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1, cleanup_limit: 1, q_global_max: 1)
              )
 
     assert {:ok, :stale_owner} =
@@ -1333,7 +1569,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                holder_reference,
                holder_descriptor,
                :rejected,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1, cleanup_limit: 1, q_global_max: 1)
              )
 
     {:ok, promoted_db_deadline} = redis(["HGET", waiter_keys.request_meta, "db_deadline_ms"])
@@ -1383,7 +1619,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                holder_reference,
                holder_descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
 
     waiter_keys = keys_for(waiter_request, scope)
@@ -1391,6 +1627,216 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, active_member} = redis(["HGET", waiter_keys.variant_active, "member"])
     assert active_member == waiter.member
     assert {:ok, 1} = redis(["ZCARD", waiter_keys.global_active_expiry])
+  end
+
+  test "known release requires positive server-owned promotion bounds", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    for invalid_opts <- [
+          [hmac_key: @hmac_key, scope: scope, b_total: 1],
+          [hmac_key: @hmac_key, scope: scope, b_total: 1, cleanup_limit: 1],
+          [hmac_key: @hmac_key, scope: scope, b_total: 1, q_global_max: 20],
+          [
+            hmac_key: @hmac_key,
+            scope: scope,
+            b_total: 1,
+            cleanup_limit: 1,
+            cleanup_limit: 2,
+            q_global_max: 20
+          ],
+          release_opts(scope, 1, cleanup_limit: 0),
+          release_opts(scope, 1, q_global_max: 0),
+          release_opts(scope, 1, cleanup_limit: :unbounded)
+        ] do
+      assert {:error, :invalid_input} =
+               Redis.release_known_outcome(reference, descriptor, :completed, invalid_opts)
+
+      assert {:ok, "RESERVING"} = redis(["HGET", keys.request_meta, "state"])
+      assert {:ok, admitted_member} = redis(["HGET", keys.variant_active, "member"])
+      assert admitted_member == admitted.member
+      assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
+    end
+  end
+
+  test "known release does not inspect an eligible waiter beyond the bounded prefix", %{
+    scope: scope
+  } do
+    holder_request = request()
+    blocker_request = request(@second_order_id, @second_variant_id)
+    blocked_request = request(@third_variant_id, @second_variant_id)
+    later_request = request(@order_id, @third_variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 2))
+
+    assert {:ok, {:admitted, _blocker}} =
+             Redis.enqueue_or_return_existing(blocker_request, opts(scope, b_total: 2))
+
+    assert {:ok, {:queued, blocked}} =
+             Redis.enqueue_or_return_existing(blocked_request, opts(scope, b_total: 2))
+
+    assert {:ok, {:queued, later}} =
+             Redis.enqueue_or_return_existing(later_request, opts(scope, b_total: 2))
+
+    reference = reference_for(holder_request, holder)
+    descriptor = claim_descriptor(holder_request, holder)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               release_opts(scope, 2, cleanup_limit: 1, q_global_max: 20)
+             )
+
+    assert {:ok, "COMPLETED"} =
+             redis(["HGET", keys_for(holder_request, scope).request_meta, "state"])
+
+    assert {:ok, "QUEUED"} =
+             redis(["HGET", keys_for(blocked_request, scope).request_meta, "state"])
+
+    assert {:ok, "QUEUED"} =
+             redis(["HGET", keys_for(later_request, scope).request_meta, "state"])
+
+    assert {:ok, later_score} =
+             redis([
+               "ZSCORE",
+               keys_for(later_request, scope).global_queue_dispatch,
+               later.member
+             ])
+
+    assert is_binary(later_score)
+    assert {:ok, 1} = redis(["ZCARD", keys_for(blocker_request, scope).global_active_expiry])
+    assert {:ok, nil} = redis(["HGET", keys_for(later_request, scope).variant_active, "member"])
+
+    assert {:ok, blocked_score} =
+             redis([
+               "ZSCORE",
+               keys_for(blocked_request, scope).global_queue_dispatch,
+               blocked.member
+             ])
+
+    assert is_binary(blocked_score)
+  end
+
+  test "release uses q_global_max when it is lower than cleanup_limit", %{scope: scope} do
+    holder_request = request()
+    waiter_request = request(@second_order_id, @second_variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, waiter}} =
+             Redis.enqueue_or_return_existing(waiter_request, opts(scope, b_total: 1))
+
+    reference = reference_for(holder_request, holder)
+    descriptor = claim_descriptor(holder_request, holder)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :rejected,
+               release_opts(scope, 1, cleanup_limit: 5, q_global_max: 1)
+             )
+
+    waiter_keys = keys_for(waiter_request, scope)
+    assert {:ok, "ADMITTED"} = redis(["HGET", waiter_keys.request_meta, "state"])
+    assert {:ok, waiter_member} = redis(["HGET", waiter_keys.variant_active, "member"])
+    assert waiter_member == waiter.member
+  end
+
+  test "known release skips an expired candidate inside the bounded prefix", %{scope: scope} do
+    holder_request = request()
+    waiter_request = request(@second_order_id, @second_variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, waiter}} =
+             Redis.enqueue_or_return_existing(waiter_request, opts(scope, b_total: 1))
+
+    reference = reference_for(holder_request, holder)
+    descriptor = claim_descriptor(holder_request, holder)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    waiter_keys = keys_for(waiter_request, scope)
+    {:ok, sequence} = redis(["HGET", waiter_keys.request_meta, "sequence"])
+    {:ok, time} = redis(["TIME"])
+
+    now_ms =
+      String.to_integer(Enum.at(time, 0)) * 1_000 +
+        div(String.to_integer(Enum.at(time, 1)), 1_000)
+
+    expired_deadline = now_ms - 1
+
+    assert {:ok, 0} =
+             redis(["HSET", waiter_keys.request_meta, "queue_deadline_ms", expired_deadline])
+
+    assert {:ok, 0} =
+             redis(["ZADD", waiter_keys.global_queue_expiry, expired_deadline, waiter.member])
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               release_opts(scope, 1, cleanup_limit: 1, q_global_max: 20)
+             )
+
+    assert {:ok, "QUEUED"} = redis(["HGET", waiter_keys.request_meta, "state"])
+    assert {:ok, ^sequence} = redis(["HGET", waiter_keys.request_meta, "sequence"])
+    assert {:ok, nil} = redis(["HGET", waiter_keys.variant_active, "member"])
+  end
+
+  test "contradictory candidate indexes fail before known release mutation", %{scope: scope} do
+    holder_request = request()
+    waiter_request = request(@second_order_id, @second_variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, waiter}} =
+             Redis.enqueue_or_return_existing(waiter_request, opts(scope, b_total: 1))
+
+    reference = reference_for(holder_request, holder)
+    descriptor = claim_descriptor(holder_request, holder)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    waiter_keys = keys_for(waiter_request, scope)
+    {:ok, sequence} = redis(["HGET", waiter_keys.request_meta, "sequence"])
+
+    assert {:ok, 0} =
+             redis([
+               "ZADD",
+               waiter_keys.global_queue_dispatch,
+               String.to_integer(sequence) + 1,
+               waiter.member
+             ])
+
+    assert {:error, :unavailable} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               release_opts(scope, 1, cleanup_limit: 1, q_global_max: 20)
+             )
+
+    holder_keys = keys_for(holder_request, scope)
+    assert {:ok, "RESERVING"} = redis(["HGET", holder_keys.request_meta, "state"])
+    assert {:ok, holder_member} = redis(["HGET", holder_keys.variant_active, "member"])
+    assert holder_member == holder.member
+    assert {:ok, 1} = redis(["ZCARD", holder_keys.global_active_expiry])
   end
 
   test "known release skips a blocked global head and promotes a free variant", %{scope: scope} do
@@ -1422,7 +1868,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                holder_reference,
                holder_descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 2)
+               release_opts(scope, 2)
              )
 
     blocked_keys = keys_for(blocked_request, scope)
@@ -1436,6 +1882,221 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
              redis(["ZSCORE", blocked_keys.global_queue_dispatch, blocked.member])
 
     assert is_binary(blocked_score)
+  end
+
+  test "known release command work follows the bounded prefix and uses pipelines", %{scope: scope} do
+    empty_scope = "#{scope}_empty"
+    empty_holder_request = request(UUIDv7.generate(), UUIDv7.generate())
+    keys_for(empty_holder_request, empty_scope)
+
+    assert {:ok, {:admitted, empty_holder}} =
+             Redis.enqueue_or_return_existing(
+               empty_holder_request,
+               opts(empty_scope, b_total: 1)
+             )
+
+    empty_reference = reference_for(empty_holder_request, empty_holder)
+    empty_descriptor = claim_descriptor(empty_holder_request, empty_holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(empty_reference, empty_descriptor, lookup_opts(empty_scope))
+
+    {empty_result, empty_round_trips, empty_commands} =
+      measure_redis_interactions(empty_scope, fn ->
+        Redis.release_known_outcome(
+          empty_reference,
+          empty_descriptor,
+          :completed,
+          release_opts(empty_scope, 1, cleanup_limit: 2, q_global_max: 20)
+        )
+      end)
+
+    assert empty_result == {:ok, :released}
+    assert {empty_round_trips, empty_commands} == {2, 2}
+
+    eligible_scope = "#{scope}_eligible"
+    eligible_holder_request = request(UUIDv7.generate(), UUIDv7.generate())
+    eligible_waiter_request = request(UUIDv7.generate(), UUIDv7.generate())
+    keys_for(eligible_holder_request, eligible_scope)
+    keys_for(eligible_waiter_request, eligible_scope)
+
+    assert {:ok, {:admitted, eligible_holder}} =
+             Redis.enqueue_or_return_existing(
+               eligible_holder_request,
+               opts(eligible_scope, b_total: 1)
+             )
+
+    assert {:ok, {:queued, _eligible_waiter}} =
+             Redis.enqueue_or_return_existing(
+               eligible_waiter_request,
+               opts(eligible_scope, b_total: 1)
+             )
+
+    eligible_reference = reference_for(eligible_holder_request, eligible_holder)
+    eligible_descriptor = claim_descriptor(eligible_holder_request, eligible_holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(
+               eligible_reference,
+               eligible_descriptor,
+               lookup_opts(eligible_scope)
+             )
+
+    {eligible_result, eligible_round_trips, eligible_commands} =
+      measure_redis_interactions(eligible_scope, fn ->
+        Redis.release_known_outcome(
+          eligible_reference,
+          eligible_descriptor,
+          :completed,
+          release_opts(eligible_scope, 1, cleanup_limit: 1, q_global_max: 1)
+        )
+      end)
+
+    assert eligible_result == {:ok, :released}
+    assert {eligible_round_trips, eligible_commands} == {4, 12}
+
+    skipped_scope = "#{scope}_skipped"
+    skipped_holder_request = request(UUIDv7.generate(), UUIDv7.generate())
+    first_blocker_request = request(UUIDv7.generate(), UUIDv7.generate())
+    second_blocker_request = request(UUIDv7.generate(), UUIDv7.generate())
+    first_waiter_request = request(UUIDv7.generate(), first_blocker_request.variant_id)
+    second_waiter_request = request(UUIDv7.generate(), second_blocker_request.variant_id)
+
+    for tracked_request <- [
+          skipped_holder_request,
+          first_blocker_request,
+          second_blocker_request,
+          first_waiter_request,
+          second_waiter_request
+        ] do
+      keys_for(tracked_request, skipped_scope)
+    end
+
+    assert {:ok, {:admitted, skipped_holder}} =
+             Redis.enqueue_or_return_existing(
+               skipped_holder_request,
+               opts(skipped_scope, b_total: 3)
+             )
+
+    assert {:ok, {:admitted, _first_blocker}} =
+             Redis.enqueue_or_return_existing(
+               first_blocker_request,
+               opts(skipped_scope, b_total: 3)
+             )
+
+    assert {:ok, {:admitted, _second_blocker}} =
+             Redis.enqueue_or_return_existing(
+               second_blocker_request,
+               opts(skipped_scope, b_total: 3)
+             )
+
+    assert {:ok, {:queued, _first_waiter}} =
+             Redis.enqueue_or_return_existing(
+               first_waiter_request,
+               opts(skipped_scope, b_total: 3)
+             )
+
+    assert {:ok, {:queued, _second_waiter}} =
+             Redis.enqueue_or_return_existing(
+               second_waiter_request,
+               opts(skipped_scope, b_total: 3)
+             )
+
+    skipped_reference = reference_for(skipped_holder_request, skipped_holder)
+    skipped_descriptor = claim_descriptor(skipped_holder_request, skipped_holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(
+               skipped_reference,
+               skipped_descriptor,
+               lookup_opts(skipped_scope)
+             )
+
+    {skipped_result, skipped_round_trips, skipped_commands} =
+      measure_redis_interactions(skipped_scope, fn ->
+        Redis.release_known_outcome(
+          skipped_reference,
+          skipped_descriptor,
+          :rejected,
+          release_opts(skipped_scope, 3, cleanup_limit: 2, q_global_max: 20)
+        )
+      end)
+
+    assert skipped_result == {:ok, :released}
+    assert {skipped_round_trips, skipped_commands} == {5, 23}
+
+    prefix_scope = "#{scope}_prefix"
+    prefix_holder_request = request(UUIDv7.generate(), UUIDv7.generate())
+    prefix_blocker_request = request(UUIDv7.generate(), UUIDv7.generate())
+    prefix_waiter_request = request(UUIDv7.generate(), prefix_blocker_request.variant_id)
+    outside_waiter_request = request(UUIDv7.generate(), UUIDv7.generate())
+
+    for tracked_request <- [
+          prefix_holder_request,
+          prefix_blocker_request,
+          prefix_waiter_request,
+          outside_waiter_request
+        ] do
+      keys_for(tracked_request, prefix_scope)
+    end
+
+    assert {:ok, {:admitted, prefix_holder}} =
+             Redis.enqueue_or_return_existing(
+               prefix_holder_request,
+               opts(prefix_scope, b_total: 2)
+             )
+
+    assert {:ok, {:admitted, _prefix_blocker}} =
+             Redis.enqueue_or_return_existing(
+               prefix_blocker_request,
+               opts(prefix_scope, b_total: 2)
+             )
+
+    assert {:ok, {:queued, prefix_waiter}} =
+             Redis.enqueue_or_return_existing(
+               prefix_waiter_request,
+               opts(prefix_scope, b_total: 2)
+             )
+
+    assert {:ok, {:queued, outside_waiter}} =
+             Redis.enqueue_or_return_existing(
+               outside_waiter_request,
+               opts(prefix_scope, b_total: 2)
+             )
+
+    prefix_reference = reference_for(prefix_holder_request, prefix_holder)
+    prefix_descriptor = claim_descriptor(prefix_holder_request, prefix_holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(prefix_reference, prefix_descriptor, lookup_opts(prefix_scope))
+
+    {prefix_result, prefix_round_trips, prefix_commands} =
+      measure_redis_interactions(prefix_scope, fn ->
+        Redis.release_known_outcome(
+          prefix_reference,
+          prefix_descriptor,
+          :completed,
+          release_opts(prefix_scope, 2, cleanup_limit: 1, q_global_max: 20)
+        )
+      end)
+
+    assert prefix_result == {:ok, :released}
+    assert {prefix_round_trips, prefix_commands} == {5, 13}
+
+    assert {:ok, "QUEUED"} =
+             redis([
+               "HGET",
+               keys_for(outside_waiter_request, prefix_scope).request_meta,
+               "state"
+             ])
+
+    assert {:ok, [prefix_waiter.member, outside_waiter.member]} ==
+             redis([
+               "ZRANGE",
+               keys_for(outside_waiter_request, prefix_scope).global_queue_dispatch,
+               "0",
+               "1"
+             ])
   end
 
   test "renewal generation lifecycle keeps ia02:v2 through known release", %{scope: scope} do
@@ -1462,6 +2123,11 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, "ia02:v2"} = redis(["HGET", keys.reservation_fence, "schema_version"])
     assert {:ok, "ia02:v2"} = redis(["HGET", keys.variant_active, "schema_version"])
 
+    assert {:ok, stored_reservation_key} =
+             redis(["HGET", keys.request_meta, "post_reservation_reservation_key"])
+
+    assert stored_reservation_key == renewal_request.reservation_key
+
     assert {:ok, {:renewed, _deadline}} =
              Redis.renew_lease(reference, descriptor, lookup_opts(scope))
 
@@ -1474,7 +2140,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                reference,
                descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
 
     assert {:ok, "ia02:v2"} = redis(["HGET", keys.request_meta, "schema_version"])
@@ -1532,7 +2198,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                reference,
                descriptor,
                :rejected,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
 
     keys = keys_for(admitted_request, scope)
@@ -1546,7 +2212,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                reference,
                descriptor,
                :rejected,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
 
     assert {:ok, :stale_owner} =
@@ -1554,7 +2220,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                reference,
                descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
   end
 
@@ -1575,6 +2241,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     descriptor =
       claim_descriptor(holder_request, holder)
       |> Map.put(:recovery_deadline_ms, holder.lease_deadline_ms + 120_000)
+      |> Map.update!(:deadline, &%{&1 | recovery_deadline: holder.lease_deadline_ms + 120_000})
 
     assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
 
@@ -1593,6 +2260,27 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     waiter_keys = keys_for(waiter_request, scope)
     assert {:ok, "UNKNOWN_DB_OUTCOME"} = redis(["HGET", keys.request_meta, "state"])
     assert {:ok, "UNKNOWN_DB_OUTCOME"} = redis(["HGET", keys.reservation_fence, "state"])
+
+    assert {:ok, "s0-operation:v1"} =
+             redis(["HGET", keys.request_meta, "operation_evidence_version"])
+
+    assert {:ok, "absent"} =
+             redis(["HGET", keys.request_meta, "pre_reservation_presence"])
+
+    assert {:ok, stored_reservation_key} =
+             redis(["HGET", keys.request_meta, "post_reservation_reservation_key"])
+
+    assert stored_reservation_key == holder_request.reservation_key
+
+    assert {:ok, descriptor_digest} =
+             redis(["HGET", keys.request_meta, "recovery_descriptor_digest"])
+
+    assert {:ok, ^descriptor_digest} =
+             redis(["HGET", keys.reservation_fence, "recovery_descriptor_digest"])
+
+    assert {:ok, ^descriptor_digest} =
+             redis(["HGET", keys.variant_active, "recovery_descriptor_digest"])
+
     assert {:ok, holder_member} = redis(["HGET", keys.variant_active, "member"])
     assert holder_member == holder.member
     assert {:ok, 1} = redis(["ZCARD", keys.global_active_expiry])
@@ -1659,11 +2347,41 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                lookup_opts(scope)
              )
 
+    changed_recovery_fact =
+      Map.update!(unknown_descriptor, :pre, fn pre ->
+        %{pre | inventory: %{pre.inventory | stock_on_hand: pre.inventory.stock_on_hand - 1}}
+      end)
+
     assert {:ok, :stale_owner} =
              Redis.mark_unknown_and_fence(
                reference,
                descriptor,
-               Map.put(unknown_descriptor, :recovery_deadline_ms, recovery_deadline + 1),
+               changed_recovery_fact,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "UNKNOWN_DB_OUTCOME"} = redis(["HGET", keys.request_meta, "state"])
+
+    assert {:ok, 0} = redis(["HSET", keys.request_meta, "post_inventory_version", "corrupt"])
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_unknown_and_fence(
+               reference,
+               descriptor,
+               unknown_descriptor,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, holder_member} = redis(["HGET", keys.variant_active, "member"])
+    assert holder_member == holder.member
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_unknown_and_fence(
+               reference,
+               descriptor,
+               unknown_descriptor
+               |> Map.put(:recovery_deadline_ms, recovery_deadline + 1)
+               |> Map.update!(:deadline, &%{&1 | recovery_deadline: recovery_deadline + 1}),
                lookup_opts(scope)
              )
 
@@ -1795,7 +2513,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                reference,
                descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
 
     target = shared_target(admitted_request)
@@ -1841,7 +2559,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                reference,
                descriptor,
                :completed,
-               Keyword.put(lookup_opts(scope), :b_total, 1)
+               release_opts(scope, 1)
              )
 
     target = shared_target(admitted_request)
@@ -2278,7 +2996,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
                  reference,
                  owner,
                  outcome,
-                 Keyword.put(lookup_opts(scope), :b_total, 1)
+                 release_opts(scope, 1)
                )}
           end
         end)
@@ -2296,6 +3014,90 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, "COMPLETED"} = redis(["HGET", keys.request_meta, "state"])
     assert {:ok, nil} = redis(["HGET", keys.variant_active, "member"])
     assert {:ok, 0} = redis(["ZCARD", keys.global_active_expiry])
+  end
+
+  test "concurrent queue movement cannot partially release or promote", %{scope: scope} do
+    holder_request = request(UUIDv7.generate(), UUIDv7.generate())
+    queued_request = request(UUIDv7.generate(), UUIDv7.generate())
+    keys_for(holder_request, scope)
+    queued_keys = keys_for(queued_request, scope)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, queued}} =
+             Redis.enqueue_or_return_existing(queued_request, opts(scope, b_total: 1))
+
+    holder_reference = reference_for(holder_request, holder)
+    holder_descriptor = claim_descriptor(holder_request, holder)
+    queued_reference = reference_for(queued_request, queued)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(holder_reference, holder_descriptor, lookup_opts(scope))
+
+    parent = self()
+
+    release_task =
+      Task.async(fn ->
+        send(parent, {:queue_race_ready, :release, self()})
+
+        receive do
+          :run_queue_race ->
+            Redis.release_known_outcome(
+              holder_reference,
+              holder_descriptor,
+              :completed,
+              release_opts(scope, 1, cleanup_limit: 1, q_global_max: 1)
+            )
+        end
+      end)
+
+    abandon_task =
+      Task.async(fn ->
+        send(parent, {:queue_race_ready, :abandon, self()})
+
+        receive do
+          :run_queue_race ->
+            Redis.abandon(
+              queued_reference,
+              :trusted_pre_reservation_abandonment,
+              lookup_opts(scope)
+            )
+        end
+      end)
+
+    assert_receive {:queue_race_ready, :release, release_pid}, 1_000
+    assert_receive {:queue_race_ready, :abandon, abandon_pid}, 1_000
+    send(release_pid, :run_queue_race)
+    send(abandon_pid, :run_queue_race)
+
+    release_result = Task.await(release_task, 5_000)
+    abandon_result = Task.await(abandon_task, 5_000)
+    holder_keys = keys_for(holder_request, scope)
+    holder_member = holder.member
+    queued_member = queued.member
+
+    case {release_result, abandon_result} do
+      {{:ok, :released}, {:ok, {:abandoned, _}}} ->
+        assert {:ok, "COMPLETED"} = redis(["HGET", holder_keys.request_meta, "state"])
+        assert {:ok, "ABANDONED"} = redis(["HGET", queued_keys.request_meta, "state"])
+        assert {:ok, 0} = redis(["ZCARD", holder_keys.global_active_expiry])
+
+      {{:ok, :released}, {:ok, :frozen}} ->
+        assert {:ok, "COMPLETED"} = redis(["HGET", holder_keys.request_meta, "state"])
+        assert {:ok, "ADMITTED"} = redis(["HGET", queued_keys.request_meta, "state"])
+        assert {:ok, ^queued_member} = redis(["HGET", queued_keys.variant_active, "member"])
+        assert {:ok, 1} = redis(["ZCARD", holder_keys.global_active_expiry])
+
+      {{:error, :unavailable}, {:ok, {:abandoned, _}}} ->
+        assert {:ok, "RESERVING"} = redis(["HGET", holder_keys.request_meta, "state"])
+        assert {:ok, "ABANDONED"} = redis(["HGET", queued_keys.request_meta, "state"])
+        assert {:ok, ^holder_member} = redis(["HGET", holder_keys.variant_active, "member"])
+        assert {:ok, 1} = redis(["ZCARD", holder_keys.global_active_expiry])
+
+      _other ->
+        flunk("queue race did not preserve a complete outcome")
+    end
   end
 
   test "opposite-order overlapping shared acquisitions have no partial owner", %{scope: scope} do
@@ -2353,24 +3155,91 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   end
 
   defp claim_descriptor(request, admission) do
-    %{
-      member: admission.member,
+    pre_inventory = %InventoryFacts{
       variant_id: request.variant_id,
-      reservation_key: request.reservation_key,
-      identity_digest: request.identity_digest,
-      request_fingerprint: request.request_fingerprint,
-      operation_id: admission.operation_id,
-      operation_epoch: admission.operation_epoch,
-      lease_token: admission.lease_token,
-      owner_epoch: admission.owner_epoch,
-      db_deadline_ms: admission.db_deadline_ms,
-      lease_deadline_ms: admission.lease_deadline_ms,
-      safety_margin_ms: admission.safety_margin_ms,
-      mutation_kind: "reserve",
-      desired_quantity: request.quantity,
-      expiry_policy: Atom.to_string(request.expiry_policy),
-      recovery_deadline_ms: admission.lease_deadline_ms + 5_000
+      stock_on_hand: 9,
+      reserved_count: 0,
+      allow_oversell: false,
+      version: 4
     }
+
+    post_inventory = %{pre_inventory | reserved_count: request.quantity, version: 5}
+
+    post_reservation = %ReservationFacts{
+      id: @operation_id,
+      quantity: request.quantity,
+      state: :active,
+      reservation_key: request.reservation_key,
+      expires_at: operation_datetime(),
+      consumed_at: nil,
+      expired_at: nil,
+      cancelled_at: nil,
+      version: 1
+    }
+
+    claim_descriptor_with_facts(
+      request,
+      admission,
+      :absent,
+      post_reservation,
+      pre_inventory,
+      post_inventory
+    )
+  end
+
+  defp claim_descriptor_with_facts(
+         request,
+         admission,
+         pre_reservation,
+         post_reservation,
+         pre_inventory,
+         post_inventory
+       ) do
+    pre = %Operation.Pre{reservation: pre_reservation, inventory: pre_inventory}
+    post = %Operation.Post{reservation: post_reservation, inventory: post_inventory}
+
+    deadline = %Deadline{
+      db_deadline: admission.db_deadline_ms,
+      lease_deadline: admission.lease_deadline_ms,
+      recovery_deadline: admission.lease_deadline_ms + 5_000,
+      safety_margin: admission.safety_margin_ms
+    }
+
+    assert {:ok, operation} =
+             Operation.new(request,
+               pre: pre,
+               post: post,
+               deadline: deadline,
+               expires_at: operation_datetime(),
+               now: operation_datetime()
+             )
+
+    operation = %{
+      operation
+      | operation_id: admission.operation_id,
+        operation_epoch: admission.operation_epoch
+    }
+
+    Map.merge(
+      Map.from_struct(operation),
+      %{
+        member: admission.member,
+        lease_token: admission.lease_token,
+        owner_epoch: admission.owner_epoch,
+        db_deadline_ms: admission.db_deadline_ms,
+        lease_deadline_ms: admission.lease_deadline_ms,
+        safety_margin_ms: admission.safety_margin_ms,
+        mutation_kind: Atom.to_string(operation.mutation.kind),
+        desired_quantity: request.quantity,
+        expiry_policy: Atom.to_string(request.expiry_policy),
+        recovery_deadline_ms: admission.lease_deadline_ms + 5_000
+      }
+    )
+  end
+
+  defp operation_datetime do
+    {:ok, datetime, 0} = DateTime.from_iso8601("2025-01-01T00:00:00.123456Z")
+    datetime
   end
 
   defp shared_target(request) do
@@ -2399,6 +3268,19 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   end
 
   defp lookup_opts(scope), do: [hmac_key: @hmac_key, scope: scope]
+
+  defp release_opts(scope, b_total, overrides \\ []) do
+    Keyword.merge(
+      [
+        hmac_key: @hmac_key,
+        scope: scope,
+        b_total: b_total,
+        cleanup_limit: 2,
+        q_global_max: 20
+      ],
+      overrides
+    )
+  end
 
   defp request(order_id \\ @order_id, variant_id \\ @variant_id, quantity \\ 1) do
     assert {:ok, request} =
@@ -2454,6 +3336,50 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   end
 
   defp redis(command), do: Redix.command(RedixClient.connection_name(), command)
+
+  defp measure_redis_interactions(scope, fun) do
+    handler_id = {__MODULE__, System.unique_integer([:positive])}
+    reference = make_ref()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:redix, :pipeline, :start],
+        &record_measured_redis_pipeline/4,
+        {self(), reference, scope}
+      )
+
+    try do
+      result = fun.()
+      pipelines = collect_measured_redis_pipelines(reference, [])
+      round_trips = length(pipelines)
+      commands = Enum.reduce(pipelines, 0, &(length(&1) + &2))
+      {result, round_trips, commands}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp record_measured_redis_pipeline(_event, _measurements, metadata, {owner, ref, scope}) do
+    if redis_pipeline_mentions_scope?(metadata.commands, scope) do
+      send(owner, {ref, metadata.commands})
+    end
+  end
+
+  defp redis_pipeline_mentions_scope?(commands, scope) do
+    Enum.any?(commands, fn command ->
+      Enum.any?(command, &(is_binary(&1) and String.contains?(&1, scope)))
+    end)
+  end
+
+  defp collect_measured_redis_pipelines(reference, pipelines) do
+    receive do
+      {^reference, commands} when is_list(commands) ->
+        collect_measured_redis_pipelines(reference, [commands | pipelines])
+    after
+      0 -> Enum.reverse(pipelines)
+    end
+  end
 
   defp hgetall(key) do
     assert {:ok, values} = redis(["HGETALL", key])
