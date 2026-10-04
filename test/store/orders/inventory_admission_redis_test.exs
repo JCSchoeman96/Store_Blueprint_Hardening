@@ -12,6 +12,9 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
   @variant_id "018ecb40-c457-73e6-a400-000398daddd9"
   @second_variant_id "018ecb40-c457-73e6-a400-000398dadda0"
   @third_variant_id "018ecb40-c457-73e6-a400-000398dadda1"
+  @collection_attempt_id "018ecb40-c457-73e6-a400-000398dadda2"
+  @generation_id "018ecb40-c457-73e6-a400-000398dadda3"
+  @other_generation_id "018ecb40-c457-73e6-a400-000398dadda4"
   @operation_id "018ecb40-c457-73e6-a400-000398daddaa"
   @max_test_cleanup_records 128
 
@@ -1212,7 +1215,7 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, :frozen} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
   end
 
-  test "renewal uses Redis time, preserves identity, and stops at the DB deadline", %{
+  test "renewal uses Redis time and preserves the DB safety margin", %{
     scope: scope
   } do
     admitted_request = request()
@@ -1239,10 +1242,10 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
              Redis.renew_lease(reference, descriptor, lookup_opts(scope))
 
     assert renewed_deadline <= String.to_integer(original_deadline)
-    assert renewed_deadline == admitted.db_deadline_ms
+    assert renewed_deadline == admitted.db_deadline_ms + admitted.safety_margin_ms
     assert {:ok, stored_deadline} = redis(["HGET", keys.request_meta, "lease_deadline_ms"])
     assert String.to_integer(stored_deadline) == renewed_deadline
-    assert renewed_deadline <= admitted.db_deadline_ms
+    assert renewed_deadline > admitted.db_deadline_ms
     assert renewed_deadline >= now_ms
 
     assert redis(["ZSCORE", keys.global_active_expiry, admitted.member]) ==
@@ -1359,6 +1362,161 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
              )
   end
 
+  test "known release admits a queued free variant at global capacity one", %{scope: scope} do
+    holder_request = request()
+    waiter_request = request(@second_order_id, @second_variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 1))
+
+    assert {:ok, {:queued, waiter}} =
+             Redis.enqueue_or_return_existing(waiter_request, opts(scope, b_total: 1))
+
+    holder_reference = reference_for(holder_request, holder)
+    holder_descriptor = claim_descriptor(holder_request, holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(holder_reference, holder_descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               holder_reference,
+               holder_descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    waiter_keys = keys_for(waiter_request, scope)
+    assert {:ok, "ADMITTED"} = redis(["HGET", waiter_keys.request_meta, "state"])
+    assert {:ok, active_member} = redis(["HGET", waiter_keys.variant_active, "member"])
+    assert active_member == waiter.member
+    assert {:ok, 1} = redis(["ZCARD", waiter_keys.global_active_expiry])
+  end
+
+  test "known release skips a blocked global head and promotes a free variant", %{scope: scope} do
+    holder_request = request()
+    blocking_request = request(@second_order_id, @second_variant_id)
+    blocked_request = request(@third_variant_id, @second_variant_id)
+    eligible_request = request(@order_id, @third_variant_id)
+
+    assert {:ok, {:admitted, holder}} =
+             Redis.enqueue_or_return_existing(holder_request, opts(scope, b_total: 2))
+
+    assert {:ok, {:admitted, _blocking}} =
+             Redis.enqueue_or_return_existing(blocking_request, opts(scope, b_total: 2))
+
+    assert {:ok, {:queued, blocked}} =
+             Redis.enqueue_or_return_existing(blocked_request, opts(scope, b_total: 2))
+
+    assert {:ok, {:queued, eligible}} =
+             Redis.enqueue_or_return_existing(eligible_request, opts(scope, b_total: 2))
+
+    holder_reference = reference_for(holder_request, holder)
+    holder_descriptor = claim_descriptor(holder_request, holder)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(holder_reference, holder_descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               holder_reference,
+               holder_descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 2)
+             )
+
+    blocked_keys = keys_for(blocked_request, scope)
+    eligible_keys = keys_for(eligible_request, scope)
+    assert {:ok, "QUEUED"} = redis(["HGET", blocked_keys.request_meta, "state"])
+    assert {:ok, "ADMITTED"} = redis(["HGET", eligible_keys.request_meta, "state"])
+    assert {:ok, eligible_member} = redis(["HGET", eligible_keys.variant_active, "member"])
+    assert eligible_member == eligible.member
+
+    assert {:ok, blocked_score} =
+             redis(["ZSCORE", blocked_keys.global_queue_dispatch, blocked.member])
+
+    assert is_binary(blocked_score)
+  end
+
+  test "renewal generation lifecycle keeps ia02:v2 through known release", %{scope: scope} do
+    assert {:ok, renewal_request} =
+             Request.new_renewal_generation(
+               @order_id,
+               @variant_id,
+               @collection_attempt_id,
+               @generation_id,
+               1
+             )
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(renewal_request, opts(scope, b_total: 1))
+
+    reference = reference_for(renewal_request, admitted)
+    descriptor = claim_descriptor(renewal_request, admitted)
+    keys = keys_for(renewal_request, scope)
+
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.request_meta, "schema_version"])
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.reservation_fence, "schema_version"])
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.request_meta, "schema_version"])
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.reservation_fence, "schema_version"])
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.variant_active, "schema_version"])
+
+    assert {:ok, {:renewed, _deadline}} =
+             Redis.renew_lease(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.request_meta, "schema_version"])
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.reservation_fence, "schema_version"])
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.variant_active, "schema_version"])
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.request_meta, "schema_version"])
+    assert {:ok, "ia02:v2"} = redis(["HGET", keys.reservation_fence, "schema_version"])
+
+    assert {:ok, renewal_unknown_request} =
+             Request.new_renewal_generation(
+               @order_id,
+               @variant_id,
+               @collection_attempt_id,
+               @other_generation_id,
+               1
+             )
+
+    assert {:ok, {:admitted, unknown_admitted}} =
+             Redis.enqueue_or_return_existing(renewal_unknown_request, opts(scope, b_total: 1))
+
+    unknown_reference = reference_for(renewal_unknown_request, unknown_admitted)
+    unknown_descriptor = claim_descriptor(renewal_unknown_request, unknown_admitted)
+    unknown_keys = keys_for(renewal_unknown_request, scope)
+
+    assert {:ok, :claimed} =
+             Redis.claim_reserving(unknown_reference, unknown_descriptor, lookup_opts(scope))
+
+    assert {:ok, :fenced} =
+             Redis.mark_unknown_and_fence(
+               unknown_reference,
+               unknown_descriptor,
+               unknown_descriptor,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, "ia02:v2"} =
+             redis(["HGET", unknown_keys.request_meta, "schema_version"])
+
+    assert {:ok, "ia02:v2"} =
+             redis(["HGET", unknown_keys.reservation_fence, "schema_version"])
+
+    assert {:ok, "ia02:v2"} =
+             redis(["HGET", unknown_keys.variant_active, "schema_version"])
+  end
+
   test "known rejected outcome releases exact ownership and replays only itself", %{scope: scope} do
     admitted_request = request()
 
@@ -1457,8 +1615,8 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     required_recovery_window = recovery_deadline - now_ms
 
     assert metadata_ttl >= required_recovery_window
-    assert fence_ttl >= required_recovery_window
-    assert active_ttl >= required_recovery_window
+    assert fence_ttl == -1
+    assert active_ttl == -1
 
     expired_lease_deadline =
       now_ms - 1
@@ -1668,6 +1826,58 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert replayed.operation_id == admitted.operation_id
   end
 
+  test "shared unknown fence survives expiry of terminal admission evidence", %{scope: scope} do
+    admitted_request = request()
+
+    assert {:ok, {:admitted, admitted}} =
+             Redis.enqueue_or_return_existing(admitted_request, opts(scope, b_total: 1))
+
+    reference = reference_for(admitted_request, admitted)
+    descriptor = claim_descriptor(admitted_request, admitted)
+    assert {:ok, :claimed} = Redis.claim_reserving(reference, descriptor, lookup_opts(scope))
+
+    assert {:ok, :released} =
+             Redis.release_known_outcome(
+               reference,
+               descriptor,
+               :completed,
+               Keyword.put(lookup_opts(scope), :b_total, 1)
+             )
+
+    target = shared_target(admitted_request)
+    owner = shared_owner()
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence([target], owner, lookup_opts(scope))
+
+    assert {:ok, :fenced} =
+             Redis.mark_shared_mutation_unknown([target], owner, lookup_opts(scope))
+
+    keys = keys_for(admitted_request, scope)
+    assert {:ok, -1} = redis(["PTTL", keys.shared_mutation_fence])
+
+    assert {:ok, 1} = redis(["PEXPIREAT", keys.request_meta, "1"])
+    assert {:ok, 1} = redis(["PEXPIREAT", keys.reservation_fence, "1"])
+    assert {:ok, 0} = redis(["EXISTS", keys.request_meta, keys.reservation_fence])
+
+    assert {:ok, :busy} =
+             Redis.acquire_shared_mutation_fence([target], shared_owner(), lookup_opts(scope))
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", keys.shared_mutation_fence, "state"])
+
+    assert {:ok, :released} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               [target],
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence([target], shared_owner(), lookup_opts(scope))
+  end
+
   test "shared fence acquisition and release are all or none with deterministic target identity",
        %{
          scope: scope
@@ -1787,6 +1997,9 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
     assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
              redis(["HGET", first_keys.shared_mutation_fence, "state"])
 
+    assert {:ok, -1} = redis(["PTTL", first_keys.shared_mutation_fence])
+    assert {:ok, -1} = redis(["PTTL", first_keys.reservation_fence])
+
     assert {:ok, 0} = redis(["ZCARD", first_keys.variant_queue_order])
     assert {:ok, 0} = redis(["ZCARD", first_keys.global_active_expiry])
     assert {:ok, nil} = redis(["GET", first_keys.global_sequence])
@@ -1823,6 +2036,119 @@ defmodule Store.Orders.InventoryAdmissionRedisTest do
 
     assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
              redis(["HGET", keys.reservation_fence, "state"])
+
+    assert {:ok, -1} = redis(["PTTL", keys.reservation_fence])
+    assert {:ok, -1} = redis(["PTTL", keys.shared_mutation_fence])
+  end
+
+  test "shared unknown stays fail closed after subordinate operation evidence expires", %{
+    scope: scope
+  } do
+    request = request()
+    target = shared_target(request)
+    owner = shared_owner()
+    keys = keys_for(request, scope)
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence([target], owner, lookup_opts(scope))
+
+    assert {:ok, -1} = redis(["PTTL", keys.reservation_fence])
+    assert {:ok, -1} = redis(["PTTL", keys.shared_mutation_fence])
+
+    assert {:ok, :fenced} =
+             Redis.mark_shared_mutation_unknown([target], owner, lookup_opts(scope))
+
+    assert {:ok, -1} = redis(["PTTL", keys.reservation_fence])
+    assert {:ok, -1} = redis(["PTTL", keys.shared_mutation_fence])
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", keys.reservation_fence, "state"])
+
+    assert {:ok, 1} = redis(["PEXPIREAT", keys.shared_mutation_fence, "1"])
+    assert {:ok, 0} = redis(["EXISTS", keys.shared_mutation_fence])
+
+    assert {:ok, "SHARED_UNKNOWN_DB_OUTCOME"} =
+             redis(["HGET", keys.reservation_fence, "state"])
+
+    assert {:error, :unavailable} =
+             Redis.acquire_shared_mutation_fence([target], shared_owner(), lookup_opts(scope))
+
+    assert {:error, :unavailable} =
+             Redis.enqueue_or_return_existing(request, opts(scope, b_total: 1))
+
+    assert {:ok, :stale_owner} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               [target],
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    assert {:ok, :stale_owner} =
+             Redis.mark_shared_mutation_unknown([target], owner, lookup_opts(scope))
+  end
+
+  test "shared target digest orders renewal generations by binary identity without dedupe", %{
+    scope: scope
+  } do
+    assert {:ok, first} =
+             Request.new_renewal_generation(
+               @order_id,
+               @variant_id,
+               @collection_attempt_id,
+               @generation_id,
+               1
+             )
+
+    assert {:ok, second} =
+             Request.new_renewal_generation(
+               @order_id,
+               @variant_id,
+               @collection_attempt_id,
+               @other_generation_id,
+               1
+             )
+
+    track_request(first, scope)
+    track_request(second, scope)
+    first_target = shared_target(first)
+    second_target = shared_target(second)
+    targets = [first_target, second_target]
+    owner = shared_owner()
+
+    assert first.reservation_key != second.reservation_key
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence(Enum.reverse(targets), owner, lookup_opts(scope))
+
+    first_keys = keys_for(first, scope)
+
+    assert {:ok, reverse_digest} =
+             redis(["HGET", first_keys.shared_mutation_fence, "target_set_digest"])
+
+    assert {:ok, "2"} =
+             redis(["HGET", first_keys.shared_mutation_fence, "target_count"])
+
+    assert {:ok, :released} =
+             Redis.release_shared_mutation_fence_known_outcome(
+               targets,
+               owner,
+               :completed,
+               lookup_opts(scope)
+             )
+
+    second_owner = shared_owner()
+
+    assert {:ok, :acquired} =
+             Redis.acquire_shared_mutation_fence(targets, second_owner, lookup_opts(scope))
+
+    assert {:ok, forward_digest} =
+             redis(["HGET", first_keys.shared_mutation_fence, "target_set_digest"])
+
+    assert forward_digest == reverse_digest
+
+    assert {:ok, "2"} =
+             redis(["HGET", first_keys.shared_mutation_fence, "target_count"])
   end
 
   test "overlapping shared fence contenders have one complete owner", %{scope: scope} do

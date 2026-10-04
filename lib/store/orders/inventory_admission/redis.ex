@@ -2325,10 +2325,13 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local seconds = tonumber(now_reply[1])
   local microseconds = tonumber(now_reply[2])
   local db_deadline_ms = tonumber(metadata[9])
+  local safety_margin_ms = tonumber(metadata[13])
   local lease_window_ms = tonumber(metadata[14])
   if seconds == nil
     or microseconds == nil
     or db_deadline_ms == nil
+    or safety_margin_ms == nil
+    or safety_margin_ms < 0
     or lease_window_ms == nil
     or lease_window_ms < 1 then
     return unavailable()
@@ -2339,7 +2342,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     return deadline_reached()
   end
 
-  local next_deadline_ms = math.min(now_ms + lease_window_ms, db_deadline_ms)
+  local hard_lease_deadline_ms = db_deadline_ms + safety_margin_ms
+  if now_ms + lease_window_ms < hard_lease_deadline_ms then
+    return unavailable()
+  end
+
+  local next_deadline_ms = math.min(now_ms + lease_window_ms, hard_lease_deadline_ms)
   if next_deadline_ms <= now_ms then
     return deadline_reached()
   end
@@ -2543,12 +2551,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
 
   local now_reply = redis.pcall("TIME")
   local metadata_pttl = redis.pcall("PTTL", KEYS[7])
-  local fence_pttl = redis.pcall("PTTL", KEYS[8])
-  local active_pttl = redis.pcall("PTTL", KEYS[5])
   if failed(now_reply)
     or failed(metadata_pttl)
-    or failed(fence_pttl)
-    or failed(active_pttl)
     or now_reply[1] == false
     or now_reply[2] == false then
     return unavailable()
@@ -2557,18 +2561,12 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local seconds = tonumber(now_reply[1])
   local microseconds = tonumber(now_reply[2])
   local metadata_ttl = tonumber(metadata_pttl)
-  local fence_ttl = tonumber(fence_pttl)
-  local active_ttl = tonumber(active_pttl)
   local terminal_retention_ms = tonumber(metadata[14])
   local recovery_deadline = tonumber(recovery_deadline_ms)
   if seconds == nil
     or microseconds == nil
     or metadata_ttl == nil
-    or fence_ttl == nil
-    or active_ttl == nil
     or metadata_ttl == -2
-    or fence_ttl == -2
-    or active_ttl == -2
     or terminal_retention_ms == nil
     or terminal_retention_ms < 1
     or recovery_deadline == nil then
@@ -2588,18 +2586,10 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   end
 
-  if fence_ttl == -1 or fence_ttl < required_ttl_ms then
-    local renewed = redis.pcall("PEXPIRE", KEYS[8], required_ttl_ms)
-    if failed(renewed) or renewed ~= 1 then
-      return unavailable()
-    end
-  end
-
-  if active_ttl == -1 or active_ttl < required_ttl_ms then
-    local renewed = redis.pcall("PEXPIRE", KEYS[5], required_ttl_ms)
-    if failed(renewed) or renewed ~= 1 then
-      return unavailable()
-    end
+  local fence_persistent = redis.pcall("PERSIST", KEYS[8])
+  local active_persistent = redis.pcall("PERSIST", KEYS[5])
+  if failed(fence_persistent) or failed(active_persistent) then
+    return unavailable()
   end
 
   redis.call(
@@ -2667,19 +2657,6 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     or b_total == nil
     or b_total < 1
     or (candidate_present ~= "0" and candidate_present ~= "1") then
-    return unavailable()
-  end
-
-  local queue_head = redis.pcall("ZRANGE", KEYS[2], "0", "0")
-  if failed(queue_head) then
-    return unavailable()
-  end
-
-  if candidate_present == "0" then
-    if #queue_head ~= 0 then
-      return unavailable()
-    end
-  elseif ARGV[14] == nil or #queue_head ~= 1 or queue_head[1] ~= ARGV[14] then
     return unavailable()
   end
 
@@ -2833,6 +2810,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   local candidate_identity = nil
   local candidate_variant_hex = nil
   local candidate_member = nil
+  local candidate_schema = nil
   local candidate_operation_id = nil
   local candidate_operation_epoch = nil
   local candidate_lease_token = nil
@@ -2865,12 +2843,13 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       return unavailable()
     end
 
-    local candidate_queue_score = redis.pcall("ZSCORE", KEYS[2], candidate_member)
+    local candidate_queue_score = redis.pcall("ZSCORE", KEYS[9], candidate_member)
     local candidate_dispatch_score = redis.pcall("ZSCORE", KEYS[3], candidate_member)
     local candidate_expiry_score = redis.pcall("ZSCORE", KEYS[4], candidate_member)
+    local candidate_queue_head = redis.pcall("ZRANGE", KEYS[9], "0", "0")
     candidate_metadata = redis.pcall(
       "HMGET",
-      KEYS[9],
+      KEYS[11],
       "schema_version",
       "state",
       "identity_digest",
@@ -2889,7 +2868,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     )
     local candidate_fence = redis.pcall(
       "HMGET",
-      KEYS[10],
+      KEYS[12],
       "schema_version",
       "state",
       "identity_digest",
@@ -2900,25 +2879,57 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "operation_epoch",
       "reservation_key"
     )
+    local candidate_active_length = redis.pcall("HLEN", KEYS[10])
+    local candidate_active = redis.pcall(
+      "HMGET",
+      KEYS[10],
+      "schema_version",
+      "state",
+      "member",
+      "variant_hex",
+      "identity_digest",
+      "request_fingerprint",
+      "operation_id",
+      "operation_epoch"
+    )
+    local candidate_global_active_score = redis.pcall("ZSCORE", KEYS[6], candidate_member)
     local active_count = redis.pcall("ZCARD", KEYS[6])
-    local queue_head = redis.pcall("ZRANGE", KEYS[2], "0", "0")
 
     if failed(candidate_queue_score)
       or failed(candidate_dispatch_score)
       or failed(candidate_expiry_score)
+      or failed(candidate_queue_head)
       or failed(candidate_metadata)
       or failed(candidate_fence)
+      or failed(candidate_active_length)
+      or failed(candidate_active)
+      or failed(candidate_global_active_score)
       or failed(active_count)
-      or failed(queue_head) then
+      then
       return unavailable()
     end
 
-    if #queue_head ~= 1
-      or queue_head[1] ~= candidate_member
+    candidate_schema = candidate_metadata[1]
+    local candidate_active_is_releasing = false
+    if candidate_active_length > 0 then
+      candidate_active_is_releasing = candidate_active[1] == schema
+        and candidate_active[2] == "RESERVING"
+        and candidate_active[3] == member
+        and candidate_active[4] == variant_hex
+        and candidate_active[5] == identity
+        and candidate_active[6] == fingerprint
+        and candidate_active[7] == operation_id
+        and candidate_active[8] == operation_epoch
+    end
+
+    if candidate_member == member
+      or #candidate_queue_head ~= 1
+      or candidate_queue_head[1] ~= candidate_member
       or candidate_queue_score == false
       or candidate_dispatch_score == false
       or candidate_expiry_score == false
-      or candidate_metadata[1] ~= schema
+      or candidate_global_active_score ~= false
+      or (candidate_schema ~= "ia02:v1" and candidate_schema ~= "ia02:v2")
       or candidate_metadata[2] ~= "QUEUED"
       or candidate_metadata[3] ~= candidate_identity
       or candidate_metadata[4] ~= candidate_variant_hex
@@ -2927,7 +2938,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or candidate_metadata[7] ~= candidate_operation_id
       or candidate_metadata[8] ~= candidate_operation_epoch
       or candidate_metadata[15] ~= candidate_reservation_key
-      or candidate_fence[1] ~= schema
+      or candidate_fence[1] ~= candidate_schema
       or candidate_fence[2] ~= "QUEUED"
       or candidate_fence[3] ~= candidate_identity
       or candidate_fence[4] ~= candidate_variant_hex
@@ -2938,7 +2949,8 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or candidate_fence[9] ~= candidate_reservation_key
       or tonumber(candidate_queue_score) ~= tonumber(candidate_metadata[9])
       or tonumber(candidate_dispatch_score) ~= tonumber(candidate_metadata[9])
-      or tonumber(candidate_expiry_score) ~= tonumber(candidate_metadata[10]) then
+      or tonumber(candidate_expiry_score) ~= tonumber(candidate_metadata[10])
+      or (candidate_active_length > 0 and not candidate_active_is_releasing) then
       return unavailable()
     end
 
@@ -2955,28 +2967,29 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       or candidate_retention_ms == nil
       or candidate_retention_ms < 1
       or active_count_number == nil
+      or active_count_number < 1
+      or active_count_number - 1 >= b_total
+      or candidate_safety_margin_ms < 0
       or candidate_lease_window_ms < db_window_ms + candidate_safety_margin_ms then
       return unavailable()
     end
 
-    if active_count_number < b_total + 1 then
-      local now_reply = redis.pcall("TIME")
-      if failed(now_reply) or now_reply[1] == false or now_reply[2] == false then
-        return unavailable()
-      end
+    local now_reply = redis.pcall("TIME")
+    if failed(now_reply) or now_reply[1] == false or now_reply[2] == false then
+      return unavailable()
+    end
 
-      local seconds = tonumber(now_reply[1])
-      local microseconds = tonumber(now_reply[2])
-      if seconds == nil or microseconds == nil then
-        return unavailable()
-      end
+    local seconds = tonumber(now_reply[1])
+    local microseconds = tonumber(now_reply[2])
+    if seconds == nil or microseconds == nil then
+      return unavailable()
+    end
 
-      local now_ms = seconds * 1000 + math.floor(microseconds / 1000)
-      if now_ms < queue_deadline_ms then
-        candidate_db_deadline_ms = now_ms + db_window_ms
-        candidate_lease_deadline_ms = now_ms + candidate_lease_window_ms
-        candidate_promote = true
-      end
+    local now_ms = seconds * 1000 + math.floor(microseconds / 1000)
+    if now_ms < queue_deadline_ms then
+      candidate_db_deadline_ms = now_ms + db_window_ms
+      candidate_lease_deadline_ms = now_ms + candidate_lease_window_ms
+      candidate_promote = true
     end
   end
 
@@ -2988,23 +3001,23 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   redis.call("PEXPIRE", KEYS[8], terminal_retention_ms)
 
   if candidate_promote then
-    redis.call("ZREM", KEYS[2], candidate_member)
+    redis.call("ZREM", KEYS[9], candidate_member)
     redis.call("ZREM", KEYS[3], candidate_member)
     redis.call("ZREM", KEYS[4], candidate_member)
     redis.call(
       "HSET",
-      KEYS[9],
+      KEYS[11],
       "state", "ADMITTED",
       "db_deadline_ms", candidate_db_deadline_ms,
       "lease_deadline_ms", candidate_lease_deadline_ms,
       "lease_token", candidate_lease_token,
       "owner_epoch", candidate_operation_epoch
     )
-    redis.call("HSET", KEYS[10], "state", "ADMITTED", "fence_kind", "admission")
+    redis.call("HSET", KEYS[12], "state", "ADMITTED", "fence_kind", "admission")
     redis.call(
       "HSET",
-      KEYS[5],
-      "schema_version", schema,
+      KEYS[10],
+      "schema_version", candidate_schema,
       "state", "ADMITTED",
       "member", candidate_member,
       "variant_hex", candidate_variant_hex,
@@ -3023,14 +3036,14 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     redis.call("ZADD", KEYS[6], candidate_lease_deadline_ms, candidate_member)
     redis.call(
       "EXPIRE",
-      KEYS[9],
+      KEYS[11],
       math.ceil(
         (candidate_retention_ms + candidate_lease_window_ms + candidate_safety_margin_ms) / 1000
       )
     )
     redis.call(
       "EXPIRE",
-      KEYS[10],
+      KEYS[12],
       math.ceil(
         (candidate_retention_ms + candidate_lease_window_ms + candidate_safety_margin_ms) / 1000
       )
@@ -3333,7 +3346,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "mutation_kind", mutation_kind,
       "recovery_deadline_ms", recovery_deadline_ms
     )
-    redis.call("PEXPIRE", shared_fence_key, fence_ttl_ms)
+    redis.call("PERSIST", shared_fence_key)
 
     if admission_fence_length == 0 then
       redis.call(
@@ -3347,10 +3360,10 @@ defmodule Store.Orders.InventoryAdmission.Redis do
         "member", member,
         "reservation_key", reservation_key
       )
-      redis.call("PEXPIRE", admission_fence_key, fence_ttl_ms)
+      redis.call("PERSIST", admission_fence_key)
     elseif admission_fence_state == "SHARED_COMPLETED" or admission_fence_state == "SHARED_REJECTED" then
       redis.call("HSET", admission_fence_key, "state", "SHARED_ACTIVE")
-      redis.call("PEXPIRE", admission_fence_key, fence_ttl_ms)
+      redis.call("PERSIST", admission_fence_key)
     end
   end
 
@@ -3471,9 +3484,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       end
 
       terminal_count = terminal_count + 1
-    elseif fence[2] ~= "SHARED_ACTIVE" then
+    elseif fence[2] ~= "SHARED_ACTIVE" and fence[2] ~= "SHARED_UNKNOWN_DB_OUTCOME" then
       return stale()
-    elseif marker_targets[index] and marker[2] ~= "SHARED_ACTIVE" then
+    elseif marker_targets[index] and marker[2] ~= fence[2] then
       return unavailable()
     end
   end
@@ -3675,10 +3688,10 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       "fence_kind", "shared",
       "recovery_deadline_ms", recovery_deadline_ms
     )
-    redis.call("PEXPIRE", fence_key, fence_ttl_ms)
+    redis.call("PERSIST", fence_key)
     if marker_targets[index] then
       redis.call("HSET", admission_fence_key, "state", "SHARED_UNKNOWN_DB_OUTCOME")
-      redis.call("PEXPIRE", admission_fence_key, fence_ttl_ms)
+      redis.call("PERSIST", admission_fence_key)
     end
   end
 
@@ -3985,7 +3998,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          {:ok, context} <- reference_context(reference, Keyword.take(opts, [:hmac_key, :scope])),
          {:ok, values} <- lease_values(owner, reference, context),
          {:ok, outcome} <- normalize_known_outcome(outcome),
-         {:ok, promotion} <- release_promotion_context(context.keys),
+         {:ok, promotion} <- release_promotion_context(context.keys, values.member),
          {:ok, reply} <-
            eval(
              @release_known_outcome_script,
@@ -4383,9 +4396,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   end
 
-  defp claim_arguments(_reference, _context, values) do
+  defp claim_arguments(reference, _context, values) do
     [
-      @record_version,
+      record_version(reference),
       values.identity_digest,
       values.request_fingerprint,
       values.member,
@@ -4406,9 +4419,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     ]
   end
 
-  defp lease_arguments(_reference, _context, values) do
+  defp lease_arguments(reference, _context, values) do
     [
-      @record_version,
+      record_version(reference),
       values.identity_digest,
       values.request_fingerprint,
       values.member,
@@ -4421,9 +4434,9 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     ]
   end
 
-  defp unknown_arguments(_reference, _context, values) do
+  defp unknown_arguments(reference, _context, values) do
     [
-      @record_version,
+      record_version(reference),
       values.identity_digest,
       values.request_fingerprint,
       values.member,
@@ -4443,66 +4456,261 @@ defmodule Store.Orders.InventoryAdmission.Redis do
   defp normalize_known_outcome("REJECTED"), do: {:ok, "REJECTED"}
   defp normalize_known_outcome(_outcome), do: {:error, :invalid_input}
 
-  defp release_promotion_context(keys) do
-    case redis_command(["ZRANGE", keys.variant_queue_order, "0", "0"]) do
-      {:ok, []} -> {:ok, %{keys: [], present: false}}
-      {:ok, [candidate_member]} -> promotion_candidate(keys, candidate_member)
+  defp release_promotion_context(keys, releasing_member) do
+    with :ok <- validate_member(releasing_member),
+         {:ok, candidate_members} <-
+           redis_command(["ZRANGE", keys.global_queue_dispatch, "0", "-1"]),
+         true <- is_list(candidate_members),
+         {:ok, now_ms} <- redis_server_time() do
+      discover_release_candidate(keys, candidate_members, releasing_member, now_ms)
+    else
       _ -> {:error, :unavailable}
     end
   end
 
-  defp promotion_candidate(keys, candidate_member) do
+  defp discover_release_candidate(_keys, [], _releasing_member, _now_ms),
+    do: {:ok, %{keys: [], present: false}}
+
+  defp discover_release_candidate(keys, [member | rest], releasing_member, now_ms) do
+    if member == releasing_member do
+      discover_release_candidate(keys, rest, releasing_member, now_ms)
+    else
+      case promotion_candidate(keys, member, releasing_member, now_ms) do
+        {:ok, :blocked} ->
+          discover_release_candidate(keys, rest, releasing_member, now_ms)
+
+        {:ok, candidate} ->
+          {:ok, candidate}
+
+        {:error, :unavailable} = error ->
+          error
+      end
+    end
+  end
+
+  defp promotion_candidate(keys, candidate_member, releasing_member, now_ms) do
+    candidate_meta_key = request_meta_key(keys, candidate_member)
+
     with :ok <- validate_member(candidate_member),
-         candidate_meta_key <- request_meta_key(keys, candidate_member),
          {:ok,
           [
+            candidate_schema,
+            "QUEUED",
             candidate_identity,
             candidate_variant_hex,
             candidate_fingerprint,
             candidate_operation_id,
             candidate_operation_epoch,
-            candidate_reservation_key,
-            "QUEUED"
+            candidate_sequence,
+            candidate_queue_deadline,
+            candidate_reservation_key
           ]} <-
            redis_command([
              "HMGET",
              candidate_meta_key,
+             "schema_version",
+             "state",
              "identity_digest",
              "variant_hex",
              "request_fingerprint",
              "operation_id",
              "operation_epoch",
-             "reservation_key",
-             "state"
+             "sequence",
+             "queue_deadline_ms",
+             "reservation_key"
            ]),
+         true <- candidate_schema in [@record_version, @renewal_record_version],
          :ok <- validate_digest(candidate_identity),
          :ok <- validate_variant_hex(candidate_variant_hex),
          :ok <- validate_digest(candidate_fingerprint),
          :ok <- validate_operation_id(candidate_operation_id),
          {:ok, candidate_epoch} <- parse_positive_integer(candidate_operation_epoch),
+         {:ok, sequence} <- parse_positive_integer(candidate_sequence),
+         {:ok, queue_deadline_ms} <- parse_positive_integer(candidate_queue_deadline),
          true <- is_binary(candidate_reservation_key) and byte_size(candidate_reservation_key) > 0,
          {:ok, candidate_variant_id} <- decode_variant_hex(candidate_variant_hex),
          {:ok, candidate_keys} <-
            key_set(candidate_variant_id, candidate_member, candidate_identity,
              scope: scope_from_keys(keys)
-           ) do
-      {:ok,
-       %{
-         keys: [candidate_meta_key, candidate_keys.reservation_fence],
-         present: true,
-         member: candidate_member,
-         identity_digest: candidate_identity,
-         variant_hex: candidate_variant_hex,
-         request_fingerprint: candidate_fingerprint,
-         operation_id: candidate_operation_id,
-         operation_epoch: candidate_epoch,
-         reservation_key: candidate_reservation_key,
-         lease_token: generate_lease_token()
-       }}
+           ),
+         {:ok,
+          [
+            fence_schema,
+            "QUEUED",
+            fence_identity,
+            fence_variant_hex,
+            ^candidate_member,
+            fence_fingerprint,
+            fence_operation_id,
+            fence_operation_epoch,
+            fence_reservation_key
+          ]} <-
+           redis_command([
+             "HMGET",
+             candidate_keys.reservation_fence,
+             "schema_version",
+             "state",
+             "identity_digest",
+             "variant_hex",
+             "member",
+             "request_fingerprint",
+             "operation_id",
+             "operation_epoch",
+             "reservation_key"
+           ]),
+         true <- fence_schema == candidate_schema,
+         true <- fence_identity == candidate_identity,
+         true <- fence_variant_hex == candidate_variant_hex,
+         true <- fence_fingerprint == candidate_fingerprint,
+         true <- fence_operation_id == candidate_operation_id,
+         true <- fence_operation_epoch == candidate_operation_epoch,
+         true <- fence_reservation_key == candidate_reservation_key,
+         {:ok, queue_score} <-
+           redis_command(["ZSCORE", candidate_keys.variant_queue_order, candidate_member]),
+         {:ok, dispatch_score} <-
+           redis_command(["ZSCORE", keys.global_queue_dispatch, candidate_member]),
+         {:ok, expiry_score} <-
+           redis_command(["ZSCORE", keys.global_queue_expiry, candidate_member]),
+         {:ok, queue_head} <-
+           redis_command(["ZRANGE", candidate_keys.variant_queue_order, "0", "0"]),
+         {:ok, active_length} <- redis_command(["HLEN", candidate_keys.variant_active]),
+         {:ok, active} <-
+           redis_command([
+             "HMGET",
+             candidate_keys.variant_active,
+             "state",
+             "member",
+             "variant_hex",
+             "identity_digest",
+             "request_fingerprint",
+             "operation_id",
+             "operation_epoch"
+           ]),
+         {:ok, global_active_score} <-
+           redis_command(["ZSCORE", keys.global_active_expiry, candidate_member]) do
+      candidate = %{
+        keys: keys,
+        candidate_keys: candidate_keys,
+        meta_key: candidate_meta_key,
+        member: candidate_member,
+        releasing_member: releasing_member,
+        identity_digest: candidate_identity,
+        variant_hex: candidate_variant_hex,
+        request_fingerprint: candidate_fingerprint,
+        operation_id: candidate_operation_id,
+        operation_epoch: candidate_epoch,
+        reservation_key: candidate_reservation_key,
+        sequence: sequence,
+        queue_deadline_ms: queue_deadline_ms,
+        queue_score: queue_score,
+        dispatch_score: dispatch_score,
+        expiry_score: expiry_score,
+        queue_head: queue_head,
+        active_length: active_length,
+        active: active,
+        global_active_score: global_active_score
+      }
+
+      validate_release_candidate(candidate, now_ms)
     else
       _ -> {:error, :unavailable}
     end
   end
+
+  defp validate_release_candidate(candidate, now_ms) do
+    cond do
+      not release_candidate_indexes_match?(candidate) ->
+        {:error, :unavailable}
+
+      candidate.global_active_score != nil ->
+        {:error, :unavailable}
+
+      not release_candidate_head_and_live?(candidate, now_ms) ->
+        {:ok, :blocked}
+
+      true ->
+        validate_release_candidate_active(candidate)
+    end
+  end
+
+  defp release_candidate_indexes_match?(candidate) do
+    candidate.queue_score != nil and candidate.dispatch_score != nil and
+      candidate.expiry_score != nil and
+      score_matches?(candidate.queue_score, candidate.sequence) and
+      score_matches?(candidate.dispatch_score, candidate.sequence) and
+      score_matches?(candidate.expiry_score, candidate.queue_deadline_ms)
+  end
+
+  defp release_candidate_head_and_live?(candidate, now_ms) do
+    candidate.queue_head == [candidate.member] and candidate.queue_deadline_ms > now_ms
+  end
+
+  defp validate_release_candidate_active(candidate) do
+    case release_candidate_active_state(candidate) do
+      :free -> {:ok, release_promotion(candidate)}
+      :releasing -> {:ok, release_promotion(candidate)}
+      :busy -> {:ok, :blocked}
+      :invalid -> {:error, :unavailable}
+    end
+  end
+
+  defp release_candidate_active_state(%{active_length: 0}), do: :free
+
+  defp release_candidate_active_state(candidate) do
+    cond do
+      candidate.candidate_keys.variant_active == candidate.keys.variant_active and
+          release_active_matches?(
+            candidate.active,
+            candidate.releasing_member,
+            candidate.variant_hex
+          ) ->
+        :releasing
+
+      Enum.all?(candidate.active, &is_binary/1) ->
+        :busy
+
+      true ->
+        :invalid
+    end
+  end
+
+  defp release_active_matches?(
+         ["RESERVING", releasing_member, variant_hex | _],
+         releasing_member,
+         variant_hex
+       ),
+       do: true
+
+  defp release_active_matches?(_active, _releasing_member, _variant_hex), do: false
+
+  defp release_promotion(candidate) do
+    %{
+      keys: [
+        candidate.candidate_keys.variant_queue_order,
+        candidate.candidate_keys.variant_active,
+        candidate.meta_key,
+        candidate.candidate_keys.reservation_fence
+      ],
+      present: true,
+      member: candidate.member,
+      identity_digest: candidate.identity_digest,
+      variant_hex: candidate.variant_hex,
+      request_fingerprint: candidate.request_fingerprint,
+      operation_id: candidate.operation_id,
+      operation_epoch: candidate.operation_epoch,
+      reservation_key: candidate.reservation_key,
+      lease_token: generate_lease_token()
+    }
+  end
+
+  defp score_matches?(score, expected) when is_binary(score) do
+    case Float.parse(score) do
+      {value, ""} -> value == expected
+      _ -> false
+    end
+  end
+
+  defp score_matches?(_score, _expected), do: false
 
   defp scope_from_keys(keys) do
     case Regex.run(~r/\{inventory_admission:[^:]+:([^}]+)\}/, keys.hash_tag) do
@@ -4511,7 +4719,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
     end
   end
 
-  defp release_arguments(_reference, _context, values, outcome, promotion) do
+  defp release_arguments(reference, _context, values, outcome, promotion) do
     promotion_arguments =
       if promotion.present do
         [
@@ -4529,7 +4737,7 @@ defmodule Store.Orders.InventoryAdmission.Redis do
       end
 
     [
-      @record_version,
+      record_version(reference),
       values.identity_digest,
       values.request_fingerprint,
       values.member,
@@ -4648,7 +4856,10 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          {:ok, keys} <-
            key_set(Map.get(target, :variant_id), member, identity_digest, scope: options.scope),
          {:ok, order_raw} <- UUIDv7.decode(identities.order_id),
-         {:ok, variant_raw} <- UUIDv7.decode(identities.variant_id) do
+         {:ok, variant_raw} <- UUIDv7.decode(identities.variant_id),
+         {:ok, collection_raw} <- sort_identity_raw(Map.get(identities, :collection_attempt_id)),
+         {:ok, generation_raw} <-
+           sort_identity_raw(Map.get(identities, :reservation_generation_id)) do
       {:ok,
        %{
          reservation_key: Map.get(target, :reservation_key),
@@ -4657,12 +4868,15 @@ defmodule Store.Orders.InventoryAdmission.Redis do
          identity_digest: identity_digest,
          member: member,
          keys: keys,
-         sort_key: {order_raw, variant_raw}
+         sort_key: {order_raw, variant_raw, collection_raw, generation_raw}
        }}
     else
       _ -> {:error, :invalid_input}
     end
   end
+
+  defp sort_identity_raw(nil), do: {:ok, <<>>}
+  defp sort_identity_raw(identity), do: UUIDv7.decode(identity)
 
   defp shared_script_keys(%{targets: targets}) do
     target_keys =
