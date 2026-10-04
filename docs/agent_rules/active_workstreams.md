@@ -1507,16 +1507,57 @@ This section records dynamic status only. It does not override accepted lifecycl
 
 Current JC-229 / SBH-10-04 serial-admission evidence:
 
-- canonical SUBS register v0.1.34 records `SBH-10-04 = READY / No`
-- bounded shared authority = `AUTHORITY_ASSIGNED`
-- `SBH-10-05 = BLOCKED_DEPENDENCY / No`
-- the human has explicitly selected JC-229 / SBH-10-04 for implementation in owner-authored PR #122 comment `#5950367213`, posted after PR #121 merged and explicitly approving `8a21739555de1dde8f448bfd7e1172b1caeb54c3` as the exact JC-229 `task_base_sha` subject to PR #122 merge and post-merge verification
-- accepted post-governance SUBS tip = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
-- candidate JC-229 `task_base_sha` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3`
-- fresh post-readmission Phase-B implementation branch = not created
-- stale pre-readmission branch `subs-task/sbh-10-04-bound-renewal-initiation` still exists at `08b28937c001b4f35350bcf5de6fdd052fc7a4c3` as PR #78 evidence; it is not the fresh Phase-B branch and must not be resumed
-- Phase B may create one fresh `subs-task/sbh-10-04-*` branch from the exact task base only after this registry refresh is human-merged and independently post-merge verified
-- PR #78 remains stale partial evidence and must not be resumed
+- Prior SUBS v0.1.34 READY and task-start evidence is historical admission.
+- JC-229 / SBH-10-04 is now `BLOCKED_AUTHORITY -> STOP` at draft PR #127 head
+  `c409a440dbb5f2ea2fb39e79e0f9b11787d38422`.
+- Original task base and accepted SUBS tip remain
+  `8a21739555de1dde8f448bfd7e1172b1caeb54c3`.
+- The implementation branch exists as
+  `subs-task/sbh-10-04-renewal-initiation-phase-b` in
+  `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions/.worktrees/sbh-10-04-renewal-initiation-phase-b`.
+  It must remain stopped. PR #127 remains draft and must not be changed or merged.
+- JC-230 / SBH-10-05 remains dependency-blocked. The SUBS Master Register remains
+  unchanged; this correction grants no JC-229 execution authority.
+- PR #78 remains stale evidence and must not be resumed.
+
+### JC-229 exact-generation guard prerequisite
+
+The [owning correction](../governance/sbh_10_04_cross_domain_authority_amendment.md#jc-229-dispatch-atomicity-correction)
+records the race, guard semantics, proof requirements, and sequencing.
+
+Governance task `jc229-generation-guard` has authoritative parent `origin/main`
+at `43b2927b3fd4689c68bf8ec4f631d8ab0c5c2d8c`, branch
+`governance/jc229-generation-guard`, and worktree
+`/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-governance-jc229-generation-guard`.
+It owns only this bounded registry edit and the amendments in
+`docs/governance/inventory_reservations.md` and
+`docs/governance/sbh_10_04_cross_domain_authority_amendment.md`.
+Runtime, SUBS Master Register, S0 architecture, PR #127, and PR #128 edits are excluded.
+Lifecycle is `IMPLEMENTING` until validation/publication and the subsequent review,
+human merge, and independent target-verification gates complete.
+
+The future prerequisite belongs to S0 / Orders concurrency, separately from IA-04.
+Candidate parent is `origin/hardening/s0-baseline` at
+`f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`. State is
+`BLOCKED_BASE_RECONCILIATION / BLOCKED_FACADE_AUTHORITY / NOT STARTED`.
+No executable future task SHA,
+implementation branch, or worktree is assigned. Separately authorized reconciliation
+of relevant accepted shared-main changes and a fresh exact-base/ownership decision
+must precede implementation. The accepted Store.Orders facade also needs an explicit
+authority decision because exposing the guard would require a third file,
+`lib/store/orders/domain.ex`. This task does not authorize that edit or integration.
+
+After those gates, exclusive prerequisite scope is
+`lib/store/orders/inventory_reservations.ex` and
+`test/store/orders/inventory_reservation_generation_test.exs` only.
+PR #128 may continue its Redis-only Slice 2 independently. It receives no guard work.
+Later IA-04 slices touching either file must wait for prerequisite S0 merge and
+independent verification, then reconcile the accepted guard before coding.
+No competing write authority is permitted. If later-slice work already started,
+STOP for a new sequencing decision. This does not broaden IA-04 or authorize IA-05.
+
+JC-229 remains blocked through prerequisite acceptance, S0 merge/verification,
+SUBS integration/verification, and separate SUBS governance re-admission.
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
