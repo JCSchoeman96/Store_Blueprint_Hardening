@@ -127,6 +127,30 @@ defmodule Store.Orders.InventoryReservations do
   def recover_exact_generation(_order_id, _variant_id, _reservation_key),
     do: {:error, :invalid_identity}
 
+  @spec guard_exact_generation(String.t(), String.t(), String.t(), pos_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :transaction_required
+             | :invalid_identity
+             | :not_found
+             | :contradictory_evidence
+             | :quantity_mismatch
+             | :not_active
+             | :database_unavailable}
+  def guard_exact_generation(order_id, variant_id, reservation_key, required_quantity)
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             is_integer(required_quantity) and required_quantity > 0 do
+    guard_exact_generation_in_caller_transaction(
+      order_id,
+      variant_id,
+      reservation_key,
+      required_quantity
+    )
+  end
+
+  def guard_exact_generation(_order_id, _variant_id, _reservation_key, _required_quantity),
+    do: {:error, :invalid_identity}
+
   @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
           | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
@@ -213,6 +237,47 @@ defmodule Store.Orders.InventoryReservations do
       end
     else
       {:error, Error.new("RESERVATION_CONFLICT", "Invalid exact operation options", %{})}
+    end
+  end
+
+  defp guard_exact_generation_in_caller_transaction(
+         order_id,
+         variant_id,
+         reservation_key,
+         required_quantity
+       ) do
+    if Repo.in_transaction?() do
+      with {:ok, identity} <-
+             exact_generation_identity(order_id, variant_id, reservation_key),
+           {:ok, reservation} <- lock_exact_generation_reservation(identity),
+           :ok <- validate_guard_locked_row(reservation, identity, required_quantity) do
+        {:ok, reservation_facts(reservation)}
+      end
+    else
+      {:error, :transaction_required}
+    end
+  rescue
+    _error in Postgrex.Error -> {:error, :database_unavailable}
+    _error in DBConnection.ConnectionError -> {:error, :database_unavailable}
+  end
+
+  defp validate_guard_locked_row(nil, _identity, _required_quantity),
+    do: {:error, :not_found}
+
+  defp validate_guard_locked_row(%InventoryReservation{} = row, identity, required_quantity) do
+    cond do
+      row.order_id != identity.order_id or row.variant_id != identity.variant_id or
+          row.reservation_key != identity.reservation_key ->
+        {:error, :contradictory_evidence}
+
+      row.quantity != required_quantity ->
+        {:error, :quantity_mismatch}
+
+      row.state != :active ->
+        {:error, :not_active}
+
+      true ->
+        :ok
     end
   end
 
