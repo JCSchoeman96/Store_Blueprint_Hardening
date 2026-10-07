@@ -25,6 +25,10 @@ defmodule Store.Support.Redis do
     do_delete_prefix("#{key_prefix()}:*", "0")
   end
 
+  @doc false
+  @spec flush_db() :: :ok | {:error, term()}
+  def flush_db, do: clear_namespace()
+
   @spec key(String.t()) :: String.t()
   def key(relative_key) when is_binary(relative_key) do
     "#{key_prefix()}:#{relative_key}"
