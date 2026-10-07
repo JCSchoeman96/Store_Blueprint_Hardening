@@ -276,11 +276,23 @@ additive guard implementation in `Store.Orders.InventoryReservations`. Cross-dom
 callers must retain the accepted `Store.Orders` facade boundary, supply trusted typed
 identity and explicit system/actor authority, and never access Orders tables through
 Subscription Repo code. Current `domain.ex` forwards the existing exact-generation
-APIs explicitly and has no guard entry. The two-file limit therefore does not yet
-provide an authorized public entry for JC-229. Do not bypass that facade or alter an
-existing recovery API to expose the guard. A separate authority decision must resolve
-this minimal facade-exposure requirement before executable admission. This task does
-not pre-authorize a third implementation file.
+APIs explicitly and has no guard entry yet. Cross-domain callers must never call
+`InventoryReservations` directly.
+
+The 2026-10-07 source-compatibility admission explicitly authorizes one additive
+`Store.Orders` facade forwarding entry for the exact-generation transaction guard.
+The frozen future implementation boundary is exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+test/store/orders/inventory_reservation_generation_test.exs
+```
+
+No arbitrary public function name is frozen. Freeze the behavioral contract:
+`Store.Orders` (public/internal facade) → additive exact-generation transaction
+guard → `InventoryReservations` implementation. Do not bypass that facade or alter an
+existing recovery API to expose the guard.
 
 For a physical dispatch, the exact collection epoch N in `not_started`, exact
 PaymentIntent evidence, and the exact active physical generation under the guard
@@ -303,65 +315,87 @@ prevent the new reservation-to-inventory edge that would otherwise form a cycle.
 A caller must not hold earlier Orders locks when it starts collection locking.
 A future authoritative writer that violates this graph blocks implementation.
 
-### Conditional prerequisite admission
+### Prerequisite admission (2026-10-07)
 
 Objective: protect one exact physical generation through a governed caller's outer
 transaction, without writing inventory, Subscription state, or new durable evidence.
 The owner is S0 / Orders inventory concurrency, in one dedicated temporary task
 branch/worktree. This is a separate prerequisite, not JC-229 or IA-04 Slice 2.
 
-Authoritative parent candidate is `origin/hardening/s0-baseline` at exact SHA
-`f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`. This is the reviewed code baseline,
-not an executable future task base. S0's common ancestor with main is
-`d78a916472a75c9ffebea33acf6b07f41ffe07f3`. Main has since accepted shared Redis,
-runtime/test configuration, CI, and performance database safety changes through
-PR #86 and PR #89. AGENTS.md requires relevant main changes to be reconciled first.
-This governance task does not authorize or perform that integration.
+**Governance parent:** canonical `origin/main` at
+`b0a6c07637258659eb561e9863ea88667d1f96ae` (governance branch
+`governance/s0-jc229-generation-guard-admission`).
 
-Prerequisite state is `BLOCKED_BASE_RECONCILIATION / BLOCKED_FACADE_AUTHORITY / NOT STARTED`. There is no
-honestly assignable executable future task SHA yet. Before implementation, a separate
-bounded authority decision must reconcile the required accepted main baseline into
-S0, independently verify it, and record the resulting exact task base, authoritative
-parent, branch, worktree, ownership, and exclusions in the active registry. If that
-parent moves, STOP and re-evaluate. Do not branch from main alone, which lacks the
-accepted PR #117 runtime, or use PR #127 as Orders implementation authority.
+**Accepted S0 task base (implementation parent):**
 
-The proposed two-file implementation boundary, still blocked on the base and facade
-authority decisions, is:
+```text
+commit = da0a369b9f99ecca6db940a802257cea4e69b2b8
+tree   = 6227effe919509d71fe0450234792831d7d13240
+ref    = origin/hardening/s0-baseline
+```
+
+Provenance: PR #128 Slice 2 merged and post-merge verified; PR #132 DevCore
+reconciliation merged as `da0a369...` with zero IA implementation/test drift on the
+guard surfaces. Source-compatibility review at this base: `PASS`. Relevant main/S0
+runtime divergence on the three guard surfaces is S0-ahead exact-generation history;
+it does not require importing unrelated main application history before implementing
+on S0. `BLOCKED_BASE_RECONCILIATION` and `BLOCKED_FACADE_AUTHORITY` are resolved.
+
+**Prerequisite lifecycle:**
+
+```text
+JC-229 EXACT-GENERATION GUARD PREREQUISITE = AUTHORIZED / NOT STARTED
+```
+
+```text
+implementation branch  = NOT CREATED YET
+implementation worktree = NOT CREATED YET
+integration target     = hardening/s0-baseline
+```
+
+Writable files for the future implementation task only:
 
 ```text
 lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
 test/store/orders/inventory_reservation_generation_test.exs
 ```
 
 Every other file is forbidden in that implementation task. In particular, no
 `inventory_reservation.ex` resource change, migration, Ash snapshot, new resource or
-Domain, `inventory_admission.ex`, `InventoryAdmission.Redis`, Orders `domain.ex`,
-generic checkout, workers, Subscription runtime, Payments, providers, dependency,
-configuration, stock authority, or IA-05 recovery change is admitted. Any need for
-additional files requires STOP and another authority decision. Existing APIs remain
-unchanged; recovery-after-ambiguous-mutation compliance in PR #127's fence path remains
-that stopped task's separate responsibility. The guard does not add recovery semantics.
+Domain, `inventory_admission.ex`, `InventoryAdmission.Redis`, generic checkout,
+workers, Subscription runtime, Payments, providers, dependency, configuration, stock
+authority, or IA-05 recovery change is admitted. Any need for additional files
+requires STOP and another authority decision. Existing APIs remain unchanged;
+recovery-after-ambiguous-mutation compliance in PR #127's fence path remains that
+stopped task's separate responsibility. The guard does not add recovery semantics.
+
+Do not branch the implementation from `main` alone (lacks accepted PR #117 runtime)
+or use PR #127 / `hardening/s0-ia04` as implementation authority. If the task base
+moves before implementation starts, STOP and re-evaluate.
 
 ### IA-04 isolation and sequencing
 
-PR #128's cumulative eight-file diff contains accepted Slice-1 configuration/startup
-files plus the two Slice-2 Redis files. Neither allowed guard file appears in that
-diff. Slice 2 makes no PostgreSQL calls or Orders routing changes. Redis lifecycle
-fences remain coordination; the new PostgreSQL guard neither replaces them nor
-changes their known/unknown outcome, capacity-retention, or timeout rules.
+PR #128 Slice 2 is `PASS / ACCEPTED / FROZEN` (merge `f5131e39801c1633b79d04cacd30202b0823e48d`
+into `hardening/s0-baseline`). Its cumulative diff contained accepted Slice-1
+configuration/startup files plus the two Slice-2 Redis files only; neither guard
+surface appeared in that diff. Slice 2 makes no PostgreSQL calls or Orders routing
+changes. Redis lifecycle fences remain coordination; the new PostgreSQL guard neither
+replaces them nor changes their known/unknown outcome, capacity-retention, or timeout
+rules.
 
-The task may coexist with active PR #128 only after the base/admission gates above.
-It must use its own branch/worktree and S0's explicit bounded ownership assignment.
-PR #128 remains untouched. No guard implementation may be added to it.
+The guard prerequisite must use its own branch/worktree and S0's explicit bounded
+ownership assignment. No guard implementation may be added to the historical
+`hardening/s0-ia04` line.
 
-IA-04 full-scope admission already assigns `inventory_reservations.ex` to later
-service/writer slices. Reserve the two guard files exclusively to the prerequisite
-until it is merged and independently verified on S0. Later IA-04 work touching either
-file must wait and reconcile the accepted guard before implementation. No parallel
-competing implementation of this Orders file is permitted. If later slices have
-started or ownership changed, STOP for a new sequencing decision. Slice 2 itself
-need not wait for the guard and receives no broader PostgreSQL authority here.
+IA-04 Slice 1 = `PASS / ACCEPTED / FROZEN`. IA-04 Slice 3 = `SERIAL-BLOCKED ON JC-229
+GUARD PREREQUISITE` (not authorized to start). IA-05+ = `NOT AUTHORIZED`.
+
+Reserve the three-file guard boundary exclusively to the prerequisite until it is
+merged and independently verified on S0. Later IA-04 slices touching
+`inventory_reservations.ex` must wait for prerequisite S0 merge/verification, then
+reconcile the accepted guard before coding. No parallel competing implementation is
+permitted. If later-slice work already started, STOP for a new sequencing decision.
 S0 architecture remains unchanged; this completes the Orders exact-generation
 concurrency contract and does not amend the InventoryAdmission architecture file.
 
@@ -413,10 +447,10 @@ lock waits, and errors; add no logging of complete keys or payment evidence.
 
 ### Merge and re-admission gates
 
-The governance PR requires exact-head CI, independent review, human merge into main,
-and independent post-merge commit/tree verification. It implements no capability.
-The prerequisite then requires the separate base/ownership admission above, focused
-deterministic tests and neighbouring regressions, measured performance proof,
+The governance admission PR requires exact-head CI, independent review, human merge
+into `main`, and independent post-merge commit/tree verification. It implements no
+capability. After that admission merges, the prerequisite implementation requires
+focused deterministic tests and neighbouring regressions, measured performance proof,
 `mix check`, required exact-head CI, and fresh independent review. Its integration
 target is `hardening/s0-baseline`, using a normal bounded merge, followed by independent
 post-merge commit/tree and test verification. No force push is authorized.

@@ -1630,8 +1630,8 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `982b483fab0f337e5697c74c64e1e2a12dac65a3` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work.
-- `origin/hardening/s0-baseline` = `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (current fetched persistent S0 tip)
+- `origin/main` = `b0a6c07637258659eb561e9863ea88667d1f96ae` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work.
+- `origin/hardening/s0-baseline` = `da0a369b9f99ecca6db940a802257cea4e69b2b8` (tree `6227effe919509d71fe0450234792831d7d13240`; PR #132 DevCore reconciliation)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
 - PR #90 = MERGED / ACCEPTED into `main`
@@ -1657,6 +1657,11 @@ This section records dynamic status only. It does not override accepted lifecycl
   `c6aabd412fe66ce778a51ecba5361dfebdbc2052`; S0 IA-04 configuration/startup-authority correction preserved by this reconciliation
 - PR #124 = MERGED / ACCEPTED into `main` as
   `ddc59e42941a859eeb6ae72e311c87fff10d7996`; IA-04 implementation-state transition to `AUTHORIZED / IMPLEMENTING` and its Slice-1/Slice-2 guards are preserved by this reconciliation
+- PR #128 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline` as
+  `f5131e39801c1633b79d04cacd30202b0823e48d` (IA-04 Slice 2 Redis coordination)
+- PR #132 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline` as
+  `da0a369b9f99ecca6db940a802257cea4e69b2b8` (DevCore reconciliation; tree
+  `6227effe919509d71fe0450234792831d7d13240`; zero drift on IA guard surfaces)
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
 - PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (historical SUBS main reconciliation; see record above)
 - PR #89 = MERGED / ACCEPTED into `main`
@@ -1679,44 +1684,78 @@ Current JC-229 / SBH-10-04 serial-admission evidence:
 ### JC-229 exact-generation guard prerequisite
 
 The [owning correction](../governance/sbh_10_04_cross_domain_authority_amendment.md#jc-229-dispatch-atomicity-correction)
-records the race, guard semantics, proof requirements, and sequencing.
+records the race, guard semantics, lock ordering, proof requirements, and sequencing.
 
-Governance task `jc229-generation-guard` has authoritative parent `origin/main`
-at `43b2927b3fd4689c68bf8ec4f631d8ab0c5c2d8c`, branch
-`governance/jc229-generation-guard`, and worktree
-`/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-governance-jc229-generation-guard`.
-It owns only this bounded registry edit and the amendments in
-`docs/governance/inventory_reservations.md` and
-`docs/governance/sbh_10_04_cross_domain_authority_amendment.md`.
-Runtime, SUBS Master Register, S0 architecture, PR #127, and PR #128 edits are excluded.
-Lifecycle is `PUSHED`. Full validation remains blocked by local database credentials;
-exact-head CI, human merge, and independent target-verification gates remain required.
+**IA-04 / S0 acceptance (frozen):**
 
-The future prerequisite belongs to S0 / Orders concurrency, separately from IA-04.
-Candidate parent is `origin/hardening/s0-baseline` at
-`f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`. State is
-`BLOCKED_BASE_RECONCILIATION / BLOCKED_FACADE_AUTHORITY / NOT STARTED`.
-No executable future task SHA,
-implementation branch, or worktree is assigned. Separately authorized reconciliation
-of relevant accepted shared-main changes and a fresh exact-base/ownership decision
-must precede implementation. The accepted Store.Orders facade also needs an explicit
-authority decision because exposing the guard would require a third file,
-`lib/store/orders/domain.ex`. This task does not authorize that edit or integration.
+```text
+IA-04 Slice 1 = PASS / ACCEPTED / FROZEN
+IA-04 Slice 2 = PASS / ACCEPTED / FROZEN  (PR #128 merge f5131e39801c1633b79d04cacd30202b0823e48d)
+PR #132 DevCore reconciliation = PASS / ACCEPTED / FROZEN  (merge da0a369b9f99ecca6db940a802257cea4e69b2b8; tree 6227effe919509d71fe0450234792831d7d13240)
+IA-04 Slice 3 = SERIAL-BLOCKED ON JC-229 GUARD PREREQUISITE  (NOT AUTHORIZED to start)
+IA-05+ = NOT AUTHORIZED
+```
 
-After those gates, exclusive prerequisite scope is
-`lib/store/orders/inventory_reservations.ex` and
-`test/store/orders/inventory_reservation_generation_test.exs` only.
-PR #128 remains independent of this generation-guard prerequisite and receives no
-guard work. Its separate Slice-2 correction remains blocked until the IA-04 amendment
-passes independent review, exact-head CI, human merge, and post-merge verification as
-recorded above. Those gates restore authority only for the two listed corrections.
-Later IA-04 slices touching either file must wait for prerequisite S0 merge and
-independent verification, then reconcile the accepted guard before coding.
-No competing write authority is permitted. If later-slice work already started,
-STOP for a new sequencing decision. This does not broaden IA-04 or authorize IA-05.
+**Source-compatibility admission (2026-10-07):** `PASS` at S0 task base
+`da0a369b9f99ecca6db940a802257cea4e69b2b8`. Exact-generation read/recover APIs from
+PR #117 remain; `read_exact_generation` uses non-locking `Repo.one/1`; exact
+reserve/release/consume lock `InventoryItem` before `InventoryReservation`; generic
+expiry excludes renewal-generation keys; `Store.Orders` remains the cross-domain
+facade; one additive `domain.ex` forwarder is sufficient; no schema/migration,
+InventoryAdmission, or SUBS change is required for the prerequisite. Relevant main/S0
+divergence does not block implementing on current S0 (`RELEVANT_MAIN_RUNTIME_RECONCILIATION_REQUIRED = NO`).
 
-JC-229 remains blocked through prerequisite acceptance, S0 merge/verification,
-SUBS integration/verification, and separate SUBS governance re-admission.
+**Facade authority:** resolved. Future implementation boundary is exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+test/store/orders/inventory_reservation_generation_test.exs
+```
+
+Cross-domain callers must never call `InventoryReservations` directly.
+
+**Prerequisite lifecycle (implementation not started):**
+
+```text
+JC-229 EXACT-GENERATION GUARD PREREQUISITE = AUTHORIZED / NOT STARTED
+owner = S0 / Orders inventory concurrency
+task base = da0a369b9f99ecca6db940a802257cea4e69b2b8
+task tree = 6227effe919509d71fe0450234792831d7d13240
+integration target = hardening/s0-baseline
+implementation branch = NOT CREATED YET
+implementation worktree = NOT CREATED YET
+```
+
+**Performance contract (future implementation):** `DATA_LAYER = PostgreSQL durable row lock`;
+no hot/warm cache, Redis, TTL, invalidation, PubSub, or Oban in the guard. Target:
+one indexed `reservation_key` locking `SELECT`, zero `InventoryItem` queries, zero N+1;
+separate-backend-session concurrency proof with explicit barriers (not sleeps alone).
+
+**Dispatch lock ordering (frozen):**
+
+```text
+RenewalCollectionAttempt lock → exact reservation-generation guard lock → Subscription collection CAS → outer transaction commit/rollback
+```
+
+Inventory mutation/fence operations retain
+`RenewalCollectionAttempt → InventoryItem → exact InventoryReservation → collection transition`.
+Never `reservation guard → InventoryItem`; never Orders holding inventory/reservation locks
+then acquiring a Subscription collection lock.
+
+**Governance admission task:** branch `governance/s0-jc229-generation-guard-admission` from
+canonical `origin/main` at `b0a6c07637258659eb561e9863ea88667d1f96ae`. Writable:
+`docs/agent_rules/active_workstreams.md` and
+`docs/governance/sbh_10_04_cross_domain_authority_amendment.md` only. Excluded: runtime,
+`inventory_reservations.md`, S0 architecture/implementation-plan files, SUBS Master Register,
+PR #127, PR #128, issue #101. Prior `governance/jc229-generation-guard` evidence is
+historical; this admission supersedes its `BLOCKED_*` prerequisite state.
+
+JC-229 / SBH-10-04 implementation remains `BLOCKED_AUTHORITY -> STOP` until the
+prerequisite merges to S0, post-merge verification completes, SUBS integration/verification,
+and separate SUBS governance re-admission. PR #127 remains draft and stopped.
+Historical `hardening/s0-ia04` at `bd4ff2466e1b69c012c75dc317e461e46c9bff5a` is Slice-2
+historical state only; do not reset, rebase, or start Slice 3 on that line.
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
