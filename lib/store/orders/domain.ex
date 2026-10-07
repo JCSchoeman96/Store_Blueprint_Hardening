@@ -232,6 +232,9 @@ defmodule Store.Orders do
     )
   end
 
+  def guard_exact_generation(_order_id, _variant_id, _reservation_key, _required_quantity),
+    do: {:error, :invalid_identity}
+
   @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
           | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}

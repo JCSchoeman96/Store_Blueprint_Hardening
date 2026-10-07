@@ -455,6 +455,27 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
     end)
   end
 
+  test "guard_exact_generation rejects malformed public arguments without raising" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    key = generation_key(order.id, variant_id)
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.guard_exact_generation(order.id, variant_id, key, 0)
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.guard_exact_generation(order.id, variant_id, key, "1")
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.guard_exact_generation(nil, variant_id, key, 1)
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.guard_exact_generation(order.id, nil, key, 1)
+
+    assert {:error, :invalid_identity} =
+             Store.Orders.guard_exact_generation(order.id, variant_id, nil, 1)
+  end
+
   test "guard_exact_generation requires an outer caller transaction" do
     order = create_order!()
     variant_id = UUIDv7.generate()
