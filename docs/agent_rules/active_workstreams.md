@@ -938,6 +938,72 @@ An advance of `origin/main` does not by itself invalidate the PLATFORM developme
 
 At task admission, inspect current canonical governance and evaluate only task-relevant changes.
 
+### Bounded Platform task admission: DevCore database profiles (2026-10-07)
+
+The existing task branch is authorized to configure workstation DEV and TEST
+Ecto profiles through the DevCore project contract.
+
+```text
+Workstream: PLATFORM / DevCore database profiles
+Task base: e7699dc00d518bc35a3e59851feeea2ee8ae4071
+Original parent: 435924ae2b9c819c8d4f820c5b316d154f3be2b0
+Integration base: 7eff026fb7cce7b29dc5d5916f9e3895039b858a
+Branch: platform/task-workstation-infra-contract
+Worktree: /home/jcschoeman96/projects/current/Store_Blueprint_Hardening-task-workstation-infra
+Lifecycle: VALIDATED locally; independent review passed, exact-head CI pending
+```
+
+Superseded broad integration candidate (local only; do not publish):
+
+```text
+Branch: integration/platform-devcore-main-sync
+Worktree: /home/jcschoeman96/.config/superpowers/worktrees/Store_Blueprint_Hardening/platform-devcore-main-sync-7eff026
+Task source: ccd4c04276ef027117c39b1a03dd8d70ffa5fe87
+Canonical source: 7eff026fb7cce7b29dc5d5916f9e3895039b858a
+Merge commit: 5795ad00c7e56690b9a1b64ea8150de445c02bd6
+Merge correction: bf46abdcbc6e1f2a5de549b8e03d73cef489fb81
+Lifecycle: SUPERSEDED for publication; retained read-only because the branch diff includes inherited Docker/Compose changes
+```
+
+Clean DevCore review integration:
+
+```text
+Branch: integration/platform-devcore-settings-review
+Worktree: /home/jcschoeman96/.config/superpowers/worktrees/Store_Blueprint_Hardening/platform-devcore-settings-review
+Integration base: origin/main at 7eff026fb7cce7b29dc5d5916f9e3895039b858a
+Task code source: ccd4c04276ef027117c39b1a03dd8d70ffa5fe87
+Integrated compatibility source: bf46abdcbc6e1f2a5de549b8e03d73cef489fb81
+Lifecycle: INTEGRATING; scope filtered to the owned DevCore settings and supporting docs, local validation and independent review passed, exact-head CI pending
+Owned scope: DevCore DEV/TEST profiles and their supporting project, environment, and task documentation only
+Excluded: inherited Docker/Compose changes, production configuration, schema/migrations, and PR #128
+```
+
+The integration kept Docker/Compose lifecycle files identical to the task
+source. It retained current-main performance-database safety and removed only
+duplicate clauses introduced by the automatic `test/support/stripe_api_stub.ex`
+merge.
+
+Owned files for this bounded task:
+
+```text
+config/dev.exs
+config/test.exs
+.devcore/**
+.env.example
+README.md
+docs/deployment/env-vars.md
+```
+
+By explicit user authority, PLATFORM owns the workstation DEV/TEST connection
+settings in `config/test.exs` for this task. Preserve the existing
+`Store.Config.PerformanceDatabaseSafety` validation, `STORE_PERF_*` routing,
+and CI service defaults. This decision does not change S0 InventoryAdmission
+authority.
+
+Excluded: Docker/Compose lifecycle changes, production database settings,
+schema or migration changes, and PR #128. Existing Docker/Compose files on the
+task branch are outside this task's writable boundary.
+
 A PLATFORM task stops for main movement only when the newer canonical state specifically changes or invalidates:
 
 - PLATFORM ownership or exclusions;

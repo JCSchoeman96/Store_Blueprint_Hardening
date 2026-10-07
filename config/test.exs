@@ -52,11 +52,20 @@ test_database_config =
     ]
   else
     [
-      username: "store_blueprint_test",
+      username: System.get_env("STORE_TEST_DATABASE_USERNAME", "store_blueprint_test"),
       password: System.get_env("STORE_TEST_DATABASE_PASSWORD"),
-      hostname: "127.0.0.1",
-      port: 55433
+      hostname: System.get_env("STORE_TEST_DATABASE_HOST", "127.0.0.1"),
+      port:
+        System.get_env("STORE_TEST_DATABASE_PORT", System.get_env("STORE_DB_PORT", "55433"))
+        |> String.to_integer()
     ]
+  end
+
+test_database_name =
+  if performance_smoke? do
+    performance_database_name
+  else
+    "#{System.get_env("STORE_TEST_DATABASE_NAME", "store_blueprint_test")}#{test_db_suffix}"
   end
 
 redis_connection_config =
@@ -139,7 +148,7 @@ config :store, Store.Repo,
   password: Keyword.fetch!(test_database_config, :password),
   hostname: Keyword.fetch!(test_database_config, :hostname),
   port: Keyword.fetch!(test_database_config, :port),
-  database: performance_database_name,
+  database: test_database_name,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: bench_pool_size
 
@@ -149,7 +158,7 @@ config :store, Store.DirectRepo,
   password: Keyword.fetch!(test_database_config, :password),
   hostname: Keyword.fetch!(test_database_config, :hostname),
   port: Keyword.fetch!(test_database_config, :port),
-  database: performance_database_name,
+  database: test_database_name,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: bench_direct_pool_size
 
