@@ -211,6 +211,30 @@ defmodule Store.Orders do
     InventoryReservations.recover_exact_generation(order_id, variant_id, reservation_key)
   end
 
+  @spec guard_exact_generation(String.t(), String.t(), String.t(), pos_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :transaction_required
+             | :invalid_identity
+             | :not_found
+             | :contradictory_evidence
+             | :quantity_mismatch
+             | :not_active
+             | :database_unavailable}
+  def guard_exact_generation(order_id, variant_id, reservation_key, required_quantity)
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             is_integer(required_quantity) and required_quantity > 0 do
+    InventoryReservations.guard_exact_generation(
+      order_id,
+      variant_id,
+      reservation_key,
+      required_quantity
+    )
+  end
+
+  def guard_exact_generation(_order_id, _variant_id, _reservation_key, _required_quantity),
+    do: {:error, :invalid_identity}
+
   @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
           | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
