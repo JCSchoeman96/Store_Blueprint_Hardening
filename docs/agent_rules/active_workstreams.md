@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` (accepted tip after PR #117; PR #115 task base remains historical provenance) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e` (accepted tip after PR #134; tree `3e6c79e823741b661ef96308aca320356580dfce`) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -286,9 +286,9 @@ alignment task. PR #71 later advanced it to the replacement development base rec
 below. `READY` does not mean `ACTIVE_PARALLEL`, `VALIDATED`, or `READY_FOR_INTEGRATION`.
 Convergence with current `main` remains a later integration obligation.
 
-### Current accepted S0 development base
+### Accepted S0 development base after PR #117 (historical)
 
-Current accepted S0 development base: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+S0 development base at PR #117 completion: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
 The prior accepted S0 task base was `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`; the prior reconciled S0 base was `f4127902c3f328b76674724faa6a473c629c01ef`.
 
 Provenance:
@@ -1630,8 +1630,8 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `b0a6c07637258659eb561e9863ea88667d1f96ae` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work.
-- `origin/hardening/s0-baseline` = `da0a369b9f99ecca6db940a802257cea4e69b2b8` (tree `6227effe919509d71fe0450234792831d7d13240`; PR #132 DevCore reconciliation)
+- `origin/main` = `4fdc9e2581ff2d83280040b2d3f70c6b57238ba2` at the JC-329 governance admission preflight; resolve with `git fetch origin && git rev-parse origin/main` before work.
+- `origin/hardening/s0-baseline` = `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e` (tree `3e6c79e823741b661ef96308aca320356580dfce`; PR #134 JC-327 prerequisite merge)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
 - PR #90 = MERGED / ACCEPTED into `main`
@@ -1663,6 +1663,10 @@ This section records dynamic status only. It does not override accepted lifecycl
   `da0a369b9f99ecca6db940a802257cea4e69b2b8` (DevCore reconciliation; tree
   `6227effe919509d71fe0450234792831d7d13240`; zero drift on IA guard surfaces)
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
+- PR #134 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline`; JC-327 accepted
+  implementation head `562eed9fd7fe7adf6da1a9298856e651ef302582`; merge
+  `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`; tree
+  `3e6c79e823741b661ef96308aca320356580dfce`
 - PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (historical SUBS main reconciliation; see record above)
 - PR #89 = MERGED / ACCEPTED into `main`
 
@@ -1686,17 +1690,17 @@ Current JC-229 / SBH-10-04 serial-admission evidence:
 The [owning correction](../governance/sbh_10_04_cross_domain_authority_amendment.md#jc-229-dispatch-atomicity-correction)
 records the race, guard semantics, lock ordering, proof requirements, and sequencing.
 
-**IA-04 / S0 acceptance (frozen):**
+**Historical IA-04 / S0 acceptance before PR #134 (frozen):**
 
 ```text
 IA-04 Slice 1 = PASS / ACCEPTED / FROZEN
 IA-04 Slice 2 = PASS / ACCEPTED / FROZEN  (PR #128 merge f5131e39801c1633b79d04cacd30202b0823e48d)
 PR #132 DevCore reconciliation = PASS / ACCEPTED / FROZEN  (merge da0a369b9f99ecca6db940a802257cea4e69b2b8; tree 6227effe919509d71fe0450234792831d7d13240)
-IA-04 Slice 3 = SERIAL-BLOCKED ON JC-229 GUARD PREREQUISITE  (NOT AUTHORIZED to start)
+IA-04 Slice 3 = SERIAL-BLOCKED ON JC-229 GUARD PREREQUISITE  (historical; not authorized at that point)
 IA-05+ = NOT AUTHORIZED
 ```
 
-**Source-compatibility admission (2026-10-07):** `PASS` at S0 task base
+**Historical source-compatibility admission before PR #134 (2026-10-07):** `PASS` at S0 task base
 `da0a369b9f99ecca6db940a802257cea4e69b2b8`. Exact-generation read/recover APIs from
 PR #117 remain; `read_exact_generation` uses non-locking `Repo.one/1`; exact
 reserve/release/consume lock `InventoryItem` before `InventoryReservation`; generic
@@ -1705,7 +1709,7 @@ facade; one additive `domain.ex` forwarder is sufficient; no schema/migration,
 InventoryAdmission, or SUBS change is required for the prerequisite. Relevant main/S0
 divergence does not block implementing on current S0 (`RELEVANT_MAIN_RUNTIME_RECONCILIATION_REQUIRED = NO`).
 
-**Facade authority:** resolved. Future implementation boundary is exactly:
+**Historical facade authority for the JC-229 guard prerequisite:** resolved at admission. Its implementation boundary was exactly:
 
 ```text
 lib/store/orders/inventory_reservations.ex
@@ -1715,7 +1719,7 @@ test/store/orders/inventory_reservation_generation_test.exs
 
 Cross-domain callers must never call `InventoryReservations` directly.
 
-**Prerequisite lifecycle (implementation not started):**
+**Historical prerequisite admission state before PR #134:**
 
 ```text
 JC-229 EXACT-GENERATION GUARD PREREQUISITE = AUTHORIZED / NOT STARTED
@@ -1751,11 +1755,59 @@ canonical `origin/main` at `b0a6c07637258659eb561e9863ea88667d1f96ae`. Writable:
 PR #127, PR #128, issue #101. Prior `governance/jc229-generation-guard` evidence is
 historical; this admission supersedes its `BLOCKED_*` prerequisite state.
 
-JC-229 / SBH-10-04 implementation remains `BLOCKED_AUTHORITY -> STOP` until the
-prerequisite merges to S0, post-merge verification completes, SUBS integration/verification,
-and separate SUBS governance re-admission. PR #127 remains draft and stopped.
+JC-229 / SBH-10-04 implementation remains `BLOCKED_AUTHORITY -> STOP`. The S0
+prerequisite merge and post-merge verification are complete. Implementation remains
+blocked pending SUBS integration/verification and separate SUBS governance
+re-admission. PR #127 remains draft and stopped.
 Historical `hardening/s0-ia04` at `bd4ff2466e1b69c012c75dc317e461e46c9bff5a` is Slice-2
 historical state only; do not reset, rebase, or start Slice 3 on that line.
+
+### JC-327 prerequisite closure and current IA-04 admission (2026-10-07)
+
+JC-327 is `PASS / ACCEPTED / FROZEN / POST-MERGE VERIFIED`. PR #134 implementation
+head `562eed9fd7fe7adf6da1a9298856e651ef302582` merged to S0 as
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, with accepted tree
+`3e6c79e823741b661ef96308aca320356580dfce`.
+
+The JC-327 exact-generation guard is the completed S0 prerequisite. The accepted
+`guard_exact_generation/4` contract remains frozen. The JC-229 guard prerequisite no
+longer blocks IA-04 IN-02. This record does not admit JC-229 or begin SUBS integration.
+
+Current serial IA-04 state:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-02 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+IN-02 source compatibility is `PASS` at task base
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, tree
+`3e6c79e823741b661ef96308aca320356580dfce`. Generic
+`Store.Orders.InventoryReservations.reserve_inventory/3` still runs its existing
+`Repo.transaction/1` and then `unwrap_transaction_error/2`; the accepted JC-327 guard
+implementation is unchanged, and
+`test/store/orders/inventory_admission_recovery_test.exs` is absent.
+
+Freeze the future IN-02 implementation base and output boundary:
+
+```text
+TASK_BASE_SHA = dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e
+TASK_BASE_TREE = 3e6c79e823741b661ef96308aca320356580dfce
+```
+
+```text
+lib/store/orders/inventory_reservations.ex
+test/store/orders/inventory_admission_recovery_test.exs
+```
+
+Historical `hardening/s0-ia04` is not the implementation base. A fresh temporary
+implementation worktree must later be created from exact S0 `dff5a37...`. IN-02 must
+pass review, merge, and post-merge verification before any later Slice-3 microtask is
+admitted. This governance record does not authorize IN-03 or the rest of Slice 3.
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source

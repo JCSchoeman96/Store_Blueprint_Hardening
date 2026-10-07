@@ -23,6 +23,10 @@ The frozen JC-223 edges remain exactly as recorded at `c66...:docs/hardening/sub
 No dependency row changes in this amendment. Queue order and the authority decisions below do not add or remove JC-223 edges.
 
 ## Existing-source proof
+The source proofs below are pinned to the original canonical-main and SUBS evidence
+listed above. They preserve the basis for the cross-domain decision and do not describe
+current S0 after PR #134. Current S0 guard status is recorded under IA-04 isolation
+and sequencing below.
 
 ### Payments can retain terminal intent history and create a later intent
 
@@ -223,6 +227,10 @@ Only the separate SUBS re-admission amendment may transition `SBH-10-04` from `B
 - **Capacity claim:** This amendment makes no latency, throughput, or 100,000-user certification claim.
 
 ## JC-229 dispatch atomicity correction
+The source snapshot and guard gap recorded below describe the state before JC-327's
+S0 prerequisite implementation. The current S0 prerequisite closure appears under
+IA-04 isolation and sequencing. JC-229 remains blocked on its separate SUBS gates
+recorded below.
 
 This governance proposal addresses only the physical-generation read-to-dispatch
 race. JC-229 / SBH-10-04 remains `BLOCKED_AUTHORITY -> STOP`. PR #127 remains draft
@@ -316,6 +324,9 @@ A caller must not hold earlier Orders locks when it starts collection locking.
 A future authoritative writer that violates this graph blocks implementation.
 
 ### Prerequisite admission (2026-10-07)
+This section preserves the admission contract and preimplementation status for the
+now-completed JC-327 S0 prerequisite. Its accepted closure and current IA-04 state are
+recorded under IA-04 isolation and sequencing below.
 
 Objective: protect one exact physical generation through a governed caller's outer
 transaction, without writing inventory, Subscription state, or new durable evidence.
@@ -341,7 +352,7 @@ runtime divergence on the three guard surfaces is S0-ahead exact-generation hist
 it does not require importing unrelated main application history before implementing
 on S0. `BLOCKED_BASE_RECONCILIATION` and `BLOCKED_FACADE_AUTHORITY` are resolved.
 
-**Prerequisite lifecycle:**
+**Prerequisite lifecycle at admission (before PR #134):**
 
 ```text
 JC-229 EXACT-GENERATION GUARD PREREQUISITE = AUTHORIZED / NOT STARTED
@@ -388,16 +399,108 @@ The guard prerequisite must use its own branch/worktree and S0's explicit bounde
 ownership assignment. No guard implementation may be added to the historical
 `hardening/s0-ia04` line.
 
-IA-04 Slice 1 = `PASS / ACCEPTED / FROZEN`. IA-04 Slice 3 = `SERIAL-BLOCKED ON JC-229
-GUARD PREREQUISITE` (not authorized to start). IA-05+ = `NOT AUTHORIZED`.
+Historical status before the JC-327 S0 prerequisite merged:
 
-Reserve the three-file guard boundary exclusively to the prerequisite until it is
-merged and independently verified on S0. Later IA-04 slices touching
-`inventory_reservations.ex` must wait for prerequisite S0 merge/verification, then
-reconcile the accepted guard before coding. No parallel competing implementation is
-permitted. If later-slice work already started, STOP for a new sequencing decision.
-S0 architecture remains unchanged; this completes the Orders exact-generation
-concurrency contract and does not amend the InventoryAdmission architecture file.
+```text
+IA-04 Slice 1 = PASS / ACCEPTED / FROZEN
+IA-04 Slice 3 = SERIAL-BLOCKED ON JC-229 GUARD PREREQUISITE (not authorized at that point)
+IA-05+ = NOT AUTHORIZED
+```
+
+At the time of the JC-229 prerequisite, its three-file guard boundary was reserved
+exclusively to that work. The prerequisite is now merged and verified on S0. Later
+IA-04 work touching `inventory_reservations.ex` must preserve and reconcile the
+accepted guard before coding. The guard is frozen and must not be silently refactored.
+No parallel competing implementation is permitted. If later-slice work already
+started, STOP for a new sequencing decision. This amendment leaves S0 architecture
+unchanged and does not amend the InventoryAdmission architecture file.
+
+### JC-327 closure and IA-04 IN-02 admission (2026-10-07)
+
+JC-229's exact-generation guard prerequisite is `COMPLETE / ACCEPTED / FROZEN ON S0`:
+
+```text
+reviewed head = 562eed9fd7fe7adf6da1a9298856e651ef302582
+merge = dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e
+tree = 3e6c79e823741b661ef96308aca320356580dfce
+```
+
+The JC-229 guard prerequisite no longer blocks IA-04 IN-02. This closes the S0-side
+guard prerequisite only. It does not re-admit JC-229, start its implementation, or
+begin SUBS integration.
+
+Current serial IA-04 state:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-02 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+The admitted frozen-plan task is `TOON IN-02`, "Add the internal outcome-preserving
+reservation seam before the legacy error mapper." Its implementation base is S0
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, tree
+`3e6c79e823741b661ef96308aca320356580dfce`. The future writable implementation
+boundary is exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+test/store/orders/inventory_admission_recovery_test.exs
+```
+
+IN-02 may add an internal outcome-preserving seam around the existing generic
+reservation transaction. It must preserve the semantic distinctions between known
+commit, known rollback or governed rejection, pre-database failure, and ambiguous
+database outcome before the legacy compatibility mapper runs. Existing public
+compatibility behavior remains available through that mapper. Do not invent final
+implementation names in this governance record.
+This authority covers generic `reserve_inventory/3` only. It does not authorize
+changes to `reserve_inventory_for_checkout/3` or its CTE path.
+
+The accepted JC-327 `guard_exact_generation/4` behavior is frozen. Later code touching
+`inventory_reservations.ex` must preserve and reconcile that guard. IN-02 must not
+silently refactor it.
+
+IN-02 must not rewrite the reservation transaction, move it into Oban, implement IA-05
+recovery, add a generic transaction framework, change checkout CTE or multi-variant
+behavior, change reservation durable states, alter InventoryItem locking or final
+PostgreSQL availability checks, or add schema or migrations. Ambiguous database
+outcome must not be treated as rollback and must not authorize an automatic second
+durable mutation. Full recovery execution remains IA-05 work and is unauthorized.
+
+**Performance & Scaling Review.** PostgreSQL durable transaction outcome is the data
+layer. IN-02 adds no hot cache, Redis structure, TTL, indexes, PubSub, or Oban work for
+synchronous reservation mutation. Use existing inventory and reservation indexes only.
+Do not add a read-before-write loop. Preserve the bounded synchronous PostgreSQL
+reservation path. This admission makes no 100,000-user certification claim.
+
+```text
+DATA_LAYER = PostgreSQL durable transaction outcome
+HOT_CACHE = none
+REDIS = no new structure in IN-02
+TTL = no new TTL introduced by IN-02
+INDEXES = existing inventory/reservation indexes only
+PUBSUB = none
+OBAN = none for synchronous reservation mutation
+```
+
+**NewYou downstream-consumer review.** Store Blueprint Hardening is the generic
+hardened commerce engine; NewYou is its first-class downstream conformance consumer.
+`GENERIC_STORE_CORRECTNESS = YES` and `NEWYOU_SPECIFIC_POLICY = NO`. NewYou benefits
+from truthful ambiguous-outcome handling in later renewal and payment orchestration.
+IN-02 must not encode Paystack rules, NewYou cancellation precedence, 72-hour grace
+behavior, Entitlements policy, or NewYou membership or product semantics. Future
+NewYou integration must consume stable Store contracts and facades, not internal
+`InventoryReservations` details.
+
+JC-229 / SBH-10-04 implementation remains `BLOCKED_AUTHORITY -> STOP` until the
+accepted S0 prerequisite is combined with SUBS through separate integration and
+verification, followed by separate SUBS governance re-admission. This amendment does
+neither SUBS step and grants no JC-229 implementation authority. PR #127 remains draft
+and stopped.
 
 ### Acceptance and concurrency proof
 
@@ -446,6 +549,9 @@ No Oban job or uniqueness policy changes. Use existing Repo telemetry for query 
 lock waits, and errors; add no logging of complete keys or payment evidence.
 
 ### Merge and re-admission gates
+The JC-327 S0 prerequisite governed by the first paragraph below has since merged and
+been post-merge verified. The separate JC-229 / SUBS gates in the following paragraph
+remain mandatory.
 
 The governance admission PR requires exact-head CI, independent review, human merge
 into `main`, and independent post-merge commit/tree verification. It implements no
