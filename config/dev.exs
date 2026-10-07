@@ -1,22 +1,30 @@
 import Config
 
-# Configure the shared workstation PostgreSQL DEV cluster directly.
-config :store, Store.Repo,
-  username: "store_blueprint_dev",
+dev_database_config = [
+  username: System.get_env("STORE_DEV_DATABASE_USERNAME", "store_blueprint_dev"),
   password: System.get_env("STORE_DEV_DATABASE_PASSWORD"),
-  hostname: "127.0.0.1",
-  port: 55432,
+  hostname: System.get_env("STORE_DEV_DATABASE_HOST", "127.0.0.1"),
+  port: System.get_env("STORE_DEV_DATABASE_PORT", "55432") |> String.to_integer(),
+  database: System.get_env("STORE_DEV_DATABASE_NAME", "store_blueprint_dev")
+]
+
+# DevCore supplies these values when it runs workstation Mix commands.
+config :store, Store.Repo,
+  username: Keyword.fetch!(dev_database_config, :username),
+  password: Keyword.fetch!(dev_database_config, :password),
+  hostname: Keyword.fetch!(dev_database_config, :hostname),
+  port: Keyword.fetch!(dev_database_config, :port),
+  database: Keyword.fetch!(dev_database_config, :database),
   stacktrace: true,
-  database: "store_blueprint_dev",
   pool_size: 20
 
 # Oban and migrations use a direct connection to the same DEV database.
 config :store, Store.DirectRepo,
-  username: "store_blueprint_dev",
-  password: System.get_env("STORE_DEV_DATABASE_PASSWORD"),
-  hostname: "127.0.0.1",
-  port: 55432,
-  database: "store_blueprint_dev",
+  username: Keyword.fetch!(dev_database_config, :username),
+  password: Keyword.fetch!(dev_database_config, :password),
+  hostname: Keyword.fetch!(dev_database_config, :hostname),
+  port: Keyword.fetch!(dev_database_config, :port),
+  database: Keyword.fetch!(dev_database_config, :database),
   stacktrace: true,
   pool_size: 5
 

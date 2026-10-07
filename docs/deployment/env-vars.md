@@ -12,13 +12,25 @@ endpoints. The repository connects to them and never manages their containers.
 | Development | `127.0.0.1:55432` | `store_blueprint_dev` | `store_blueprint_dev` | `127.0.0.1:56379` |
 | Test | `127.0.0.1:55433` | `store_blueprint_test` plus the existing direct suffix | `store_blueprint_test` | `127.0.0.1:56380` |
 
-Supply `STORE_DEV_DATABASE_PASSWORD` and `STORE_TEST_DATABASE_PASSWORD` through
-local secret management. On the standard workstation, run database-backed Mix
-commands with `~/.local/bin/with-store-blueprint-db-secrets`. The test role is
-non-superuser and needs `CREATEDB` to support parallel test database suffixes.
-Test configuration pins the PostgreSQL and Redis TEST endpoints so it cannot
-inherit DEV. Each test process gets its own key prefix under
-`store_blueprint_hardening:test:`.
+The tracked `.devcore/project.conf` declares the project roles and databases.
+`devcore-project activate` provisions these allocations and writes ignored
+profile files with mode `0600`. The DEV profile supplies `STORE_DEV_DATABASE_*`
+values, and the TEST profile supplies `STORE_TEST_DATABASE_*` values. The app
+uses direct PostgreSQL connections for both `Store.Repo` and `Store.DirectRepo`.
+
+Run workstation commands through the matching profile:
+
+```sh
+devcore-project run dev -- mix setup
+devcore-project run dev -- mix phx.server
+devcore-project run test -- mix test
+```
+
+The TEST role is non-superuser and has `CREATEDB` for partition-suffixed
+databases. Ordinary test config appends `STORE_TEST_DB_SUFFIX` or
+`MIX_TEST_PARTITION` to `STORE_TEST_DATABASE_NAME`, which defaults to
+`store_blueprint_test`. CI retains its existing TEST service defaults. Each test
+process gets its own key prefix under `store_blueprint_hardening:test:`.
 
 PostgreSQL migrations install the `citext` extension. The selected PostgreSQL
 server must provide `citext`; the workstation PostgreSQL 18 TEST migration was
