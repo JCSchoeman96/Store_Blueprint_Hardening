@@ -71,6 +71,22 @@ defmodule Store.Support.RateLimitTest do
     assert {:ok, :deny} = RateLimit.allow?(:digital_signed_url, "k1", 2, 60)
   end
 
+  test "redis counters use the configured project and environment namespace" do
+    namespace = "store_blueprint_hardening:test:rate-limit-test"
+
+    Application.put_env(:store, :rate_limit,
+      backend: RedisBackend,
+      redis_client: __MODULE__.FakeRedisClient,
+      redis_key_prefix: namespace
+    )
+
+    relative_key = "parallel-run-#{System.unique_integer([:positive])}"
+    redis_key = "#{namespace}:rate_limit:waiting_room_http:#{relative_key}"
+
+    assert {:ok, :allow} = RateLimit.allow?(:waiting_room_http, relative_key, 1, 60)
+    assert [{^redis_key, 1}] = :ets.lookup(:store_rate_limit_redis_fake, redis_key)
+  end
+
   defmodule FakeRedisClient do
     @moduledoc false
 
