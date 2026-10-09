@@ -4,6 +4,7 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Store.Catalog.InventoryItem
   alias Store.Orders.{InventoryAdmission.Request, InventoryReservation, Order}
+  alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
   alias Store.Support.ID.UUIDv7
   alias Store.Support.Telemetry.RepoStats
@@ -453,6 +454,48 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
 
       assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 1
     end)
+  end
+
+  test "failed committed fixture setup leaves no partial fixture rows" do
+    parent = self()
+
+    assert_raise RuntimeError, "injected fixture setup failure", fn ->
+      create_committed_fixture!(fn order, variant_id ->
+        send(parent, {:partial_fixture_identity, order.id, variant_id})
+        raise "injected fixture setup failure"
+      end)
+    end
+
+    assert_receive {:partial_fixture_identity, order_id, variant_id}
+
+    try do
+      {order_exists?, inventory_item_exists?, reservation_count} =
+        Sandbox.unboxed_run(Store.Repo, fn ->
+          order_exists? = Repo.exists?(from o in Order, where: o.id == ^order_id)
+
+          inventory_item_exists? =
+            Repo.exists?(from i in InventoryItem, where: i.variant_id == ^variant_id)
+
+          reservation_count =
+            Repo.aggregate(
+              from(r in InventoryReservation, where: r.order_id == ^order_id),
+              :count,
+              :id
+            )
+
+          {order_exists?, inventory_item_exists?, reservation_count}
+        end)
+
+      refute order_exists?, "failed setup left its committed Order visible"
+      refute inventory_item_exists?, "failed setup left its InventoryItem visible"
+      assert reservation_count == 0
+    after
+      Sandbox.unboxed_run(Store.Repo, fn ->
+        Repo.delete_all(from r in InventoryReservation, where: r.order_id == ^order_id)
+        Repo.delete_all(from i in InventoryItem, where: i.variant_id == ^variant_id)
+        Repo.delete_all(from o in Order, where: o.id == ^order_id)
+      end)
+    end
   end
 
   test "guard_exact_generation rejects malformed public arguments without raising" do
@@ -1029,22 +1072,71 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
     end
   end
 
-  defp create_committed_fixture! do
+  defp create_committed_fixture!(after_order \\ fn _order, _variant_id -> :ok end) do
     case Sandbox.unboxed_run(Store.Repo, fn ->
-           order = create_order!()
-           variant_id = UUIDv7.generate()
-           create_inventory_item!(variant_id, 4)
-
-           {order, variant_id}
+           create_committed_fixture_transaction(after_order)
          end) do
-      {%Order{} = order, variant_id} when is_binary(variant_id) ->
+      {:ok, {%Order{} = order, variant_id, notifications}} when is_binary(variant_id) ->
+        AshNotifications.notify_post_commit(notifications,
+          context: %{test_fixture: :inventory_reservation_generation}
+        )
+
         verify_committed_fixture!(order, variant_id, :present)
         {order, variant_id}
+
+      {:error, reason} ->
+        raise "committed fixture setup transaction failed: #{inspect(reason)}"
 
       other ->
         raise "committed fixture setup returned an invalid result: #{inspect(other)}"
     end
   end
+
+  defp create_committed_fixture_transaction(after_order) do
+    Repo.transaction(fn ->
+      {order, order_notifications} = create_committed_order!()
+      variant_id = UUIDv7.generate()
+      after_order.(order, variant_id)
+
+      {_inventory_item, inventory_notifications} = create_committed_inventory_item!(variant_id, 4)
+
+      {order, variant_id, order_notifications ++ inventory_notifications}
+    end)
+  end
+
+  defp create_committed_order! do
+    Order
+    |> Ash.Changeset.for_create(:create, %{})
+    |> Ash.create(
+      domain: Store.Orders,
+      authorize?: false,
+      return_notifications?: true
+    )
+    |> unwrap_fixture_create!()
+  end
+
+  defp create_committed_inventory_item!(variant_id, stock_on_hand) do
+    InventoryItem
+    |> Ash.Changeset.for_create(:create, %{
+      variant_id: variant_id,
+      stock_on_hand: stock_on_hand,
+      reserved_count: 0
+    })
+    |> Ash.create(
+      domain: Store.Catalog,
+      authorize?: false,
+      return_notifications?: true
+    )
+    |> unwrap_fixture_create!()
+  end
+
+  defp unwrap_fixture_create!({:ok, record, notifications}) when is_list(notifications),
+    do: {record, notifications}
+
+  defp unwrap_fixture_create!({:ok, record}), do: {record, []}
+
+  defp unwrap_fixture_create!({:error, reason}),
+    do: raise("committed fixture record creation failed: #{inspect(reason)}")
 
   defp cleanup_committed_fixture!(order, variant_id) do
     case Sandbox.unboxed_run(Store.Repo, fn ->
