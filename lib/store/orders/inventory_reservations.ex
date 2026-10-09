@@ -18,21 +18,33 @@ defmodule Store.Orders.InventoryReservations do
     "inventory_reservations_unique_reservation_key_index"
   ]
 
+  @spec reserve_inventory_outcome(String.t(), [map()], keyword()) ::
+          {:known_commit,
+           %{reservations: [InventoryReservation.t()], inventory_items: [InventoryItem.t()]}}
+          | {:known_rollback, Error.t()}
+          | {:ambiguous, %{phase: atom(), reason_class: atom()}}
+  @doc false
+  def reserve_inventory_outcome(order_id, items, opts \\ [])
+      when is_binary(order_id) and is_list(items) and is_list(opts) do
+    case prepare_reserve_transaction_inputs(order_id, items, opts) do
+      {:ok, reserve_args} ->
+        {tx_result, callback_entered?} = run_reserve_inventory_transaction(reserve_args, :outcome)
+        classify_reservation_transaction_outcome(tx_result, callback_entered?)
+
+      {:error, %Error{} = error} ->
+        {:known_rollback, error}
+    end
+  end
+
   @spec reserve_inventory(String.t(), [map()], keyword()) ::
           {:ok, %{reservations: [InventoryReservation.t()], inventory_items: [InventoryItem.t()]}}
           | {:error, term()}
   def reserve_inventory(order_id, items, opts \\ [])
       when is_binary(order_id) and is_list(items) and is_list(opts) do
-    case normalize_reserve_items(items) do
-      {:ok, desired_quantities} ->
-        now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
-        ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
-        expires_at = DateTime.add(now, ttl_seconds, :second)
-        variant_ids = desired_quantities |> Map.keys() |> BinaryUuidSort.sort_uuids()
-
-        Repo.transaction(fn ->
-          reserve_variants(order_id, variant_ids, desired_quantities, expires_at, now)
-        end)
+    case prepare_reserve_transaction_inputs(order_id, items, opts) do
+      {:ok, reserve_args} ->
+        reserve_args
+        |> run_reserve_inventory_transaction(:legacy)
         |> unwrap_transaction_error("Reservation transaction failed")
         |> maybe_invalidate_after_reserve()
 
@@ -1539,6 +1551,227 @@ defmodule Store.Orders.InventoryReservations do
       {:error, error} ->
         Repo.rollback(error)
     end
+  end
+
+  defp prepare_reserve_transaction_inputs(order_id, items, opts) do
+    case normalize_reserve_items(items) do
+      {:ok, desired_quantities} ->
+        now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+        ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
+        expires_at = DateTime.add(now, ttl_seconds, :second)
+        variant_ids = desired_quantities |> Map.keys() |> BinaryUuidSort.sort_uuids()
+
+        {:ok, {order_id, variant_ids, desired_quantities, expires_at, now}}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+    end
+  rescue
+    ArgumentError ->
+      {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
+  end
+
+  defp run_reserve_inventory_transaction(
+         {order_id, variant_ids, desired_quantities, expires_at, now},
+         :legacy
+       ) do
+    in02_test_before_reserve_transaction(:legacy)
+
+    Repo.transaction(fn ->
+      in02_test_inside_reserve_transaction(:legacy)
+      reserve_variants(order_id, variant_ids, desired_quantities, expires_at, now)
+    end)
+  end
+
+  defp run_reserve_inventory_transaction(
+         {order_id, variant_ids, desired_quantities, expires_at, now},
+         :outcome
+       ) do
+    entry_key = {__MODULE__, :in02_outcome_entry, make_ref()}
+    Process.put(entry_key, false)
+
+    tx_result =
+      try do
+        in02_test_before_reserve_transaction(:outcome)
+
+        Repo.transaction(fn ->
+          Process.put(entry_key, true)
+          in02_test_inside_reserve_transaction(:outcome)
+          reserve_variants(order_id, variant_ids, desired_quantities, expires_at, now)
+        end)
+      rescue
+        exception -> {:in02_transaction_exception, exception}
+      catch
+        kind, reason -> {:in02_transaction_catch, kind, reason}
+      end
+
+    callback_entered? = Process.get(entry_key) == true
+    Process.delete(entry_key)
+
+    {tx_result, callback_entered?}
+  end
+
+  defp classify_reservation_transaction_outcome({:ok, result}, _callback_entered?) do
+    {:known_commit, result}
+  end
+
+  defp classify_reservation_transaction_outcome({:error, %Error{} = error}, _callback_entered?) do
+    {:known_rollback, error}
+  end
+
+  defp classify_reservation_transaction_outcome(
+         {:in02_transaction_exception, exception},
+         entered?
+       ) do
+    classify_reservation_transaction_exception(exception, entered?)
+  end
+
+  defp classify_reservation_transaction_outcome({:in02_transaction_catch, :throw, value}, false) do
+    throw(value)
+  end
+
+  defp classify_reservation_transaction_outcome({:in02_transaction_catch, :exit, reason}, false) do
+    exit(reason)
+  end
+
+  defp classify_reservation_transaction_outcome(
+         {:in02_transaction_catch, kind, reason},
+         entered?
+       ) do
+    phase = if entered?, do: :reservation_transaction, else: :before_callback
+
+    {:ambiguous, in02_ambiguous_payload(phase, in02_catch_reason_class(kind, reason))}
+  end
+
+  defp classify_reservation_transaction_outcome({:error, reason}, callback_entered?) do
+    classify_reservation_transaction_error(reason, callback_entered?)
+  end
+
+  defp classify_reservation_transaction_exception(%DBConnection.ConnectionError{}, false) do
+    {:known_rollback, in02_pre_callback_unavailable_error(:connection)}
+  end
+
+  defp classify_reservation_transaction_exception(%Error{} = error, _entered?) do
+    {:known_rollback, error}
+  end
+
+  defp classify_reservation_transaction_exception(exception, true) do
+    {:ambiguous,
+     in02_ambiguous_payload(:reservation_transaction, in02_exception_reason_class(exception))}
+  end
+
+  defp classify_reservation_transaction_exception(exception, false) do
+    raise exception
+  end
+
+  defp classify_reservation_transaction_error(%Error{} = error, _entered?) do
+    {:known_rollback, error}
+  end
+
+  defp classify_reservation_transaction_error(%DBConnection.ConnectionError{}, false) do
+    {:known_rollback, in02_pre_callback_unavailable_error(:connection)}
+  end
+
+  defp classify_reservation_transaction_error(:timeout, false) do
+    {:known_rollback, in02_pre_callback_unavailable_error(:timeout)}
+  end
+
+  defp classify_reservation_transaction_error(reason, true) do
+    {:ambiguous,
+     in02_ambiguous_payload(
+       :reservation_transaction,
+       in02_transaction_failure_reason_class(reason)
+     )}
+  end
+
+  defp classify_reservation_transaction_error(reason, false) do
+    {:ambiguous,
+     in02_ambiguous_payload(:before_callback, in02_transaction_failure_reason_class(reason))}
+  end
+
+  defp in02_pre_callback_unavailable_error(reason_class) when is_atom(reason_class) do
+    Error.new(
+      "INVENTORY_ADMISSION_UNAVAILABLE",
+      "Inventory reservation database entry is unavailable",
+      %{phase: :before_callback, reason_class: reason_class}
+    )
+  end
+
+  defp in02_ambiguous_payload(phase, reason_class)
+       when is_atom(phase) and is_atom(reason_class) do
+    %{phase: phase, reason_class: reason_class}
+  end
+
+  defp in02_transaction_failure_reason_class(%Error{}), do: :governed
+  defp in02_transaction_failure_reason_class(%DBConnection.ConnectionError{}), do: :connection
+  defp in02_transaction_failure_reason_class(%Postgrex.Error{}), do: :database
+  defp in02_transaction_failure_reason_class(:timeout), do: :timeout
+  defp in02_transaction_failure_reason_class(_reason), do: :unclassified
+
+  defp in02_exception_reason_class(%DBConnection.ConnectionError{}), do: :connection
+  defp in02_exception_reason_class(%Postgrex.Error{}), do: :database
+  defp in02_exception_reason_class(_exception), do: :unclassified
+
+  defp in02_catch_reason_class(:exit, :timeout), do: :timeout
+  defp in02_catch_reason_class(:exit, _reason), do: :process
+  defp in02_catch_reason_class(_kind, _reason), do: :unclassified
+
+  if Mix.env() == :test do
+    @in02_test_hook_key {__MODULE__, :in02_reserve_test_hook}
+
+    @doc false
+    def in02_put_reserve_test_hook(hook) when is_atom(hook),
+      do: Process.put(@in02_test_hook_key, hook)
+
+    @doc false
+    def in02_clear_reserve_test_hook, do: Process.delete(@in02_test_hook_key)
+
+    defp in02_test_before_reserve_transaction(:legacy), do: :ok
+
+    defp in02_test_before_reserve_transaction(:outcome) do
+      case Process.get(@in02_test_hook_key) do
+        :pre_callback_connection ->
+          raise DBConnection.ConnectionError, message: "IN-02 test pre-callback connection"
+
+        :pre_callback_argument_error ->
+          raise ArgumentError, "IN-02 test pre-callback argument error"
+
+        _ ->
+          :ok
+      end
+    end
+
+    defp in02_test_inside_reserve_transaction(:legacy) do
+      case Process.get(@in02_test_hook_key) do
+        :legacy_raise ->
+          raise RuntimeError, "IN-02 legacy reservation exception test"
+
+        :unclassified_rollback ->
+          Repo.rollback(:in02_test_unclassified)
+
+        _ ->
+          :ok
+      end
+    end
+
+    defp in02_test_inside_reserve_transaction(:outcome) do
+      case Process.get(@in02_test_hook_key) do
+        :unclassified_rollback ->
+          Repo.rollback(:in02_test_unclassified)
+
+        :post_entry_connection ->
+          raise DBConnection.ConnectionError, message: "IN-02 test post-entry connection"
+
+        :post_entry_postgrex ->
+          raise %Postgrex.Error{message: "IN-02 test post-entry database"}
+
+        _ ->
+          :ok
+      end
+    end
+  else
+    defp in02_test_before_reserve_transaction(_mode), do: :ok
+    defp in02_test_inside_reserve_transaction(_mode), do: :ok
   end
 
   defp unwrap_transaction_error({:ok, result}, _message), do: {:ok, result}
