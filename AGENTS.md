@@ -4,6 +4,12 @@ If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
 
 ---
 
+## Issue tracking (MANDATORY)
+
+Linear is our issue tracker, backed by GitHub Issues. Every blocker, dependency, or issue that arises MUST have a corresponding Linear issue linked to its GitHub Issue. Create and link the issues when the item is identified, and reference them from the relevant PR or workstream record.
+
+---
+
 ## BRANCHES, WORKTREES & PARALLEL WORK AUTHORITY (MANDATORY)
 
 Branches isolate Git history. Worktrees isolate execution. Ownership rules prevent semantic duplication.
