@@ -1626,16 +1626,21 @@ defmodule Store.Orders.InventoryReservations do
     classify_reservation_transaction_exception(exception, entered?)
   end
 
+  defp classify_reservation_transaction_outcome({:in02_transaction_catch, :throw, value}, false) do
+    throw(value)
+  end
+
+  defp classify_reservation_transaction_outcome({:in02_transaction_catch, :exit, reason}, false) do
+    exit(reason)
+  end
+
   defp classify_reservation_transaction_outcome(
          {:in02_transaction_catch, kind, reason},
          entered?
        ) do
-    if entered? do
-      {:ambiguous,
-       in02_ambiguous_payload(:reservation_transaction, in02_catch_reason_class(kind, reason))}
-    else
-      propagate_in02_caught(kind, reason)
-    end
+    phase = if entered?, do: :reservation_transaction, else: :before_callback
+
+    {:ambiguous, in02_ambiguous_payload(phase, in02_catch_reason_class(kind, reason))}
   end
 
   defp classify_reservation_transaction_outcome({:error, reason}, callback_entered?) do
@@ -1710,10 +1715,6 @@ defmodule Store.Orders.InventoryReservations do
   defp in02_catch_reason_class(:exit, :timeout), do: :timeout
   defp in02_catch_reason_class(:exit, _reason), do: :process
   defp in02_catch_reason_class(_kind, _reason), do: :unclassified
-
-  defp propagate_in02_caught(:throw, value), do: throw(value)
-  defp propagate_in02_caught(:exit, reason), do: exit(reason)
-  defp propagate_in02_caught(_kind, reason), do: raise(inspect(reason))
 
   if Mix.env() == :test do
     @in02_test_hook_key {__MODULE__, :in02_reserve_test_hook}
