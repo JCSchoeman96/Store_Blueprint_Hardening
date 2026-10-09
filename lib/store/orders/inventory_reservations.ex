@@ -5,7 +5,7 @@ defmodule Store.Orders.InventoryReservations do
 
   alias Ecto.Changeset
   alias Store.Catalog.{AvailabilityCache, InventoryItem, StockFastPath, Variant}
-  alias Store.Orders.InventoryAdmission.Request
+  alias Store.Orders.InventoryAdmission.{Operation, Request}
   alias Store.Orders.InventoryReservation
   alias Store.Repo
   alias Store.Support.Errors.Error
@@ -34,6 +34,63 @@ defmodule Store.Orders.InventoryReservations do
       {:error, %Error{} = error} ->
         {:known_rollback, error}
     end
+  end
+
+  @spec recovery_snapshot(term()) ::
+          {:ok, %{reservation: :absent | map(), inventory: map()}}
+          | {:error,
+             :invalid_operation
+             | :database_unavailable
+             | :contradictory_identity
+             | :inventory_unavailable}
+  @doc false
+  def recovery_snapshot(%Operation{} = operation) do
+    case Operation.validate(operation) do
+      :ok -> read_recovery_snapshot(operation)
+      {:error, _reason} -> {:error, :invalid_operation}
+    end
+  rescue
+    _error -> {:error, :database_unavailable}
+  end
+
+  def recovery_snapshot(_operation), do: {:error, :invalid_operation}
+
+  defp read_recovery_snapshot(operation) do
+    query =
+      from inventory in InventoryItem,
+        left_join: reservation in InventoryReservation,
+        on: reservation.reservation_key == ^operation.reservation_key,
+        where: inventory.variant_id == ^operation.variant_id,
+        select: {inventory, reservation}
+
+    case Repo.one(query) do
+      nil ->
+        {:error, :inventory_unavailable}
+
+      {%InventoryItem{} = inventory, nil} ->
+        {:ok, %{reservation: :absent, inventory: inventory_facts(inventory)}}
+
+      {%InventoryItem{} = inventory, %InventoryReservation{} = reservation} ->
+        if reservation.order_id == operation.order_id and
+             reservation.variant_id == operation.variant_id do
+          {:ok,
+           %{reservation: reservation_facts(reservation), inventory: inventory_facts(inventory)}}
+        else
+          {:error, :contradictory_identity}
+        end
+    end
+  rescue
+    _error -> {:error, :database_unavailable}
+  end
+
+  defp inventory_facts(%InventoryItem{} = inventory) do
+    Map.take(Map.from_struct(inventory), [
+      :variant_id,
+      :stock_on_hand,
+      :reserved_count,
+      :allow_oversell,
+      :version
+    ])
   end
 
   @spec reserve_inventory(String.t(), [map()], keyword()) ::
