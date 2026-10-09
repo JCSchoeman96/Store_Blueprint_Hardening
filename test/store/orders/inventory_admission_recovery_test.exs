@@ -60,6 +60,20 @@ defmodule Store.Orders.InventoryAdmissionRecoveryTest do
     assert stats.query_count == 0
   end
 
+  test "reserve_inventory_outcome propagates unexpected pre-callback ArgumentError" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 4)
+
+    InventoryReservations.in02_put_reserve_test_hook(:pre_callback_argument_error)
+
+    assert_raise ArgumentError, "IN-02 test pre-callback argument error", fn ->
+      InventoryReservations.reserve_inventory_outcome(order.id, [
+        %{variant_id: variant_id, quantity: 1}
+      ])
+    end
+  end
+
   test "reserve_inventory_outcome returns known no-commit for proven pre-callback connection failure" do
     order = create_order!()
     variant_id = UUIDv7.generate()

@@ -34,9 +34,6 @@ defmodule Store.Orders.InventoryReservations do
       {:error, %Error{} = error} ->
         {:known_rollback, error}
     end
-  rescue
-    ArgumentError ->
-      {:known_rollback, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
   end
 
   @spec reserve_inventory(String.t(), [map()], keyword()) ::
@@ -1557,17 +1554,22 @@ defmodule Store.Orders.InventoryReservations do
   end
 
   defp prepare_reserve_transaction_inputs(order_id, items, opts) do
-    case normalize_reserve_items(items) do
-      {:ok, desired_quantities} ->
-        now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
-        ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
-        expires_at = DateTime.add(now, ttl_seconds, :second)
-        variant_ids = desired_quantities |> Map.keys() |> BinaryUuidSort.sort_uuids()
+    try do
+      case normalize_reserve_items(items) do
+        {:ok, desired_quantities} ->
+          now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+          ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
+          expires_at = DateTime.add(now, ttl_seconds, :second)
+          variant_ids = desired_quantities |> Map.keys() |> BinaryUuidSort.sort_uuids()
 
-        {:ok, {order_id, variant_ids, desired_quantities, expires_at, now}}
+          {:ok, {order_id, variant_ids, desired_quantities, expires_at, now}}
 
-      {:error, %Error{} = error} ->
-        {:error, error}
+        {:error, %Error{} = error} ->
+          {:error, error}
+      end
+    rescue
+      ArgumentError ->
+        {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
     end
   end
 
@@ -1732,6 +1734,9 @@ defmodule Store.Orders.InventoryReservations do
       case Process.get(@in02_test_hook_key) do
         :pre_callback_connection ->
           raise DBConnection.ConnectionError, message: "IN-02 test pre-callback connection"
+
+        :pre_callback_argument_error ->
+          raise ArgumentError, "IN-02 test pre-callback argument error"
 
         _ ->
           :ok
