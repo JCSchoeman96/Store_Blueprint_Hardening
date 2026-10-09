@@ -1554,23 +1554,21 @@ defmodule Store.Orders.InventoryReservations do
   end
 
   defp prepare_reserve_transaction_inputs(order_id, items, opts) do
-    try do
-      case normalize_reserve_items(items) do
-        {:ok, desired_quantities} ->
-          now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
-          ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
-          expires_at = DateTime.add(now, ttl_seconds, :second)
-          variant_ids = desired_quantities |> Map.keys() |> BinaryUuidSort.sort_uuids()
+    case normalize_reserve_items(items) do
+      {:ok, desired_quantities} ->
+        now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+        ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_reservation_ttl_seconds)
+        expires_at = DateTime.add(now, ttl_seconds, :second)
+        variant_ids = desired_quantities |> Map.keys() |> BinaryUuidSort.sort_uuids()
 
-          {:ok, {order_id, variant_ids, desired_quantities, expires_at, now}}
+        {:ok, {order_id, variant_ids, desired_quantities, expires_at, now}}
 
-        {:error, %Error{} = error} ->
-          {:error, error}
-      end
-    rescue
-      ArgumentError ->
-        {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
+      {:error, %Error{} = error} ->
+        {:error, error}
     end
+  rescue
+    ArgumentError ->
+      {:error, Error.new("VALIDATION_ERROR", "Invalid reserve input", %{})}
   end
 
   defp run_reserve_inventory_transaction(
