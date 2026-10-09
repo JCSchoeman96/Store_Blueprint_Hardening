@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e` (accepted tip after PR #134; tree `3e6c79e823741b661ef96308aca320356580dfce`) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `7bc76bb89afc32f23bedaea06089504a54cdacbd` (accepted tip after PR #136; tree `03349c04d93de2a55183207e0704a2a12ff7274a`) | `origin/main` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -1630,8 +1630,8 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `4fdc9e2581ff2d83280040b2d3f70c6b57238ba2` at the JC-329 governance admission preflight; resolve with `git fetch origin && git rev-parse origin/main` before work.
-- `origin/hardening/s0-baseline` = `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e` (tree `3e6c79e823741b661ef96308aca320356580dfce`; PR #134 JC-327 prerequisite merge)
+- `origin/main` = `5afa4acdce3ef6f5b26eac7f78a0047502e6665a` (governance base for JC-335; refresh with `git fetch origin && git rev-parse origin/main` before work).
+- `origin/hardening/s0-baseline` = `7bc76bb89afc32f23bedaea06089504a54cdacbd` (tree `03349c04d93de2a55183207e0704a2a12ff7274a`; PR #136 JC-331 / IN-02 merge)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
 - PR #90 = MERGED / ACCEPTED into `main`
@@ -1773,7 +1773,7 @@ The JC-327 exact-generation guard is the completed S0 prerequisite. The accepted
 `guard_exact_generation/4` contract remains frozen. The JC-229 guard prerequisite no
 longer blocks IA-04 IN-02. This record does not admit JC-229 or begin SUBS integration.
 
-Current serial IA-04 state:
+Historical serial IA-04 state at JC-327 admission:
 
 ```text
 IA-04 overall = AUTHORIZED / IMPLEMENTING
@@ -1784,7 +1784,7 @@ remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-02 ACCEPTANCE
 IA-05+ = NOT AUTHORIZED
 ```
 
-IN-02 source compatibility is `PASS` at task base
+IN-02 source compatibility was `PASS` at task base
 `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, tree
 `3e6c79e823741b661ef96308aca320356580dfce`. Generic
 `Store.Orders.InventoryReservations.reserve_inventory/3` still runs its existing
@@ -1805,9 +1805,76 @@ test/store/orders/inventory_admission_recovery_test.exs
 ```
 
 Historical `hardening/s0-ia04` is not the implementation base. A fresh temporary
-implementation worktree must later be created from exact S0 `dff5a37...`. IN-02 must
-pass review, merge, and post-merge verification before any later Slice-3 microtask is
-admitted. This governance record does not authorize IN-03 or the rest of Slice 3.
+implementation worktree must later be created from exact S0 `dff5a37...`. IN-02 had
+to pass review, merge, and post-merge verification before any later Slice-3 microtask
+could be admitted. This JC-327 record did not authorize IN-03 or the rest of Slice 3.
+
+### JC-331 closure and JC-335 / IN-03 admission (2026-10-09)
+
+JC-331 is `PASS / ACCEPTED / POST-MERGE VERIFIED / DONE`. PR #136 merged exactly
+as reviewed. Its reviewed head is
+`a15e6ea7bf651487397c1cddd6e5b920d1cfe0fb`; the S0 merge is
+`7bc76bb89afc32f23bedaea06089504a54cdacbd` with tree
+`03349c04d93de2a55183207e0704a2a12ff7274a`. The merge tree equals the reviewed
+head tree. `hardening/s0-baseline` points to that merge.
+
+Current serial IA-04 state:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = PASS / ACCEPTED / FROZEN / POST-MERGE VERIFIED
+Slice 3 / IN-03 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-03 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+JC-335 admits only the future IN-03 implementation after its governance PR is
+reviewed and merged. Its exact S0 task base is:
+
+```text
+TASK_BASE_SHA = 7bc76bb89afc32f23bedaea06089504a54cdacbd
+TASK_BASE_TREE = 03349c04d93de2a55183207e0704a2a12ff7274a
+```
+
+The future implementation is limited to
+`lib/store/orders/inventory_reservations.ex` and
+`test/store/orders/inventory_admission_recovery_test.exs`. IN-03 adds a read-only
+PostgreSQL recovery snapshot for operation-specific PRE/POST comparison. For an
+insert, PRE includes an absent `reservation_key` and trusted inventory facts; POST
+must match the exact reservation identity, quantity, state, expiry, reservation
+version, inventory reserved-count delta, and inventory version progression. For an
+active same-order/variant adjustment, PRE and POST include the exact reservation ID,
+key, quantity, state, expiry, version, and inventory counters/version. Row presence
+or a matching key alone never proves commit. A neither-match result is unresolved
+evidence and cannot imply commit, rollback, release, or retry.
+
+IN-03 reads `InventoryReservation` and `InventoryItem` from PostgreSQL only. It does
+not write either resource, retry the mutation, change Redis, release permits,
+enqueue recovery, transition admission lifecycle, or release capacity. Unresolved
+PRE/POST evidence retains the fence. No mutation marker, table, resource, worker,
+index, migration, cache truth, Redis recovery truth, PubSub, Oban job, or second
+mutation is authorized.
+
+**Performance & Scaling Review.** The recovery snapshot is cold durable PostgreSQL
+data. It uses existing reservation-key, active order/variant, and inventory-variant
+identities, with no index or migration. Recovery truth has no cache or new TTL. It
+adds no Redis structure, invalidation, PubSub, or Oban work. Keep the Store.Repo read
+bounded to one recovery shape with no loop, under the existing global budget. Raw DB
+retry is `NONE`. This admission makes no 100k certification claim.
+
+The snapshot returns only bounded internal reservation and inventory evidence. It
+must not expose raw SQL errors, connection strings, credentials, stack traces,
+customer PII, full order payloads, or payment data. This is generic Store correctness:
+`GENERIC_STORE_CORRECTNESS = YES` and `NEWYOU_SPECIFIC_POLICY = NO`. No Paystack,
+NewYou grace, membership, subscription cancellation, entitlement, or product-specific
+inventory policy is authorized.
+
+JC-335 does not admit JC-229, start SUBS integration, implement IA-05, add an Oban
+recovery worker, or add Redis recovery resolution. JC-229 / SBH-10-04 remains under
+its existing separate SUBS integration and re-admission gates. Later Slice-3 work
+remains serially blocked on IN-03 acceptance, and IA-05+ remains `NOT AUTHORIZED`.
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
