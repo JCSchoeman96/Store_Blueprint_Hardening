@@ -498,6 +498,43 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
     end
   end
 
+  test "post-commit fixture failure runs durable cleanup before returning" do
+    parent = self()
+
+    assert_raise RuntimeError, "injected post-commit fixture failure", fn ->
+      with_committed_fixture(
+        fn _order, _variant_id -> flunk("fixture body must not run after setup failure") end,
+        after_commit: fn order, variant_id ->
+          send(parent, {:post_commit_fixture_identity, order.id, variant_id})
+          raise "injected post-commit fixture failure"
+        end
+      )
+    end
+
+    assert_receive {:post_commit_fixture_identity, order_id, variant_id}
+
+    {order_exists?, inventory_item_exists?, reservation_count} =
+      Sandbox.unboxed_run(Store.Repo, fn ->
+        order_exists? = Repo.exists?(from o in Order, where: o.id == ^order_id)
+
+        inventory_item_exists? =
+          Repo.exists?(from i in InventoryItem, where: i.variant_id == ^variant_id)
+
+        reservation_count =
+          Repo.aggregate(
+            from(r in InventoryReservation, where: r.order_id == ^order_id),
+            :count,
+            :id
+          )
+
+        {order_exists?, inventory_item_exists?, reservation_count}
+      end)
+
+    refute order_exists?
+    refute inventory_item_exists?
+    assert reservation_count == 0
+  end
+
   test "guard_exact_generation rejects malformed public arguments without raising" do
     order = create_order!()
     variant_id = UUIDv7.generate()
@@ -1062,27 +1099,23 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
     |> Ash.create!(domain: Store.Catalog, authorize?: false)
   end
 
-  defp with_committed_fixture(fun) do
-    {order, variant_id} = create_committed_fixture!()
+  defp with_committed_fixture(fun, opts \\ []) do
+    after_commit = Keyword.get(opts, :after_commit, fn _order, _variant_id -> :ok end)
 
-    try do
-      Sandbox.unboxed_run(Store.Repo, fn -> fun.(order, variant_id) end)
-    after
-      cleanup_committed_fixture!(order, variant_id)
-    end
-  end
-
-  defp create_committed_fixture!(after_order \\ fn _order, _variant_id -> :ok end) do
-    case Sandbox.unboxed_run(Store.Repo, fn ->
-           create_committed_fixture_transaction(after_order)
-         end) do
+    case create_committed_fixture!() do
       {:ok, {%Order{} = order, variant_id, notifications}} when is_binary(variant_id) ->
-        AshNotifications.notify_post_commit(notifications,
-          context: %{test_fixture: :inventory_reservation_generation}
-        )
+        try do
+          AshNotifications.notify_post_commit(notifications,
+            context: %{test_fixture: :inventory_reservation_generation}
+          )
 
-        verify_committed_fixture!(order, variant_id, :present)
-        {order, variant_id}
+          verify_committed_fixture!(order, variant_id, :present)
+          after_commit.(order, variant_id)
+
+          Sandbox.unboxed_run(Store.Repo, fn -> fun.(order, variant_id) end)
+        after
+          cleanup_committed_fixture!(order, variant_id)
+        end
 
       {:error, reason} ->
         raise "committed fixture setup transaction failed: #{inspect(reason)}"
@@ -1090,6 +1123,10 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
       other ->
         raise "committed fixture setup returned an invalid result: #{inspect(other)}"
     end
+  end
+
+  defp create_committed_fixture!(after_order \\ fn _order, _variant_id -> :ok end) do
+    Sandbox.unboxed_run(Store.Repo, fn -> create_committed_fixture_transaction(after_order) end)
   end
 
   defp create_committed_fixture_transaction(after_order) do
