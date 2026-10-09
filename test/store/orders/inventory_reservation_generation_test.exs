@@ -688,73 +688,87 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
   end
 
   test "concurrent exact release blocks until guard transaction commits" do
-    with_committed_fixture(fn order, variant_id ->
-      key = generation_key(order.id, variant_id)
-      parent = self()
+    {order_id, variant_id} =
+      with_committed_fixture(fn order, variant_id ->
+        key = generation_key(order.id, variant_id)
+        parent = self()
 
-      assert {:ok, %{reservation: %{state: :active}}} =
-               Store.Orders.reserve_exact_generation(order.id, variant_id, key, 2)
+        assert {:ok, %{reservation: %{state: :active}}} =
+                 Store.Orders.reserve_exact_generation(order.id, variant_id, key, 2)
 
-      guard_task =
-        Task.async(fn ->
-          Sandbox.unboxed_run(Store.Repo, fn ->
-            Repo.transaction(fn ->
-              {:ok, %{rows: [[guard_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
+        guard_task =
+          Task.async(fn ->
+            Sandbox.unboxed_run(Store.Repo, fn ->
+              Repo.transaction(fn ->
+                {:ok, %{rows: [[guard_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
 
-              assert {:ok, %{state: :active}} =
-                       Store.Orders.guard_exact_generation(order.id, variant_id, key, 2)
+                assert {:ok, %{state: :active}} =
+                         Store.Orders.guard_exact_generation(order.id, variant_id, key, 2)
 
-              send(parent, {:guard_acquired, guard_backend_pid})
+                send(parent, {:guard_acquired, guard_backend_pid})
 
-              receive do
-                :commit_guard_transaction -> :ok
-              after
-                10_000 -> Repo.rollback(:timed_out_waiting_for_guard_commit)
-              end
+                receive do
+                  :commit_guard_transaction -> :ok
+                after
+                  10_000 -> Repo.rollback(:timed_out_waiting_for_guard_commit)
+                end
+              end)
             end)
           end)
-        end)
 
-      assert_receive {:guard_acquired, guard_backend_pid}, 10_000
+        assert_receive {:guard_acquired, guard_backend_pid}, 10_000
 
-      release_task =
-        Task.async(fn ->
-          Sandbox.unboxed_run(Store.Repo, fn ->
-            receive do
-              :start_release -> :ok
-            after
-              10_000 -> throw(:timed_out_waiting_to_start_release)
-            end
+        release_task =
+          Task.async(fn ->
+            Sandbox.unboxed_run(Store.Repo, fn ->
+              receive do
+                :start_release -> :ok
+              after
+                10_000 -> throw(:timed_out_waiting_to_start_release)
+              end
 
-            {:ok, %{rows: [[waiter_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
-            send(parent, {:waiter_ready, waiter_backend_pid})
+              {:ok, %{rows: [[waiter_backend_pid]]}} = Repo.query("SELECT pg_backend_pid()", [])
+              send(parent, {:waiter_ready, waiter_backend_pid})
 
-            Store.Orders.release_exact_generation(order.id, variant_id, key)
+              Store.Orders.release_exact_generation(order.id, variant_id, key)
+            end)
           end)
-        end)
 
-      send(release_task.pid, :start_release)
-      assert_receive {:waiter_ready, waiter_backend_pid}, 10_000
+        send(release_task.pid, :start_release)
+        assert_receive {:waiter_ready, waiter_backend_pid}, 10_000
 
-      blocking_evidence =
-        Sandbox.unboxed_run(Store.Repo, fn ->
-          Process.sleep(50)
+        blocking_evidence =
+          Sandbox.unboxed_run(Store.Repo, fn ->
+            Process.sleep(50)
 
-          {:ok, %{rows: [[blocking_pids]]}} =
-            Repo.query("SELECT pg_blocking_pids($1::integer)", [waiter_backend_pid])
+            {:ok, %{rows: [[blocking_pids]]}} =
+              Repo.query("SELECT pg_blocking_pids($1::integer)", [waiter_backend_pid])
 
-          blocking_pids || []
-        end)
+            blocking_pids || []
+          end)
 
-      assert guard_backend_pid in blocking_evidence
+        assert guard_backend_pid in blocking_evidence
 
-      send(guard_task.pid, :commit_guard_transaction)
-      assert {:ok, :ok} = Task.await(guard_task, 10_000)
+        send(guard_task.pid, :commit_guard_transaction)
+        assert {:ok, :ok} = Task.await(guard_task, 10_000)
 
-      assert {:ok, %{changed?: true, reservation: %{state: :cancelled}}} =
-               Task.await(release_task, 10_000)
+        assert {:ok, %{changed?: true, reservation: %{state: :cancelled}}} =
+                 Task.await(release_task, 10_000)
 
-      assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 0
+        assert Repo.get_by!(InventoryItem, variant_id: variant_id).reserved_count == 0
+
+        {order.id, variant_id}
+      end)
+
+    Sandbox.unboxed_run(Store.Repo, fn ->
+      refute Repo.exists?(from o in Order, where: o.id == ^order_id)
+      refute Repo.exists?(from i in InventoryItem, where: i.variant_id == ^variant_id)
+
+      assert Repo.aggregate(
+               from(r in InventoryReservation, where: r.order_id == ^order_id),
+               :count,
+               :id
+             ) == 0
     end)
   end
 
@@ -1006,19 +1020,85 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
   end
 
   defp with_committed_fixture(fun) do
-    Sandbox.unboxed_run(Store.Repo, fn ->
-      order = create_order!()
-      variant_id = UUIDv7.generate()
-      create_inventory_item!(variant_id, 4)
+    {order, variant_id} = create_committed_fixture!()
 
-      try do
-        fun.(order, variant_id)
-      after
+    try do
+      Sandbox.unboxed_run(Store.Repo, fn -> fun.(order, variant_id) end)
+    after
+      cleanup_committed_fixture!(order, variant_id)
+    end
+  end
+
+  defp create_committed_fixture! do
+    case Sandbox.unboxed_run(Store.Repo, fn ->
+           order = create_order!()
+           variant_id = UUIDv7.generate()
+           create_inventory_item!(variant_id, 4)
+
+           {order, variant_id}
+         end) do
+      {%Order{} = order, variant_id} when is_binary(variant_id) ->
+        verify_committed_fixture!(order, variant_id, :present)
+        {order, variant_id}
+
+      other ->
+        raise "committed fixture setup returned an invalid result: #{inspect(other)}"
+    end
+  end
+
+  defp cleanup_committed_fixture!(order, variant_id) do
+    case Sandbox.unboxed_run(Store.Repo, fn ->
+           cleanup_committed_fixture_transaction(order, variant_id)
+         end) do
+      {:ok, _deletes} ->
+        verify_committed_fixture!(order, variant_id, :absent)
+
+      {:error, reason} ->
+        raise "committed fixture cleanup transaction failed: #{inspect(reason)}"
+    end
+  end
+
+  defp cleanup_committed_fixture_transaction(order, variant_id) do
+    Repo.transaction(fn ->
+      reservation_deletes =
         Repo.delete_all(from r in InventoryReservation, where: r.order_id == ^order.id)
+
+      inventory_deletes =
         Repo.delete_all(from i in InventoryItem, where: i.variant_id == ^variant_id)
-        Repo.delete_all(from o in Order, where: o.id == ^order.id)
-      end
+
+      order_deletes = Repo.delete_all(from o in Order, where: o.id == ^order.id)
+
+      {reservation_deletes, inventory_deletes, order_deletes}
     end)
+  end
+
+  defp verify_committed_fixture!(order, variant_id, expected) do
+    {order_exists?, inventory_item_exists?, reservation_count} =
+      Sandbox.unboxed_run(Store.Repo, fn ->
+        order_exists? = Repo.exists?(from o in Order, where: o.id == ^order.id)
+
+        inventory_item_exists? =
+          Repo.exists?(from i in InventoryItem, where: i.variant_id == ^variant_id)
+
+        reservation_count =
+          Repo.aggregate(
+            from(r in InventoryReservation, where: r.order_id == ^order.id),
+            :count,
+            :id
+          )
+
+        {order_exists?, inventory_item_exists?, reservation_count}
+      end)
+
+    valid? =
+      case expected do
+        :present -> order_exists? and inventory_item_exists?
+        :absent -> not order_exists? and not inventory_item_exists? and reservation_count == 0
+      end
+
+    unless valid? do
+      raise "committed fixture #{expected} verification failed for order #{order.id} and variant #{variant_id}"
+    end
   end
 
   defp with_inventory_item_locked(variant_id, fun) do
