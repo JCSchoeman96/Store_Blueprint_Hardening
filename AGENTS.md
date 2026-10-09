@@ -1,275 +1,63 @@
 # AGENTS.md (MANDATORY)
 
-If a rule is not in **AGENTS.md** or **docs/agent_rules/**, it is not a rule.
+`origin/main` is the canonical accepted Store Blueprint runtime. Linear is the canonical hardening execution queue.
+
+Technical requirements in this file apply to implementation. Historical governance, workstream registries, and branch SHA pins provide provenance and context; they do not grant or withhold permission to begin ordinary implementation when prerequisites are accepted on `main`.
 
 ---
 
-## Issue tracking (MANDATORY)
+## Sequential hardening workflow (MANDATORY)
 
-Linear is our issue tracker, backed by GitHub Issues. Every blocker, dependency, or issue that arises MUST have a corresponding Linear issue linked to its GitHub Issue. Create and link the issues when the item is identified, and reference them from the relevant PR or workstream record.
+Default local development uses one Git worktree, one active Linear implementation issue, and one short-lived issue branch at a time. Do not create additional worktrees unless the human explicitly authorizes parallel work for a specific reason.
 
----
+Use this normal lifecycle:
 
-## BRANCHES, WORKTREES & PARALLEL WORK AUTHORITY (MANDATORY)
+`Backlog` → `Todo` → `In Progress` → `In Review` → `Done`
 
-Branches isolate Git history. Worktrees isolate execution. Ownership rules prevent semantic duplication.
+Exceptional state: `Blocked`.
 
-All three controls are mandatory for parallel work.
+Linear is the canonical execution queue. GitHub Issues may be used when independently useful or technically required; do not require a mirror for every Linear issue, dependency, or blocker. Do not create process issues to authorize work, refresh pins, or record that a prerequisite merged.
 
-### Active workstream registry (MANDATORY)
+### Starting an issue
 
-Before beginning any work, agents MUST read `docs/agent_rules/active_workstreams.md`.
+Before implementation, confirm the issue and acceptance criteria in Linear and verify that its concrete prerequisites are accepted on `main`.
 
-That registry defines the current active workstreams, branches, worktrees, parent authority, owned domains/resources, shared boundaries, exclusions, pending ownership-relevant PRs, and lifecycle state.
-
-If the registry conflicts with the actual Git state (path, branch, upstream, or declared ownership), STOP.
-
-Do not hardcode transient SHAs or changing workstream statuses into this file; record those in the registry only.
-
-### Persistent vs temporary worktrees
-
-Persistent programme worktrees host long-lived hardening programmes (for example main, S0, Subscriptions, Platform). They remain until the programme itself is formally closed.
-
-Temporary task/integration/review/governance worktrees are disposable. Create them only when needed and remove them after merge/verification according to Completion and cleanup.
-
-Do not create a permanent integration worktree.
-
-### Permanent `main` worktree
-
-The repository maintains one permanent local `main` worktree.
-
-Rules:
-
-* It MUST remain on `main`.
-* It MUST track `origin/main`.
-* It MUST remain clean.
-* It MUST be updated by fast-forward only.
-* It is read-mostly and MUST NOT be used for feature, hardening, governance, or experimental implementation.
-* Use it for:
-
-  * post-merge verification;
-  * inspection of canonical `main`;
-  * establishing the current `main` SHA;
-  * creating workstreams whose declared authority is `main`.
-
-`main` is synchronization, integration, release, and canonical-history authority — not a general implementation workspace.
-
-### Authoritative parent rule
-
-Every new workstream MUST declare its authoritative parent before work begins.
-
-A workstream MUST branch from the exact SHA of that authority.
-
-Do NOT assume every workstream branches from `main`.
-
-Examples:
-
-* dependency/security work may be authorized from `origin/main`;
-* S0 hardening work may be authorized from `origin/hardening/s0-baseline`;
-* integration work may combine two explicitly declared authoritative heads.
-
-Before implementation, record:
-
-* workstream name;
-* authoritative parent ref;
-* exact parent SHA;
-* branch name;
-* worktree path;
-* owned domains/resources/files;
-* explicitly excluded areas.
-
-If the authoritative parent moves before work starts, STOP and re-evaluate the base.
-
-### Mandatory branch + worktree
-
-Every concurrent workstream MUST have:
-
-1. its own dedicated Git branch; and
-2. its own dedicated worktree.
-
-No two active agents may share the same writable worktree.
-
-Agents MUST NOT perform implementation directly on:
-
-* `main`;
-* another workstream's branch;
-* another workstream's worktree.
-
-A worktree is not a substitute for a branch, and a branch is not a substitute for a worktree.
-
-### Ownership authority
-
-Every active workstream MUST declare what it owns.
-
-Ownership may include:
-
-* domains;
-* Ash resources;
-* schemas/tables;
-* migration lineages;
-* snapshots;
-* configuration;
-* dependency graph;
-* provider integrations;
-* shared infrastructure;
-* governance documents.
-
-There MUST be only one active authority for a schema/resource/migration lineage at a time unless an explicit shared-authority decision has been recorded.
-
-If a workstream discovers that it needs to modify something owned by another active workstream:
-
-STOP.
-
-Do not implement the overlap.
-
-Request an authority decision first.
-
-### Schema and migration rule
-
-Parallel workstreams MUST NOT independently create or modify competing migration histories for the same resource/table.
-
-Before creating or modifying a migration, verify:
-
-* which workstream owns the resource;
-* whether another active branch already changes the resource;
-* whether the migration has been applied to any authoritative shared environment;
-* whether a snapshot lineage already exists elsewhere.
-
-If competing schema histories are discovered:
-
-STOP and perform an explicit schema-authority/integration decision.
-
-Never delete an already-authoritative deployed migration merely to reconcile Git history.
-
-### Integration work
-
-Integration is its own bounded workstream.
-
-Significant convergence of parallel branches MUST use:
-
-* a dedicated integration branch;
-* a dedicated integration worktree;
-* explicitly declared source SHAs;
-* explicitly declared ownership/resolution rules.
-
-The integration agent MUST NOT redesign either workstream while resolving conflicts.
-
-Prefer a normal bounded merge for published long-lived branches unless an explicit authority permits another strategy.
-
-No force push unless explicitly authorized.
-
-After integration:
-
-1. push the integrated branch;
-2. run required validation;
-3. obtain exact-head CI;
-4. perform a fresh independent post-integration review;
-5. only then declare the integration accepted.
-
-The implementation author SHOULD NOT be the sole integration reviewer.
-
-### Main-to-long-lived-branch synchronization
-
-When `main` advances while a long-lived hardening/integration branch remains active, evaluate whether the new `main` changes affect that workstream before further implementation.
-
-Integrate `main` first when it changes shared runtime or architectural dependencies such as:
-
-* `mix.exs`;
-* `mix.lock`;
-* shared Redis infrastructure;
-* HTTP/provider infrastructure;
-* authentication/security foundations;
-* database/schema authority;
-* CI/static-analysis policy;
-* shared configuration.
-
-Do not continue building significant new work on a stale runtime/dependency baseline if a relevant `main` update has already been accepted.
-
-### Workstream lifecycle
-
-Use this lifecycle for meaningful parallel work:
-
-`PLANNED`
-→ `AUTHORITY_ASSIGNED`
-→ `BRANCH_CREATED`
-→ `WORKTREE_CREATED`
-→ `OWNERSHIP_DECLARED`
-→ `IMPLEMENTING`
-→ `VALIDATED`
-→ `PUSHED`
-→ `READY_FOR_INTEGRATION`
-→ `INTEGRATING`
-→ `POST_INTEGRATION_REVIEW`
-→ `COMPLETE`
-
-Exceptional state:
-
-`IMPLEMENTING`
-→ `BLOCKED_AUTHORITY`
-→ `STOP`
-
-A workstream enters `BLOCKED_AUTHORITY` when ownership, schema lineage, migration history, architectural authority, or integration responsibility becomes ambiguous.
-
-### Completion and cleanup
-
-After a workstream is merged and independently verified on its target authority:
-
-* mark it `MERGED → VERIFIED_ON_TARGET → REMOVED`;
-* remove disposable implementation/review worktrees;
-* delete local merged branches with safe `git branch -d`;
-* remote feature branch deletion is optional housekeeping unless repository policy requires it.
-
-Do not remove the permanent `main` worktree.
-
-Do not remove an active long-lived hardening worktree until that workstream itself is formally closed.
-
-### Required pre-work checks
-
-Use only the minimum checks needed:
+In the normal repository worktree:
 
 ```bash
 git fetch origin
-git worktree list
-git status
-git branch -vv
-git rev-parse <authoritative-ref>
+git switch main
+git pull --ff-only
+git status --short
+git switch -c <issue-branch>
 ```
 
-For integration work also use:
+Every issue branch starts from the current canonical `origin/main`. Record its exact base SHA as review evidence. No separate governance PR or task-base assignment is required.
+
+Recommended branch names include `jc-229-<short-description>` and `jc-230-<short-description>`.
+
+### Dependencies and architecture questions
+
+When a prerequisite implementation is accepted on `main`, the dependent issue may proceed. Verify that the relevant capability exists at implementation start. Do not require re-admission, authority refresh, task-base governance, or branch-pin updates.
+
+If implementation reveals genuine semantic ambiguity, stop only the affected portion, state the decision that is needed, and document it in the smallest appropriate durable place, such as the Linear issue, implementation PR, tests, code, or an ADR when the decision is substantial and reusable. Do not automatically create a separate governance issue or PR.
+
+### Implementation review and merge
+
+Implementation PRs target `main`. Before recommending merge, review the exact base SHA, head SHA, diff, changed files, issue acceptance criteria, lifecycle behavior, database invariants, concurrency, retry/replay, crash/recovery where relevant, tests, CI, and security/performance where relevant. Performance-sensitive changes include the “Performance & Scaling Review” described below.
+
+Human merge is required. Do not enable automatic merging solely because the workflow is sequential.
+
+After human merge:
 
 ```bash
-git merge-base <ref-a> <ref-b>
-git diff --name-status <merge-base>..<ref-a>
-git diff --name-status <merge-base>..<ref-b>
+git switch main
+git fetch origin
+git pull --ff-only
+git status --short
 ```
 
-Avoid unnecessary `git pull`, rebase, merge, reset, or force-push operations.
-
-### Mandatory STOP conditions
-
-STOP immediately if:
-
-* the expected authoritative SHA moved;
-* the target worktree is dirty;
-* branch/worktree ownership is ambiguous;
-* another active workstream owns the same schema/resource lineage;
-* the task requires modifying another workstream's declared authority;
-* competing migration or snapshot histories are discovered;
-* integration requires changing frozen architecture;
-* a supposedly isolated task requires substantial unrelated changes;
-* a force push would be required without explicit authorization;
-* the task would require implementing directly on `main`;
-* later-phase work becomes necessary but is not authorized.
-
-Report the blocker and request a new authority decision.
-
-Do not self-authorize scope expansion.
-
-### Core law
-
-**Branch isolates history. Worktree isolates execution. Ownership isolates architecture.**
-
-Parallel work requires all three.
+Verify that local `main` equals `origin/main` and the worktree is clean. Mark the completed Linear issue `Done`, then select the next issue.
 
 ---
 
@@ -282,12 +70,9 @@ Parallel work requires all three.
 
 ---
 
-## Rule Sources (Authoritative)
-1) `AGENTS.md`
-2) `docs/agent_rules/` (including `docs/agent_rules/active_workstreams.md` for current workstream topology/ownership)
-3) `docs/governance/`
-4) `docs/phases/`
-5) `docs/agent_notes/phase_XX_docs.md`
+## Technical references
+
+Use current code, tests, accepted changes on `main`, and relevant technical documentation to understand behavior and constraints. Historical governance documents, `docs/agent_rules/active_workstreams.md`, and old branch SHA pins are provenance only; they are not execution gates and cannot override current Git state or Linear acceptance criteria.
 
 ---
 
@@ -416,73 +201,8 @@ Parallel work requires all three.
 
 ---
 
-## Phase Notes (Docs-first) (MUST)
-- Every phase must have: `docs/agent_notes/phase_XX_docs.md`
-- Must include: links consulted, decisions/pins, plan, performance review
+## Validation and session close
 
-
----
-
-## Workflow
-- ALWAYS create or update a PR, so that the work and implementation or info can be checked and reviewed
-
----
-
-## Git Sync Authority (Code Repo) (MANDATORY)
-
-Synchronization is branch-aware. Do not assume every worktree is on `main`.
-
-### Permanent `main` worktree
-
-1. `git fetch origin`
-2. Fast-forward only: `git merge --ff-only origin/main` when behind and a strict ancestor
-3. Prove clean and equal: `HEAD == origin/main`, branch `main`, `git status -sb` clean
-
-Never use `git pull --rebase`, `git rebase`, `git reset --hard`, or force push on the permanent main worktree.
-
-### Non-main workstream worktrees
-
-1. `git fetch origin`
-2. Verify the current branch, upstream, and parent authority against `docs/agent_rules/active_workstreams.md`
-3. Do **not** automatically `git pull`, `git pull --rebase`, or rebase
-4. Synchronize only with an explicitly authorized fast-forward or integration operation
-5. Never rewrite a published long-lived branch without explicit authorization
-6. No force push without explicit authorization
-
-End-of-session status MUST reference the **current** branch and its upstream (for example `hardening/subscriptions...origin/hardening/subscriptions`), not require `main...origin/main` in every worktree.
-
-### Agent start contract
-
-Every agent opened in a persistent worktree MUST begin by checking:
-
-```bash
-pwd
-git branch --show-current
-git status -sb
-git rev-parse HEAD
-git rev-parse @{upstream}   # when an upstream exists
-git fetch origin
-```
-
-Then read the matching entry in `docs/agent_rules/active_workstreams.md` and explicitly state:
-
-`WORKSTREAM` / `PATH` / `BRANCH` / `HEAD` / `UPSTREAM` / `OWNED AREA` / `EXCLUDED AREA`
-
-before modifying anything. On any conflict with the registry: STOP.
-
----
-
-## Closure Protocol (MUST)
-- `mix check` passes
-- Git: branch-aware sync complete per Git Sync Authority; `git push` OK when publishing; `git status -sb` clean vs the **current** upstream
-- Required PR, CI, and independent review gates pass
-- Verify the target authority after merge where required
-
----
-
-## End of session (MANDATORY)
-1) `mix check` (if anything changed)
-2) Branch-aware sync per Git Sync Authority (no blanket `git pull --rebase`)
-3) `git push` (only when publishing commits from the current workstream branch)
-4) `git status -sb` (must be clean vs the **current** branch upstream)
-5) Confirm required PR, CI, review, and post-merge verification gates
+- Run the checks required by the issue and affected code. For implementation changes, include relevant tests and repository CI checks; do not weaken or skip a required check because a change appears small.
+- Keep PRs focused and reviewable. Document meaningful behavior or architecture decisions in the issue, PR, tests, code, or an ADR when warranted.
+- Before ending work, report the current branch, its PR/CI/review status, validation performed, and any remaining blocker.
