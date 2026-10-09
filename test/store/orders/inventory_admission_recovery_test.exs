@@ -7,7 +7,10 @@ defmodule Store.Orders.InventoryAdmissionRecoveryTest do
   alias Store.Support.ID.UUIDv7
   alias Store.Support.Telemetry.RepoStats
 
-  @in02_test_hook_key {InventoryReservations, :in02_test_hook}
+  setup do
+    on_exit(fn -> InventoryReservations.in02_clear_reserve_test_hook() end)
+    :ok
+  end
 
   test "reserve_inventory_outcome returns known_commit for a successful reservation" do
     order = create_order!()
@@ -57,51 +60,76 @@ defmodule Store.Orders.InventoryAdmissionRecoveryTest do
     assert stats.query_count == 0
   end
 
+  test "reserve_inventory_outcome returns known no-commit for proven pre-callback connection failure" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 4)
+
+    InventoryReservations.in02_put_reserve_test_hook(:pre_callback_connection)
+
+    assert {:known_rollback,
+            %Error{
+              code: "INVENTORY_ADMISSION_UNAVAILABLE",
+              meta: %{phase: :before_callback, reason_class: :connection}
+            }} =
+             InventoryReservations.reserve_inventory_outcome(order.id, [
+               %{variant_id: variant_id, quantity: 1}
+             ])
+
+    assert reservation_count(order.id, variant_id) == 0
+  end
+
+  test "reserve_inventory_outcome classifies post-entry connection uncertainty as ambiguous" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 4)
+
+    InventoryReservations.in02_put_reserve_test_hook(:post_entry_connection)
+
+    outcome =
+      InventoryReservations.reserve_inventory_outcome(order.id, [
+        %{variant_id: variant_id, quantity: 1}
+      ])
+
+    assert {:ambiguous, %{phase: :reservation_transaction, reason_class: :connection}} = outcome
+    refute match?({:known_rollback, _}, outcome)
+  end
+
+  test "reserve_inventory_outcome classifies post-entry Postgrex uncertainty as database not connection" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 4)
+
+    InventoryReservations.in02_put_reserve_test_hook(:post_entry_postgrex)
+
+    outcome =
+      InventoryReservations.reserve_inventory_outcome(order.id, [
+        %{variant_id: variant_id, quantity: 1}
+      ])
+
+    assert {:ambiguous, %{phase: :reservation_transaction, reason_class: :database}} = outcome
+    refute match?({:known_rollback, _}, outcome)
+  end
+
   test "reserve_inventory_outcome classifies post-entry unclassified rollback as ambiguous" do
     order = create_order!()
     variant_id = UUIDv7.generate()
     create_inventory_item!(variant_id, 4)
 
-    Process.put(@in02_test_hook_key, :unclassified_rollback)
+    InventoryReservations.in02_put_reserve_test_hook(:unclassified_rollback)
 
-    try do
-      outcome =
-        InventoryReservations.reserve_inventory_outcome(order.id, [
-          %{variant_id: variant_id, quantity: 1}
-        ])
+    outcome =
+      InventoryReservations.reserve_inventory_outcome(order.id, [
+        %{variant_id: variant_id, quantity: 1}
+      ])
 
-      assert {:ambiguous, %{phase: :reservation_transaction, reason_class: :unclassified}} =
-               outcome
+    assert {:ambiguous, %{phase: :reservation_transaction, reason_class: :unclassified}} =
+             outcome
 
-      refute match?({:known_rollback, _}, outcome)
-    after
-      Process.delete(@in02_test_hook_key)
-    end
+    refute match?({:known_rollback, _}, outcome)
   end
 
-  test "reserve_inventory_outcome classifies post-entry lost outcome signal as ambiguous" do
-    order = create_order!()
-    variant_id = UUIDv7.generate()
-    create_inventory_item!(variant_id, 4)
-
-    Process.put(@in02_test_hook_key, :raise_ambiguous_signal)
-
-    try do
-      outcome =
-        InventoryReservations.reserve_inventory_outcome(order.id, [
-          %{variant_id: variant_id, quantity: 1}
-        ])
-
-      assert {:ambiguous, %{phase: :reservation_transaction, reason_class: :lost_result}} =
-               outcome
-
-      refute match?({:known_rollback, _}, outcome)
-    after
-      Process.delete(@in02_test_hook_key)
-    end
-  end
-
-  test "reserve_inventory preserves successful public compatibility shape" do
+  test "legacy reserve_inventory preserves successful public compatibility shape" do
     order = create_order!()
     variant_id = UUIDv7.generate()
     create_inventory_item!(variant_id, 3)
@@ -112,7 +140,7 @@ defmodule Store.Orders.InventoryAdmissionRecoveryTest do
     assert reservation.state == :active
   end
 
-  test "reserve_inventory preserves governed public error compatibility" do
+  test "legacy reserve_inventory preserves governed public error compatibility" do
     order = create_order!()
     variant_id = UUIDv7.generate()
     create_inventory_item!(variant_id, 1)
@@ -121,19 +149,27 @@ defmodule Store.Orders.InventoryAdmissionRecoveryTest do
              Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 2}])
   end
 
-  test "public reserve_inventory maps ambiguous outcomes to reservation conflict without exposing structured ambiguity" do
+  test "legacy reserve_inventory maps non-Error rollback tuples through the existing mapper" do
     order = create_order!()
     variant_id = UUIDv7.generate()
     create_inventory_item!(variant_id, 4)
 
-    Process.put(@in02_test_hook_key, :unclassified_rollback)
+    InventoryReservations.in02_put_reserve_test_hook(:unclassified_rollback)
 
-    try do
-      assert {:error,
-              %Error{code: "RESERVATION_CONFLICT", message: "Reservation transaction failed"}} =
-               Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
-    after
-      Process.delete(@in02_test_hook_key)
+    assert {:error,
+            %Error{code: "RESERVATION_CONFLICT", message: "Reservation transaction failed"}} =
+             Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
+  end
+
+  test "legacy reserve_inventory still propagates callback exceptions" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 4)
+
+    InventoryReservations.in02_put_reserve_test_hook(:legacy_raise)
+
+    assert_raise RuntimeError, "IN-02 legacy reservation exception test", fn ->
+      Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
     end
   end
 
