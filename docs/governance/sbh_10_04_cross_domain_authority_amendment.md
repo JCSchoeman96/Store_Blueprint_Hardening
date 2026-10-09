@@ -568,3 +568,103 @@ SUBS governance re-admission must verify all canonical grants, current source
 compatibility, and real dispatch-CAS composition and assign a fresh accepted task base.
 Until all these gates complete, JC-229 remains `BLOCKED_AUTHORITY -> STOP` and PR #127
 remains draft. JC-230 stays dependency-blocked. This task never merges either runtime PR.
+
+### S0 IA-04 serial admission: JC-335 / IN-03 (2026-10-09)
+
+JC-331 is `PASS / ACCEPTED / POST-MERGE VERIFIED / DONE`. PR #136 merged exactly
+as reviewed: reviewed head `a15e6ea7bf651487397c1cddd6e5b920d1cfe0fb`, merge
+`7bc76bb89afc32f23bedaea06089504a54cdacbd`, and tree
+`03349c04d93de2a55183207e0704a2a12ff7274a`. The merge tree equals the reviewed
+head tree. The accepted S0 task base is:
+
+```text
+TASK_BASE_SHA = 7bc76bb89afc32f23bedaea06089504a54cdacbd
+TASK_BASE_TREE = 03349c04d93de2a55183207e0704a2a12ff7274a
+```
+
+The serial IA-04 state is:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = PASS / ACCEPTED / FROZEN / POST-MERGE VERIFIED
+Slice 3 / IN-03 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-03 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+IN-03 is only the read-only durable PostgreSQL recovery snapshot for
+operation-specific PRE/POST comparison. It exposes durable reservation and inventory
+facts. It does not execute recovery transitions or interpret a neither-match result.
+
+For an insert, the trusted PRE evidence includes absence of the operation's
+`reservation_key` and the `InventoryItem` values for `stock_on_hand`,
+`reserved_count`, and `version`. Expected POST must match the exact reservation
+identity (`id`, `reservation_key`, `order_id`, and `variant_id`), quantity, state,
+expiry, reservation version, expected reserved-count delta, and inventory version
+progression. Row presence or a matching key alone is not commit proof.
+
+For an active same-order/variant adjustment, PRE and expected POST include the exact
+reservation ID, key, quantity, state, expiry, and version, plus the inventory
+`stock_on_hand`, `reserved_count`, and version. A matching key with unexpected
+quantity, state, expiry, or version is not a POST match. If PostgreSQL facts match
+neither the trusted PRE nor expected POST descriptor, the result is unresolved
+evidence. It does not imply commit, rollback, release, or retry. Unresolved comparison
+retains the fence and capacity.
+
+Recovery truth is PostgreSQL only. IN-03 must not read Redis, ETS, Cachex,
+StockFastPath, AvailabilityCache, PubSub, browser storage, or localStorage as
+recovery evidence. The snapshot is read-only: it cannot insert, update, delete,
+reserve, release, consume, expire, retry the mutation, change Redis, release permits,
+enqueue recovery, transition admission lifecycle, or perform another durable
+mutation. IN-03 does not authorize recovery execution.
+
+Future implementation files are exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+test/store/orders/inventory_admission_recovery_test.exs
+```
+
+No third implementation file, resource, schema, migration, index, mutation marker,
+worker, Redis primitive, or recovery service is authorized. The accepted
+`reserve_inventory_outcome/3` known-commit, known-rollback, and ambiguous distinctions
+remain in place before legacy interpretation. The accepted JC-327
+`guard_exact_generation/4` behavior remains frozen. IN-03 does not refactor either
+seam.
+
+**Performance & Scaling Review.**
+
+```text
+DATA_LAYER = COLD / DURABLE PostgreSQL snapshot
+INDEXES = existing reservation_key, active order/variant, and inventory variant identities only; no new index or migration
+CACHE = none for recovery truth
+TTL = no new TTL introduced by IN-03
+REDIS_STRUCTURE = none added; the future recovery fence and descriptor remain coordination authority only
+INVALIDATION = none; read-only snapshot
+PUBSUB = none
+OBAN = none
+STORE_REPO = one bounded recovery read shape; no loop; no second durable mutation
+RAW_DB_RETRY = NONE
+100K_CERTIFICATION = NOT CLAIMED
+```
+
+The snapshot returns bounded internal reservation and inventory evidence only. It
+must not expose raw SQL errors, connection strings, credentials, stack traces,
+customer PII, full order payloads, or payment data.
+
+```text
+GENERIC_STORE_CORRECTNESS = YES
+NEWYOU_SPECIFIC_POLICY = NO
+```
+
+This admission adds no Paystack behavior, NewYou grace rules, membership semantics,
+subscription cancellation policy, Entitlements policy, or product-specific inventory
+rules.
+
+This S0 admission preserves every JC-229 / SBH-10-04 authority boundary above. It
+does not re-admit SBH-10-04, authorize JC-229, start SUBS integration, implement
+IA-05, authorize an Oban recovery worker, or add Redis recovery resolution. Later
+Slice-3 microtasks remain serially blocked until IN-03 is accepted. IA-05+ remains
+`NOT AUTHORIZED`.
