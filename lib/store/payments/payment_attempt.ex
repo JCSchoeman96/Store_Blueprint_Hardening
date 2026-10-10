@@ -46,6 +46,11 @@ defmodule Store.Payments.PaymentAttempt do
       public?(true)
     end
 
+    attribute :provider_reference_kind, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :provider_transaction_id, :string do
       allow_nil?(true)
       public?(true)
@@ -124,6 +129,7 @@ defmodule Store.Payments.PaymentAttempt do
         :payload_sha256,
         :attempted_at,
         :provider_reference,
+        :provider_reference_kind,
         :provider_transaction_id,
         :observation_source,
         :raw_provider_status,

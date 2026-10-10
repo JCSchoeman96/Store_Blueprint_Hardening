@@ -55,6 +55,17 @@ defmodule Store.Payments.Providers do
     end
   end
 
+  @spec expected_environment(provider()) :: {:ok, String.t() | nil} | {:error, Error.t()}
+  def expected_environment(provider) do
+    with {:ok, module} <- adapter(provider) do
+      if Code.ensure_loaded?(module) and function_exported?(module, :expected_environment, 0) do
+        module.expected_environment()
+      else
+        {:ok, nil}
+      end
+    end
+  end
+
   @spec observe_payment(provider(), map(), keyword()) ::
           {:ok, Store.Payments.Types.ProviderObservation.t()} | {:error, term()}
   def observe_payment(provider, identity, opts \\ [])

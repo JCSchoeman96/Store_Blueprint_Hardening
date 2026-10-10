@@ -503,6 +503,7 @@ defmodule Store.Payments.Interlocks do
       observation = %ProviderObservation{
         provider: provider,
         provider_reference: canonical.provider_payment_id || canonical.provider_session_id || "",
+        provider_reference_kind: canonical_reference_kind(canonical),
         provider_transaction_id: canonical.provider_payment_id,
         local_payment_intent_id: payment_intent.id,
         observation_source: :webhook,
@@ -526,6 +527,19 @@ defmodule Store.Payments.Interlocks do
       })
     end
   end
+
+  defp canonical_reference_kind(%CanonicalReceipt{event_type: "setup_intent." <> _}),
+    do: :setup_intent
+
+  defp canonical_reference_kind(%CanonicalReceipt{provider_payment_id: payment_id})
+       when is_binary(payment_id),
+       do: :payment_intent
+
+  defp canonical_reference_kind(%CanonicalReceipt{provider_session_id: session_id})
+       when is_binary(session_id),
+       do: :checkout_session
+
+  defp canonical_reference_kind(_canonical), do: nil
 
   defp webhook_observation_outcome(:succeeded), do: :authoritative_success
   defp webhook_observation_outcome(:failed), do: :failure_observation

@@ -7,6 +7,7 @@ defmodule Store.Payments.Types.ProviderObservation do
   @enforce_keys [
     :provider,
     :provider_reference,
+    :provider_reference_kind,
     :observation_source,
     :normalized_outcome,
     :raw_provider_status,
@@ -17,6 +18,7 @@ defmodule Store.Payments.Types.ProviderObservation do
   defstruct [
     :provider,
     :provider_reference,
+    :provider_reference_kind,
     :provider_transaction_id,
     :local_payment_intent_id,
     :observation_source,
@@ -47,6 +49,7 @@ defmodule Store.Payments.Types.ProviderObservation do
   @type t :: %__MODULE__{
           provider: atom() | String.t(),
           provider_reference: String.t(),
+          provider_reference_kind: :payment_intent | :checkout_session | :setup_intent | nil,
           provider_transaction_id: String.t() | nil,
           local_payment_intent_id: String.t() | nil,
           observation_source: source(),
@@ -85,13 +88,18 @@ defmodule Store.Payments.Types.ProviderObservation do
   end
 
   defp validate_reference(payment_intent, observation) do
-    expected_reference =
-      Map.get(payment_intent, :provider_payment_id) ||
-        Map.get(payment_intent, :provider_session_id)
+    {expected_reference, expected_kind} = provider_identity(payment_intent)
 
-    if is_binary(expected_reference) and expected_reference == observation.provider_reference,
-      do: :ok,
-      else: {:error, :provider_reference_mismatch}
+    cond do
+      not is_binary(expected_reference) or expected_reference != observation.provider_reference ->
+        {:error, :provider_reference_mismatch}
+
+      expected_kind != observation.provider_reference_kind ->
+        {:error, :provider_reference_kind_mismatch}
+
+      true ->
+        :ok
+    end
   end
 
   defp validate_transaction(payment_intent, observation) do
@@ -121,10 +129,41 @@ defmodule Store.Payments.Types.ProviderObservation do
   end
 
   defp validate_environment(observation, opts) do
-    case Keyword.get(opts, :provider_environment) do
-      nil -> :ok
-      expected when expected == observation.provider_environment -> :ok
-      _expected -> {:error, :environment_mismatch}
+    expected = Keyword.get(opts, :provider_environment)
+    environment_required? = normalize_provider(observation.provider) == "stripe"
+
+    cond do
+      is_nil(expected) and (environment_required? or is_binary(observation.provider_environment)) ->
+        {:error, :environment_unverified}
+
+      is_nil(expected) ->
+        :ok
+
+      is_nil(observation.provider_environment) ->
+        {:error, :environment_unverified}
+
+      expected == observation.provider_environment ->
+        :ok
+
+      true ->
+        {:error, :environment_mismatch}
+    end
+  end
+
+  defp provider_identity(payment_intent) do
+    case {Map.get(payment_intent, :purpose), Map.get(payment_intent, :provider_payment_id),
+          Map.get(payment_intent, :provider_session_id)} do
+      {:subscription_payment_method_update, reference, _session} when is_binary(reference) ->
+        {reference, :setup_intent}
+
+      {_purpose, reference, _session} when is_binary(reference) ->
+        {reference, :payment_intent}
+
+      {_purpose, _reference, session} when is_binary(session) ->
+        {session, :checkout_session}
+
+      _ ->
+        {nil, nil}
     end
   end
 

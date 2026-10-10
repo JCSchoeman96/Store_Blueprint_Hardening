@@ -15,6 +15,7 @@ defmodule Store.Payments.ObservationEvidence do
       provider_event_key: provider_event_key(observation),
       attempt_key: observation_key(payment_intent, observation),
       provider_reference: empty_to_nil(observation.provider_reference),
+      provider_reference_kind: reference_kind(observation.provider_reference_kind),
       provider_transaction_id: observation.provider_transaction_id,
       observation_source: Atom.to_string(observation.observation_source),
       outcome: Atom.to_string(observation.normalized_outcome),
@@ -36,9 +37,10 @@ defmodule Store.Payments.ObservationEvidence do
   defp observation_key(payment_intent, observation) do
     identity =
       {observation.provider, observation.provider_reference, observation.provider_transaction_id,
-       payment_intent.id, observation.provider_event_id, observation.normalized_outcome,
-       observation.raw_provider_status, observation.amount_minor, observation.currency,
-       observation.provider_environment, observation.provider_occurred_at}
+       reference_kind(observation.provider_reference_kind), payment_intent.id,
+       observation.provider_event_id, observation.observation_source,
+       observation.normalized_outcome, observation.raw_provider_status, observation.amount_minor,
+       observation.currency, observation.provider_environment, observation.provider_occurred_at}
 
     digest = :crypto.hash(:sha256, :erlang.term_to_binary(identity, [:deterministic]))
     "provider_observation:" <> Base.encode16(digest, case: :lower)
@@ -52,4 +54,7 @@ defmodule Store.Payments.ObservationEvidence do
 
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
+
+  defp reference_kind(nil), do: nil
+  defp reference_kind(kind) when is_atom(kind), do: Atom.to_string(kind)
 end

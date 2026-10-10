@@ -92,6 +92,14 @@ defmodule Store.TestSupport.StripeAPIStub do
     end)
   end
 
+  def stub_observation(fun) when is_function(fun, 1) do
+    Req.Test.stub(@stub_name, fun)
+  end
+
+  def json_response(conn, body) when is_map(body) do
+    Req.Test.json(conn, body)
+  end
+
   def stub_payment_observation(reference, response)
       when is_binary(reference) and is_map(response) do
     Req.Test.stub(@stub_name, fn conn ->

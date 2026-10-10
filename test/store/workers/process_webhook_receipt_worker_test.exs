@@ -11,7 +11,15 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   alias Store.Comms.EmailOutbox
   alias Store.Orders.InventoryReservation
   alias Store.Orders.{Order, PaymentApplication}
-  alias Store.Payments.{ObservationEvidence, PaymentAttempt, PaymentIntent, WebhookReceipt}
+
+  alias Store.Payments.{
+    ObservationEvidence,
+    PaymentAttempt,
+    PaymentIntent,
+    Providers,
+    WebhookReceipt
+  }
+
   alias Store.Payments.Types.ProviderObservation
   alias Store.Pricing.TaxRate
   alias Store.Shipping.Facade, as: ShippingFacade
@@ -136,16 +144,29 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
     assert {:ok, _} = ObservationEvidence.record(payment_intent, failure)
     assert {:ok, _} = ObservationEvidence.record(payment_intent, success)
 
+    assert {:ok, _} =
+             ObservationEvidence.record(payment_intent, %{
+               failure
+               | observation_source: :reconciliation
+             })
+
+    assert {:ok, _} = ObservationEvidence.record(payment_intent, failure)
+
     assert {:ok, attempts} =
              PaymentAttempt
              |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
              |> Ash.Query.sort(observed_at: :asc)
              |> Ash.read(domain: Store.Payments, authorize?: false)
 
-    assert Enum.map(attempts, & &1.outcome) |> Enum.sort() ==
-             Enum.sort(["failure_observation", "authoritative_success"])
+    assert Enum.map(attempts, &{&1.observation_source, &1.outcome}) |> Enum.sort() ==
+             Enum.sort([
+               {"verification", "failure_observation"},
+               {"verification", "authoritative_success"},
+               {"reconciliation", "failure_observation"}
+             ])
 
     assert Enum.map(attempts, & &1.provider_reference) == [
+             "pi_observation_replay",
              "pi_observation_replay",
              "pi_observation_replay"
            ]
@@ -185,6 +206,7 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
     %ProviderObservation{
       provider: :stripe,
       provider_reference: "pi_observation_replay",
+      provider_reference_kind: :payment_intent,
       provider_transaction_id: "pi_observation_replay",
       observation_source: :verification,
       normalized_outcome: outcome,
@@ -221,11 +243,122 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
     }
 
     assert {:ok, result} = Store.Payments.Facade.observe_payment_intent_for_system(input)
+    assert {:ok, "test"} = Providers.expected_environment(:stripe)
     assert result.eligibility == :eligible
     assert result.evidence.provider_event_id == nil
     assert result.evidence.provider_reference == "pi_reconcile_read"
     assert fetch_payment_intent!(payment_intent.id).state == :created
     assert result.observation.observation_source == :verification
+  end
+
+  test "session-only intent recovers through Checkout Session and discovered PaymentIntent" do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2500,
+        currency: "USD",
+        provider_session_id: "cs_session_only"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    StripeAPIStub.stub_observation(fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/v1/checkout/sessions/cs_session_only"
+
+      StripeAPIStub.json_response(conn, %{
+        "amount_total" => 2500,
+        "currency" => "usd",
+        "id" => "cs_session_only",
+        "livemode" => false,
+        "payment_intent" => nil,
+        "payment_status" => "unpaid",
+        "status" => "open"
+      })
+    end)
+
+    input = %Store.Payments.Inputs.ObservePaymentIntentInput{
+      payment_intent_id: payment_intent.id
+    }
+
+    assert {:ok, pending} =
+             Store.Payments.Facade.observe_payment_intent_for_system(input)
+
+    assert pending.observation.provider_reference == "cs_session_only"
+    assert pending.observation.provider_transaction_id == nil
+    assert pending.observation.normalized_outcome == :unresolved
+    assert pending.evidence.provider_reference_kind == "checkout_session"
+
+    StripeAPIStub.stub_observation(fn conn ->
+      assert conn.method == "GET"
+
+      case conn.request_path do
+        "/v1/checkout/sessions/cs_session_only" ->
+          StripeAPIStub.json_response(conn, %{
+            "amount_total" => 2500,
+            "currency" => "usd",
+            "id" => "cs_session_only",
+            "livemode" => false,
+            "payment_intent" => "pi_from_session",
+            "payment_status" => "paid",
+            "status" => "complete"
+          })
+
+        "/v1/payment_intents/pi_from_session" ->
+          StripeAPIStub.json_response(conn, %{
+            "amount" => 2500,
+            "amount_received" => 2500,
+            "currency" => "usd",
+            "id" => "pi_from_session",
+            "status" => "succeeded"
+          })
+
+        other ->
+          flunk("unexpected Stripe observation path: #{other}")
+      end
+    end)
+
+    assert {:ok, recovered} =
+             Store.Payments.Facade.observe_payment_intent_for_system(input)
+
+    assert recovered.eligibility == :eligible
+    assert recovered.observation.provider_reference == "cs_session_only"
+    assert recovered.observation.provider_reference_kind == :checkout_session
+    assert recovered.observation.provider_transaction_id == "pi_from_session"
+    assert recovered.evidence.provider_reference_kind == "checkout_session"
+    assert recovered.evidence.provider_environment == "test"
+
+    assert {:ok, attempts} =
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.read(domain: Store.Payments, authorize?: false)
+
+    assert Enum.map(attempts, & &1.outcome) |> Enum.sort() ==
+             ["authoritative_success", "unresolved"]
+  end
+
+  test "SetupIntent PaymentIntent purpose fails observation without a PaymentIntent GET" do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        purpose: :subscription_payment_method_update,
+        amount_received_minor: 0,
+        currency: "USD",
+        provider_payment_id: "seti_method_update"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    StripeAPIStub.stub_unexpected!("SetupIntent must not use PaymentIntent retrieval")
+
+    input = %Store.Payments.Inputs.ObservePaymentIntentInput{
+      payment_intent_id: payment_intent.id
+    }
+
+    assert {:error, error} =
+             Store.Payments.Facade.observe_payment_intent_for_system(input)
+
+    assert error.code == "PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED"
   end
 
   test "a mismatched provider response remains durable and fails eligibility" do

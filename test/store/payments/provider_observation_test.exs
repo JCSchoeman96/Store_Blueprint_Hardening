@@ -16,15 +16,23 @@ defmodule Store.Payments.ProviderObservationTest do
     observation = %ProviderObservation{
       provider: :stripe,
       provider_reference: "pi_1",
+      provider_reference_kind: :payment_intent,
       observation_source: :verification,
       amount_minor: 2500,
       currency: "USD",
+      provider_environment: "test",
       raw_provider_status: "succeeded",
       observed_at: DateTime.utc_now(),
       normalized_outcome: :authoritative_success
     }
 
-    assert :eligible = ProviderObservation.validate_target(intent, observation)
+    assert :eligible =
+             ProviderObservation.validate_target(intent, observation,
+               provider_environment: "test"
+             )
+
+    assert {:error, :environment_unverified} =
+             ProviderObservation.validate_target(intent, observation)
 
     assert {:error, :amount_mismatch} =
              ProviderObservation.validate_target(intent, %{observation | amount_minor: 2499})
@@ -37,6 +45,13 @@ defmodule Store.Payments.ProviderObservationTest do
                observation
                | provider_reference: "pi_2"
              })
+
+    assert {:error, :provider_reference_kind_mismatch} =
+             ProviderObservation.validate_target(
+               intent,
+               %{observation | provider_reference_kind: :checkout_session},
+               provider_environment: "test"
+             )
 
     assert {:error, :provider_mismatch} =
              ProviderObservation.validate_target(intent, %{observation | provider: :paystack})
@@ -55,6 +70,42 @@ defmodule Store.Payments.ProviderObservationTest do
              )
   end
 
+  test "Stripe success requires a known matching expected environment" do
+    intent = %PaymentIntent{
+      id: "intent-1",
+      provider: :stripe,
+      provider_payment_id: "pi_1",
+      amount_received_minor: 2500,
+      currency: "USD"
+    }
+
+    observation = %ProviderObservation{
+      provider: :stripe,
+      provider_reference: "pi_1",
+      provider_reference_kind: :payment_intent,
+      observation_source: :verification,
+      amount_minor: 2500,
+      currency: "USD",
+      provider_environment: "test",
+      raw_provider_status: "succeeded",
+      observed_at: DateTime.utc_now(),
+      normalized_outcome: :authoritative_success
+    }
+
+    assert :eligible =
+             ProviderObservation.validate_target(intent, observation,
+               provider_environment: "test"
+             )
+
+    assert {:error, :environment_mismatch} =
+             ProviderObservation.validate_target(intent, observation,
+               provider_environment: "live"
+             )
+
+    assert {:error, :environment_unverified} =
+             ProviderObservation.validate_target(intent, observation)
+  end
+
   test "unresolved and unknown outcomes never qualify as success" do
     intent = %PaymentIntent{
       id: "intent-1",
@@ -67,15 +118,19 @@ defmodule Store.Payments.ProviderObservationTest do
     observation = %ProviderObservation{
       provider: :stripe,
       provider_reference: "pi_1",
+      provider_reference_kind: :payment_intent,
       observation_source: :verification,
       amount_minor: 2500,
       currency: "USD",
+      provider_environment: "test",
       raw_provider_status: "processing",
       observed_at: DateTime.utc_now(),
       normalized_outcome: :unresolved
     }
 
     assert {:error, :observation_not_authoritative_success} =
-             ProviderObservation.validate_target(intent, observation)
+             ProviderObservation.validate_target(intent, observation,
+               provider_environment: "test"
+             )
   end
 end

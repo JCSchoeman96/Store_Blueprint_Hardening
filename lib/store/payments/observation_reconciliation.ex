@@ -22,11 +22,12 @@ defmodule Store.Payments.ObservationReconciliation do
     payment_intent_id = input.payment_intent_id
 
     with {:ok, payment_intent} <- fetch_payment_intent(payment_intent_id),
-         {:ok, provider_reference} <- provider_reference(payment_intent),
+         {:ok, provider_identity} <- provider_identity(payment_intent),
+         {:ok, provider_environment} <- Providers.expected_environment(payment_intent.provider),
          {:ok, observation} <-
            Providers.observe_payment(
              payment_intent.provider,
-             %{provider_reference: provider_reference}
+             provider_identity
            ),
          observation <- %{observation | local_payment_intent_id: payment_intent.id},
          {:ok, %PaymentAttempt{} = attempt} <-
@@ -40,10 +41,7 @@ defmodule Store.Payments.ObservationReconciliation do
            ProviderObservation.validate_target(
              payment_intent,
              observation,
-             input
-             |> Map.from_struct()
-             |> Keyword.new()
-             |> Keyword.take([:provider_environment])
+             provider_environment: provider_environment
            )
        }}
     end
@@ -67,17 +65,32 @@ defmodule Store.Payments.ObservationReconciliation do
     end
   end
 
-  defp provider_reference(%PaymentIntent{} = payment_intent) do
-    case payment_intent.provider_payment_id || payment_intent.provider_session_id do
-      reference when is_binary(reference) and reference != "" ->
-        {:ok, reference}
+  defp provider_identity(%PaymentIntent{} = payment_intent) do
+    {reference, kind} =
+      case {payment_intent.purpose, payment_intent.provider_payment_id,
+            payment_intent.provider_session_id} do
+        {:subscription_payment_method_update, payment_id, _session_id}
+        when is_binary(payment_id) and payment_id != "" ->
+          {payment_id, :setup_intent}
 
-      _ ->
-        {:error,
-         Error.new(
-           "PAYMENT_EVENT_UNVERIFIED",
-           "payment intent has no provider reference for observation"
-         )}
+        {_purpose, payment_id, _session_id} when is_binary(payment_id) and payment_id != "" ->
+          {payment_id, :payment_intent}
+
+        {_purpose, _payment_id, session_id} when is_binary(session_id) and session_id != "" ->
+          {session_id, :checkout_session}
+
+        _ ->
+          {nil, nil}
+      end
+
+    if is_binary(reference) do
+      {:ok, %{provider_reference: reference, provider_reference_kind: kind}}
+    else
+      {:error,
+       Error.new(
+         "PAYMENT_EVENT_UNVERIFIED",
+         "payment intent has no provider reference for observation"
+       )}
     end
   end
 end

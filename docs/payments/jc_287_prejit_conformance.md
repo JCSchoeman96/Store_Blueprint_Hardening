@@ -9,9 +9,9 @@ This review checks shared Payments mechanisms against the NewYou Commerce Pre-JI
 | PAY-INV-004, PAY-INV-018 | Provider errors return errors; pending and unknown statuses map to unresolved or unknown evidence. | Pass |
 | PAY-INV-005 | No browser callback is used by the observation API. | Pass |
 | PAY-INV-006 | The reconciliation entry point loads one `PaymentIntent` and uses its stored provider reference. | Pass |
-| PAY-INV-007 | Deterministic `attempt_key` upsert stores an exact replay once; different outcomes retain separate rows. | Pass |
+| PAY-INV-007 | Deterministic `attempt_key` includes observation source. A replay from that source upserts once; identical evidence from another source gets a separate row; changed provider state gets a separate row. | Pass |
 | PAY-INV-008, PAY-INV-028 | A durable PaymentIntent ID and provider reference are enough to invoke observation again. | Pass |
-| PAY-INV-009 | Validator checks provider, reference, bound transaction ID, integer minor amount, currency, and supplied environment. | Pass |
+| PAY-INV-009 | Validator checks provider, typed reference kind and value, bound transaction ID, integer minor amount, currency, and a server-configured Stripe environment. Missing expected Stripe environment fails closed. | Pass |
 | PAY-INV-010, PAY-INV-025 | `ProviderObservation` uses a bounded normalized class and retains raw status separately. | Pass |
 | PAY-INV-015 | Observation schema uses an integer amount and currency string. No float conversion exists. | Pass |
 | PAY-INV-019 | Stripe metadata is not copied into the observation. Only opaque local intent ID and provider customer/payment-method references are retained. | Pass |
@@ -19,8 +19,8 @@ This review checks shared Payments mechanisms against the NewYou Commerce Pre-JI
 
 ## Test evidence
 
-`ProviderObservationTest` checks exact provider, reference, transaction, amount, currency, environment, and outcome eligibility. `StripeObservationTest` checks provider retrieval, unsupported adapters, and an unknown status. `ProcessWebhookReceiptWorkerTest` checks structured webhook chronology and verifies that replaying one verification result creates one row while a later success remains alongside an earlier failure.
+`ProviderObservationTest` checks exact provider, reference, transaction, amount, currency, and environment eligibility, including a missing expected environment. `StripeObservationTest` checks PaymentIntent retrieval, Checkout Session retrieval with and without a discovered PaymentIntent, unsupported SetupIntent observation, unsupported adapters, and an unknown status. `ProcessWebhookReceiptWorkerTest` checks server-side environment selection, session-only recovery, SetupIntent endpoint safety, source-separated replay identity, structured webhook chronology, and both failure/success arrival orders.
 
 ## Scope boundary
 
-This change does not decide final Commerce precedence, renewal collection identity, cancellation or grace policy, refund/dispute/settlement behavior, or entitlement changes. JC-282 is required to interpret a later success after an earlier failure without relying on arrival order. JC-281, JC-265, JC-272, and JC-284 remain separate work. Paystack transaction observation and production certification remain unsupported here.
+This change does not decide final Commerce precedence, renewal collection identity, cancellation or grace policy, refund/dispute/settlement behavior, or entitlement changes. JC-282 is required to interpret a later success after an earlier failure without relying on arrival order. JC-281, JC-265, JC-272, and JC-284 remain separate work. Paystack transaction observation and production certification remain unsupported here. SetupIntent observation also remains unsupported; its ID is never sent to the PaymentIntent endpoint.
