@@ -48,21 +48,20 @@ defmodule Store.Subscriptions.Scheduler do
     DateTime.add(past_due_since_at, grace_period_days * 86_400, :second)
   end
 
-  @spec next_retry_at(DateTime.t(), non_neg_integer(), map()) :: DateTime.t()
+  @spec next_retry_at(DateTime.t(), non_neg_integer(), map()) :: DateTime.t() | :exhausted
   def next_retry_at(%DateTime{} = reference_at, dunning_attempt_count, plan)
       when is_integer(dunning_attempt_count) and dunning_attempt_count >= 0 and is_map(plan) do
     retry_schedule_hours =
       map_attr(plan, :retry_schedule_hours, [24, 72, 120])
       |> normalize_retry_schedule()
 
-    schedule_index = min(dunning_attempt_count, max(length(retry_schedule_hours) - 1, 0))
+    case Enum.at(retry_schedule_hours, dunning_attempt_count) do
+      offset_hours when is_integer(offset_hours) ->
+        DateTime.add(reference_at, offset_hours * 3_600, :second)
 
-    offset_hours =
-      retry_schedule_hours
-      |> Enum.at(schedule_index, List.last(retry_schedule_hours, 24))
-      |> max(24)
-
-    DateTime.add(reference_at, offset_hours * 3_600, :second)
+      nil ->
+        :exhausted
+    end
   end
 
   @spec renewal_jitter_seconds(Ecto.UUID.t(), pos_integer()) :: non_neg_integer()
@@ -125,7 +124,7 @@ defmodule Store.Subscriptions.Scheduler do
     |> Enum.filter(&(is_integer(&1) and &1 >= 0))
     |> case do
       [] -> [24, 72, 120]
-      values -> values
+      values -> values |> Enum.uniq() |> Enum.sort()
     end
   end
 
