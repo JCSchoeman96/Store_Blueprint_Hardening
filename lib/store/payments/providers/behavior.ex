@@ -7,6 +7,7 @@ defmodule Store.Payments.Providers.Behaviour do
   """
 
   alias Store.Payments.Types.CanonicalReceipt
+  alias Store.Payments.Types.ProviderObservation
 
   @type capability_map :: %{
           optional(:supports_one_time_checkout?) => boolean(),
@@ -17,7 +18,8 @@ defmodule Store.Payments.Providers.Behaviour do
           optional(:supports_provider_managed_subscriptions?) => boolean(),
           optional(:webhook_verification_mode) =>
             :offline_hmac | :remote_verify | :ip_allowlist_plus_signature,
-          optional(:supports_webhooks?) => boolean()
+          optional(:supports_webhooks?) => boolean(),
+          optional(:supports_transaction_observation?) => boolean()
         }
 
   @callback capabilities() :: capability_map()
@@ -30,4 +32,7 @@ defmodule Store.Payments.Providers.Behaviour do
               {:ok, map()} | {:error, term()}
 
   @callback normalize_webhook(map()) :: {:ok, CanonicalReceipt.t()} | {:error, term()}
+
+  @callback observe_payment(map(), keyword()) ::
+              {:ok, ProviderObservation.t()} | {:error, term()}
 end

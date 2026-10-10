@@ -39,6 +39,22 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
     assert receipt.status == :unknown
   end
 
+  test "normalize_webhook leaves provider occurrence time absent when Stripe omits it" do
+    payload = %{
+      "id" => "evt_without_created",
+      "type" => "payment_intent.succeeded",
+      "data" => %{
+        "object" => %{
+          "id" => "pi_omitted_created",
+          "amount_received" => 1_999,
+          "currency" => "usd"
+        }
+      }
+    }
+
+    assert {:ok, %CanonicalReceipt{occurred_at: nil}} = Stripe.normalize_webhook(payload)
+  end
+
   test "create_intent response does not expose provider string field" do
     attrs = %{
       order_ref: "ORDP26STRIPE",

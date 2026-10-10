@@ -25,6 +25,15 @@ defmodule Store.Payments.Providers.PeachPayments do
   end
 
   @impl true
+  def observe_payment(_identity, _opts),
+    do:
+      {:error,
+       Error.new(
+         "PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED",
+         "peach payments observation is unsupported"
+       )}
+
+  @impl true
   def create_intent(_attrs, _opts) do
     {:error,
      Error.new("VALIDATION_ERROR", "peach payments intent creation is not implemented yet")}
