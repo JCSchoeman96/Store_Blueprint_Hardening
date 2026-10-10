@@ -1560,8 +1560,6 @@ defmodule Store.PerformanceSmokeTest do
         Store.Config.PerformanceDatabaseSafety.assert_destructive_cleanup_allowed!(Store.Repo)
 
         # Order matters: respect foreign key dependencies (children first).
-        Store.Config.PerformanceDatabaseSafety.assert_destructive_cleanup_allowed!(Store.Repo)
-
         tables_to_truncate = [
           "payment_intents",
           "order_line_items",
