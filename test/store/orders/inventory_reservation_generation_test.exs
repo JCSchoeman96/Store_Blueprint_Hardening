@@ -107,6 +107,33 @@ defmodule Store.Orders.InventoryReservationGenerationTest do
              Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
   end
 
+  test "checkout conflicts with an active exact generation without moving counters" do
+    order = create_order!()
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 8)
+    key = generation_key(order.id, variant_id)
+
+    assert {:ok, %{reservation: exact, replayed?: false}} =
+             Store.Orders.reserve_exact_generation(order.id, variant_id, key, 2)
+
+    before_inventory = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert before_inventory.reserved_count == 2
+    assert before_inventory.stock_on_hand == 8
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Orders.reserve_inventory_for_checkout(
+               order.id,
+               [%{variant_id: variant_id, quantity: 1}]
+             )
+
+    assert reservation_count(order.id, variant_id) == 1
+    assert Repo.get!(InventoryReservation, exact.id).state == :active
+
+    after_inventory = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert after_inventory.reserved_count == 2
+    assert after_inventory.stock_on_hand == 8
+  end
+
   test "same exact generation concurrency creates one durable row and safely replays" do
     with_committed_fixture(fn order, variant_id ->
       key = generation_key(order.id, variant_id)

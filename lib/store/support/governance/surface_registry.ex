@@ -176,7 +176,13 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:reconcile_paid_subscription_renewal_for_system, 1},
         {:reconcile_paid_subscription_renewal_for_system, 2},
         {:run_due_renewals_for_system, 0},
-        {:run_due_renewals_for_system, 1}
+        {:run_due_renewals_for_system, 1},
+        {:establish_access_effect_for_system, 1},
+        {:get_current_access_effect_for_system, 1},
+        {:mark_access_effect_pending_for_system, 1},
+        {:mark_access_effect_applied_for_system, 1},
+        {:mark_access_effect_failed_retryable_for_system, 1},
+        {:retry_access_effect_for_system, 1}
       ]
     },
     Store.Entitlements.Facade => %{

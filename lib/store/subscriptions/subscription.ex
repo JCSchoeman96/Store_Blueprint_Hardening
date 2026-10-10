@@ -11,6 +11,8 @@ defmodule Store.Subscriptions.Subscription do
     authorizers: [Ash.Policy.Authorizer],
     domain: Store.Subscriptions
 
+  @unresolved_contract_message "subscription commercial contract is unresolved"
+
   attributes do
     uuid_v7_primary_key(:id)
 
@@ -23,6 +25,12 @@ defmodule Store.Subscriptions.Subscription do
       allow_nil?(false)
       default(:pending)
       public?(true)
+    end
+
+    attribute :aggregate_version, :integer do
+      allow_nil?(false)
+      default(1)
+      public?(false)
     end
 
     attribute :provider, Store.Payments.Types.Provider do
@@ -169,6 +177,16 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    attribute :current_plan_revision_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :current_contract_change_id, :uuid do
+      allow_nil?(true)
+      public?(false)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -178,6 +196,20 @@ defmodule Store.Subscriptions.Subscription do
       allow_nil?(false)
       attribute_writable?(true)
       public?(true)
+    end
+
+    belongs_to :current_plan_revision, Store.Subscriptions.PlanRevision do
+      source_attribute(:current_plan_revision_id)
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(true)
+    end
+
+    belongs_to :current_contract_change, Store.Subscriptions.ContractChange do
+      source_attribute(:current_contract_change_id)
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(false)
     end
 
     belongs_to :variant, Store.Catalog.Variant do
@@ -324,8 +356,17 @@ defmodule Store.Subscriptions.Subscription do
         :retry_suppressed_at,
         :stored_payment_method_id,
         :source_order_id,
-        :source_order_line_item_id
+        :source_order_line_item_id,
+        :current_plan_revision_id
       ])
+
+      validate(fn changeset, _context ->
+        if is_binary(Ash.Changeset.get_attribute(changeset, :current_plan_revision_id)) do
+          :ok
+        else
+          {:error, field: :current_plan_revision_id, message: @unresolved_contract_message}
+        end
+      end)
 
       upsert?(true)
       upsert_identity(:unique_source_order_line_item)
@@ -356,6 +397,7 @@ defmodule Store.Subscriptions.Subscription do
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
       change(set_attribute(:retry_suppressed_at, nil))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :mark_past_due_transition do
@@ -385,17 +427,57 @@ defmodule Store.Subscriptions.Subscription do
         {Store.Support.Governance.TransitionState,
          target: :past_due, state_attribute: :status, lock_attribute: nil}
       )
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :cancel_at_period_end_transition do
+      public?(false)
       require_atomic?(false)
-      accept([])
+
+      accept([
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
+
       change(set_attribute(:cancel_at_period_end, true))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
+    end
+
+    update :rescind_cancel_at_period_end_transition do
+      public?(false)
+      require_atomic?(false)
+
+      accept([
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
+
+      change(set_attribute(:cancel_at_period_end, false))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :cancel_now_transition do
+      public?(false)
       require_atomic?(false)
-      accept([:canceled_reason])
+
+      accept([
+        :canceled_reason,
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
 
       change(
         {Store.Support.Governance.TransitionState,
@@ -413,6 +495,8 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
       end)
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :extend_period do
@@ -447,12 +531,15 @@ defmodule Store.Subscriptions.Subscription do
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
       change(set_attribute(:retry_suppressed_at, nil))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :queue_change do
+      public?(false)
       require_atomic?(false)
 
       accept([
+        :current_contract_change_id,
         :pending_variant_id,
         :pending_subscription_plan_id,
         :pending_renewal_amount_minor,
@@ -461,6 +548,24 @@ defmodule Store.Subscriptions.Subscription do
         :next_retry_at,
         :retry_suppressed_at
       ])
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
+    end
+
+    update :consume_contract_change_for_renewal do
+      public?(false)
+      require_atomic?(false)
+
+      accept([
+        :current_contract_change_id,
+        :pending_variant_id,
+        :pending_subscription_plan_id,
+        :pending_renewal_amount_minor,
+        :pending_renewal_currency,
+        :change_effective_at
+      ])
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :mark_expired_transition do
@@ -481,6 +586,8 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
       end)
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
     update :set_provider_billing_reference do
@@ -494,6 +601,8 @@ defmodule Store.Subscriptions.Subscription do
         :next_retry_at,
         :retry_suppressed_at
       ])
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
   end
 
@@ -509,6 +618,11 @@ defmodule Store.Subscriptions.Subscription do
     table("subscriptions")
     repo(Store.Repo)
 
+    references do
+      reference(:current_plan_revision, on_delete: :restrict)
+      reference(:current_contract_change, on_delete: :restrict)
+    end
+
     custom_indexes do
       index([:user_id, :status], name: "subscriptions_user_id_status_index")
       index([:status, :next_renewal_at], name: "subscriptions_status_next_renewal_at_index")
@@ -516,6 +630,12 @@ defmodule Store.Subscriptions.Subscription do
       index([:provider, :provider_subscription_id], name: "subscriptions_provider_ref_index")
       index([:source_order_line_item_id], name: "subscriptions_source_order_line_item_id_index")
       index([:subscription_plan_id], name: "subscriptions_subscription_plan_id_index")
+      index([:current_plan_revision_id], name: "subscriptions_current_plan_revision_id_index")
+
+      index([:current_contract_change_id],
+        name: "subscriptions_current_contract_change_id_index"
+      )
+
       index([:variant_id], name: "subscriptions_variant_id_index")
       index([:pending_subscription_plan_id], name: "subscriptions_pending_plan_id_index")
       index([:pending_variant_id], name: "subscriptions_pending_variant_id_index")
@@ -536,7 +656,11 @@ defmodule Store.Subscriptions.Subscription do
       authorize_if(always())
     end
 
-    policy action([:cancel_at_period_end_transition, :cancel_now_transition]) do
+    policy action([
+             :cancel_at_period_end_transition,
+             :rescind_cancel_at_period_end_transition,
+             :cancel_now_transition
+           ]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
@@ -561,7 +685,8 @@ defmodule Store.Subscriptions.Subscription do
              :mark_past_due_transition,
              :extend_period,
              :mark_expired_transition,
-             :set_provider_billing_reference
+             :set_provider_billing_reference,
+             :consume_contract_change_for_renewal
            ]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
