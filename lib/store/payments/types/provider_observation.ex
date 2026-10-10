@@ -105,10 +105,19 @@ defmodule Store.Payments.Types.ProviderObservation do
   defp validate_transaction(payment_intent, observation) do
     expected_transaction = Map.get(payment_intent, :provider_payment_id)
 
-    if is_nil(expected_transaction) or is_nil(observation.provider_transaction_id) or
-         expected_transaction == observation.provider_transaction_id,
-       do: :ok,
-       else: {:error, :provider_transaction_mismatch}
+    cond do
+      is_nil(expected_transaction) ->
+        :ok
+
+      is_nil(observation.provider_transaction_id) ->
+        {:error, :provider_transaction_unverified}
+
+      expected_transaction == observation.provider_transaction_id ->
+        :ok
+
+      true ->
+        {:error, :provider_transaction_mismatch}
+    end
   end
 
   defp validate_amount(payment_intent, observation) do

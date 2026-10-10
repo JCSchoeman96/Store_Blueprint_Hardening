@@ -11,7 +11,7 @@ This review checks shared Payments mechanisms against the NewYou Commerce Pre-JI
 | PAY-INV-006 | The reconciliation entry point loads one `PaymentIntent` and uses its stored provider reference. | Pass |
 | PAY-INV-007 | Deterministic `attempt_key` includes observation source. A replay from that source upserts once; identical evidence from another source gets a separate row; changed provider state gets a separate row. | Pass |
 | PAY-INV-008, PAY-INV-028 | A durable PaymentIntent ID and provider reference are enough to invoke observation again. | Pass |
-| PAY-INV-009 | Validator checks provider, typed reference kind and value, bound transaction ID, integer minor amount, currency, and a server-configured Stripe environment. Missing expected Stripe environment fails closed. | Pass |
+| PAY-INV-009 | Eligibility requires exact provider, typed reference kind and value, returned transaction ID when locally bound, integer minor amount, currency, and the server-configured Stripe environment. Missing or mismatched returned PaymentIntent IDs remain inconclusive; Checkout Session and discovered PaymentIntent response IDs must each match the exact requested identity. Missing expected Stripe environment fails closed. | Pass |
 | PAY-INV-010, PAY-INV-025 | `ProviderObservation` uses a bounded normalized class and retains raw status separately. | Pass |
 | PAY-INV-015 | Observation schema uses an integer amount and currency string. No float conversion exists. | Pass |
 | PAY-INV-019 | Stripe metadata is not copied into the observation. Only opaque local intent ID and provider customer/payment-method references are retained. | Pass |
@@ -19,7 +19,7 @@ This review checks shared Payments mechanisms against the NewYou Commerce Pre-JI
 
 ## Test evidence
 
-`ProviderObservationTest` checks exact provider, reference, transaction, amount, currency, and environment eligibility, including a missing expected environment. `StripeObservationTest` checks PaymentIntent retrieval, Checkout Session retrieval with and without a discovered PaymentIntent, unsupported SetupIntent observation, unsupported adapters, and an unknown status. `ProcessWebhookReceiptWorkerTest` checks server-side environment selection, session-only recovery, SetupIntent endpoint safety, source-separated replay identity, structured webhook chronology, and both failure/success arrival orders.
+`ProviderObservationTest` checks exact provider, reference, bound transaction ID (including missing and mismatched transaction evidence), amount, currency, and environment eligibility, including a missing expected environment. `StripeObservationTest` checks exact PaymentIntent response identity, exact Checkout Session response identity, exact identity for a PaymentIntent discovered from a session, session-only recovery with a matching pair of returned IDs, unsupported SetupIntent observation, unsupported adapters, and unknown statuses. `ProcessWebhookReceiptWorkerTest` checks server-side environment selection, session-only recovery, SetupIntent endpoint safety, source-separated replay identity, structured webhook chronology, and both failure/success arrival orders.
 
 ## Scope boundary
 

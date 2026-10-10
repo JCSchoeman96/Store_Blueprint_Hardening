@@ -17,6 +17,7 @@ defmodule Store.Payments.ProviderObservationTest do
       provider: :stripe,
       provider_reference: "pi_1",
       provider_reference_kind: :payment_intent,
+      provider_transaction_id: "pi_1",
       observation_source: :verification,
       amount_minor: 2500,
       currency: "USD",
@@ -62,6 +63,13 @@ defmodule Store.Payments.ProviderObservationTest do
                | provider_transaction_id: "pi_other"
              })
 
+    assert {:error, :provider_transaction_unverified} =
+             ProviderObservation.validate_target(
+               intent,
+               %{observation | provider_transaction_id: nil},
+               provider_environment: "test"
+             )
+
     assert {:error, :environment_mismatch} =
              ProviderObservation.validate_target(
                intent,
@@ -83,6 +91,7 @@ defmodule Store.Payments.ProviderObservationTest do
       provider: :stripe,
       provider_reference: "pi_1",
       provider_reference_kind: :payment_intent,
+      provider_transaction_id: "pi_1",
       observation_source: :verification,
       amount_minor: 2500,
       currency: "USD",
@@ -119,6 +128,7 @@ defmodule Store.Payments.ProviderObservationTest do
       provider: :stripe,
       provider_reference: "pi_1",
       provider_reference_kind: :payment_intent,
+      provider_transaction_id: "pi_1",
       observation_source: :verification,
       amount_minor: 2500,
       currency: "USD",

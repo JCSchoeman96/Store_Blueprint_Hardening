@@ -673,7 +673,7 @@ defmodule Store.Payments.Providers.Stripe do
   defp observe_reference(reference, :payment_intent, config) do
     with {:ok, response} <- stripe_get("/v1/payment_intents/#{URI.encode(reference)}", config),
          {:ok, body} <- extract_payment_intent_response(response) do
-      normalize_payment_observation(reference, :payment_intent, body, config)
+      normalize_payment_observation(reference, :payment_intent, body, config, reference)
     end
   end
 
@@ -681,8 +681,17 @@ defmodule Store.Payments.Providers.Stripe do
     with {:ok, response} <-
            stripe_get("/v1/checkout/sessions/#{URI.encode(reference)}", config),
          {:ok, session} <- extract_payment_intent_response(response) do
-      observe_checkout_session(reference, session, config)
+      observe_checkout_session_response(reference, session, config)
     end
+  end
+
+  defp observe_checkout_session_response(reference, %{"id" => reference} = session, config) do
+    observe_checkout_session(reference, session, config)
+  end
+
+  defp observe_checkout_session_response(reference, session, config) do
+    {:ok, observation} = normalize_checkout_session(reference, session, config)
+    {:ok, mark_unknown_identity(observation)}
   end
 
   defp observe_checkout_session(reference, session, config) do
@@ -704,7 +713,8 @@ defmodule Store.Payments.Providers.Stripe do
              reference,
              :checkout_session,
              payment_intent,
-             config
+             config,
+             payment_intent_id
            ) do
       {:ok, validate_session_evidence(observation, session, payment_intent)}
     end
@@ -744,7 +754,7 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   defp validate_session_evidence(observation, session, payment_intent) do
-    if session_evidence_consistent?(observation, session) do
+    if session_evidence_consistent?(observation, session, payment_intent) do
       %{
         observation
         | evidence_sha256:
@@ -762,8 +772,11 @@ defmodule Store.Payments.Providers.Stripe do
     end
   end
 
-  defp session_evidence_consistent?(observation, session) do
-    consistent_session_money?(observation, session) and
+  defp session_evidence_consistent?(observation, session, payment_intent) do
+    session["id"] == observation.provider_reference and
+      stripe_id(session["payment_intent"]) == payment_intent["id"] and
+      payment_intent["id"] == observation.provider_transaction_id and
+      consistent_session_money?(observation, session) and
       consistent_session_status?(observation, session) and
       consistent_session_environment?(observation, session)
   end
@@ -784,7 +797,7 @@ defmodule Store.Payments.Providers.Stripe do
     is_nil(session_environment) or session_environment == observation.provider_environment
   end
 
-  defp normalize_payment_observation(reference, reference_kind, body, config) do
+  defp normalize_payment_observation(reference, reference_kind, body, config, expected_id) do
     status = Map.get(body, "status")
     amount = Map.get(body, "amount_received") || Map.get(body, "amount")
     currency = Map.get(body, "currency")
@@ -798,27 +811,36 @@ defmodule Store.Payments.Providers.Stripe do
         {:ok, unknown_observation(reference, reference_kind, body, config, status)}
 
       true ->
-        {:ok,
-         %ProviderObservation{
-           provider: :stripe,
-           provider_reference: reference,
-           provider_reference_kind: reference_kind,
-           provider_transaction_id: provider_transaction_id,
-           local_payment_intent_id: get_in(body, ["metadata", "local_intent_id"]),
-           observation_source: :verification,
-           normalized_outcome: normalize_observation_status(status),
-           raw_provider_status: status,
-           amount_minor: amount,
-           currency: String.upcase(currency),
-           provider_environment: stripe_observed_environment(body, config),
-           provider_occurred_at: nil,
-           observed_at: DateTime.utc_now(),
-           provider_customer_ref: stripe_id(body["customer"]),
-           provider_payment_method_ref: stripe_id(body["payment_method"]),
-           evidence_sha256: evidence_hash(body),
-           metadata: nil
-         }}
+        observation = %ProviderObservation{
+          provider: :stripe,
+          provider_reference: reference,
+          provider_reference_kind: reference_kind,
+          provider_transaction_id: provider_transaction_id,
+          local_payment_intent_id: get_in(body, ["metadata", "local_intent_id"]),
+          observation_source: :verification,
+          normalized_outcome: normalize_observation_status(status),
+          raw_provider_status: status,
+          amount_minor: amount,
+          currency: String.upcase(currency),
+          provider_environment: stripe_observed_environment(body, config),
+          provider_occurred_at: nil,
+          observed_at: DateTime.utc_now(),
+          provider_customer_ref: stripe_id(body["customer"]),
+          provider_payment_method_ref: stripe_id(body["payment_method"]),
+          evidence_sha256: evidence_hash(body),
+          metadata: nil
+        }
+
+        if provider_transaction_id == expected_id do
+          {:ok, observation}
+        else
+          {:ok, mark_unknown_identity(observation)}
+        end
     end
+  end
+
+  defp mark_unknown_identity(%ProviderObservation{} = observation) do
+    %{observation | normalized_outcome: :unknown_or_contradictory}
   end
 
   defp unknown_observation(reference, reference_kind, body, config, status) do

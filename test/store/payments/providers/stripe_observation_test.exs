@@ -56,6 +56,57 @@ defmodule Store.Payments.Providers.StripeObservationTest do
     assert observation.normalized_outcome == :unknown_or_contradictory
   end
 
+  test "succeeded PaymentIntent without returned identity remains inconclusive" do
+    StripeAPIStub.stub_payment_observation("pi_expected", %{
+      "amount" => 2500,
+      "amount_received" => 2500,
+      "currency" => "usd",
+      "status" => "succeeded"
+    })
+
+    assert {:ok, observation} =
+             Stripe.observe_payment(
+               %{provider_reference: "pi_expected", provider_reference_kind: :payment_intent},
+               []
+             )
+
+    assert observation.provider_transaction_id == nil
+    assert observation.normalized_outcome == :unknown_or_contradictory
+
+    assert {:error, :provider_transaction_unverified} =
+             ProviderObservation.validate_target(
+               stripe_intent("pi_expected"),
+               observation,
+               provider_environment: "test"
+             )
+  end
+
+  test "succeeded PaymentIntent with a different returned identity remains inconclusive" do
+    StripeAPIStub.stub_payment_observation("pi_expected", %{
+      "amount" => 2500,
+      "amount_received" => 2500,
+      "currency" => "usd",
+      "id" => "pi_other",
+      "status" => "succeeded"
+    })
+
+    assert {:ok, observation} =
+             Stripe.observe_payment(
+               %{provider_reference: "pi_expected", provider_reference_kind: :payment_intent},
+               []
+             )
+
+    assert observation.provider_transaction_id == "pi_other"
+    assert observation.normalized_outcome == :unknown_or_contradictory
+
+    assert {:error, :provider_transaction_mismatch} =
+             ProviderObservation.validate_target(
+               stripe_intent("pi_expected"),
+               observation,
+               provider_environment: "test"
+             )
+  end
+
   test "provider livemode is retained for comparison with trusted server environment" do
     StripeAPIStub.stub_payment_observation("pi_live", %{
       "amount" => 2500,
@@ -150,6 +201,74 @@ defmodule Store.Payments.Providers.StripeObservationTest do
     assert observation.provider_environment == "test"
   end
 
+  test "checkout session response with a different identity remains inconclusive" do
+    StripeAPIStub.stub_observation(fn conn ->
+      assert conn.request_path == "/v1/checkout/sessions/cs_expected"
+
+      StripeAPIStub.json_response(conn, %{
+        "amount_total" => 2500,
+        "currency" => "usd",
+        "id" => "cs_other",
+        "livemode" => false,
+        "payment_intent" => "pi_expected",
+        "payment_status" => "paid",
+        "status" => "complete"
+      })
+    end)
+
+    assert {:ok, observation} =
+             Stripe.observe_payment(
+               %{provider_reference: "cs_expected", provider_reference_kind: :checkout_session},
+               []
+             )
+
+    assert observation.provider_reference == "cs_expected"
+    assert observation.normalized_outcome == :unknown_or_contradictory
+  end
+
+  for {test_name, returned_id} <- [
+        {"different", "pi_other"},
+        {"missing", nil}
+      ] do
+    test "checkout PaymentIntent response with #{test_name} identity remains inconclusive" do
+      returned_id = unquote(Macro.escape(returned_id))
+
+      StripeAPIStub.stub_observation(fn conn ->
+        case conn.request_path do
+          "/v1/checkout/sessions/cs_identity" ->
+            StripeAPIStub.json_response(conn, %{
+              "amount_total" => 2500,
+              "currency" => "usd",
+              "id" => "cs_identity",
+              "livemode" => false,
+              "payment_intent" => "pi_expected",
+              "payment_status" => "paid",
+              "status" => "complete"
+            })
+
+          "/v1/payment_intents/pi_expected" ->
+            StripeAPIStub.json_response(conn, %{
+              "amount" => 2500,
+              "amount_received" => 2500,
+              "currency" => "usd",
+              "id" => returned_id,
+              "status" => "succeeded"
+            })
+        end
+      end)
+
+      assert {:ok, observation} =
+               Stripe.observe_payment(
+                 %{provider_reference: "cs_identity", provider_reference_kind: :checkout_session},
+                 []
+               )
+
+      assert observation.provider_reference == "cs_identity"
+      assert observation.normalized_outcome == :unknown_or_contradictory
+      assert observation.provider_transaction_id == returned_id
+    end
+  end
+
   test "SetupIntent identity is explicitly unsupported for payment observation" do
     StripeAPIStub.stub_unexpected!("SetupIntent must not use PaymentIntent retrieval")
 
@@ -175,5 +294,14 @@ defmodule Store.Payments.Providers.StripeObservationTest do
              Providers.observe_payment("future_provider", %{provider_reference: "ref"})
 
     assert error.code == "PAYMENT_PROVIDER_UNSUPPORTED"
+  end
+
+  defp stripe_intent(provider_payment_id) do
+    %{
+      provider: :stripe,
+      provider_payment_id: provider_payment_id,
+      amount_received_minor: 2500,
+      currency: "USD"
+    }
   end
 end
