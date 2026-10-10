@@ -2,6 +2,8 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   use Store.DataCase, async: false
   use Oban.Testing, repo: Store.DirectRepo
 
+  alias Ecto.Adapters.SQL.Sandbox
+
   import Ash.Expr
   require Ash.Query
 
@@ -9,7 +11,8 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
   alias Store.Comms.EmailOutbox
   alias Store.Orders.InventoryReservation
   alias Store.Orders.{Order, PaymentApplication}
-  alias Store.Payments.{PaymentIntent, WebhookReceipt}
+  alias Store.Payments.{ObservationEvidence, PaymentAttempt, PaymentIntent, WebhookReceipt}
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Pricing.TaxRate
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
@@ -39,6 +42,7 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
     raw_body =
       Jason.encode!(%{
         "id" => "evt_worker_payment_success_001",
+        "created" => 1_700_000_000,
         "type" => "payment_intent.succeeded",
         "data" => %{
           "object" => %{
@@ -72,6 +76,19 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
     assert :succeeded == fetch_payment_intent!(payment_intent.id).state
     assert :paid == fetch_order!(order.id).state
 
+    assert {:ok, [payment_attempt]} =
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.read(domain: Store.Payments, authorize?: false)
+
+    assert payment_attempt.provider_event_id == "evt_worker_payment_success_001"
+    assert payment_attempt.provider_reference == payment_intent.id
+    assert payment_attempt.observation_source == "webhook"
+    assert payment_attempt.outcome == "authoritative_success"
+    assert DateTime.to_unix(payment_attempt.provider_occurred_at) == 1_700_000_000
+    assert %DateTime{} = payment_attempt.observed_at
+    refute payment_attempt.provider_occurred_at == payment_attempt.observed_at
+
     assert 1 ==
              PaymentApplication
              |> Ash.Query.filter(expr(order_id == ^order.id))
@@ -86,6 +103,11 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              perform_job(ProcessWebhookReceiptWorker, %{"webhook_receipt_id" => receipt.id})
 
     assert 1 ==
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+
+    assert 1 ==
              PaymentApplication
              |> Ash.Query.filter(expr(order_id == ^order.id))
              |> Ash.count!(domain: Store.Orders, authorize?: false)
@@ -94,6 +116,186 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              EmailOutbox
              |> Ash.Query.filter(expr(order_id == ^order.id and template_kind == :order_receipt))
              |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+  end
+
+  test "the same verify observation is idempotent and later success remains durable after failure" do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2500,
+        currency: "USD",
+        provider_payment_id: "pi_observation_replay"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    failure = provider_observation(:failure_observation, "requires_payment_method")
+    success = provider_observation(:authoritative_success, "succeeded")
+
+    assert {:ok, _} = ObservationEvidence.record(payment_intent, failure)
+    assert {:ok, _} = ObservationEvidence.record(payment_intent, failure)
+    assert {:ok, _} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, attempts} =
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.Query.sort(observed_at: :asc)
+             |> Ash.read(domain: Store.Payments, authorize?: false)
+
+    assert Enum.map(attempts, & &1.outcome) |> Enum.sort() ==
+             Enum.sort(["failure_observation", "authoritative_success"])
+
+    assert Enum.map(attempts, & &1.provider_reference) == [
+             "pi_observation_replay",
+             "pi_observation_replay"
+           ]
+
+    reverse_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2500,
+        currency: "USD",
+        provider_payment_id: "pi_observation_reverse"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    reverse_success = %{
+      success
+      | provider_reference: "pi_observation_reverse",
+        provider_transaction_id: "pi_observation_reverse"
+    }
+
+    reverse_failure = %{
+      failure
+      | provider_reference: "pi_observation_reverse",
+        provider_transaction_id: "pi_observation_reverse"
+    }
+
+    assert {:ok, _} = ObservationEvidence.record(reverse_intent, reverse_success)
+    assert {:ok, _} = ObservationEvidence.record(reverse_intent, reverse_failure)
+
+    assert 2 ==
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^reverse_intent.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
+  defp provider_observation(outcome, status) do
+    %ProviderObservation{
+      provider: :stripe,
+      provider_reference: "pi_observation_replay",
+      provider_transaction_id: "pi_observation_replay",
+      observation_source: :verification,
+      normalized_outcome: outcome,
+      raw_provider_status: status,
+      amount_minor: 2500,
+      currency: "USD",
+      observed_at: DateTime.utc_now(),
+      evidence_sha256: :crypto.hash(:sha256, status) |> Base.encode16(case: :lower)
+    }
+  end
+
+  test "provider reconciliation stores evidence without applying commerce effects" do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2500,
+        currency: "USD",
+        provider_payment_id: "pi_reconcile_read"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    StripeAPIStub.stub_payment_observation("pi_reconcile_read", %{
+      "amount" => 2500,
+      "amount_received" => 2500,
+      "currency" => "usd",
+      "id" => "pi_reconcile_read",
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "succeeded"
+    })
+
+    input = %Store.Payments.Inputs.ObservePaymentIntentInput{
+      payment_intent_id: payment_intent.id
+    }
+
+    assert {:ok, result} = Store.Payments.Facade.observe_payment_intent_for_system(input)
+    assert result.eligibility == :eligible
+    assert result.evidence.provider_event_id == nil
+    assert result.evidence.provider_reference == "pi_reconcile_read"
+    assert fetch_payment_intent!(payment_intent.id).state == :created
+    assert result.observation.observation_source == :verification
+  end
+
+  test "a mismatched provider response remains durable and fails eligibility" do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2500,
+        currency: "USD",
+        provider_payment_id: "pi_reconcile_mismatch"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    StripeAPIStub.stub_payment_observation("pi_reconcile_mismatch", %{
+      "amount" => 2500,
+      "amount_received" => 2499,
+      "currency" => "usd",
+      "id" => "pi_reconcile_mismatch",
+      "status" => "succeeded"
+    })
+
+    input = %Store.Payments.Inputs.ObservePaymentIntentInput{
+      payment_intent_id: payment_intent.id
+    }
+
+    assert {:ok, result} = Store.Payments.Facade.observe_payment_intent_for_system(input)
+    assert result.eligibility == {:error, :amount_mismatch}
+    assert result.evidence.amount_minor == 2499
+    assert result.evidence.outcome == "authoritative_success"
+    assert fetch_payment_intent!(payment_intent.id).state == :created
+  end
+
+  test "concurrent duplicate observations produce one durable row", context do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2500,
+        currency: "USD",
+        provider_payment_id: "pi_concurrent_observation"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    observation = %{
+      provider_observation(:authoritative_success, "succeeded")
+      | provider_reference: "pi_concurrent_observation",
+        provider_transaction_id: "pi_concurrent_observation"
+    }
+
+    sandbox_owner = context.sandbox_owners[Store.Repo]
+
+    assert 4 ==
+             1..4
+             |> Task.async_stream(
+               fn _ ->
+                 :ok = Sandbox.allow(Store.Repo, sandbox_owner, self())
+                 ObservationEvidence.record(payment_intent, observation)
+               end,
+               max_concurrency: 4,
+               timeout: 10_000
+             )
+             |> Enum.count(fn
+               {:ok, {:ok, _attempt}} -> true
+               _ -> false
+             end)
+
+    assert 1 ==
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
   end
 
   test "worker falls back to metadata local_intent_id when provider payment id is not yet persisted" do

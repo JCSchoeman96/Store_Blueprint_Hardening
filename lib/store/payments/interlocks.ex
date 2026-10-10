@@ -11,8 +11,17 @@ defmodule Store.Payments.Interlocks do
   alias Store.Digital.Facade, as: DigitalFacade
   alias Store.Fulfillment.Facade, as: FulfillmentFacade
   alias Store.Orders.Order
-  alias Store.Payments.{PaymentAttempt, PaymentIntent, ProviderEvent, Providers, WebhookReceipt}
+
+  alias Store.Payments.{
+    ObservationEvidence,
+    PaymentIntent,
+    ProviderEvent,
+    Providers,
+    WebhookReceipt
+  }
+
   alias Store.Payments.Types.CanonicalReceipt
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Subscriptions.RenewalAttempt
@@ -60,12 +69,12 @@ defmodule Store.Payments.Interlocks do
          {:ok, payload} <- decode_webhook_payload(receipt.raw_body),
          {:ok, canonical} <- normalize_canonical_receipt(receipt.provider, payload),
          {:ok, payment_intent} <- fetch_payment_intent_for_canonical(canonical),
-         {:ok, payment_intent} <-
-           hydrate_payment_intent_provider_references(payment_intent, canonical),
-         :ok <- validate_canonical_receipt_target(payment_intent, canonical),
          {:ok, provider_event_key} <- ingest_provider_event(receipt, canonical),
          {:ok, _attempt} <-
-           record_payment_attempt(payment_intent, receipt, canonical, provider_event_key),
+           record_payment_attempt(payment_intent, receipt, canonical),
+         :ok <- validate_canonical_receipt_target(payment_intent, canonical),
+         {:ok, payment_intent} <-
+           hydrate_payment_intent_provider_references(payment_intent, canonical),
          {:ok, _result} <- apply_canonical_receipt(payment_intent, canonical, provider_event_key) do
       :ok
     else
@@ -464,9 +473,7 @@ defmodule Store.Payments.Interlocks do
 
   defp ingest_provider_event(receipt, canonical) do
     with {:ok, provider} <- normalize_provider(canonical.provider || receipt.provider) do
-      payload_hash =
-        canonical.raw_payload
-        |> Idempotency.payload_hash()
+      payload_hash = Idempotency.payload_hash(canonical.raw_payload)
 
       attrs = %{
         provider: provider,
@@ -487,37 +494,43 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp record_payment_attempt(payment_intent, receipt, canonical, provider_event_key) do
+  defp record_payment_attempt(payment_intent, receipt, canonical) do
     with {:ok, provider} <- normalize_provider(canonical.provider || receipt.provider) do
       payload_hash =
         canonical.raw_payload
         |> Idempotency.payload_hash()
 
-      attrs = %{
-        payment_intent_id: payment_intent.id,
+      observation = %ProviderObservation{
         provider: provider,
+        provider_reference: canonical.provider_payment_id || canonical.provider_session_id || "",
+        provider_transaction_id: canonical.provider_payment_id,
+        local_payment_intent_id: payment_intent.id,
+        observation_source: :webhook,
+        normalized_outcome: webhook_observation_outcome(canonical.status),
+        raw_provider_status: canonical.raw_provider_status || canonical.event_type,
+        amount_minor: canonical.amount_minor,
+        currency: canonical.currency,
+        provider_environment: canonical.provider_environment,
+        provider_occurred_at: canonical.occurred_at,
+        observed_at: receipt.received_at,
+        provider_customer_ref: canonical.provider_customer_ref,
+        provider_payment_method_ref: canonical.provider_payment_method_ref,
         provider_event_id: canonical.provider_event_id,
-        provider_event_key: provider_event_key,
-        attempt_key:
-          payment_attempt_key(provider_event_key, payment_intent.id, canonical.event_type),
-        outcome: payment_attempt_outcome(canonical.status),
-        payload_sha256: payload_hash,
-        attempted_at: DateTime.utc_now()
+        evidence_sha256: payload_hash,
+        metadata: nil
       }
 
-      PaymentAttempt
-      |> Ash.Changeset.for_create(:record, attrs, context: %{system?: true})
-      |> Ash.create(payment_ash_opts([]))
+      ObservationEvidence.record(payment_intent, %{
+        observation
+        | provider_event_id: canonical.provider_event_id
+      })
     end
   end
 
-  defp payment_attempt_key(provider_event_key, payment_intent_id, event_type) do
-    "pay_attempt:#{provider_event_key}:pi:#{payment_intent_id}:event:#{event_type}"
-  end
-
-  defp payment_attempt_outcome(:succeeded), do: "succeeded"
-  defp payment_attempt_outcome(:failed), do: "failed"
-  defp payment_attempt_outcome(_), do: "ignored"
+  defp webhook_observation_outcome(:succeeded), do: :authoritative_success
+  defp webhook_observation_outcome(:failed), do: :failure_observation
+  defp webhook_observation_outcome(:requires_action), do: :requires_action
+  defp webhook_observation_outcome(_), do: :unknown_or_contradictory
 
   defp apply_canonical_receipt(
          %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,

@@ -7,10 +7,18 @@ defmodule Store.Payments.Facade do
   require Ash.Query
 
   alias Store.Admin.AuditLog
+  alias Store.Payments.Inputs.ObservePaymentIntentInput
   alias Store.Payments.Inputs.WebhookReceiptIngestInput
+  alias Store.Payments.ObservationReconciliation
   alias Store.Payments.{PaymentIntent, Providers, WebhookReceipt}
   alias Store.Payments.Queries.{PaymentIntentIndexQuery, PaymentIntentShowQuery}
   alias Store.Support.Errors.Normalize
+
+  @spec observe_payment_intent_for_system(ObservePaymentIntentInput.t()) ::
+          {:ok, ObservationReconciliation.result()} | {:error, term()}
+  def observe_payment_intent_for_system(%ObservePaymentIntentInput{} = input) do
+    ObservationReconciliation.observe_payment_intent(input)
+  end
 
   @spec list_payment_intents_for_admin(map(), PaymentIntentIndexQuery.t()) ::
           {:ok, [PaymentIntent.t()]} | {:error, term()}

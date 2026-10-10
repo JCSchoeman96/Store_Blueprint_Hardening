@@ -10,6 +10,7 @@ defmodule Store.Payments.Providers.Stripe do
 
   alias Store.Payments.ProviderConfig
   alias Store.Payments.Types.CanonicalReceipt
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Support.Errors.Error
   alias Store.Support.HTTP.ReqClient
 
@@ -26,9 +27,24 @@ defmodule Store.Payments.Providers.Stripe do
       supports_tokenization?: true,
       supports_merchant_initiated_charges?: true,
       supports_provider_managed_subscriptions?: true,
+      supports_transaction_observation?: true,
       webhook_verification_mode: :offline_hmac,
       supports_webhooks?: true
     }
+  end
+
+  @impl true
+  def observe_payment(identity, opts) when is_map(identity) and is_list(opts) do
+    with {:ok, reference} <- fetch_required_binary(identity, :provider_reference),
+         {:ok, config} <- stripe_config(opts),
+         {:ok, response} <- stripe_get("/v1/payment_intents/#{URI.encode(reference)}", config),
+         {:ok, body} <- extract_payment_intent_response(response) do
+      normalize_payment_observation(reference, body, config)
+    end
+  end
+
+  def observe_payment(_identity, _opts) do
+    {:error, Error.new("PAYMENT_PROVIDER_OBSERVATION_INVALID", "payment reference is required")}
   end
 
   @impl true
@@ -130,8 +146,10 @@ defmodule Store.Payments.Providers.Stripe do
          provider_payment_method_ref: extract_provider_payment_method_ref(payload),
          local_payment_intent_id: extract_local_payment_intent_id(payload),
          status: normalize_status(event_type),
+         raw_provider_status: extract_raw_provider_status(payload, event_type),
          amount_minor: amount_minor,
          currency: currency,
+         provider_environment: extract_provider_environment(payload),
          order_ref: extract_order_ref(payload),
          action_url: extract_action_url(payload),
          client_secret: extract_client_secret(payload),
@@ -476,9 +494,23 @@ defmodule Store.Payments.Providers.Stripe do
         DateTime.from_unix!(created)
 
       _ ->
-        DateTime.utc_now() |> DateTime.truncate(:second)
+        nil
     end
   end
+
+  defp extract_raw_provider_status(payload, event_type) do
+    payload
+    |> payload_object()
+    |> Map.get("status")
+    |> case do
+      status when is_binary(status) -> status
+      _ -> event_type
+    end
+  end
+
+  defp extract_provider_environment(%{"livemode" => true}), do: "live"
+  defp extract_provider_environment(%{"livemode" => false}), do: "test"
+  defp extract_provider_environment(_payload), do: nil
 
   defp normalize_status(event_type)
        when event_type in [
@@ -578,6 +610,115 @@ defmodule Store.Payments.Providers.Stripe do
       {:error, reason} -> {:error, transport_error(reason)}
     end
   end
+
+  defp stripe_get(path, config) do
+    options =
+      config.request_options
+      |> Keyword.merge(
+        url: stripe_url(config.api_base_url, path),
+        headers: stripe_read_headers(config),
+        retry: :safe_transient,
+        max_retries: 2
+      )
+
+    case ReqClient.get(options[:url], Keyword.delete(options, :url)) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        {:ok, %{status: status, body: body}}
+
+      {:ok, response} ->
+        stripe_error(response)
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, transport_error(reason)}
+    end
+  end
+
+  defp stripe_read_headers(config) do
+    [
+      {"authorization", "Bearer #{config.secret_key}"},
+      {"stripe-version", config.api_version}
+    ]
+  end
+
+  defp normalize_payment_observation(reference, body, config) do
+    status = Map.get(body, "status")
+    amount = Map.get(body, "amount_received") || Map.get(body, "amount")
+    currency = Map.get(body, "currency")
+    provider_transaction_id = Map.get(body, "id")
+
+    cond do
+      not is_binary(status) ->
+        {:ok, unknown_observation(reference, body, config, "missing_status")}
+
+      not is_integer(amount) or amount < 0 or not is_binary(currency) ->
+        {:ok, unknown_observation(reference, body, config, status)}
+
+      true ->
+        {:ok,
+         %ProviderObservation{
+           provider: :stripe,
+           provider_reference: reference,
+           provider_transaction_id: provider_transaction_id,
+           local_payment_intent_id: get_in(body, ["metadata", "local_intent_id"]),
+           observation_source: :verification,
+           normalized_outcome: normalize_observation_status(status),
+           raw_provider_status: status,
+           amount_minor: amount,
+           currency: String.upcase(currency),
+           provider_environment: stripe_environment(config.secret_key),
+           provider_occurred_at: nil,
+           observed_at: DateTime.utc_now(),
+           provider_customer_ref: stripe_id(body["customer"]),
+           provider_payment_method_ref: stripe_id(body["payment_method"]),
+           evidence_sha256:
+             :crypto.hash(:sha256, Jason.encode!(body)) |> Base.encode16(case: :lower),
+           metadata: nil
+         }}
+    end
+  end
+
+  defp unknown_observation(reference, body, config, status) do
+    %ProviderObservation{
+      provider: :stripe,
+      provider_reference: reference,
+      provider_transaction_id: stripe_id(body["id"]),
+      local_payment_intent_id: get_in(body, ["metadata", "local_intent_id"]),
+      observation_source: :verification,
+      normalized_outcome: :unknown_or_contradictory,
+      raw_provider_status: status,
+      amount_minor: if(is_integer(body["amount"]), do: body["amount"]),
+      currency: if(is_binary(body["currency"]), do: String.upcase(body["currency"])),
+      provider_environment: stripe_environment(config.secret_key),
+      provider_occurred_at: nil,
+      observed_at: DateTime.utc_now(),
+      provider_customer_ref: stripe_id(body["customer"]),
+      provider_payment_method_ref: stripe_id(body["payment_method"]),
+      evidence_sha256: :crypto.hash(:sha256, Jason.encode!(body)) |> Base.encode16(case: :lower),
+      metadata: nil
+    }
+  end
+
+  defp normalize_observation_status("succeeded"), do: :authoritative_success
+  defp normalize_observation_status("canceled"), do: :failure_observation
+  defp normalize_observation_status("requires_action"), do: :requires_action
+
+  defp normalize_observation_status(status)
+       when status in [
+              "processing",
+              "requires_capture",
+              "requires_confirmation",
+              "requires_payment_method"
+            ],
+       do: :unresolved
+
+  defp normalize_observation_status(_status), do: :unknown_or_contradictory
+
+  defp stripe_environment("sk_test_" <> _), do: "test"
+  defp stripe_environment("sk_live_" <> _), do: "live"
+  defp stripe_environment(_), do: nil
 
   defp stripe_request_opts(config, path, form, idempotency_key) do
     config.request_options

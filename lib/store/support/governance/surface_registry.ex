@@ -21,6 +21,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
       exports: [
         {:list_payment_intents_for_admin, 2},
         {:get_payment_intent_for_admin, 2},
+        {:observe_payment_intent_for_system, 1},
         {:ingest_webhook_receipt_for_system, 1},
         {:get_webhook_receipt_for_system, 1},
         {:process_payment_webhook_receipt_for_system, 1},

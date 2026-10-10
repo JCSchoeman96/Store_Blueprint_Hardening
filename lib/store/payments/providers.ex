@@ -55,6 +55,29 @@ defmodule Store.Payments.Providers do
     end
   end
 
+  @spec observe_payment(provider(), map(), keyword()) ::
+          {:ok, Store.Payments.Types.ProviderObservation.t()} | {:error, term()}
+  def observe_payment(provider, identity, opts \\ [])
+      when is_map(identity) and is_list(opts) do
+    with {:ok, module} <- adapter(provider),
+         true <- Map.get(module.capabilities(), :supports_transaction_observation?, false) do
+      module.observe_payment(identity, opts)
+    else
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED",
+           "provider observation is unsupported",
+           %{
+             provider: normalize_provider(provider) |> Atom.to_string()
+           }
+         )}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
   @spec create_intent(provider(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def create_intent(provider, attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
     with {:ok, module} <- adapter(provider) do

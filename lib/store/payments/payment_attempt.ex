@@ -17,12 +17,12 @@ defmodule Store.Payments.PaymentAttempt do
     end
 
     attribute :provider_event_id, :string do
-      allow_nil?(false)
+      allow_nil?(true)
       public?(true)
     end
 
     attribute :provider_event_key, :string do
-      allow_nil?(false)
+      allow_nil?(true)
       public?(true)
     end
 
@@ -38,6 +38,52 @@ defmodule Store.Payments.PaymentAttempt do
 
     attribute :payload_sha256, :string do
       allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_reference, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_transaction_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :observation_source, :string do
+      allow_nil?(false)
+      public?(true)
+    end
+
+    attribute :raw_provider_status, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :amount_minor, :integer do
+      allow_nil?(true)
+      constraints(min: 0)
+      public?(true)
+    end
+
+    attribute :currency, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_environment, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :provider_occurred_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :observed_at, :utc_datetime_usec do
+      allow_nil?(false)
       public?(true)
     end
 
@@ -76,7 +122,16 @@ defmodule Store.Payments.PaymentAttempt do
         :attempt_key,
         :outcome,
         :payload_sha256,
-        :attempted_at
+        :attempted_at,
+        :provider_reference,
+        :provider_transaction_id,
+        :observation_source,
+        :raw_provider_status,
+        :amount_minor,
+        :currency,
+        :provider_environment,
+        :provider_occurred_at,
+        :observed_at
       ])
 
       upsert?(true)
@@ -93,6 +148,8 @@ defmodule Store.Payments.PaymentAttempt do
     custom_indexes do
       index([:payment_intent_id], name: "payment_attempts_payment_intent_id_index")
       index([:attempted_at], name: "payment_attempts_attempted_at_index")
+      index([:provider, :provider_reference], name: "payment_attempts_provider_reference_index")
+      index([:payment_intent_id, :observed_at], name: "payment_attempts_intent_observed_index")
     end
   end
 

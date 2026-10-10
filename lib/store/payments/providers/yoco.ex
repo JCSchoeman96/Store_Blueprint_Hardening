@@ -25,6 +25,12 @@ defmodule Store.Payments.Providers.Yoco do
   end
 
   @impl true
+  def observe_payment(_identity, _opts),
+    do:
+      {:error,
+       Error.new("PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED", "yoco observation is unsupported")}
+
+  @impl true
   def create_intent(_attrs, _opts) do
     {:error, Error.new("VALIDATION_ERROR", "yoco intent creation is not implemented yet")}
   end

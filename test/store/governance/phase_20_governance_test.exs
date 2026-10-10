@@ -30,6 +30,12 @@ defmodule Store.Governance.Phase20GovernanceTest do
            ] == SurfaceRegistry.allowed_exports(Store.Carts.Facade)
   end
 
+  test "surface registry includes payment observation system export" do
+    assert {:observe_payment_intent_for_system, 1} in SurfaceRegistry.allowed_exports(
+             Store.Payments.Facade
+           )
+  end
+
   test "policy matrix and route inventory pin phase 20 web behavior" do
     policy_matrix = File.read!("docs/governance/policy_matrix.md")
     route_inventory = File.read!("docs/governance/route_inventory.md")

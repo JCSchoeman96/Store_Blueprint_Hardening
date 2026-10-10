@@ -7,8 +7,10 @@ defmodule Store.Payments.Types.CanonicalReceipt do
     :provider,
     :provider_event_id,
     :status,
+    :raw_provider_status,
     :amount_minor,
     :currency,
+    :provider_environment,
     :occurred_at,
     :event_type
   ]
@@ -22,8 +24,10 @@ defmodule Store.Payments.Types.CanonicalReceipt do
     :provider_payment_method_ref,
     :local_payment_intent_id,
     :status,
+    :raw_provider_status,
     :amount_minor,
     :currency,
+    :provider_environment,
     :order_ref,
     :action_url,
     :client_secret,
@@ -44,12 +48,14 @@ defmodule Store.Payments.Types.CanonicalReceipt do
           provider_payment_method_ref: String.t() | nil,
           local_payment_intent_id: String.t() | nil,
           status: status(),
+          raw_provider_status: String.t() | nil,
           amount_minor: non_neg_integer(),
           currency: String.t(),
+          provider_environment: String.t() | nil,
           order_ref: String.t() | nil,
           action_url: String.t() | nil,
           client_secret: String.t() | nil,
-          occurred_at: DateTime.t(),
+          occurred_at: DateTime.t() | nil,
           event_type: String.t(),
           raw_payload: map() | nil
         }

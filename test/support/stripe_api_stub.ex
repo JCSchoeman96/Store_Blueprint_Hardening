@@ -92,6 +92,19 @@ defmodule Store.TestSupport.StripeAPIStub do
     end)
   end
 
+  def stub_payment_observation(reference, response)
+      when is_binary(reference) and is_map(response) do
+    Req.Test.stub(@stub_name, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/v1/payment_intents/#{URI.encode(reference)}"
+      assert Plug.Conn.get_req_header(conn, "authorization") != []
+      assert Plug.Conn.get_req_header(conn, "stripe-version") != []
+      assert Plug.Conn.get_req_header(conn, "idempotency-key") == []
+
+      Req.Test.json(conn, response)
+    end)
+  end
+
   def form_params(conn) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     assert Plug.Conn.get_req_header(conn, "authorization") != []
