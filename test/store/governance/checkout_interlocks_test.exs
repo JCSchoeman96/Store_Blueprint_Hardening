@@ -399,7 +399,7 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     end
   end
 
-  test "late terminal evidence cannot change an applied success" do
+  test "late certified terminal evidence requires reconciliation without undoing applied success" do
     order = create_customer_order!()
     payment_intent = create_submitted_payment_intent!(order.id, "pi_success_then_cancel")
     success = outcome_observation(payment_intent, :authoritative_success, "succeeded")
@@ -415,11 +415,68 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     canceled = outcome_observation(payment_intent, :failure_observation, "canceled")
     assert {:ok, canceled_evidence} = ObservationEvidence.record(payment_intent, canceled)
 
-    assert {:ok, %{outcome: :already_applied_success}} =
+    assert {:ok, %{outcome: :reconciliation_required}} =
              Facade.apply_observed_payment_outcome_for_system(%{
                payment_intent: payment_intent,
                observation: canceled,
                evidence: canceled_evidence
+             })
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+  end
+
+  test "a nonterminal failure after applied success leaves success monotonic without reconciliation" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id, "pi_success_then_retryable")
+    success = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+    assert {:ok, success_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: success_evidence
+             })
+
+    retryable =
+      outcome_observation(payment_intent, :failure_observation, "requires_payment_method")
+
+    assert {:ok, retryable_evidence} = ObservationEvidence.record(payment_intent, retryable)
+
+    assert {:ok, %{outcome: :already_applied_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: retryable,
+               evidence: retryable_evidence
+             })
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+  end
+
+  test "replayed success after application remains already applied" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id, "pi_success_replayed")
+    success = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+    assert {:ok, success_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: success_evidence
+             })
+
+    assert {:ok, replay_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :already_applied_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: replay_evidence
              })
 
     assert :succeeded == fetch_payment_intent!(payment_intent.id).state

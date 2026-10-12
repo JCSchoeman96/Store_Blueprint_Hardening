@@ -27,10 +27,7 @@ defmodule Store.Payments.PaymentOutcomeResolver do
     application = Keyword.get(opts, :payment_application)
 
     cond do
-      exact_application?(payment_intent, application) ->
-        {:ok, :already_applied_success}
-
-      conflicting_application?(application) ->
+      conflicting_application?(payment_intent, application) ->
         {:ok, :reconciliation_required}
 
       Keyword.get(opts, :evidence_history_overflow?, false) ->
@@ -39,6 +36,9 @@ defmodule Store.Payments.PaymentOutcomeResolver do
       Keyword.get(opts, :terminal_non_success_evidence?, false) and
           Keyword.get(opts, :authoritative_success_evidence?, false) ->
         {:ok, :reconciliation_required}
+
+      exact_application?(payment_intent, application) ->
+        {:ok, :already_applied_success}
 
       Keyword.get(opts, :authoritative_success_evidence?, false) ->
         {:ok, :authoritative_success}
@@ -77,8 +77,11 @@ defmodule Store.Payments.PaymentOutcomeResolver do
 
   defp exact_application?(_payment_intent, _application), do: false
 
-  defp conflicting_application?(%{payment_intent_id: id}) when is_binary(id), do: true
-  defp conflicting_application?(_application), do: false
+  defp conflicting_application?(payment_intent, %{payment_intent_id: id} = application)
+       when is_binary(id),
+       do: not exact_application?(payment_intent, application)
+
+  defp conflicting_application?(_payment_intent, _application), do: false
 
   defp exact_intent?(payment_intent, observation) do
     is_nil(observation.local_payment_intent_id) or

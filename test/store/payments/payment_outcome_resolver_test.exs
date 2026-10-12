@@ -49,6 +49,20 @@ defmodule Store.Payments.PaymentOutcomeResolverTest do
              )
   end
 
+  test "certified contradiction takes precedence over an exact applied payment application" do
+    application = %{order_id: "order-1", payment_intent_id: "intent-1"}
+
+    assert {:ok, :reconciliation_required} =
+             PaymentOutcomeResolver.resolve(
+               %{id: "intent-1", order_id: "order-1"},
+               observation(:failure_observation, "canceled"),
+               payment_application: application,
+               provider_finality: :terminal_non_success,
+               terminal_non_success_evidence?: true,
+               authoritative_success_evidence?: true
+             )
+  end
+
   test "an application for another payment intent requires reconciliation" do
     application = %{order_id: "order-1", payment_intent_id: "intent-a"}
 
