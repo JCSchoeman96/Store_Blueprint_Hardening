@@ -22,13 +22,15 @@ defmodule Store.Payments.Interlocks do
     WebhookReceipt
   }
 
+  alias Store.Payments.Inputs.RenewalOrderPaymentApplicationInput
+  alias Store.Payments.Inputs.RenewalPaymentApplicationInput
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Subscriptions.RenewalAttempt
   alias Store.Support.AshNotifications
-  alias Store.Support.Errors.Error
+  alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.Governance.Idempotency
   alias Store.Workers.EnsureSubscriptionsForPaidOrderWorker
   alias Store.Workers.ReconcilePaidSubscriptionRenewalWorker
@@ -99,6 +101,138 @@ defmodule Store.Payments.Interlocks do
       when is_binary(payment_intent_id) and is_list(opts) do
     with {:ok, payment_intent} <- fetch_payment_intent(payment_intent_id) do
       apply_payment_success_once(payment_intent, opts)
+    end
+  end
+
+  @spec renewal_payment_application_status_for_system(RenewalPaymentApplicationInput.t()) ::
+          {:ok, :applied | :unapplied} | {:error, Error.t()}
+  def renewal_payment_application_status_for_system(%RenewalPaymentApplicationInput{} = input) do
+    read_renewal_payment_application_status(input)
+  end
+
+  @spec serialize_renewal_order_payment_application_for_system(
+          RenewalOrderPaymentApplicationInput.t()
+        ) :: {:ok, :unapplied} | {:error, Error.t()}
+  def serialize_renewal_order_payment_application_for_system(
+        %RenewalOrderPaymentApplicationInput{} = input
+      ) do
+    run_renewal_application_transaction(fn -> lock_and_confirm_unapplied_renewal_order(input) end)
+  end
+
+  defp lock_and_confirm_unapplied_renewal_order(%RenewalOrderPaymentApplicationInput{
+         order_id: order_id
+       }) do
+    with :ok <- lock_order!(order_id),
+         {:ok, []} <- read_renewal_order_payment_applications(order_id) do
+      {:ok, :unapplied}
+    else
+      {:ok, [_application]} ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "renewal Order has an application without a bound PaymentIntent"
+         )}
+
+      {:ok, [_first, _second | _rest]} ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal Order has conflicting applications")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp read_renewal_order_payment_applications(order_id) do
+    case SQL.query(
+           Repo,
+           "SELECT payment_intent_id::text FROM payment_applications WHERE order_id = $1::text::uuid LIMIT 2",
+           [order_id]
+         ) do
+      {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  @spec serialize_renewal_payment_application_for_system(RenewalPaymentApplicationInput.t()) ::
+          {:ok, :applied | :unapplied} | {:error, Error.t()}
+  def serialize_renewal_payment_application_for_system(%RenewalPaymentApplicationInput{} = input) do
+    run_renewal_application_transaction(fn ->
+      lock_and_read_renewal_payment_application(input)
+    end)
+  end
+
+  defp lock_and_read_renewal_payment_application(%RenewalPaymentApplicationInput{} = input) do
+    with :ok <- lock_order!(input.order_id),
+         :ok <- lock_payment_intent_for_renewal(input.order_id, input.payment_intent_id) do
+      read_renewal_payment_application_status(input)
+    end
+  end
+
+  defp run_renewal_application_transaction(fun) do
+    if Repo.in_transaction?() do
+      fun.()
+    else
+      case Repo.transaction(fn ->
+             rollback_renewal_application_error(fun.())
+           end) do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  defp rollback_renewal_application_error({:error, reason}), do: Repo.rollback(reason)
+  defp rollback_renewal_application_error(result), do: result
+
+  defp lock_payment_intent_for_renewal(order_id, payment_intent_id) do
+    query = """
+    SELECT order_id::text
+    FROM payment_intents
+    WHERE id = $1::text::uuid
+    FOR UPDATE
+    """
+
+    case SQL.query(Repo, query, [payment_intent_id]) do
+      {:ok, %{rows: [[^order_id]]}} ->
+        :ok
+
+      {:ok, %{rows: [[_other_order_id]]}} ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
+
+      {:ok, %{rows: []}} ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment intent was not found")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp read_renewal_payment_application_status(%RenewalPaymentApplicationInput{} = input) do
+    query = """
+    SELECT payment_applications.payment_intent_id::text, payment_intents.order_id::text
+    FROM payment_applications
+    JOIN payment_intents ON payment_intents.id = payment_applications.payment_intent_id
+    WHERE payment_applications.order_id = $1::text::uuid
+    LIMIT 2
+    """
+
+    case SQL.query(Repo, query, [input.order_id]) do
+      {:ok, %{rows: []}} ->
+        {:ok, :unapplied}
+
+      {:ok, %{rows: [[payment_intent_id, payment_order_id]]}}
+      when payment_intent_id == input.payment_intent_id and payment_order_id == input.order_id ->
+        {:ok, :applied}
+
+      {:ok, %{rows: [[_payment_intent_id, _payment_order_id]]}} ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "order payment identity conflicts")}
+
+      {:ok, %{rows: [_first, _second]}} ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "order has conflicting payment applications")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
   end
 

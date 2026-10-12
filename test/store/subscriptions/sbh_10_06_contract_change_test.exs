@@ -551,13 +551,8 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     renewal_order = fetch_order!(attempt.order_id)
     payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
 
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    renewal_order
-    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    assert {:ok, %{applied?: false}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
 
     assert {:ok, :reconciled} =
              Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,

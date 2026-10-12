@@ -21,6 +21,8 @@ defmodule Store.Payments.Refunds do
     WebhookReceipt
   }
 
+  alias Store.Payments.Inputs.RenewalCancellationRemediationInput
+
   alias Store.Repo
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
@@ -37,6 +39,7 @@ defmodule Store.Payments.Refunds do
           required(:currency) => String.t(),
           required(:provider) => Providers.provider(),
           optional(:reason) => String.t(),
+          optional(:idempotency_key) => String.t(),
           optional(:line_item_ids) => [String.t()],
           optional(:scope_kind) => :full_refund | :partial_refund | :shipping_refund | String.t()
         }
@@ -51,6 +54,44 @@ defmodule Store.Payments.Refunds do
     with {:ok, request} <- normalize_request(attrs),
          :ok <- enforce_refund_actor!(actor, context, authorize?) do
       request_refund_transaction(request, actor, context, authorize?)
+    end
+  end
+
+  @spec request_renewal_cancellation_remediation_for_system(
+          RenewalCancellationRemediationInput.t()
+        ) :: {:ok, Refund.t()} | {:error, Error.t() | term()}
+  def request_renewal_cancellation_remediation_for_system(
+        %RenewalCancellationRemediationInput{} = input
+      ) do
+    with {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
+         :ok <- ensure_matching_order_id(input.order_id, payment_intent.order_id),
+         :ok <- ensure_refundable_payment_intent(payment_intent),
+         true <- is_integer(payment_intent.amount_received_minor),
+         true <- payment_intent.amount_received_minor > 0 do
+      request_refund(
+        %{
+          order_id: input.order_id,
+          payment_intent_id: input.payment_intent_id,
+          requested_amount_minor: payment_intent.amount_received_minor,
+          currency: payment_intent.currency,
+          provider: payment_intent.provider,
+          reason: "renewal_collected_after_cancellation",
+          scope_kind: :full_refund,
+          line_item_ids: [],
+          idempotency_key:
+            "renewal-cancel-remediation:#{input.renewal_attempt_id}:#{input.payment_intent_id}"
+        },
+        actor: nil,
+        context: %{system?: true},
+        authorize?: false
+      )
+    else
+      false ->
+        {:error,
+         Error.new("REFUND_NOT_ALLOWED", "renewal payment does not have a refundable amount")}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -790,6 +831,7 @@ defmodule Store.Payments.Refunds do
   end
 
   defp ensure_refundable_payment_intent(%{state: "succeeded"}), do: :ok
+  defp ensure_refundable_payment_intent(%{state: :succeeded}), do: :ok
 
   defp ensure_refundable_payment_intent(_payment_intent) do
     {:error, Error.new("REFUND_NOT_ALLOWED", "refund requires succeeded payment intent")}
