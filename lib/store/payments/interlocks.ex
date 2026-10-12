@@ -14,7 +14,9 @@ defmodule Store.Payments.Interlocks do
 
   alias Store.Payments.{
     ObservationEvidence,
+    PaymentAttempt,
     PaymentIntent,
+    PaymentOutcomeResolver,
     ProviderEvent,
     Providers,
     WebhookReceipt
@@ -70,12 +72,13 @@ defmodule Store.Payments.Interlocks do
          {:ok, canonical} <- normalize_canonical_receipt(receipt.provider, payload),
          {:ok, payment_intent} <- fetch_payment_intent_for_canonical(canonical),
          {:ok, provider_event_key} <- ingest_provider_event(receipt, canonical),
-         {:ok, _attempt} <-
+         {:ok, _attempt, observation} <-
            record_payment_attempt(payment_intent, receipt, canonical),
          :ok <- validate_canonical_receipt_target(payment_intent, canonical),
          {:ok, payment_intent} <-
            hydrate_payment_intent_provider_references(payment_intent, canonical),
-         {:ok, _result} <- apply_canonical_receipt(payment_intent, canonical, provider_event_key) do
+         {:ok, _outcome} <-
+           apply_provider_observation(payment_intent, observation, provider_event_key) do
       :ok
     else
       {:discard, reason} -> {:discard, reason}
@@ -89,13 +92,45 @@ defmodule Store.Payments.Interlocks do
   def apply_payment_success_once(payment_intent_or_id, opts \\ [])
 
   def apply_payment_success_once(%PaymentIntent{} = payment_intent, _opts) do
+    apply_payment_success_once_internal(payment_intent, false)
+  end
+
+  def apply_payment_success_once(payment_intent_id, opts)
+      when is_binary(payment_intent_id) and is_list(opts) do
+    with {:ok, payment_intent} <- fetch_payment_intent(payment_intent_id) do
+      apply_payment_success_once(payment_intent, opts)
+    end
+  end
+
+  def apply_observed_payment_outcome(%{
+        payment_intent: %PaymentIntent{} = payment_intent,
+        observation: %ProviderObservation{} = observation,
+        evidence: %PaymentAttempt{} = evidence
+      }) do
+    with {:ok, current_intent} <- fetch_payment_intent(payment_intent.id),
+         {:ok, persisted_evidence} <- fetch_payment_attempt(evidence.id),
+         :ok <- validate_persisted_evidence(current_intent, observation, persisted_evidence),
+         {:ok, outcome} <- apply_provider_observation(current_intent, observation, nil) do
+      {:ok, %{outcome: outcome, payment_intent: current_intent}}
+    end
+  end
+
+  def apply_observed_payment_outcome(_result),
+    do: {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "payment observation is invalid")}
+
+  defp apply_payment_success_once_internal(
+         %PaymentIntent{} = payment_intent,
+         verified_correction?
+       ) do
     started_at = System.monotonic_time()
 
     result =
       with true <- is_binary(payment_intent.order_id),
            {:ok, order} <- fetch_order(payment_intent.order_id),
            {:ok, result, notifications} <-
-             Repo.transaction(fn -> run_apply_payment_success_once(payment_intent, order) end)
+             Repo.transaction(fn ->
+               run_apply_payment_success_once(payment_intent, order, verified_correction?)
+             end)
              |> normalize_transaction_result(),
            :ok <-
              AshNotifications.notify_post_commit(
@@ -128,13 +163,6 @@ defmodule Store.Payments.Interlocks do
 
     emit_apply_payment_success_once_telemetry(result, started_at)
     result
-  end
-
-  def apply_payment_success_once(payment_intent_id, opts)
-      when is_binary(payment_intent_id) and is_list(opts) do
-    with {:ok, payment_intent} <- fetch_payment_intent(payment_intent_id) do
-      apply_payment_success_once(payment_intent, opts)
-    end
   end
 
   defp normalize_payment_intent_request(attrs) do
@@ -521,10 +549,9 @@ defmodule Store.Payments.Interlocks do
         metadata: nil
       }
 
-      ObservationEvidence.record(payment_intent, %{
-        observation
-        | provider_event_id: canonical.provider_event_id
-      })
+      with {:ok, attempt} <- ObservationEvidence.record(payment_intent, observation) do
+        {:ok, attempt, observation}
+      end
     end
   end
 
@@ -546,80 +573,393 @@ defmodule Store.Payments.Interlocks do
   defp webhook_observation_outcome(:requires_action), do: :requires_action
   defp webhook_observation_outcome(_), do: :unknown_or_contradictory
 
-  defp apply_canonical_receipt(
+  defp apply_provider_observation(payment_intent, observation, provider_event_key) do
+    with :ok <- validate_observation_identity(payment_intent, observation),
+         {:ok, provider_environment} <- Providers.expected_environment(payment_intent.provider),
+         eligibility <- observation_eligibility(payment_intent, observation, provider_environment),
+         finality <- Providers.classify_payment_finality(payment_intent.provider, observation),
+         {:ok, application} <- fetch_payment_application(payment_intent),
+         {:ok, evidence_history} <-
+           fetch_payment_evidence_history(payment_intent, observation, provider_environment),
+         {:ok, outcome} <-
+           PaymentOutcomeResolver.resolve(payment_intent, observation,
+             eligibility: eligibility,
+             provider_finality: finality,
+             payment_application: application,
+             terminal_non_success_evidence?: evidence_history.terminal_non_success?,
+             authoritative_success_evidence?: evidence_history.authoritative_success?,
+             evidence_history_overflow?: evidence_history.overflow?
+           ),
+         {:ok, _result} <-
+           apply_resolved_outcome(payment_intent, outcome, provider_event_key) do
+      {:ok, outcome}
+    end
+  end
+
+  defp observation_eligibility(
          %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
-         %CanonicalReceipt{status: :succeeded},
-         _provider_event_key
+         %ProviderObservation{normalized_outcome: :authoritative_success} = observation,
+         provider_environment
        ) do
-    with {:ok, _updated_intent, _notifications} <-
-           maybe_mark_payment_intent_succeeded(payment_intent),
+    with :ok <- ProviderObservation.validate_identity(payment_intent, observation),
+         true <- observation.provider_environment == provider_environment do
+      :eligible
+    else
+      false -> {:error, :environment_mismatch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp observation_eligibility(
+         %PaymentIntent{} = payment_intent,
+         %ProviderObservation{normalized_outcome: :authoritative_success} = observation,
+         provider_environment
+       ) do
+    ProviderObservation.validate_target(payment_intent, observation,
+      provider_environment: provider_environment
+    )
+  end
+
+  defp observation_eligibility(_payment_intent, _observation, _provider_environment),
+    do: :not_applicable
+
+  defp validate_observation_identity(payment_intent, observation) do
+    case ProviderObservation.validate_identity(payment_intent, observation) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "provider observation identity does not match", %{
+           reason: reason
+         })}
+    end
+  end
+
+  defp apply_resolved_outcome(payment_intent, :authoritative_success, _provider_event_key) do
+    if payment_intent.purpose == :subscription_payment_method_update do
+      with {:ok, _updated_intent, _notifications} <-
+             maybe_mark_payment_intent_succeeded(payment_intent, true),
+           :ok <-
+             SubscriptionsFacade.handle_payment_method_update_succeeded_for_system(
+               payment_intent.id
+             ) do
+        {:ok, :applied}
+      end
+    else
+      apply_payment_success_once_internal(payment_intent, true)
+    end
+  end
+
+  defp apply_resolved_outcome(
+         %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
+         :verified_terminal_non_success,
+         _provider_event_key
+       ),
+       do: maybe_cancel_payment_intent(payment_intent)
+
+  defp apply_resolved_outcome(
+         payment_intent,
+         :verified_terminal_non_success,
+         _provider_event_key
+       ),
+       do: apply_terminal_non_success(payment_intent)
+
+  defp apply_resolved_outcome(payment_intent, :requires_action, _provider_event_key),
+    do: maybe_mark_payment_intent_requires_action(payment_intent)
+
+  defp apply_resolved_outcome(_payment_intent, outcome, _provider_event_key),
+    do: {:ok, outcome}
+
+  defp fetch_payment_application(%PaymentIntent{order_id: order_id}) when is_binary(order_id) do
+    query = """
+    SELECT order_id::text, payment_intent_id::text
+    FROM payment_applications
+    WHERE order_id = $1::text::uuid
+    LIMIT 2
+    """
+
+    case SQL.query(Repo, query, [order_id]) do
+      {:ok, %{rows: [[^order_id, payment_intent_id]]}} ->
+        {:ok, %{order_id: order_id, payment_intent_id: payment_intent_id}}
+
+      {:ok, %{rows: []}} ->
+        {:ok, nil}
+
+      {:ok, %{rows: [[applied_order_id, payment_intent_id]]}} ->
+        {:ok, %{order_id: applied_order_id, payment_intent_id: payment_intent_id}}
+
+      {:ok, %{rows: [_first, _second]}} ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "order has conflicting payment applications")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fetch_payment_application(_payment_intent), do: {:ok, nil}
+
+  @payment_evidence_history_limit 100
+
+  defp fetch_payment_evidence_history(
+         %PaymentIntent{} = payment_intent,
+         observation,
+         provider_environment
+       ) do
+    query =
+      PaymentAttempt
+      |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+      |> Ash.Query.limit(@payment_evidence_history_limit + 1)
+
+    case Ash.read(query,
+           domain: Store.Payments,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, attempts} ->
+        matching_observations =
+          attempts
+          |> Enum.filter(&same_provider_transaction?(&1, payment_intent, observation))
+          |> Enum.map(&observation_from_payment_attempt/1)
+          |> Enum.reject(&is_nil/1)
+
+        observations = [observation | matching_observations]
+
+        {:ok,
+         %{
+           terminal_non_success?:
+             Enum.any?(observations, fn evidence ->
+               Providers.classify_payment_finality(evidence.provider, evidence) ==
+                 :terminal_non_success
+             end),
+           authoritative_success?:
+             Enum.any?(observations, fn evidence ->
+               Providers.classify_payment_finality(evidence.provider, evidence) ==
+                 :authoritative_success and
+                 ProviderObservation.validate_target(payment_intent, evidence,
+                   provider_environment: provider_environment
+                 ) == :eligible
+             end),
+           overflow?: length(attempts) > @payment_evidence_history_limit
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp same_provider_transaction?(attempt, payment_intent, observation) do
+    attempt.payment_intent_id == payment_intent.id and
+      attempt.provider == observation.provider and
+      attempt.provider_reference == observation.provider_reference and
+      attempt.provider_reference_kind == Atom.to_string(observation.provider_reference_kind) and
+      attempt.provider_transaction_id == observation.provider_transaction_id
+  end
+
+  defp observation_from_payment_attempt(%PaymentAttempt{} = attempt) do
+    with {:ok, outcome} <- observation_outcome(attempt.outcome),
+         {:ok, source} <- observation_source(attempt.observation_source),
+         {:ok, reference_kind} <- observation_reference_kind(attempt.provider_reference_kind),
+         true <- is_binary(attempt.provider_reference),
+         true <- is_binary(attempt.raw_provider_status),
+         true <- not is_nil(attempt.observed_at) do
+      %ProviderObservation{
+        provider: attempt.provider,
+        provider_reference: attempt.provider_reference,
+        provider_reference_kind: reference_kind,
+        provider_transaction_id: attempt.provider_transaction_id,
+        local_payment_intent_id: attempt.payment_intent_id,
+        observation_source: source,
+        normalized_outcome: outcome,
+        raw_provider_status: attempt.raw_provider_status,
+        amount_minor: attempt.amount_minor,
+        currency: attempt.currency,
+        provider_environment: attempt.provider_environment,
+        provider_occurred_at: attempt.provider_occurred_at,
+        observed_at: attempt.observed_at,
+        provider_event_id: attempt.provider_event_id
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp observation_outcome(value) do
+    case value do
+      "unresolved" -> {:ok, :unresolved}
+      "requires_action" -> {:ok, :requires_action}
+      "failure_observation" -> {:ok, :failure_observation}
+      "authoritative_success" -> {:ok, :authoritative_success}
+      "reversal_observation" -> {:ok, :reversal_observation}
+      "unknown_or_contradictory" -> {:ok, :unknown_or_contradictory}
+      _ -> :error
+    end
+  end
+
+  defp observation_source(value) do
+    case value do
+      "direct_response" -> {:ok, :direct_response}
+      "webhook" -> {:ok, :webhook}
+      "verification" -> {:ok, :verification}
+      "reconciliation" -> {:ok, :reconciliation}
+      "operator" -> {:ok, :operator}
+      _ -> :error
+    end
+  end
+
+  defp observation_reference_kind("payment_intent"), do: {:ok, :payment_intent}
+  defp observation_reference_kind("checkout_session"), do: {:ok, :checkout_session}
+  defp observation_reference_kind("setup_intent"), do: {:ok, :setup_intent}
+  defp observation_reference_kind(_value), do: :error
+
+  defp fetch_payment_attempt(id) do
+    query = PaymentAttempt |> Ash.Query.filter(expr(id == ^id))
+
+    case Ash.read(query, domain: Store.Payments, authorize?: false, context: %{system?: true}) do
+      {:ok, [%PaymentAttempt{} = attempt]} ->
+        {:ok, attempt}
+
+      {:ok, _} ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "payment evidence was not found")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp validate_persisted_evidence(payment_intent, observation, evidence) do
+    reference_kind =
+      case observation.provider_reference_kind do
+        kind when is_atom(kind) -> Atom.to_string(kind)
+        _ -> nil
+      end
+
+    fields = [
+      payment_intent_id: {evidence.payment_intent_id, payment_intent.id},
+      provider: {evidence.provider, Providers.normalize_provider(observation.provider)},
+      provider_reference: {evidence.provider_reference, observation.provider_reference},
+      provider_reference_kind: {evidence.provider_reference_kind, reference_kind},
+      provider_transaction_id:
+        {evidence.provider_transaction_id, observation.provider_transaction_id},
+      observation_source:
+        {evidence.observation_source, Atom.to_string(observation.observation_source)},
+      outcome: {evidence.outcome, Atom.to_string(observation.normalized_outcome)},
+      raw_provider_status: {evidence.raw_provider_status, observation.raw_provider_status},
+      amount_minor: {evidence.amount_minor, observation.amount_minor},
+      currency: {evidence.currency, observation.currency},
+      provider_environment: {evidence.provider_environment, observation.provider_environment},
+      provider_occurred_at:
+        {date_time_identity(evidence.provider_occurred_at),
+         date_time_identity(observation.provider_occurred_at)},
+      payload_sha256: {evidence.payload_sha256, observation.evidence_sha256},
+      provider_event_id: {evidence.provider_event_id, observation.provider_event_id}
+    ]
+
+    mismatches =
+      fields
+      |> Enum.reject(fn {_field, {stored, supplied}} -> stored == supplied end)
+      |> Enum.map(&elem(&1, 0))
+
+    if mismatches == [] do
+      :ok
+    else
+      {:error,
+       Error.new("PAYMENT_EVENT_UNVERIFIED", "payment evidence does not match observation", %{
+         mismatched_fields: mismatches
+       })}
+    end
+  end
+
+  defp date_time_identity(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
+  defp date_time_identity(value), do: value
+
+  defp apply_terminal_non_success(%PaymentIntent{order_id: order_id} = payment_intent)
+       when is_binary(order_id) do
+    with {:ok, _order} <- fetch_order(order_id),
+         {:ok, {:ok, result, notifications}} <-
+           Repo.transaction(fn ->
+             lock_order!(order_id)
+             lock_payment_intent!(payment_intent.id)
+             apply_terminal_non_success_in_transaction(payment_intent)
+           end),
          :ok <-
-           SubscriptionsFacade.handle_payment_method_update_succeeded_for_system(
-             payment_intent.id
+           AshNotifications.notify_post_commit(notifications,
+             context: %{
+               flow: :apply_terminal_payment_failure,
+               order_id: order_id,
+               payment_intent_id: payment_intent.id
+             }
            ) do
-      {:ok, :updated}
+      {:ok, result}
     end
   end
 
-  defp apply_canonical_receipt(
-         payment_intent,
-         %CanonicalReceipt{status: :succeeded},
-         provider_event_key
-       ) do
-    apply_payment_success_once(payment_intent, provider_event_key: provider_event_key)
-  end
+  defp apply_terminal_non_success(_payment_intent), do: {:ok, :verified_terminal_non_success}
 
-  defp apply_canonical_receipt(
-         %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
-         %CanonicalReceipt{status: :failed, event_type: "setup_intent.canceled"},
-         _provider_event_key
-       ) do
-    maybe_cancel_payment_intent(payment_intent)
-  end
+  defp apply_terminal_non_success_in_transaction(payment_intent) do
+    case fetch_payment_application(payment_intent) do
+      {:ok, %{payment_intent_id: id}} when id == payment_intent.id ->
+        {:ok, :already_applied_success, []}
 
-  defp apply_canonical_receipt(
-         %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
-         %CanonicalReceipt{status: :failed},
-         _provider_event_key
-       ) do
-    maybe_mark_payment_intent_failed(payment_intent)
-  end
+      {:ok, %{payment_intent_id: _other_id}} ->
+        Repo.rollback(Error.new("PAYMENT_EVENT_UNVERIFIED", "order payment identity conflicts"))
 
-  defp apply_canonical_receipt(
-         payment_intent,
-         %CanonicalReceipt{status: :failed},
-         _provider_event_key
-       ) do
-    with {:ok, _result} <- maybe_mark_payment_intent_failed(payment_intent),
-         :ok <- maybe_release_failed_renewal_reservations(payment_intent) do
-      {:ok, :updated}
+      {:ok, nil} ->
+        apply_terminal_failure_without_payment_application(payment_intent)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
     end
   end
 
-  defp apply_canonical_receipt(
-         payment_intent,
-         %CanonicalReceipt{status: :requires_action},
-         _provider_event_key
-       ) do
-    with {:ok, _result} <- maybe_mark_payment_intent_requires_action(payment_intent),
-         :ok <- maybe_release_failed_renewal_reservations(payment_intent) do
-      {:ok, :updated}
+  defp apply_terminal_failure_without_payment_application(payment_intent) do
+    with {:ok, current} <- fetch_payment_intent(payment_intent.id),
+         {:ok, {_marked, notifications}} <- maybe_mark_payment_intent_failed(current),
+         :ok <- maybe_release_failed_renewal_reservations(current) do
+      {:ok, :verified_terminal_non_success, notifications}
+    else
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
-  defp apply_canonical_receipt(_payment_intent, _canonical, _provider_event_key) do
-    {:discard, "webhook event does not require payment state transition"}
+  defp lock_order!(order_id) do
+    case SQL.query(Repo, "SELECT id FROM orders WHERE id = $1::text::uuid FOR UPDATE", [order_id]) do
+      {:ok, %{rows: [[_id]]}} -> :ok
+      _ -> Repo.rollback(Error.new("ORDER_NOT_FOUND", "order not found for payment intent"))
+    end
   end
 
-  defp run_apply_payment_success_once(payment_intent, order) do
-    application_key = "paid_apply:order:#{order.id}"
+  defp lock_payment_intent!(payment_intent_id) do
+    case SQL.query(Repo, "SELECT id FROM payment_intents WHERE id = $1::text::uuid FOR UPDATE", [
+           payment_intent_id
+         ]) do
+      {:ok, %{rows: [[_id]]}} -> :ok
+      _ -> Repo.rollback(Error.new("PAYMENT_EVENT_UNVERIFIED", "payment intent was not found"))
+    end
+  end
 
-    with {:ok, status} <- insert_payment_application(order.id, payment_intent.id, application_key),
+  defp run_apply_payment_success_once(payment_intent, order, verified_correction?) do
+    lock_order!(order.id)
+    lock_payment_intent!(payment_intent.id)
+
+    with {:ok, current_intent} <- fetch_payment_intent(payment_intent.id),
+         {:ok, current_order} <- fetch_order(order.id),
+         {:ok, existing_application} <- fetch_payment_application(current_intent),
+         :ok <- ensure_payment_application_identity(existing_application, current_intent),
+         {:ok, status} <-
+           insert_payment_application(
+             current_order.id,
+             current_intent.id,
+             "paid_apply:order:#{current_order.id}"
+           ),
          {:ok, updated_intent, intent_notifications} <-
-           maybe_mark_payment_intent_succeeded(payment_intent),
-         {:ok, updated_order, order_notifications} <- maybe_mark_order_paid(order),
+           maybe_mark_payment_intent_succeeded(current_intent, verified_correction?),
+         {:ok, updated_order, order_notifications} <- maybe_mark_order_paid(current_order),
          {:ok, _consume_result} <-
-           Store.Orders.consume_reservations_for_order(order.id, context: %{system?: true}) do
+           Store.Orders.consume_reservations_for_order(current_order.id,
+             context: %{system?: true}
+           ) do
       notifications = intent_notifications ++ order_notifications
       {:ok, apply_once_result(status, updated_order, updated_intent), notifications}
     else
@@ -628,12 +968,17 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp apply_once_result(:inserted, order, payment_intent) do
-    %{applied?: true, order: order, payment_intent: payment_intent}
-  end
+  defp ensure_payment_application_identity(nil, _payment_intent), do: :ok
 
-  defp apply_once_result(:exists, order, payment_intent) do
-    %{applied?: false, order: order, payment_intent: payment_intent}
+  defp ensure_payment_application_identity(
+         %{payment_intent_id: payment_intent_id},
+         %PaymentIntent{id: payment_intent_id}
+       ),
+       do: :ok
+
+  defp ensure_payment_application_identity(_application, _payment_intent) do
+    {:error,
+     Error.new("PAYMENT_EVENT_UNVERIFIED", "order already has a different payment application")}
   end
 
   defp insert_payment_application(order_id, payment_intent_id, application_key) do
@@ -654,17 +999,59 @@ defmodule Store.Payments.Interlocks do
         {:ok, :inserted}
 
       {:ok, %{rows: []}} ->
-        {:ok, :exists}
+        confirm_existing_payment_application(order_id, payment_intent_id, application_key)
 
       {:error, _reason} ->
         {:error, Error.new("INTERNAL_ERROR", "unable to record payment application")}
     end
   end
 
-  defp maybe_mark_payment_intent_succeeded(%PaymentIntent{state: :succeeded} = payment_intent),
-    do: {:ok, payment_intent, []}
+  defp confirm_existing_payment_application(order_id, payment_intent_id, application_key) do
+    query = """
+    SELECT order_id::text, payment_intent_id::text
+    FROM payment_applications
+    WHERE application_key = $1
+    LIMIT 1
+    """
 
-  defp maybe_mark_payment_intent_succeeded(%PaymentIntent{state: state} = payment_intent)
+    case SQL.query(Repo, query, [application_key]) do
+      {:ok, %{rows: [[^order_id, ^payment_intent_id]]}} ->
+        {:ok, :exists}
+
+      {:ok, %{rows: [[_order_id, _other_payment_intent_id]]}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "order already has a different payment application"
+         )}
+
+      {:ok, %{rows: []}} ->
+        {:error,
+         Error.new("INTERNAL_ERROR", "payment application conflict could not be resolved")}
+
+      {:error, _reason} ->
+        {:error, Error.new("INTERNAL_ERROR", "unable to verify existing payment application")}
+    end
+  end
+
+  defp apply_once_result(:inserted, order, payment_intent) do
+    %{applied?: true, order: order, payment_intent: payment_intent}
+  end
+
+  defp apply_once_result(:exists, order, payment_intent) do
+    %{applied?: false, order: order, payment_intent: payment_intent}
+  end
+
+  defp maybe_mark_payment_intent_succeeded(
+         %PaymentIntent{state: :succeeded} = payment_intent,
+         _verified_correction?
+       ),
+       do: {:ok, payment_intent, []}
+
+  defp maybe_mark_payment_intent_succeeded(
+         %PaymentIntent{state: state} = payment_intent,
+         _verified_correction?
+       )
        when state in [:submitted, :requires_action] do
     payment_intent
     |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
@@ -675,7 +1062,20 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp maybe_mark_payment_intent_succeeded(_payment_intent) do
+  defp maybe_mark_payment_intent_succeeded(
+         %PaymentIntent{state: :failed} = payment_intent,
+         true
+       ) do
+    payment_intent
+    |> Ash.Changeset.for_update(:correct_to_succeeded, %{}, context: %{system?: true})
+    |> Ash.update(payment_ash_opts(return_notifications?: true))
+    |> case do
+      {:ok, updated_intent, notifications} -> {:ok, updated_intent, notifications}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_mark_payment_intent_succeeded(_payment_intent, _verified_correction?) do
     {:error,
      Error.new(
        "PAYMENT_EVENT_UNVERIFIED",
@@ -683,20 +1083,21 @@ defmodule Store.Payments.Interlocks do
      )}
   end
 
-  defp maybe_mark_payment_intent_failed(%PaymentIntent{state: :failed}), do: {:ok, :noop}
+  defp maybe_mark_payment_intent_failed(%PaymentIntent{state: :failed}),
+    do: {:ok, {:noop, []}}
 
   defp maybe_mark_payment_intent_failed(%PaymentIntent{state: state} = payment_intent)
        when state in [:submitted, :requires_action] do
     payment_intent
     |> Ash.Changeset.for_update(:mark_failed, %{}, context: %{system?: true})
-    |> Ash.update(payment_ash_opts([]))
+    |> Ash.update(payment_ash_opts(return_notifications?: true))
     |> case do
-      {:ok, _updated_intent} -> {:ok, :updated}
+      {:ok, updated_intent, notifications} -> {:ok, {updated_intent, notifications}}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp maybe_mark_payment_intent_failed(%PaymentIntent{}), do: {:ok, :noop}
+  defp maybe_mark_payment_intent_failed(%PaymentIntent{}), do: {:ok, {:noop, []}}
 
   defp maybe_cancel_payment_intent(%PaymentIntent{state: :cancelled}), do: {:ok, :noop}
 

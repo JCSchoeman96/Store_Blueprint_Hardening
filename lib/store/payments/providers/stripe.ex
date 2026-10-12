@@ -53,6 +53,40 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   @impl true
+  def classify_payment_finality(%ProviderObservation{
+        raw_provider_status: status,
+        normalized_outcome: :authoritative_success
+      })
+      when status in [
+             "succeeded",
+             "payment_intent.succeeded",
+             "setup_intent.succeeded",
+             "checkout.session.completed"
+           ],
+      do: :authoritative_success
+
+  def classify_payment_finality(%ProviderObservation{raw_provider_status: status})
+      when status in ["canceled", "payment_intent.canceled", "setup_intent.canceled"],
+      do: :terminal_non_success
+
+  def classify_payment_finality(%ProviderObservation{raw_provider_status: status})
+      when status in [
+             "requires_payment_method",
+             "requires_action",
+             "requires_confirmation",
+             "requires_capture",
+             "processing"
+           ],
+      do: :non_terminal
+
+  def classify_payment_finality(%ProviderObservation{
+        raw_provider_status: "payment_intent.payment_failed"
+      }),
+      do: :non_terminal
+
+  def classify_payment_finality(%ProviderObservation{}), do: :unknown
+
+  @impl true
   def create_intent(attrs, opts) when is_map(attrs) and is_list(opts) do
     case attr(attrs, :intent_purpose) do
       :subscription_payment_method_update ->
@@ -102,9 +136,11 @@ defmodule Store.Payments.Providers.Stripe do
          idempotency_key: renewal_key,
          confirm: true,
          off_session: true,
-         amount_minor: amount_minor,
-         currency: String.upcase(currency),
+         amount_minor: payment_intent_amount(payment_intent),
+         currency: stripe_currency_from_response(payment_intent["currency"]),
          provider_payment_id: payment_intent["id"],
+         raw_provider_status: payment_intent["status"],
+         provider_environment: stripe_observed_environment(payment_intent, nil),
          provider_customer_ref: payment_intent["customer"] || provider_customer_ref,
          provider_payment_method_ref:
            payment_intent["payment_method"] || provider_payment_method_ref,
@@ -1005,6 +1041,17 @@ defmodule Store.Payments.Providers.Stripe do
 
   defp normalize_charge_status(_payment_intent, %{status: 402}), do: :failed
   defp normalize_charge_status(_payment_intent, _response), do: :failed
+
+  defp payment_intent_amount(%{"amount_received" => amount}) when is_integer(amount),
+    do: amount
+
+  defp payment_intent_amount(%{"amount" => amount}) when is_integer(amount), do: amount
+  defp payment_intent_amount(_payment_intent), do: nil
+
+  defp stripe_currency_from_response(currency) when is_binary(currency),
+    do: String.upcase(currency)
+
+  defp stripe_currency_from_response(_currency), do: nil
 
   defp stripe_id(%{"id" => id}) when is_binary(id), do: id
   defp stripe_id(id) when is_binary(id), do: id

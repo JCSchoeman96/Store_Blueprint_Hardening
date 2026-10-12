@@ -69,14 +69,20 @@ defmodule Store.Payments.Types.ProviderObservation do
 
   @spec validate_target(map(), t(), keyword()) :: :eligible | {:error, atom()}
   def validate_target(payment_intent, %__MODULE__{} = observation, opts \\ []) do
-    with :ok <- validate_provider(payment_intent, observation),
-         :ok <- validate_reference(payment_intent, observation),
-         :ok <- validate_transaction(payment_intent, observation),
+    with :ok <- validate_identity(payment_intent, observation),
          :ok <- validate_amount(payment_intent, observation),
          :ok <- validate_currency(payment_intent, observation),
          :ok <- validate_environment(observation, opts),
          :ok <- validate_outcome(observation) do
       :eligible
+    end
+  end
+
+  @spec validate_identity(map(), t()) :: :ok | {:error, atom()}
+  def validate_identity(payment_intent, %__MODULE__{} = observation) do
+    with :ok <- validate_provider(payment_intent, observation),
+         :ok <- validate_reference(payment_intent, observation) do
+      validate_transaction(payment_intent, observation)
     end
   end
 

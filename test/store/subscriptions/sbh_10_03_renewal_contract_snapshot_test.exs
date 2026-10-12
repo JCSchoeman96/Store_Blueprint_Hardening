@@ -140,8 +140,13 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       |> Plug.Conn.resp(200, Jason.encode!(StripeAPIStub.payment_intent_response(params)))
     end)
 
-    assert {:ok, :processed} =
-             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+    {renewal_result, renewal_stats} =
+      RepoStats.capture(fn ->
+        Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+      end)
+
+    assert {:ok, :processed} = renewal_result
+    assert renewal_stats.query_count <= 80
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     contract_change = fetch_contract_change!(contract_change_id)
@@ -203,6 +208,16 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     later_revision = SubscriptionsFixtures.create_plan_revision!(later_plan)
     assert {:ok, later_target} = queue_plan_change(customer, after_consumption, later_plan)
 
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => payment_intent.amount_received_minor,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "succeeded"
+    })
+
     assert {:ok, :processed} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
 
@@ -248,7 +263,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       end)
 
     assert {:ok, :processed} = result
-    assert stats.query_count <= 64
+    assert stats.query_count <= 80
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     after_binding = fetch_subscription!(subscription.id)

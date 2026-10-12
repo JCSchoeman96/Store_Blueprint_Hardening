@@ -20,6 +20,23 @@ defmodule Store.Payments.Facade do
     ObservationReconciliation.observe_payment_intent(input)
   end
 
+  @spec apply_observed_payment_outcome_for_system(map()) :: {:ok, map()} | {:error, term()}
+  def apply_observed_payment_outcome_for_system(observation_result)
+      when is_map(observation_result) do
+    Store.Payments.apply_observed_payment_outcome_for_system(observation_result)
+  end
+
+  @spec record_and_apply_payment_observation_for_system(
+          PaymentIntent.t(),
+          Store.Payments.Types.ProviderObservation.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def record_and_apply_payment_observation_for_system(
+        %PaymentIntent{} = payment_intent,
+        %Store.Payments.Types.ProviderObservation{} = observation
+      ) do
+    Store.Payments.record_and_apply_payment_observation_for_system(payment_intent, observation)
+  end
+
   @spec list_payment_intents_for_admin(map(), PaymentIntentIndexQuery.t()) ::
           {:ok, [PaymentIntent.t()]} | {:error, term()}
   def list_payment_intents_for_admin(actor, %PaymentIntentIndexQuery{} = query)

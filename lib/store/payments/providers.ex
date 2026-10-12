@@ -7,6 +7,7 @@ defmodule Store.Payments.Providers do
   """
 
   alias Store.Payments.Providers.{PayFast, Paystack, PeachPayments, Stripe, Yoco}
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Support.Errors.Error
 
   @type known_provider :: :stripe | :payfast | :paystack | :yoco | :peach_payments
@@ -86,6 +87,17 @@ defmodule Store.Payments.Providers do
 
       {:error, error} ->
         {:error, error}
+    end
+  end
+
+  @spec classify_payment_finality(provider(), ProviderObservation.t()) ::
+          :authoritative_success | :terminal_non_success | :non_terminal | :unknown
+  def classify_payment_finality(provider, %ProviderObservation{} = observation) do
+    with {:ok, module} <- adapter(provider),
+         true <- function_exported?(module, :classify_payment_finality, 1) do
+      module.classify_payment_finality(observation)
+    else
+      _ -> :unknown
     end
   end
 

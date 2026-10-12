@@ -22,6 +22,8 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_payment_intents_for_admin, 2},
         {:get_payment_intent_for_admin, 2},
         {:observe_payment_intent_for_system, 1},
+        {:apply_observed_payment_outcome_for_system, 1},
+        {:record_and_apply_payment_observation_for_system, 2},
         {:ingest_webhook_receipt_for_system, 1},
         {:get_webhook_receipt_for_system, 1},
         {:process_payment_webhook_receipt_for_system, 1},

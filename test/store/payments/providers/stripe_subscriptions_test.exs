@@ -120,6 +120,38 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
     assert payload.metadata.subscription_id == "sub_001"
     assert payload.provider_payment_id =~ "pi_test_"
     assert payload.provider_client_secret =~ payload.provider_payment_id
+    assert payload.raw_provider_status == "succeeded"
+    assert payload.provider_environment == "test"
+  end
+
+  test "charge_off_session reports the returned PaymentIntent money and livemode" do
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{
+          "amount_received" => 1_998,
+          "currency" => "zar",
+          "livemode" => true
+        })
+      )
+    end)
+
+    attrs = %{
+      amount_minor: 1_999,
+      currency: "USD",
+      renewal_key: "renewal_actual_response_facts",
+      local_intent_id: "pi_local_actual_response_facts",
+      order_id: "order_actual_response_facts",
+      renewal_attempt_id: "attempt_actual_response_facts",
+      subscription_id: "sub_actual_response_facts",
+      provider_customer_ref: "cus_actual_response_facts",
+      provider_payment_method_ref: "pm_actual_response_facts"
+    }
+
+    assert {:ok, payload} = Stripe.charge_off_session(attrs, [])
+    assert payload.amount_minor == 1_998
+    assert payload.currency == "ZAR"
+    assert payload.provider_environment == "live"
   end
 
   test "normalize_webhook extracts local payment intent metadata for off-session events" do

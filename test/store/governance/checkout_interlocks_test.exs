@@ -4,9 +4,12 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Store.OrderFixtures
   alias Store.Orders.{Order, PaymentApplication}
-  alias Store.Payments.PaymentIntent
+  alias Store.Payments.{Facade, ObservationEvidence, PaymentIntent}
+  alias Store.Payments.Types.ProviderObservation
+  alias Store.Repo
   alias Store.Support.Errors.Error
   alias Store.Support.ID.UUIDv7
   alias Store.TestFixtures
@@ -239,6 +242,369 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     end
   end
 
+  test "apply-once refuses to attribute an order application to a different payment intent" do
+    order = create_customer_order!()
+    first_intent = create_submitted_payment_intent!(order.id)
+
+    second_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(
+        :create,
+        %{order_id: order.id, amount_received_minor: 1_000, provider: :stripe}
+      )
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    assert {:ok, %{applied?: true}} = Store.Payments.apply_payment_success_once(first_intent.id)
+    assert {:error, _reason} = Store.Payments.apply_payment_success_once(second_intent.id)
+
+    assert :succeeded == fetch_payment_intent!(first_intent.id).state
+    assert :created == fetch_payment_intent!(second_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+
+    assert {:ok, [application]} =
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.read(domain: Store.Orders, authorize?: false)
+
+    assert application.payment_intent_id == first_intent.id
+  end
+
+  test "verified success can correct a failed payment intent through outcome application" do
+    order = create_customer_order!()
+
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          order_id: order.id,
+          amount_received_minor: 1_000,
+          currency: "USD",
+          provider: :stripe,
+          provider_payment_id: "pi_corrected"
+        }
+      )
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+      |> submit_payment_intent!()
+
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_failed, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    nonterminal_failure =
+      outcome_observation(payment_intent, :failure_observation, "requires_payment_method")
+
+    assert {:ok, _failure_evidence} =
+             ObservationEvidence.record(payment_intent, nonterminal_failure)
+
+    assert {:error, _reason} =
+             payment_intent
+             |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+             |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    observation = %ProviderObservation{
+      provider: :stripe,
+      provider_reference: "pi_corrected",
+      provider_reference_kind: :payment_intent,
+      provider_transaction_id: "pi_corrected",
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: :authoritative_success,
+      raw_provider_status: "succeeded",
+      amount_minor: 1_000,
+      currency: "USD",
+      provider_environment: "test",
+      observed_at: DateTime.utc_now()
+    }
+
+    assert {:ok, evidence} = ObservationEvidence.record(payment_intent, observation)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: observation,
+               evidence: evidence
+             })
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+
+    assert 1 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+  end
+
+  test "Stripe cancellation evidence makes a later success require reconciliation" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id, "pi_cancel_then_success")
+
+    canceled = outcome_observation(payment_intent, :failure_observation, "canceled")
+    assert {:ok, canceled_evidence} = ObservationEvidence.record(payment_intent, canceled)
+
+    assert {:ok, %{outcome: :verified_terminal_non_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: canceled,
+               evidence: canceled_evidence
+             })
+
+    succeeded = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+    assert {:ok, succeeded_evidence} = ObservationEvidence.record(payment_intent, succeeded)
+
+    assert {:ok, %{outcome: :reconciliation_required}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: succeeded,
+               evidence: succeeded_evidence
+             })
+
+    assert :failed == fetch_payment_intent!(payment_intent.id).state
+    assert :pending_payment == fetch_order!(order.id).state
+    assert 0 == Repo.aggregate(PaymentApplication, :count, :id)
+  end
+
+  test "cancel and success evidence resolve to reconciliation in either insertion order" do
+    for evidence_order <- [[:canceled, :succeeded], [:succeeded, :canceled]] do
+      order = create_customer_order!()
+
+      payment_intent =
+        create_submitted_payment_intent!(order.id, "pi_order_#{UUIDv7.generate()}")
+
+      observations = %{
+        canceled: outcome_observation(payment_intent, :failure_observation, "canceled"),
+        succeeded: outcome_observation(payment_intent, :authoritative_success, "succeeded")
+      }
+
+      evidence =
+        Map.new(evidence_order, fn key ->
+          observation = Map.fetch!(observations, key)
+          assert {:ok, record} = ObservationEvidence.record(payment_intent, observation)
+          {key, record}
+        end)
+
+      results =
+        Enum.map([:canceled, :succeeded], fn key ->
+          Facade.apply_observed_payment_outcome_for_system(%{
+            payment_intent: payment_intent,
+            observation: Map.fetch!(observations, key),
+            evidence: Map.fetch!(evidence, key)
+          })
+        end)
+
+      assert Enum.all?(results, &match?({:ok, %{outcome: :reconciliation_required}}, &1))
+      assert :submitted == fetch_payment_intent!(payment_intent.id).state
+      assert :pending_payment == fetch_order!(order.id).state
+      assert 0 == Repo.aggregate(PaymentApplication, :count, :id)
+    end
+  end
+
+  test "late certified terminal evidence requires reconciliation without undoing applied success" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id, "pi_success_then_cancel")
+    success = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+    assert {:ok, success_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: success_evidence
+             })
+
+    canceled = outcome_observation(payment_intent, :failure_observation, "canceled")
+    assert {:ok, canceled_evidence} = ObservationEvidence.record(payment_intent, canceled)
+
+    assert {:ok, %{outcome: :reconciliation_required}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: canceled,
+               evidence: canceled_evidence
+             })
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+  end
+
+  test "a nonterminal failure after applied success leaves success monotonic without reconciliation" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id, "pi_success_then_retryable")
+    success = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+    assert {:ok, success_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: success_evidence
+             })
+
+    retryable =
+      outcome_observation(payment_intent, :failure_observation, "requires_payment_method")
+
+    assert {:ok, retryable_evidence} = ObservationEvidence.record(payment_intent, retryable)
+
+    assert {:ok, %{outcome: :already_applied_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: retryable,
+               evidence: retryable_evidence
+             })
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+  end
+
+  test "replayed success after application remains already applied" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id, "pi_success_replayed")
+    success = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+    assert {:ok, success_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: success_evidence
+             })
+
+    assert {:ok, replay_evidence} = ObservationEvidence.record(payment_intent, success)
+
+    assert {:ok, %{outcome: :already_applied_success}} =
+             Facade.apply_observed_payment_outcome_for_system(%{
+               payment_intent: payment_intent,
+               observation: success,
+               evidence: replay_evidence
+             })
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+  end
+
+  test "a succeeded payment intent cannot transition back to failed" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id)
+
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    assert {:error, _reason} =
+             payment_intent
+             |> Ash.Changeset.for_update(:mark_failed, %{}, context: %{system?: true})
+             |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+  end
+
+  test "concurrent success applications preserve one exact payment application" do
+    order = create_customer_order!()
+    payment_intent = create_submitted_payment_intent!(order.id)
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          Sandbox.allow(Store.Repo, parent, self())
+          Sandbox.allow(Store.DirectRepo, parent, self())
+          Store.Payments.apply_payment_success_once(payment_intent.id)
+        end)
+      end
+
+    results = Enum.map(tasks, &Task.await(&1, 15_000))
+    assert Enum.all?(results, &match?({:ok, _}, &1))
+
+    assert 1 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert :paid == fetch_order!(order.id).state
+  end
+
+  test "terminal failure and success evidence racing requires reconciliation" do
+    order = create_customer_order!()
+
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        order_id: order.id,
+        amount_received_minor: 1_000,
+        currency: "USD",
+        provider: :stripe,
+        provider_payment_id: "pi_terminal_race"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+      |> submit_payment_intent!()
+
+    terminal_observation = outcome_observation(payment_intent, :failure_observation, "canceled")
+    success_observation = outcome_observation(payment_intent, :authoritative_success, "succeeded")
+
+    assert {:ok, terminal_evidence} =
+             ObservationEvidence.record(payment_intent, terminal_observation)
+
+    assert {:ok, success_evidence} =
+             ObservationEvidence.record(payment_intent, success_observation)
+
+    terminal_result = %{
+      payment_intent: payment_intent,
+      observation: terminal_observation,
+      evidence: terminal_evidence
+    }
+
+    success_result = %{
+      payment_intent: payment_intent,
+      observation: success_observation,
+      evidence: success_evidence
+    }
+
+    parent = self()
+    start = make_ref()
+
+    tasks =
+      Enum.map([terminal_result, success_result], fn result ->
+        Task.async(fn ->
+          Sandbox.allow(Store.Repo, parent, self())
+          Sandbox.allow(Store.DirectRepo, parent, self())
+          send(parent, {:ready, start})
+          receive do: ({:go, ^start} -> :ok)
+          Facade.apply_observed_payment_outcome_for_system(result)
+        end)
+      end)
+
+    assert_receive {:ready, ^start}
+    assert_receive {:ready, ^start}
+    send(Enum.at(tasks, 0).pid, {:go, start})
+    send(Enum.at(tasks, 1).pid, {:go, start})
+    Enum.each(tasks, &Task.await(&1, 15_000))
+
+    assert :submitted == fetch_payment_intent!(payment_intent.id).state
+    assert :pending_payment == fetch_order!(order.id).state
+    assert 0 == Repo.aggregate(PaymentApplication, :count, :id)
+    assert 2 == Repo.aggregate(Store.Payments.PaymentAttempt, :count, :id)
+  end
+
+  defp outcome_observation(payment_intent, outcome, status) do
+    %ProviderObservation{
+      provider: :stripe,
+      provider_reference: payment_intent.provider_payment_id,
+      provider_reference_kind: :payment_intent,
+      provider_transaction_id: payment_intent.provider_payment_id,
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: outcome,
+      raw_provider_status: status,
+      amount_minor: 1_000,
+      currency: "USD",
+      provider_environment: "test",
+      observed_at: DateTime.utc_now()
+    }
+  end
+
   test "create_or_reuse_payment_intent fails closed for missing or unsupported provider" do
     order = create_order!()
 
@@ -306,6 +672,19 @@ defmodule Store.Governance.CheckoutInterlocksTest do
       :create,
       %{order_id: order_id, amount_received_minor: 1_000, provider: :stripe}
     )
+    |> Ash.create!(domain: Store.Payments, authorize?: false)
+    |> submit_payment_intent!()
+  end
+
+  defp create_submitted_payment_intent!(order_id, provider_payment_id) do
+    PaymentIntent
+    |> Ash.Changeset.for_create(:create, %{
+      order_id: order_id,
+      amount_received_minor: 1_000,
+      currency: "USD",
+      provider: :stripe,
+      provider_payment_id: provider_payment_id
+    })
     |> Ash.create!(domain: Store.Payments, authorize?: false)
     |> submit_payment_intent!()
   end

@@ -34,6 +34,14 @@ defmodule Store.Governance.Phase20GovernanceTest do
     assert {:observe_payment_intent_for_system, 1} in SurfaceRegistry.allowed_exports(
              Store.Payments.Facade
            )
+
+    assert {:apply_observed_payment_outcome_for_system, 1} in SurfaceRegistry.allowed_exports(
+             Store.Payments.Facade
+           )
+
+    assert {:record_and_apply_payment_observation_for_system, 2} in SurfaceRegistry.allowed_exports(
+             Store.Payments.Facade
+           )
   end
 
   test "policy matrix and route inventory pin phase 20 web behavior" do
