@@ -282,8 +282,9 @@ defmodule Store.Payments.Interlocks do
                :payment_succeeded
              ),
            :ok <- maybe_enqueue_fulfillment(result),
-           :ok <- maybe_enqueue_digital_grants(result),
-           :ok <- maybe_enqueue_subscriptions(result),
+           renewal_attempt_lookup <- renewal_attempt_for_payment_result(result),
+           :ok <- maybe_enqueue_digital_grants(result, renewal_attempt_lookup),
+           :ok <- maybe_enqueue_subscriptions(result, renewal_attempt_lookup),
            :ok <- maybe_enqueue_order_receipt(result) do
         {:ok, result}
       else
@@ -786,6 +787,27 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp apply_resolved_outcome(
+         %PaymentIntent{order_id: order_id} = payment_intent,
+         :already_applied_success,
+         _provider_event_key
+       )
+       when is_binary(order_id) do
+    with {:ok, order} <- fetch_order(order_id),
+         result = %{applied?: false, order: order, payment_intent: payment_intent},
+         :ok <-
+           maybe_enqueue_subscriptions(
+             result,
+             renewal_attempt_for_payment_result(result)
+           ) do
+      {:ok, :already_applied_success}
+    end
+  end
+
+  defp apply_resolved_outcome(_payment_intent, :already_applied_success, _provider_event_key) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "applied payment has no Order identity")}
+  end
+
+  defp apply_resolved_outcome(
          %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
          :verified_terminal_non_success,
          _provider_event_key
@@ -1089,7 +1111,7 @@ defmodule Store.Payments.Interlocks do
            ),
          {:ok, updated_intent, intent_notifications} <-
            maybe_mark_payment_intent_succeeded(current_intent, verified_correction?),
-         {:ok, updated_order, order_notifications} <- maybe_mark_order_paid(current_order),
+         {:ok, updated_order, order_notifications} <- maybe_mark_order_paid(current_order, status),
          {:ok, _consume_result} <-
            Store.Orders.consume_reservations_for_order(current_order.id,
              context: %{system?: true}
@@ -1280,9 +1302,13 @@ defmodule Store.Payments.Interlocks do
 
   defp maybe_release_failed_renewal_reservations(%PaymentIntent{}), do: :ok
 
-  defp maybe_mark_order_paid(%Order{state: :paid} = order), do: {:ok, order, []}
+  defp maybe_mark_order_paid(%Order{state: :paid} = order, _application_status),
+    do: {:ok, order, []}
 
-  defp maybe_mark_order_paid(%Order{state: state} = order)
+  defp maybe_mark_order_paid(%Order{state: :refunded} = order, :exists),
+    do: {:ok, order, []}
+
+  defp maybe_mark_order_paid(%Order{state: state} = order, _application_status)
        when state in [:pending_payment, :pending_provider_setup] do
     order
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
@@ -1293,7 +1319,7 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp maybe_mark_order_paid(_order) do
+  defp maybe_mark_order_paid(_order, _application_status) do
     {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "order is not in a payable state")}
   end
 
@@ -1393,40 +1419,99 @@ defmodule Store.Payments.Interlocks do
 
   defp maybe_enqueue_fulfillment(_result), do: :ok
 
-  defp maybe_enqueue_digital_grants(%{applied?: true, order: %Order{} = order}) do
-    case DigitalFacade.enqueue_paid_order_download_grants_for_system(order.id) do
+  defp maybe_enqueue_digital_grants(
+         %{applied?: true, order: %Order{}},
+         {:ok, %RenewalAttempt{failure_code: "RENEWAL_AUTHORITY_WITHDRAWN"}}
+       ) do
+    :ok
+  end
+
+  defp maybe_enqueue_digital_grants(
+         %{applied?: true, order: %Order{} = order},
+         {:ok, %RenewalAttempt{}}
+       ) do
+    enqueue_digital_grants(order.id)
+  end
+
+  defp maybe_enqueue_digital_grants(%{applied?: true, order: %Order{} = order}, :none) do
+    enqueue_digital_grants(order.id)
+  end
+
+  defp maybe_enqueue_digital_grants(
+         %{applied?: true, order: %Order{} = order},
+         {:error, reason}
+       ) do
+    Logger.warning(
+      "issue_digital_grants_suppressed_unverified_renewal order_id=#{order.id} reason=#{inspect(reason)}"
+    )
+
+    :ok
+  end
+
+  defp maybe_enqueue_digital_grants(_result, _renewal_attempt_lookup), do: :ok
+
+  defp enqueue_digital_grants(order_id) do
+    case DigitalFacade.enqueue_paid_order_download_grants_for_system(order_id) do
       {:ok, _job} ->
         :ok
 
       {:error, reason} ->
         Logger.warning(
-          "issue_digital_grants_enqueue_failed order_id=#{order.id} reason=#{inspect(reason)}"
+          "issue_digital_grants_enqueue_failed order_id=#{order_id} reason=#{inspect(reason)}"
         )
 
         :ok
     end
   end
 
-  defp maybe_enqueue_digital_grants(_result), do: :ok
+  defp maybe_enqueue_subscriptions(
+         %{order: %Order{} = order},
+         {:ok, %RenewalAttempt{} = renewal_attempt}
+       ) do
+    enqueue_renewal_reconciliation_job(order.id, renewal_attempt.id)
+  end
 
-  defp maybe_enqueue_subscriptions(%{applied?: true, order: %Order{} = order}) do
-    case fetch_renewal_attempt_by_order_id(order.id) do
-      {:ok, %RenewalAttempt{} = renewal_attempt} ->
-        enqueue_renewal_reconciliation_job(order.id, renewal_attempt.id)
+  defp maybe_enqueue_subscriptions(%{applied?: true, order: %Order{} = order}, :none) do
+    maybe_enqueue_initial_subscriptions(order)
+  end
+
+  defp maybe_enqueue_subscriptions(
+         %{order: %Order{} = order},
+         {:error, reason}
+       ) do
+    Logger.warning(
+      "renewal_reconciliation_precheck_failed order_id=#{order.id} reason=#{inspect(reason)}"
+    )
+
+    {:error, reason}
+  end
+
+  defp maybe_enqueue_subscriptions(_result, _renewal_attempt_lookup), do: :ok
+
+  defp renewal_attempt_for_payment_result(%{
+         order: %Order{id: order_id},
+         payment_intent: %PaymentIntent{id: payment_intent_id}
+       }) do
+    case fetch_renewal_attempt_by_order_id(order_id) do
+      {:ok,
+       %RenewalAttempt{
+         order_id: ^order_id,
+         payment_intent_id: ^payment_intent_id
+       } = renewal_attempt} ->
+        {:ok, renewal_attempt}
 
       {:ok, nil} ->
-        maybe_enqueue_initial_subscriptions(order)
+        :none
+
+      {:ok, %RenewalAttempt{}} ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
 
       {:error, reason} ->
-        Logger.warning(
-          "renewal_reconciliation_precheck_failed order_id=#{order.id} reason=#{inspect(reason)}"
-        )
-
-        :ok
+        {:error, reason}
     end
   end
 
-  defp maybe_enqueue_subscriptions(_result), do: :ok
+  defp renewal_attempt_for_payment_result(_result), do: :none
 
   defp maybe_enqueue_initial_subscriptions(%Order{} = order) do
     case SubscriptionsFacade.order_has_subscription_lines_for_system(order.id) do
@@ -1466,16 +1551,24 @@ defmodule Store.Payments.Interlocks do
     query =
       RenewalAttempt
       |> Ash.Query.filter(expr(order_id == ^order_id))
-      |> Ash.Query.limit(1)
+      |> Ash.Query.limit(2)
 
     case Ash.read(query,
            domain: Store.Subscriptions,
            authorize?: false,
            context: %{system?: true}
          ) do
-      {:ok, [renewal_attempt | _]} -> {:ok, renewal_attempt}
-      {:ok, []} -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
+      {:ok, [renewal_attempt]} ->
+        {:ok, renewal_attempt}
+
+      {:ok, []} ->
+        {:ok, nil}
+
+      {:ok, [_first, _second | _rest]} ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "multiple renewal attempts match Order")}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1492,7 +1585,10 @@ defmodule Store.Payments.Interlocks do
           "renewal_reconciliation_enqueue_failed order_id=#{order_id} reason=#{inspect(reason)}"
         )
 
-        :ok
+        {:error,
+         Error.new("INTERNAL_ERROR", "renewal reconciliation could not be queued", %{
+           reason: inspect(reason)
+         })}
     end
   end
 

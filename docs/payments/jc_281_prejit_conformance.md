@@ -9,6 +9,10 @@ Cancellation locks the Subscription aggregate, then serializes on the exact rene
 - **Payment first:** the exact `PaymentApplication` exists when cancellation obtains the Order lock. The renewal remains commercially paid. Period-end cancellation stays scheduled and delayed reconciliation applies the bound period. Cancel-now marks the renewal attempt historically succeeded before terminating access, so later reconciliation cannot reactivate the Subscription. No refund is inferred from cancellation.
 - **Cancellation first:** no exact application exists when cancellation obtains the Order lock. The exact unresolved `RenewalAttempt` is failed with `RENEWAL_AUTHORITY_WITHDRAWN`. Generic retry handling cannot overwrite that disposition, and claim SQL will not reclaim it. A late exact payment success preserves PaymentIntent, Order, and PaymentApplication truth, leaves the Subscription canceled, and requests one full refund for that Order and PaymentIntent.
 
+A terminal `PAYMENT_FAILED` classification remains intact when cancellation follows a final provider failure. Cancellation marks unresolved attempts as withdrawn; it does not rewrite a completed provider failure.
+
+Payment-success fanout resolves the exact RenewalAttempt by Order and PaymentIntent on first application and authoritative replay. A replay already recognized as applied retries only renewal reconciliation enqueue, without repeating payment effects. Multiple attempts bound to one Order fail closed. Lookup and enqueue errors propagate to the observation worker for retry; Oban uniqueness keeps insertion idempotent.
+
 Provider status, callback arrival time, webhook time, and wall-clock guesses do not decide precedence. The durable application row and the serialized Order lock do.
 
 ## Cancellation timing
@@ -21,7 +25,7 @@ An exact PaymentApplication already present takes precedence even when the previ
 
 Immediately before `charge_off_session`, Store runs one fresh database transaction that checks the current Subscription state, cancellation flags, current period boundary, exact `RenewalAttempt`/Order/PaymentIntent identity, charged version evidence, and active stored payment method. The transaction locks the Subscription and attempt, then commits before the provider request. No database transaction spans the provider POST.
 
-A cancellation that wins before this check prevents the provider request. A cancellation after this validated dispatch boundary does not imply the provider request was prevented. Later authoritative evidence is applied to the exact PaymentIntent/Order by the JC-282 payment path, then the withdrawn RenewalAttempt reconciliation requests a full refund with reason `renewal_collected_after_cancellation`. The stable idempotency key is `renewal-cancel-remediation:<renewal_attempt_id>:<payment_intent_id>`. Replays reuse the existing Refund; access is not granted while the refund is pending.
+A cancellation that wins before this check prevents the provider request. A cancellation after this validated dispatch boundary does not imply the provider request was prevented. Later authoritative evidence is applied to the exact PaymentIntent/Order by the JC-282 payment path. The withdrawn RenewalAttempt reconciliation then requests a full refund with reason `renewal_collected_after_cancellation`. The stable idempotency key is `renewal-cancel-remediation:<renewal_attempt_id>:<payment_intent_id>`. Replays reuse the existing Refund, including after it settles. The same exact attempt lookup suppresses digital grant jobs for a withdrawn renewal, so access is not granted while the refund is pending.
 
 Cancellation does not mutate provider evidence or payment outcome. A collection that never becomes authoritative does not create a Refund. No automatic reactivation occurs. No grace duration is hardcoded; the charged PlanRevision snapshot continues to own retry and grace evidence.
 
@@ -33,7 +37,7 @@ Cancellation does not mutate provider evidence or payment outcome. A collection 
 | Period ended → unresolved renewal → cancel | Renewal authority is withdrawn immediately; Subscription is terminally canceled. |
 | Cancel → stale renewal worker | Worker exits without a provider mutation. |
 | Bound attempt → cancel → dispatch check | Fresh authority check refuses the provider mutation. |
-| Provider request crossed boundary → cancel → late success | Payment truth remains; Subscription stays canceled; one exact remediation Refund is requested. |
+| Provider request crossed boundary → cancel → late success | Payment truth remains; Subscription stays canceled; no entitlement or digital grant is issued; one exact remediation Refund is requested. |
 | Exact PaymentApplication → period-end cancel → delayed renewal reconcile | Original paid period is applied; cancellation stays scheduled; no refund. |
 | Exact PaymentApplication → cancel-now → delayed renewal reconcile | Paid history remains; Subscription stays canceled; access stays revoked; no refund. |
 | Cancel first → duplicate late success | One PaymentApplication and one remediation Refund; replays are idempotent. |

@@ -120,10 +120,10 @@ defmodule Store.Payments.Refunds do
          :ok <- ensure_refundable_payment_intent(payment_intent),
          :ok <- ensure_matching_order_id(request.order_id, payment_intent.order_id),
          {:ok, order} <- fetch_order(request.order_id),
-         :ok <- ensure_order_state_allows_refund(order),
          :ok <- ensure_matching_currency(request.currency, payment_intent.currency),
          {:ok, existing_refund} <-
            find_refund_by_idempotency_key_for_update(request.idempotency_key),
+         :ok <- ensure_existing_refund_or_order_refundable(existing_refund, order),
          {:ok, refund, notifications} <-
            create_or_reuse_refund(
              existing_refund,
@@ -854,6 +854,11 @@ defmodule Store.Payments.Refunds do
   defp ensure_order_state_allows_refund(_order) do
     {:error, Error.new("REFUND_NOT_ALLOWED", "refund requires paid order state")}
   end
+
+  defp ensure_existing_refund_or_order_refundable(%Refund{}, _order), do: :ok
+
+  defp ensure_existing_refund_or_order_refundable(nil, order),
+    do: ensure_order_state_allows_refund(order)
 
   defp find_refund_by_idempotency_key_for_update(idempotency_key) do
     query = """

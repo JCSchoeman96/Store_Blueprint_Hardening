@@ -2009,7 +2009,8 @@ defmodule Store.Subscriptions.Facade do
 
   defp reconcile_withdrawn_paid_renewal(order_id, attempt) do
     with :ok <- ensure_matching_attempt_payment(order_id, attempt),
-         {:ok, %Order{state: :paid} = order} <- fetch_paid_order(order_id),
+         {:ok, %Order{} = order} <- fetch_order_for_system(order_id),
+         :ok <- ensure_withdrawn_renewal_order_state(order),
          :ok <- ensure_renewal_payment_application(order.id, attempt),
          {:ok, _refund} <-
            PaymentsFacade.request_renewal_cancellation_remediation_for_system(
@@ -2023,6 +2024,15 @@ defmodule Store.Subscriptions.Facade do
     else
       {:error, reason} -> {:error, Normalize.normalize(reason)}
     end
+  end
+
+  defp ensure_withdrawn_renewal_order_state(%Order{state: state})
+       when state in [:paid, :refunded],
+       do: :ok
+
+  defp ensure_withdrawn_renewal_order_state(_order) do
+    {:error,
+     Error.new("INVALID_STATE_TRANSITION", "order must be paid before renewal remediation")}
   end
 
   defp ensure_renewal_payment_application(
@@ -3040,6 +3050,12 @@ defmodule Store.Subscriptions.Facade do
   defp classify_renewal_attempt_for_cancellation(attempt, :unapplied, _requested_mode) do
     mark_attempt_authority_withdrawn(attempt)
   end
+
+  defp mark_attempt_authority_withdrawn(%RenewalAttempt{
+         status: :failed,
+         failure_code: "PAYMENT_FAILED"
+       }),
+       do: {:ok, []}
 
   defp mark_attempt_authority_withdrawn(%RenewalAttempt{} = attempt) do
     attempt

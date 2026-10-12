@@ -233,7 +233,16 @@ defmodule Store.Subscriptions.RenewalAttempt do
     update :mark_authority_withdrawn do
       require_atomic?(false)
       accept([:failure_message])
-      change(filter(expr(status != :succeeded)))
+
+      change(
+        filter(
+          expr(
+            status != :succeeded and
+              (status != :failed or is_nil(failure_code) or failure_code != "PAYMENT_FAILED")
+          )
+        )
+      )
+
       change(set_attribute(:status, :failed))
       change(set_attribute(:failure_code, "RENEWAL_AUTHORITY_WITHDRAWN"))
     end
