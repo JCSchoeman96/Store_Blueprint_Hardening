@@ -265,7 +265,7 @@ defmodule Store.Subscriptions.FacadeTest do
     end
   end
 
-  test "physical renewal reserves inventory, writes live shipping, and leaves reservation active before payment success" do
+  test "physical renewal applies certified direct success after reserving inventory and live shipping" do
     customer = SubscriptionsFixtures.create_customer!("phase27_physical_success")
 
     %{variant: base_variant} =
@@ -306,14 +306,16 @@ defmodule Store.Subscriptions.FacadeTest do
     assert renewal_order.shipping_quote_amount_minor == 450
     assert renewal_order.shipping_total_minor == 450
     assert renewal_order.grand_total_minor == 2_550
+    assert renewal_order.state == :paid
     assert renewal_payment_intent.amount_received_minor == 2_550
+    assert renewal_payment_intent.state == :succeeded
 
     reservation = fetch_reservation!(renewal_order.id, variant.id)
-    assert reservation.state == :active
+    assert reservation.state == :consumed
 
     inventory = Repo.get_by!(InventoryItem, variant_id: variant.id)
-    assert inventory.reserved_count == 1
-    assert inventory.stock_on_hand == 10
+    assert inventory.reserved_count == 0
+    assert inventory.stock_on_hand == 9
   end
 
   test "physical renewal hard blocker suppresses retries when shipping cost surges" do
@@ -403,7 +405,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert %DateTime{} = updated.next_retry_at
   end
 
-  test "physical renewal releases inventory immediately when Stripe declines synchronously" do
+  test "physical renewal retains inventory when Stripe returns a retryable payment failure" do
     Application.put_env(:store, :payments,
       enabled_providers: [:stripe],
       stripe: [
@@ -451,19 +453,18 @@ defmodule Store.Subscriptions.FacadeTest do
         live_amount_minor: 400
       })
 
-    assert {:error, error} =
+    assert {:ok, :processed} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
 
-    assert error.code == "PAYMENT_FAILED"
-
     attempt = fetch_latest_attempt!(subscription.id)
+    assert attempt.status == :processing
     reservation = fetch_reservation!(attempt.order_id, variant.id)
-    assert reservation.state == :cancelled
+    assert reservation.state == :active
 
     inventory = Repo.get_by!(InventoryItem, variant_id: variant.id)
-    assert inventory.reserved_count == 0
+    assert inventory.reserved_count == 1
     assert inventory.stock_on_hand == 1
   end
 

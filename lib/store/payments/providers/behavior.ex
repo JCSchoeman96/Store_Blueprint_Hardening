@@ -35,4 +35,8 @@ defmodule Store.Payments.Providers.Behaviour do
 
   @callback observe_payment(map(), keyword()) ::
               {:ok, ProviderObservation.t()} | {:error, term()}
+
+  @callback classify_payment_finality(ProviderObservation.t()) ::
+              :authoritative_success | :terminal_non_success | :non_terminal | :unknown
+  @optional_callbacks classify_payment_finality: 1
 end

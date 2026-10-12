@@ -14,7 +14,17 @@ defmodule Store.Payments do
   alias Store.Orders.Order
   alias Store.Orders.OrderLineItem
   alias Store.Payments.Inputs.CreateIntentForOrderInput
-  alias Store.Payments.{Interlocks, PaymentIntent, Providers, ProviderTask, Refunds}
+
+  alias Store.Payments.{
+    Interlocks,
+    ObservationEvidence,
+    PaymentIntent,
+    Providers,
+    ProviderTask,
+    Refunds
+  }
+
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.Telemetry.RepoStats
@@ -177,6 +187,32 @@ defmodule Store.Payments do
           | {:error, term()}
   def apply_payment_success_once(payment_intent_or_id, opts \\ []) when is_list(opts) do
     Interlocks.apply_payment_success_once(payment_intent_or_id, opts)
+  end
+
+  @spec apply_observed_payment_outcome_for_system(map()) :: {:ok, map()} | {:error, term()}
+  def apply_observed_payment_outcome_for_system(observation_result)
+      when is_map(observation_result) do
+    Interlocks.apply_observed_payment_outcome(observation_result)
+  end
+
+  @spec record_and_apply_payment_observation_for_system(
+          PaymentIntent.t(),
+          ProviderObservation.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def record_and_apply_payment_observation_for_system(
+        %PaymentIntent{} = payment_intent,
+        %ProviderObservation{} = observation
+      ) do
+    with {:ok, evidence} <-
+           ObservationEvidence.record(payment_intent, observation),
+         {:ok, result} <-
+           Interlocks.apply_observed_payment_outcome(%{
+             payment_intent: payment_intent,
+             observation: observation,
+             evidence: evidence
+           }) do
+      {:ok, Map.put(result, :evidence, evidence)}
+    end
   end
 
   defp create_or_reuse_intent_for_checkout(checkout, input) do

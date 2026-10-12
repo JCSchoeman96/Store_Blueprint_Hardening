@@ -2227,9 +2227,11 @@ defmodule Store.Subscriptions.Facade do
       {:error, %Error{code: "STALE_RECORD"} = reason} ->
         {:error, reason}
 
-      {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = reason} ->
-        _ = mark_attempt_failed(attempt, reason)
-        {:error, reason}
+      {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"}} ->
+        :ok
+
+      {:error, %Error{code: "PAYMENT_OUTCOME_UNRESOLVED"}} ->
+        :ok
 
       {:error, reason} ->
         case mark_attempt_failed(attempt, reason) do
@@ -4194,25 +4196,26 @@ defmodule Store.Subscriptions.Facade do
              []
            ),
          {:ok, payment_intent} <-
-           persist_payment_intent_provider_refs(payment_intent, charge_response) do
-      case Map.get(charge_response, :status) do
-        :succeeded ->
+           persist_payment_intent_provider_refs(payment_intent, charge_response),
+         observation <-
+           direct_charge_observation(subscription.provider, payment_intent, charge_response),
+         {:ok, %{outcome: outcome}} <-
+           Store.Payments.Facade.record_and_apply_payment_observation_for_system(
+             payment_intent,
+             observation
+           ) do
+      case outcome do
+        outcome when outcome in [:authoritative_success, :already_applied_success] ->
           {:ok, payment_intent}
 
-        :failed ->
-          _ = release_renewal_inventory(order)
-          _ = mark_virtual_payment_intent_failed(payment_intent)
-
+        :verified_terminal_non_success ->
           {:error,
            Error.new(
              "PAYMENT_FAILED",
-             "off-session renewal charge failed"
+             "off-session renewal charge reached terminal failure"
            )}
 
         :requires_action ->
-          _ = release_renewal_inventory(order)
-          _ = mark_virtual_payment_intent_requires_action(payment_intent)
-
           subscription_update_result =
             mark_subscription_authentication_required(subscription, plan, now, charge_response)
 
@@ -4228,10 +4231,56 @@ defmodule Store.Subscriptions.Facade do
           )
 
         _ ->
-          {:error, Error.new("PAYMENT_PROVIDER_DOWN", "unexpected recurring charge response")}
+          {:error,
+           Error.new(
+             "PAYMENT_OUTCOME_UNRESOLVED",
+             "provider response does not establish terminal payment outcome"
+           )}
       end
     end
   end
+
+  defp direct_charge_observation(provider, payment_intent, charge_response) do
+    provider_status = Map.get(charge_response, :raw_provider_status)
+
+    normalized_outcome =
+      case Map.get(charge_response, :status) do
+        :succeeded -> :authoritative_success
+        :requires_action -> :requires_action
+        :failed -> :failure_observation
+        _ -> :unknown_or_contradictory
+      end
+
+    raw_provider_status =
+      normalize_provider_status(provider_status || Map.get(charge_response, :status))
+
+    observation_identity =
+      {provider, charge_response.provider_payment_id, raw_provider_status,
+       charge_response.amount_minor, charge_response.currency,
+       charge_response.provider_environment}
+
+    %Store.Payments.Types.ProviderObservation{
+      provider: provider,
+      provider_reference: charge_response.provider_payment_id || "",
+      provider_reference_kind: :payment_intent,
+      provider_transaction_id: charge_response.provider_payment_id,
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :direct_response,
+      normalized_outcome: normalized_outcome,
+      raw_provider_status: raw_provider_status,
+      amount_minor: charge_response.amount_minor,
+      currency: charge_response.currency,
+      provider_environment: charge_response.provider_environment,
+      observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond),
+      evidence_sha256:
+        :crypto.hash(:sha256, :erlang.term_to_binary(observation_identity, [:deterministic]))
+        |> Base.encode16(case: :lower)
+    }
+  end
+
+  defp normalize_provider_status(status) when is_binary(status), do: status
+  defp normalize_provider_status(status) when is_atom(status), do: Atom.to_string(status)
+  defp normalize_provider_status(_status), do: "unknown"
 
   defp release_renewal_inventory(%Order{} = order) do
     Orders.release_reservations_for_order(order.id, context: %{system?: true})
@@ -4252,27 +4301,6 @@ defmodule Store.Subscriptions.Facade do
       context: %{system?: true}
     )
     |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
-  end
-
-  defp mark_virtual_payment_intent_failed(%PaymentIntent{state: :failed}), do: :ok
-
-  defp mark_virtual_payment_intent_failed(%PaymentIntent{} = payment_intent) do
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_failed, %{}, context: %{system?: true})
-    |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    :ok
-  end
-
-  defp mark_virtual_payment_intent_requires_action(%PaymentIntent{state: :requires_action}),
-    do: :ok
-
-  defp mark_virtual_payment_intent_requires_action(%PaymentIntent{} = payment_intent) do
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_requires_action, %{}, context: %{system?: true})
-    |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    :ok
   end
 
   defp mark_attempt_processing(%RenewalAttempt{} = attempt, order_id, payment_intent_id) do

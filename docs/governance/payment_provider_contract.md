@@ -106,6 +106,12 @@ All workers operate on a canonical receipt:
 
 This struct must be **the only input** to state transition orchestration.
 
+### 3.1 Provider observations and Commerce outcomes
+
+An immutable provider observation is evidence about one event or provider read. It is not itself a terminal Commerce result. The adapter classifies finality for the exact provider transaction as authoritative success, terminal non-success, non-terminal, or unknown. Payments resolves that classification with exact target eligibility and any existing `PaymentApplication` before applying a commercial consequence.
+
+Unknown provider finality fails closed. A failure observation from a retry-capable or uncertified state must not mark the PaymentIntent terminal or release irreversible renewal authority. An applied success remains monotonic against late failure or provider noise. Arrival time and webhook order do not establish precedence.
+
 ---
 
 ## 4) Idempotency contract (must be deterministic)

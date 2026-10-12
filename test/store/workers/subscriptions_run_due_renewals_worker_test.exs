@@ -60,10 +60,10 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
     assert is_binary(attempt.payment_intent_id)
 
     renewal_order = fetch_order!(attempt.order_id)
-    assert renewal_order.state == :pending_payment
+    assert renewal_order.state == :paid
 
     renewal_payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
-    assert renewal_payment_intent.state == :submitted
+    assert renewal_payment_intent.state == :succeeded
     assert is_binary(renewal_payment_intent.provider_payment_id)
 
     receipt = create_success_webhook_receipt!(renewal_order, renewal_payment_intent)

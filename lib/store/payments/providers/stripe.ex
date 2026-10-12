@@ -53,6 +53,40 @@ defmodule Store.Payments.Providers.Stripe do
   end
 
   @impl true
+  def classify_payment_finality(%ProviderObservation{
+        raw_provider_status: status,
+        normalized_outcome: :authoritative_success
+      })
+      when status in [
+             "succeeded",
+             "payment_intent.succeeded",
+             "setup_intent.succeeded",
+             "checkout.session.completed"
+           ],
+      do: :authoritative_success
+
+  def classify_payment_finality(%ProviderObservation{raw_provider_status: status})
+      when status in ["canceled", "payment_intent.canceled", "setup_intent.canceled"],
+      do: :terminal_non_success
+
+  def classify_payment_finality(%ProviderObservation{raw_provider_status: status})
+      when status in [
+             "requires_payment_method",
+             "requires_action",
+             "requires_confirmation",
+             "requires_capture",
+             "processing"
+           ],
+      do: :non_terminal
+
+  def classify_payment_finality(%ProviderObservation{
+        raw_provider_status: "payment_intent.payment_failed"
+      }),
+      do: :non_terminal
+
+  def classify_payment_finality(%ProviderObservation{}), do: :unknown
+
+  @impl true
   def create_intent(attrs, opts) when is_map(attrs) and is_list(opts) do
     case attr(attrs, :intent_purpose) do
       :subscription_payment_method_update ->
@@ -95,7 +129,8 @@ defmodule Store.Payments.Providers.Stripe do
              renewal_key,
              opts
            ),
-         {:ok, payment_intent} <- extract_payment_intent_response(response) do
+         {:ok, payment_intent} <- extract_payment_intent_response(response),
+         {:ok, provider_environment} <- expected_environment() do
       {:ok,
        %{
          status: normalize_charge_status(payment_intent, response),
@@ -105,6 +140,8 @@ defmodule Store.Payments.Providers.Stripe do
          amount_minor: amount_minor,
          currency: String.upcase(currency),
          provider_payment_id: payment_intent["id"],
+         raw_provider_status: payment_intent["status"],
+         provider_environment: provider_environment,
          provider_customer_ref: payment_intent["customer"] || provider_customer_ref,
          provider_payment_method_ref:
            payment_intent["payment_method"] || provider_payment_method_ref,

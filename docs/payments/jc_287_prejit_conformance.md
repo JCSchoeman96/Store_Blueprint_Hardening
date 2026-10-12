@@ -23,4 +23,4 @@ This review checks shared Payments mechanisms against the NewYou Commerce Pre-JI
 
 ## Scope boundary
 
-This change does not decide final Commerce precedence, renewal collection identity, cancellation or grace policy, refund/dispute/settlement behavior, or entitlement changes. JC-282 is required to interpret a later success after an earlier failure without relying on arrival order. JC-281, JC-265, JC-272, and JC-284 remain separate work. Paystack transaction observation and production certification remain unsupported here. SetupIntent observation also remains unsupported; its ID is never sent to the PaymentIntent endpoint.
+This change provides the observation and evidence contract used by JC-282 to resolve Commerce outcomes without relying on arrival order. JC-287 does not decide renewal collection identity, cancellation or grace policy, refund/dispute/settlement behavior, or entitlement changes. JC-281, JC-265, JC-272, and JC-284 remain separate work. Paystack transaction observation and production certification remain unsupported here. SetupIntent observation also remains unsupported; its ID is never sent to the PaymentIntent endpoint.

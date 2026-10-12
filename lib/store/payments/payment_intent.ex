@@ -106,6 +106,7 @@ defmodule Store.Payments.PaymentIntent do
       transition(:mark_requires_action, from: :submitted, to: :requires_action)
       transition(:mark_succeeded, from: :submitted, to: :succeeded)
       transition(:mark_succeeded, from: :requires_action, to: :succeeded)
+      transition(:correct_to_succeeded, from: :failed, to: :succeeded)
       transition(:mark_failed, from: :submitted, to: :failed)
       transition(:mark_failed, from: :requires_action, to: :failed)
       transition(:cancel, from: :created, to: :cancelled)
@@ -211,6 +212,12 @@ defmodule Store.Payments.PaymentIntent do
       change({Store.Support.Governance.TransitionState, target: :succeeded})
     end
 
+    update :correct_to_succeeded do
+      require_atomic?(false)
+      accept([])
+      change({Store.Support.Governance.TransitionState, target: :succeeded})
+    end
+
     update :mark_failed do
       require_atomic?(false)
       accept([])
@@ -303,6 +310,11 @@ defmodule Store.Payments.PaymentIntent do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:correct_to_succeeded) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
     end
 
     policy action(:mark_failed) do

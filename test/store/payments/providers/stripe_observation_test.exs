@@ -305,3 +305,57 @@ defmodule Store.Payments.Providers.StripeObservationTest do
     }
   end
 end
+
+defmodule Store.Payments.Providers.StripeFinalityTest do
+  use ExUnit.Case, async: true
+
+  alias Store.Payments.Providers
+  alias Store.Payments.Types.ProviderObservation
+
+  for {status, expected} <- [
+        {"succeeded", :authoritative_success},
+        {"canceled", :terminal_non_success},
+        {"requires_payment_method", :non_terminal},
+        {"requires_action", :non_terminal},
+        {"requires_confirmation", :non_terminal},
+        {"requires_capture", :non_terminal},
+        {"processing", :non_terminal},
+        {"future_status", :unknown}
+      ] do
+    test "classifies Stripe status #{status}" do
+      observation = %ProviderObservation{
+        provider: :stripe,
+        provider_reference: "pi_1",
+        provider_reference_kind: :payment_intent,
+        observation_source: :verification,
+        normalized_outcome:
+          if(unquote(status) == "succeeded",
+            do: :authoritative_success,
+            else: :failure_observation
+          ),
+        raw_provider_status: unquote(status),
+        amount_minor: 1,
+        currency: "USD",
+        observed_at: DateTime.utc_now()
+      }
+
+      assert Providers.classify_payment_finality(:stripe, observation) == unquote(expected)
+    end
+  end
+
+  test "uncertified providers do not infer terminal failure" do
+    observation = %ProviderObservation{
+      provider: :paystack,
+      provider_reference: "ref-1",
+      provider_reference_kind: :payment_intent,
+      observation_source: :verification,
+      normalized_outcome: :failure_observation,
+      raw_provider_status: "failed",
+      amount_minor: 1,
+      currency: "ZAR",
+      observed_at: DateTime.utc_now()
+    }
+
+    assert Providers.classify_payment_finality(:paystack, observation) == :unknown
+  end
+end

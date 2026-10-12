@@ -120,6 +120,8 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
     assert payload.metadata.subscription_id == "sub_001"
     assert payload.provider_payment_id =~ "pi_test_"
     assert payload.provider_client_secret =~ payload.provider_payment_id
+    assert payload.raw_provider_status == "succeeded"
+    assert payload.provider_environment == "test"
   end
 
   test "normalize_webhook extracts local payment intent metadata for off-session events" do
