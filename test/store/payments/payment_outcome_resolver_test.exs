@@ -104,6 +104,39 @@ defmodule Store.Payments.PaymentOutcomeResolverTest do
              )
   end
 
+  test "certified terminal and success facts resolve to reconciliation regardless of current fact" do
+    terminal = observation(:failure_observation, "canceled")
+    success = observation(:authoritative_success, "succeeded")
+
+    options = [
+      eligibility: :eligible,
+      provider_finality: :authoritative_success,
+      terminal_non_success_evidence?: true,
+      authoritative_success_evidence?: true
+    ]
+
+    assert {:ok, :reconciliation_required} =
+             PaymentOutcomeResolver.resolve(%{id: "intent-1"}, success, options)
+
+    assert {:ok, :reconciliation_required} =
+             PaymentOutcomeResolver.resolve(
+               %{id: "intent-1"},
+               terminal,
+               Keyword.put(options, :provider_finality, :terminal_non_success)
+             )
+  end
+
+  test "persisted nonterminal failure does not block an eligible success" do
+    assert {:ok, :authoritative_success} =
+             PaymentOutcomeResolver.resolve(
+               %{id: "intent-1"},
+               observation(:authoritative_success, "succeeded"),
+               eligibility: :eligible,
+               provider_finality: :authoritative_success,
+               authoritative_success_evidence?: true
+             )
+  end
+
   test "opposite observation arrival order does not change the resolved outcome" do
     failure = observation(:failure_observation, "requires_payment_method")
     success = observation(:authoritative_success, "succeeded")

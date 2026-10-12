@@ -40,8 +40,7 @@ defmodule Store.Payments.ObservationEvidence do
        reference_kind(observation.provider_reference_kind), payment_intent.id,
        observation.provider_event_id, observation.observation_source,
        observation.normalized_outcome, observation.raw_provider_status, observation.amount_minor,
-       observation.currency, observation.provider_environment, observation.provider_occurred_at,
-       observation.observed_at}
+       observation.currency, observation.provider_environment, observation.provider_occurred_at}
 
     digest = :crypto.hash(:sha256, :erlang.term_to_binary(identity, [:deterministic]))
     "provider_observation:" <> Base.encode16(digest, case: :lower)

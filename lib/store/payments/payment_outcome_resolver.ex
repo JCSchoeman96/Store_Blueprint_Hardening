@@ -33,6 +33,16 @@ defmodule Store.Payments.PaymentOutcomeResolver do
       conflicting_application?(application) ->
         {:ok, :reconciliation_required}
 
+      Keyword.get(opts, :evidence_history_overflow?, false) ->
+        {:ok, :reconciliation_required}
+
+      Keyword.get(opts, :terminal_non_success_evidence?, false) and
+          Keyword.get(opts, :authoritative_success_evidence?, false) ->
+        {:ok, :reconciliation_required}
+
+      Keyword.get(opts, :authoritative_success_evidence?, false) ->
+        {:ok, :authoritative_success}
+
       true ->
         resolve_finality(observation, opts)
     end

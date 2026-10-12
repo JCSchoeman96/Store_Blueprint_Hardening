@@ -129,19 +129,18 @@ defmodule Store.Payments.Providers.Stripe do
              renewal_key,
              opts
            ),
-         {:ok, payment_intent} <- extract_payment_intent_response(response),
-         {:ok, provider_environment} <- expected_environment() do
+         {:ok, payment_intent} <- extract_payment_intent_response(response) do
       {:ok,
        %{
          status: normalize_charge_status(payment_intent, response),
          idempotency_key: renewal_key,
          confirm: true,
          off_session: true,
-         amount_minor: amount_minor,
-         currency: String.upcase(currency),
+         amount_minor: payment_intent_amount(payment_intent),
+         currency: stripe_currency_from_response(payment_intent["currency"]),
          provider_payment_id: payment_intent["id"],
          raw_provider_status: payment_intent["status"],
-         provider_environment: provider_environment,
+         provider_environment: stripe_observed_environment(payment_intent, nil),
          provider_customer_ref: payment_intent["customer"] || provider_customer_ref,
          provider_payment_method_ref:
            payment_intent["payment_method"] || provider_payment_method_ref,
@@ -1042,6 +1041,17 @@ defmodule Store.Payments.Providers.Stripe do
 
   defp normalize_charge_status(_payment_intent, %{status: 402}), do: :failed
   defp normalize_charge_status(_payment_intent, _response), do: :failed
+
+  defp payment_intent_amount(%{"amount_received" => amount}) when is_integer(amount),
+    do: amount
+
+  defp payment_intent_amount(%{"amount" => amount}) when is_integer(amount), do: amount
+  defp payment_intent_amount(_payment_intent), do: nil
+
+  defp stripe_currency_from_response(currency) when is_binary(currency),
+    do: String.upcase(currency)
+
+  defp stripe_currency_from_response(_currency), do: nil
 
   defp stripe_id(%{"id" => id}) when is_binary(id), do: id
   defp stripe_id(id) when is_binary(id), do: id

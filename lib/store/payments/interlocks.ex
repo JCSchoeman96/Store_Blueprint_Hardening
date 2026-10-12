@@ -579,11 +579,16 @@ defmodule Store.Payments.Interlocks do
          eligibility <- observation_eligibility(payment_intent, observation, provider_environment),
          finality <- Providers.classify_payment_finality(payment_intent.provider, observation),
          {:ok, application} <- fetch_payment_application(payment_intent),
+         {:ok, evidence_history} <-
+           fetch_payment_evidence_history(payment_intent, observation, provider_environment),
          {:ok, outcome} <-
            PaymentOutcomeResolver.resolve(payment_intent, observation,
              eligibility: eligibility,
              provider_finality: finality,
-             payment_application: application
+             payment_application: application,
+             terminal_non_success_evidence?: evidence_history.terminal_non_success?,
+             authoritative_success_evidence?: evidence_history.authoritative_success?,
+             evidence_history_overflow?: evidence_history.overflow?
            ),
          {:ok, _result} <-
            apply_resolved_outcome(payment_intent, outcome, provider_event_key) do
@@ -695,6 +700,119 @@ defmodule Store.Payments.Interlocks do
 
   defp fetch_payment_application(_payment_intent), do: {:ok, nil}
 
+  @payment_evidence_history_limit 100
+
+  defp fetch_payment_evidence_history(
+         %PaymentIntent{} = payment_intent,
+         observation,
+         provider_environment
+       ) do
+    query =
+      PaymentAttempt
+      |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+      |> Ash.Query.limit(@payment_evidence_history_limit + 1)
+
+    case Ash.read(query,
+           domain: Store.Payments,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, attempts} ->
+        matching_observations =
+          attempts
+          |> Enum.filter(&same_provider_transaction?(&1, payment_intent, observation))
+          |> Enum.map(&observation_from_payment_attempt/1)
+          |> Enum.reject(&is_nil/1)
+
+        observations = [observation | matching_observations]
+
+        {:ok,
+         %{
+           terminal_non_success?:
+             Enum.any?(observations, fn evidence ->
+               Providers.classify_payment_finality(evidence.provider, evidence) ==
+                 :terminal_non_success
+             end),
+           authoritative_success?:
+             Enum.any?(observations, fn evidence ->
+               Providers.classify_payment_finality(evidence.provider, evidence) ==
+                 :authoritative_success and
+                 ProviderObservation.validate_target(payment_intent, evidence,
+                   provider_environment: provider_environment
+                 ) == :eligible
+             end),
+           overflow?: length(attempts) > @payment_evidence_history_limit
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp same_provider_transaction?(attempt, payment_intent, observation) do
+    attempt.payment_intent_id == payment_intent.id and
+      attempt.provider == observation.provider and
+      attempt.provider_reference == observation.provider_reference and
+      attempt.provider_reference_kind == Atom.to_string(observation.provider_reference_kind) and
+      attempt.provider_transaction_id == observation.provider_transaction_id
+  end
+
+  defp observation_from_payment_attempt(%PaymentAttempt{} = attempt) do
+    with {:ok, outcome} <- observation_outcome(attempt.outcome),
+         {:ok, source} <- observation_source(attempt.observation_source),
+         {:ok, reference_kind} <- observation_reference_kind(attempt.provider_reference_kind),
+         true <- is_binary(attempt.provider_reference),
+         true <- is_binary(attempt.raw_provider_status),
+         true <- not is_nil(attempt.observed_at) do
+      %ProviderObservation{
+        provider: attempt.provider,
+        provider_reference: attempt.provider_reference,
+        provider_reference_kind: reference_kind,
+        provider_transaction_id: attempt.provider_transaction_id,
+        local_payment_intent_id: attempt.payment_intent_id,
+        observation_source: source,
+        normalized_outcome: outcome,
+        raw_provider_status: attempt.raw_provider_status,
+        amount_minor: attempt.amount_minor,
+        currency: attempt.currency,
+        provider_environment: attempt.provider_environment,
+        provider_occurred_at: attempt.provider_occurred_at,
+        observed_at: attempt.observed_at,
+        provider_event_id: attempt.provider_event_id
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp observation_outcome(value) do
+    case value do
+      "unresolved" -> {:ok, :unresolved}
+      "requires_action" -> {:ok, :requires_action}
+      "failure_observation" -> {:ok, :failure_observation}
+      "authoritative_success" -> {:ok, :authoritative_success}
+      "reversal_observation" -> {:ok, :reversal_observation}
+      "unknown_or_contradictory" -> {:ok, :unknown_or_contradictory}
+      _ -> :error
+    end
+  end
+
+  defp observation_source(value) do
+    case value do
+      "direct_response" -> {:ok, :direct_response}
+      "webhook" -> {:ok, :webhook}
+      "verification" -> {:ok, :verification}
+      "reconciliation" -> {:ok, :reconciliation}
+      "operator" -> {:ok, :operator}
+      _ -> :error
+    end
+  end
+
+  defp observation_reference_kind("payment_intent"), do: {:ok, :payment_intent}
+  defp observation_reference_kind("checkout_session"), do: {:ok, :checkout_session}
+  defp observation_reference_kind("setup_intent"), do: {:ok, :setup_intent}
+  defp observation_reference_kind(_value), do: :error
+
   defp fetch_payment_attempt(id) do
     query = PaymentAttempt |> Ash.Query.filter(expr(id == ^id))
 
@@ -734,8 +852,6 @@ defmodule Store.Payments.Interlocks do
       provider_occurred_at:
         {date_time_identity(evidence.provider_occurred_at),
          date_time_identity(observation.provider_occurred_at)},
-      observed_at:
-        {date_time_identity(evidence.observed_at), date_time_identity(observation.observed_at)},
       payload_sha256: {evidence.payload_sha256, observation.evidence_sha256},
       provider_event_id: {evidence.provider_event_id, observation.provider_event_id}
     ]

@@ -15,8 +15,8 @@ defmodule Store.Subscriptions.FacadeTest do
   alias Store.Comms.EmailOutbox
   alias Store.Entitlements.EntitlementGrant
   alias Store.Entitlements.Facade, as: EntitlementsFacade
-  alias Store.Orders.{InventoryReservation, Order}
-  alias Store.Payments.PaymentIntent
+  alias Store.Orders.{InventoryReservation, Order, PaymentApplication}
+  alias Store.Payments.{PaymentAttempt, PaymentIntent}
   alias Store.Pricing.TaxRate
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
@@ -318,6 +318,92 @@ defmodule Store.Subscriptions.FacadeTest do
     assert inventory.stock_on_hand == 9
   end
 
+  test "direct Stripe success applies only when returned money and environment exactly match" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [:stripe],
+      stripe: [
+        webhook_secret: "whsec_test_only_change_me",
+        secret_key: "sk_test_store_blueprint",
+        publishable_key: "pk_test_store_blueprint",
+        request_options: StripeAPIStub.req_options()
+      ]
+    )
+
+    cases = [
+      {"amount_mismatch", 2_500, %{"amount_received" => 2_499}, 2_499, "USD", "test"},
+      {"currency_mismatch", 2_600, %{"currency" => "zar"}, 2_600, "ZAR", "test"},
+      {"environment_mismatch", 2_700, %{"livemode" => true}, 2_700, "USD", "live"},
+      {"missing_id", 2_750, %{"id" => nil}, 2_750, "USD", "test"},
+      {"missing_evidence", 2_800,
+       %{"amount_received" => nil, "amount" => nil, "currency" => nil, "livemode" => nil}, nil,
+       nil, nil}
+    ]
+
+    for {suffix, amount_minor, overrides, evidence_amount, evidence_currency, evidence_env} <-
+          cases do
+      StripeAPIStub.stub_payment_intent(fn conn, params ->
+        response =
+          Map.merge(
+            %{"status" => "succeeded"},
+            overrides
+          )
+
+        StripeAPIStub.json_response(
+          conn,
+          StripeAPIStub.payment_intent_response(params, response)
+        )
+      end)
+
+      customer = SubscriptionsFixtures.create_customer!("phase28_#{suffix}")
+      %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+      plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: amount_minor})
+      _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      %{subscription: subscription} =
+        SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+          provider: :stripe,
+          provider_billing_ref: "pm_phase28_#{suffix}",
+          next_renewal_at: DateTime.add(now, -10, :second)
+        })
+
+      assert {:ok, :processed} =
+               SubscriptionsFacade.process_due_subscription_renewal_for_system(
+                 subscription.id,
+                 now: now
+               )
+
+      attempt = fetch_latest_attempt!(subscription.id)
+      order = fetch_order!(attempt.order_id)
+      payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+      assert order.state == :pending_payment
+      assert payment_intent.state == :submitted
+      assert attempt.status == :processing
+
+      assert 0 ==
+               PaymentApplication
+               |> Ash.Query.filter(expr(order_id == ^order.id))
+               |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+      assert {:ok, [evidence]} =
+               PaymentAttempt
+               |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+               |> Ash.read(domain: Store.Payments, authorize?: false)
+
+      assert evidence.observation_source == "direct_response"
+      assert evidence.outcome == "authoritative_success"
+      assert evidence.amount_minor == evidence_amount
+      assert evidence.currency == evidence_currency
+      assert evidence.provider_environment == evidence_env
+
+      if suffix == "missing_id" do
+        assert evidence.provider_reference == nil
+        assert attempt.status == :processing
+      end
+    end
+  end
+
   test "physical renewal hard blocker suppresses retries when shipping cost surges" do
     customer = SubscriptionsFixtures.create_customer!("phase27_physical_surge")
 
@@ -460,12 +546,54 @@ defmodule Store.Subscriptions.FacadeTest do
 
     attempt = fetch_latest_attempt!(subscription.id)
     assert attempt.status == :processing
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    assert payment_intent.provider_payment_id
     reservation = fetch_reservation!(attempt.order_id, variant.id)
     assert reservation.state == :active
 
     inventory = Repo.get_by!(InventoryItem, variant_id: variant.id)
     assert inventory.reserved_count == 1
     assert inventory.stock_on_hand == 1
+
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => 0,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "processing"
+    })
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert :processing == fetch_latest_attempt!(subscription.id).status
+    assert :pending_payment == fetch_order!(attempt.order_id).state
+    assert :active == fetch_reservation!(attempt.order_id, variant.id).state
+    assert 0 == Repo.aggregate(PaymentApplication, :count, :id)
+
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => payment_intent.amount_received_minor,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "succeeded"
+    })
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert :paid == fetch_order!(attempt.order_id).state
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+    assert :consumed == fetch_reservation!(attempt.order_id, variant.id).state
   end
 
   test "legacy pending projections cannot select a renewal contract" do

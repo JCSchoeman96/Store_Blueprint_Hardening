@@ -2075,6 +2075,9 @@ defmodule Store.Subscriptions.Facade do
             :ok ->
               run_claimed_due_renewal(bound_subscription, bound_attempt, now)
 
+            {:resume_existing, claimed_attempt} ->
+              resume_existing_renewal_payment(claimed_attempt)
+
             {:skip, :already_claimed} ->
               :ok
 
@@ -2241,6 +2244,56 @@ defmodule Store.Subscriptions.Facade do
           :ok ->
             {:error, reason}
         end
+    end
+  end
+
+  defp resume_existing_renewal_payment(
+         %RenewalAttempt{
+           order_id: order_id,
+           payment_intent_id: payment_intent_id
+         } = attempt
+       )
+       when is_binary(order_id) and is_binary(payment_intent_id) do
+    input = %Store.Payments.Inputs.ObservePaymentIntentInput{
+      payment_intent_id: payment_intent_id
+    }
+
+    with {:ok, observation_result} <-
+           Store.Payments.Facade.observe_payment_intent_for_system(input),
+         {:ok, %{outcome: outcome}} <-
+           Store.Payments.Facade.apply_observed_payment_outcome_for_system(observation_result) do
+      case outcome do
+        outcome when outcome in [:authoritative_success, :already_applied_success] ->
+          :ok
+
+        :verified_terminal_non_success ->
+          terminal_renewal_observation_result(attempt)
+
+        _ ->
+          {:error,
+           Error.new(
+             "PAYMENT_OUTCOME_UNRESOLVED",
+             "existing provider transaction remains unresolved"
+           )}
+      end
+    else
+      {:error, _reason} ->
+        {:error,
+         Error.new(
+           "PAYMENT_OUTCOME_UNRESOLVED",
+           "existing provider transaction could not be reconciled"
+         )}
+    end
+  end
+
+  defp resume_existing_renewal_payment(%RenewalAttempt{}), do: :ok
+
+  defp terminal_renewal_observation_result(attempt) do
+    error = Error.new("PAYMENT_FAILED", "off-session renewal charge reached terminal failure")
+
+    case mark_attempt_failed(attempt, error) do
+      :terminal_success -> :ok
+      :ok -> {:error, error}
     end
   end
 
@@ -3451,8 +3504,12 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp claim_renewal_attempt(%RenewalAttempt{id: attempt_id, updated_at: updated_at})
-       when is_binary(attempt_id) do
+  defp claim_renewal_attempt(%RenewalAttempt{
+         id: attempt_id,
+         updated_at: updated_at,
+         status: status
+       })
+       when is_binary(attempt_id) and status in [:pending, :failed] do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:microsecond)
 
     with {:ok, attempt_uuid} <- Ecto.UUID.dump(attempt_id),
@@ -3478,6 +3535,50 @@ defmodule Store.Subscriptions.Facade do
         {:error, Error.new("VALIDATION_ERROR", "renewal attempt updated_at is required")}
     end
   end
+
+  defp claim_renewal_attempt(
+         %RenewalAttempt{
+           id: attempt_id,
+           updated_at: updated_at,
+           status: :processing,
+           order_id: order_id,
+           payment_intent_id: payment_intent_id
+         } = attempt
+       )
+       when is_binary(attempt_id) and is_binary(order_id) and is_binary(payment_intent_id) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:microsecond)
+
+    with {:ok, attempt_uuid} <- Ecto.UUID.dump(attempt_id),
+         {:ok, previous_updated_at} <- to_naive_datetime(updated_at) do
+      case Repo.query(
+             "UPDATE renewal_attempts SET updated_at = $2 WHERE id = $1 AND status = 'processing' AND order_id = $4 AND payment_intent_id = $5 AND updated_at = $3",
+             [
+               attempt_uuid,
+               now,
+               previous_updated_at,
+               Ecto.UUID.dump!(order_id),
+               Ecto.UUID.dump!(payment_intent_id)
+             ]
+           ) do
+        {:ok, %{num_rows: 1}} ->
+          {:resume_existing, attempt}
+
+        {:ok, _result} ->
+          {:skip, :already_claimed}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    else
+      :error ->
+        {:error, Error.new("VALIDATION_ERROR", "renewal attempt id must be a UUID")}
+
+      {:error, _reason} ->
+        {:error, Error.new("VALIDATION_ERROR", "renewal attempt updated_at is required")}
+    end
+  end
+
+  defp claim_renewal_attempt(%RenewalAttempt{}), do: {:skip, :already_claimed}
 
   defp to_naive_datetime(%DateTime{} = value), do: {:ok, DateTime.to_naive(value)}
   defp to_naive_datetime(%NaiveDateTime{} = value), do: {:ok, value}
@@ -4237,6 +4338,13 @@ defmodule Store.Subscriptions.Facade do
              "provider response does not establish terminal payment outcome"
            )}
       end
+    else
+      {:error, %Error{code: "PAYMENT_EVENT_UNVERIFIED"}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_OUTCOME_UNRESOLVED",
+           "provider response does not identify the exact payment transaction"
+         )}
     end
   end
 

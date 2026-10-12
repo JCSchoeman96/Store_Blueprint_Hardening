@@ -169,10 +169,12 @@ defmodule Store.TestSupport.StripeAPIStub do
     Map.merge(
       %{
         "amount" => Map.get(params, "amount", "0") |> String.to_integer(),
+        "amount_received" => Map.get(params, "amount", "0") |> String.to_integer(),
         "client_secret" => "#{provider_payment_id}_secret_test",
         "currency" => Map.get(params, "currency", "usd"),
         "customer" => Map.get(params, "customer"),
         "id" => provider_payment_id,
+        "livemode" => false,
         "metadata" => %{
           "local_intent_id" => local_intent_id,
           "order_id" => Map.get(params, "metadata[order_id]"),

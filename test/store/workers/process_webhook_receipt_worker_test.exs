@@ -227,6 +227,60 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
              |> Ash.count!(domain: Store.Payments, authorize?: false)
   end
 
+  test "observation replay identity excludes local receipt time but preserves source and provider changes" do
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(:create, %{
+        provider: :stripe,
+        amount_received_minor: 2_500,
+        currency: "USD",
+        provider_payment_id: "pi_receipt_time_identity"
+      })
+      |> Ash.create!(domain: Store.Payments, authorize?: false)
+
+    first_seen_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    replay_seen_at = DateTime.add(first_seen_at, 5, :second)
+
+    first = %{
+      provider_observation(:failure_observation, "requires_payment_method")
+      | observed_at: first_seen_at
+    }
+
+    replay = %{first | observed_at: replay_seen_at}
+
+    assert {:ok, first_evidence} = ObservationEvidence.record(payment_intent, first)
+    assert {:ok, replay_evidence} = ObservationEvidence.record(payment_intent, replay)
+    assert first_evidence.id == replay_evidence.id
+
+    assert 1 ==
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+
+    other_source = %{replay | observation_source: :reconciliation}
+    assert {:ok, _source_evidence} = ObservationEvidence.record(payment_intent, other_source)
+
+    assert 2 ==
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+
+    changed_provider_state = %{
+      other_source
+      | observation_source: :verification,
+        normalized_outcome: :authoritative_success,
+        raw_provider_status: "succeeded"
+    }
+
+    assert {:ok, _changed_state_evidence} =
+             ObservationEvidence.record(payment_intent, changed_provider_state)
+
+    assert 3 ==
+             PaymentAttempt
+             |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+             |> Ash.count!(domain: Store.Payments, authorize?: false)
+  end
+
   test "observation stays read-only until explicit outcome application corrects failed intent" do
     order = create_order!()
 
