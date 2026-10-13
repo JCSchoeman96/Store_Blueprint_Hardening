@@ -2012,7 +2012,7 @@ defmodule Store.Subscriptions.Facade do
          },
          _now
        ) do
-    if reached_collection_requires_reconciliation?(collection, payment_intent) do
+    if reached_collection_requires_reconciliation?(collection, payment_intent, subscription) do
       case reconcile_existing_renewal_collection(payment_intent) do
         {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"}} ->
           {:ok, payment_intent}
@@ -4981,7 +4981,11 @@ defmodule Store.Subscriptions.Facade do
       }
     )
 
-    if reached_collection_requires_reconciliation?(collection_attempt, payment_intent) do
+    if reached_collection_requires_reconciliation?(
+         collection_attempt,
+         payment_intent,
+         subscription
+       ) do
       reconcile_existing_renewal_collection(payment_intent, collection_attempt)
     else
       input = %AttachAndClaimInput{
@@ -5035,7 +5039,11 @@ defmodule Store.Subscriptions.Facade do
          collection_attempt,
          now
        ) do
-    if reached_collection_requires_reconciliation?(collection_attempt, payment_intent) do
+    if reached_collection_requires_reconciliation?(
+         collection_attempt,
+         payment_intent,
+         subscription
+       ) do
       reconcile_existing_renewal_collection(payment_intent, collection_attempt)
     else
       submit_off_session_renewal_charge(
@@ -5053,14 +5061,17 @@ defmodule Store.Subscriptions.Facade do
 
   defp reached_collection_requires_reconciliation?(
          %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached} = collection,
-         %PaymentIntent{} = payment_intent
+         %PaymentIntent{} = payment_intent,
+         %Subscription{status: status}
        ) do
-    (is_binary(payment_intent.provider_payment_id) and payment_intent.provider_payment_id != "") or
+    status in [:canceled, :expired] or
+      (is_binary(payment_intent.provider_payment_id) and payment_intent.provider_payment_id != "") or
       collection.financial_outcome == :requires_action or
       payment_intent.state == :requires_action
   end
 
-  defp reached_collection_requires_reconciliation?(_collection, _payment_intent), do: false
+  defp reached_collection_requires_reconciliation?(_collection, _payment_intent, _subscription),
+    do: false
 
   defp reconcile_existing_renewal_collection(
          %PaymentIntent{} = payment_intent,

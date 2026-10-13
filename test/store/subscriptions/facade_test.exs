@@ -621,7 +621,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert Store.Repo.aggregate(PaymentIntent, :count, :id) == payment_intent_count
   end
 
-  test "reached collection recovery after cancellation replays its exact PaymentIntent and key" do
+  test "reached collection recovery after cancellation does not submit another charge" do
     customer = SubscriptionsFixtures.create_customer!("jc229_canceled_reached_replay")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
@@ -658,23 +658,24 @@ defmodule Store.Subscriptions.FacadeTest do
                now: now
              )
 
-    assert_receive {:renewal_provider_request, first_key, first_collection_id,
+    assert_receive {:renewal_provider_request, _first_key, first_collection_id,
                     first_payment_intent_id},
                    5_000
+
+    assert :atomics.get(request_count, 1) == 1
 
     assert {:ok, %{status: :canceled}} =
              SubscriptionsFacade.cancel_subscription_for_user(customer, subscription.id, :now)
 
-    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+    StripeAPIStub.stub_unexpected!("canceled reached collection must not submit another charge")
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
 
-    assert_receive {:renewal_provider_request, ^first_key, ^first_collection_id,
-                    ^first_payment_intent_id},
-                   5_000
-
-    assert :atomics.get(request_count, 1) == 2
+    refute_receive {:renewal_provider_request, _, _, _}, 100
+    assert :atomics.get(request_count, 1) == 1
     assert fetch_subscription!(subscription.id).status == :canceled
 
     attempt = fetch_latest_attempt!(subscription.id)
