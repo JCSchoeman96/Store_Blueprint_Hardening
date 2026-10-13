@@ -179,10 +179,89 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
     assert aggregate_version(authoritative) == initial_version + 1
   end
 
+  test "suspension keeps the contract open, clears retry authority, and can be repaired" do
+    subscription = create_subscription!()
+    retry_at = DateTime.add(DateTime.utc_now(), 3_600, :second) |> DateTime.truncate(:microsecond)
+
+    assert {:ok, scheduled} =
+             update_subscription(subscription, :set_provider_billing_reference, %{
+               next_retry_at: retry_at
+             })
+
+    initial_version = aggregate_version(scheduled)
+
+    assert {:ok, suspended} =
+             update_subscription(scheduled, :mark_suspended_transition, %{
+               billing_status_reason: "PAYMENT_FAILED"
+             })
+
+    assert suspended.status == :suspended
+    assert is_nil(suspended.ended_at)
+    assert is_nil(suspended.canceled_at)
+    assert is_nil(suspended.canceled_reason)
+    assert is_nil(suspended.next_retry_at)
+    refute suspended.cancel_at_period_end
+    assert suspended.billing_status_reason == "PAYMENT_FAILED"
+    assert aggregate_version(suspended) == initial_version + 1
+
+    repaired_period_end =
+      DateTime.add(suspended.current_period_end_at, 30 * 24 * 60 * 60, :second)
+
+    assert {:ok, repaired} =
+             update_subscription(suspended, :extend_period, %{
+               current_period_start_at: suspended.current_period_end_at,
+               current_period_end_at: repaired_period_end,
+               next_renewal_at: repaired_period_end
+             })
+
+    assert repaired.status == :active
+    assert repaired.current_period_end_at == repaired_period_end
+    assert aggregate_version(repaired) == initial_version + 2
+  end
+
+  test "past due can suspend and suspended can be canceled, while terminal states cannot recover" do
+    active = create_subscription!()
+
+    assert {:ok, past_due} =
+             update_subscription(active, :mark_past_due_transition, %{
+               billing_status_reason: "PAYMENT_FAILED",
+               dunning_attempt_count: 1,
+               next_retry_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+             })
+
+    assert {:ok, suspended} =
+             update_subscription(past_due, :mark_suspended_transition, %{})
+
+    assert suspended.status == :suspended
+    assert is_nil(suspended.next_retry_at)
+
+    assert {:ok, canceled} =
+             update_subscription(suspended, :cancel_now_transition, %{canceled_reason: "user"})
+
+    assert canceled.status == :canceled
+
+    assert {:error, _} =
+             update_subscription(canceled, :extend_period, %{
+               current_period_end_at: canceled.current_period_end_at,
+               next_renewal_at: canceled.current_period_end_at
+             })
+
+    expired = create_subscription!()
+    assert {:ok, terminal} = update_subscription(expired, :mark_expired_transition, %{})
+    assert terminal.status == :expired
+
+    assert {:error, _} =
+             update_subscription(terminal, :extend_period, %{
+               current_period_end_at: terminal.current_period_end_at,
+               next_renewal_at: terminal.current_period_end_at
+             })
+  end
+
   test "every material Subscription action rejects a stale version and increments once" do
     actions = [
       {:activate_now, :pending},
       {:mark_past_due_transition, :active},
+      {:mark_suspended_transition, :active},
       {:cancel_at_period_end_transition, :active},
       {:cancel_now_transition, :active},
       {:extend_period, :active},
@@ -412,6 +491,11 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
   defp action_attributes(:mark_past_due_transition, _writer_a, _writer_b) do
     {%{billing_status_reason: "PAYMENT_FAILED", dunning_attempt_count: 1},
      %{billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED", dunning_attempt_count: 2}}
+  end
+
+  defp action_attributes(:mark_suspended_transition, _writer_a, _writer_b) do
+    {%{billing_status_reason: "PAYMENT_FAILED"},
+     %{billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED"}}
   end
 
   defp action_attributes(:cancel_at_period_end_transition, _writer_a, _writer_b),

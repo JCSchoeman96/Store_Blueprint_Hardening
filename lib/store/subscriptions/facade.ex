@@ -634,8 +634,8 @@ defmodule Store.Subscriptions.Facade do
       subscription.status in [:active, :past_due] and not subscription.cancel_at_period_end
 
     %{
-      can_cancel_now?: subscription.status in [:active, :past_due],
-      can_cancel_at_period_end?: subscription.status in [:active, :past_due],
+      can_cancel_now?: subscription.status in [:active, :past_due, :suspended],
+      can_cancel_at_period_end?: subscription.status in [:active, :past_due, :suspended],
       can_queue_plan_change?: can_queue_change?,
       can_queue_variant_change?: can_queue_change?,
       can_update_payment_method?: payment_method_update_supported?(subscription),
@@ -1996,10 +1996,10 @@ defmodule Store.Subscriptions.Facade do
          :ok <- ensure_subscription_contract_resolved(subscription),
          :ok <- ensure_paid_reconciliation_contract(subscription, attempt),
          :ok <- ensure_renewal_payment_application(order.id, attempt),
-         {:ok, plan} <- fetch_plan(effective_subscription_plan_id(subscription)),
          {:ok, updated_subscription} <-
-           reconcile_paid_renewal_attempt(subscription, plan, attempt),
-         :ok <- maybe_sync_entitlement(updated_subscription, plan),
+           reconcile_paid_renewal_attempt(subscription, attempt),
+         :ok <- emit_paid_renewal_access_sync_boundary(updated_subscription, attempt),
+         :ok <- maybe_sync_entitlement(updated_subscription),
          {:ok, _attempt} <- mark_attempt_succeeded(attempt, order_id, attempt.payment_intent_id) do
       {:ok, :reconciled}
     else
@@ -2167,7 +2167,7 @@ defmodule Store.Subscriptions.Facade do
              Scheduler.renewal_key(subscription.id, renewal_identity_period.current_period_end_at),
            {:ok, expiry_policy} <-
              renewal_policy_for_occurrence(subscription, renewal_key, live_revision),
-           :continue <- maybe_expire_past_due(subscription, expiry_policy, now),
+           :continue <- maybe_suspend_past_due(subscription, expiry_policy, now),
            {:ok, binding} <- bind_renewal_attempt(subscription, renewal_key) do
         bound_subscription = binding.subscription
         bound_attempt = binding.attempt
@@ -2190,8 +2190,11 @@ defmodule Store.Subscriptions.Facade do
 
         settle_claimed_due_renewal_result(bound_subscription, bound_policy, result, now)
       else
-        :expired ->
+        :suspended ->
           :ok
+
+        {:suspension_failed, reason} ->
+          {:error, reason}
 
         {:error,
          %Error{
@@ -2797,15 +2800,107 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp maybe_sync_entitlement(subscription, plan) do
+  defp maybe_sync_entitlement(%Subscription{id: subscription_id}) do
+    Repo.transaction(fn ->
+      sync_current_subscription_source_in_transaction(subscription_id)
+    end)
+    |> normalize_transaction_notifications()
+    |> project_subscription_entitlement_sync(subscription_id)
+  end
+
+  defp sync_current_subscription_source_in_transaction(subscription_id) do
+    case current_subscription_for_entitlement_sync(subscription_id) do
+      {:ok, %Subscription{} = current} ->
+        sync_active_subscription_source_in_transaction(current)
+
+      :skip ->
+        {:ok, %{outcome: :skipped, notifications: [], user_ids: []}}
+
+      {:error, reason} ->
+        Repo.rollback(Normalize.normalize(reason))
+    end
+  end
+
+  defp current_subscription_for_entitlement_sync(subscription_id) do
+    case Repo.one(
+           from subscription in Subscription,
+             where: subscription.id == ^subscription_id,
+             lock: "FOR UPDATE"
+         ) do
+      %Subscription{status: :active, canceled_at: nil, ended_at: nil} = current ->
+        {:ok, current}
+
+      %Subscription{} ->
+        :skip
+
+      nil ->
+        {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
+    end
+  end
+
+  defp sync_active_subscription_source_in_transaction(current) do
+    case fetch_plan(current.subscription_plan_id) do
+      {:ok, plan} ->
+        issue_active_subscription_grant_in_transaction(current, plan)
+
+      {:error, reason} ->
+        Repo.rollback(Normalize.normalize(reason))
+    end
+  end
+
+  defp issue_active_subscription_grant_in_transaction(current, plan) do
     if is_nil(plan.entitlement_kind) do
-      :ok
+      {:ok, %{outcome: :skipped, notifications: [], user_ids: []}}
     else
-      case EntitlementsFacade.issue_subscription_entitlement_for_system(subscription, plan) do
-        {:ok, _grant} -> :ok
-        {:error, reason} -> {:error, Normalize.normalize(reason)}
+      case EntitlementsFacade.issue_subscription_source_grant_strict_for_system(current, plan) do
+        {:ok, %{notifications: notifications, user_ids: user_ids}} ->
+          {:ok, %{outcome: :synchronized, notifications: notifications, user_ids: user_ids}}
+
+        {:error, reason} ->
+          Repo.rollback(Normalize.normalize(reason))
       end
     end
+  end
+
+  defp project_subscription_entitlement_sync(
+         {:ok, %{outcome: :synchronized, user_ids: user_ids}, notifications},
+         subscription_id
+       ) do
+    :ok =
+      AshNotifications.notify_post_commit(
+        notifications,
+        context: %{
+          flow: :reconcile_paid_renewal_entitlement,
+          subscription_id: subscription_id
+        }
+      )
+
+    EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
+      user_ids,
+      "entitlement_issued"
+    )
+  end
+
+  defp project_subscription_entitlement_sync(
+         {:ok, %{outcome: :skipped}, _notifications},
+         _subscription_id
+       ),
+       do: :ok
+
+  defp project_subscription_entitlement_sync({:error, reason}, _subscription_id),
+    do: {:error, Normalize.normalize(reason)}
+
+  defp emit_paid_renewal_access_sync_boundary(
+         %Subscription{},
+         %RenewalAttempt{}
+       ) do
+    :telemetry.execute(
+      [:store, :subscriptions, :paid_renewal_access_sync],
+      %{count: 1},
+      %{}
+    )
+
+    :ok
   end
 
   defp unwrap_create_with_notifications({:ok, record, notifications}) when is_list(notifications),
@@ -5408,7 +5503,7 @@ defmodule Store.Subscriptions.Facade do
   defp ensure_attempt_reconcilable(%RenewalAttempt{status: :succeeded}), do: :already_reconciled
   defp ensure_attempt_reconcilable(%RenewalAttempt{}), do: :ok
 
-  defp reconcile_paid_renewal_attempt(subscription, _plan, attempt) do
+  defp reconcile_paid_renewal_attempt(subscription, attempt) do
     promoted_plan_id =
       subscription.pending_subscription_plan_id || subscription.subscription_plan_id
 
@@ -5455,15 +5550,13 @@ defmodule Store.Subscriptions.Facade do
     |> normalize_subscription_update_result(subscription)
   end
 
-  defp effective_subscription_plan_id(%Subscription{subscription_plan_id: plan_id}), do: plan_id
-
-  defp maybe_expire_past_due(%Subscription{status: :past_due} = subscription, plan, now) do
+  defp maybe_suspend_past_due(%Subscription{status: :past_due} = subscription, plan, now) do
     case subscription.past_due_since_at do
       %DateTime{} = past_due_since_at ->
         grace_expires_at = Scheduler.grace_expires_at(past_due_since_at, plan)
 
         if DateTime.compare(now, grace_expires_at) in [:gt, :eq] do
-          expire_past_due_subscription(subscription)
+          suspend_past_due_subscription(subscription, %{})
         else
           :continue
         end
@@ -5473,36 +5566,94 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp maybe_expire_past_due(%Subscription{}, _plan, _now), do: :continue
+  defp maybe_suspend_past_due(%Subscription{}, _plan, _now), do: :continue
 
-  defp expire_past_due_subscription(subscription) do
-    case subscription
-         |> Ash.Changeset.for_update(
-           :mark_expired_transition,
-           %{canceled_reason: "grace_expired"},
-           context: %{system?: true}
-         )
-         |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true}) do
-      {:ok, expired} ->
-        plan =
-          case fetch_plan(subscription.subscription_plan_id) do
-            {:ok, fetched_plan} -> fetched_plan
-            _ -> nil
-          end
+  defp suspend_past_due_subscription(subscription, attrs) do
+    transaction_result = suspend_subscription_and_revoke_in_transaction(subscription, attrs)
 
-        _ =
-          EntitlementsFacade.revoke_subscription_entitlements_for_system(
-            expired.id,
-            "grace_expired"
-          )
-
-        _ = maybe_enqueue_membership_access_ended_email(expired, plan, "grace_expired")
-
-        :expired
+    case transaction_result do
+      {:ok, %{subscription: suspended, user_ids: user_ids}, notifications} ->
+        project_suspension_after_commit(suspended, user_ids, notifications)
 
       {:error, reason} ->
-        normalize_subscription_update_result({:error, reason}, subscription)
+        {:suspension_failed, Normalize.normalize(reason)}
     end
+  end
+
+  defp suspend_subscription_and_revoke_in_transaction(subscription, attrs) do
+    Repo.transaction(fn ->
+      with :ok <- lock_subscription_aggregate_version(subscription),
+           {:ok, suspended, subscription_notifications} <-
+             mark_subscription_suspended_in_transaction(subscription, attrs),
+           {:ok, %{notifications: grant_notifications, user_ids: user_ids}} <-
+             EntitlementsFacade.revoke_subscription_source_grants_strict_for_system(
+               suspended.id,
+               "grace_expired"
+             ) do
+        {:ok,
+         %{
+           subscription: suspended,
+           notifications: subscription_notifications ++ grant_notifications,
+           user_ids: user_ids
+         }}
+      else
+        {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
+      end
+    end)
+    |> normalize_transaction_notifications()
+  end
+
+  defp mark_subscription_suspended_in_transaction(subscription, attrs) do
+    subscription
+    |> Ash.Changeset.for_update(
+      :mark_suspended_transition,
+      Map.take(attrs, [:billing_status_reason, :past_due_since_at, :dunning_attempt_count]),
+      context: %{system?: true}
+    )
+    |> Ash.update(
+      domain: Subscriptions,
+      authorize?: false,
+      context: %{system?: true},
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, suspended, notifications} when is_list(notifications) ->
+        {:ok, suspended, notifications}
+
+      {:ok, suspended} ->
+        {:ok, suspended, []}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp project_suspension_after_commit(suspended, user_ids, notifications) do
+    :ok =
+      AshNotifications.notify_post_commit(
+        notifications,
+        context: %{
+          flow: :suspend_subscription,
+          subscription_id: suspended.id,
+          reason: "grace_expired"
+        }
+      )
+
+    :ok =
+      EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
+        user_ids,
+        "grace_expired"
+      )
+
+    plan =
+      case fetch_plan(suspended.subscription_plan_id) do
+        {:ok, fetched_plan} -> fetched_plan
+        _ -> nil
+      end
+
+    _ = maybe_enqueue_membership_access_ended_email(suspended, plan, "grace_expired")
+
+    :suspended
   end
 
   defp mark_attempt_succeeded(attempt, order_id, payment_intent_id) do
@@ -5529,7 +5680,7 @@ defmodule Store.Subscriptions.Facade do
 
     status =
       if next_attempt_count > max_retry_attempts do
-        :expired
+        :suspended
       else
         :past_due
       end
@@ -5549,16 +5700,26 @@ defmodule Store.Subscriptions.Facade do
       retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
     }
 
-    result =
-      persist_subscription_dunning_update(subscription, status, attrs)
-      |> stale_result_or(:ok)
-
-    emit_subscription_dunning_telemetry(subscription, status, next_attempt_count)
-    result
+    subscription
+    |> persist_subscription_dunning_update(status, attrs)
+    |> finish_subscription_dunning_update(subscription, status, next_attempt_count)
   end
 
-  defp persist_subscription_dunning_update(subscription, :expired, _attrs) do
-    expire_past_due_subscription(subscription)
+  defp finish_subscription_dunning_update(
+         {:suspension_failed, reason},
+         _subscription,
+         _status,
+         _attempt_count
+       ),
+       do: {:error, reason}
+
+  defp finish_subscription_dunning_update(result, subscription, status, attempt_count) do
+    emit_subscription_dunning_telemetry(subscription, status, attempt_count)
+    stale_result_or(result, :ok)
+  end
+
+  defp persist_subscription_dunning_update(subscription, :suspended, attrs) do
+    suspend_past_due_subscription(subscription, attrs)
   end
 
   defp persist_subscription_dunning_update(subscription, _status, attrs) do
@@ -5678,7 +5839,7 @@ defmodule Store.Subscriptions.Facade do
         subscription.user_id == ^user_id and
           subscription.membership_key in ^membership_keys and
           is_nil(subscription.ended_at) and
-          subscription.status in ^[:pending, :active, :past_due]
+          subscription.status in ^[:pending, :active, :past_due, :suspended]
       )
       |> select([subscription], subscription.id)
       |> limit(1)

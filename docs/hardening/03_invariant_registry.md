@@ -325,6 +325,7 @@ The executable status values are:
 - `pending`
 - `active`
 - `past_due`
+- `suspended`
 - `canceled`
 - `expired`
 
@@ -334,17 +335,18 @@ The state-machine transitions are:
 |---|---|---|---|
 | `activate_now` | `pending`, `past_due` | `active` | Activates or recovers the subscription and clears dunning fields. |
 | `mark_past_due_transition` | `active` | `past_due` | Starts payment-failure/dunning status. |
-| `cancel_now_transition` | `pending`, `active`, `past_due` | `canceled` | Immediate cancellation, with end/cancellation timestamps and renewal suppression. |
-| `mark_expired_transition` | `active`, `past_due` | `expired` | Ends the subscription after the expiry/grace path. |
-| `extend_period` | `active`, `past_due` | `active` | Records a successful renewal; active-to-active is a valid transition. |
+| `mark_suspended_transition` | `active`, `past_due` | `suspended` | Ends automatic retry authority and removes current access while keeping the commercial contract open. |
+| `cancel_now_transition` | `pending`, `active`, `past_due`, `suspended` | `canceled` | Immediate cancellation, with end/cancellation timestamps and renewal suppression. |
+| `mark_expired_transition` | `active`, `past_due` | `expired` | Represents explicit terminal expiry; dunning and grace exhaustion use `suspended`. |
+| `extend_period` | `active`, `past_due`, `suspended` | `active` | Records an exact paid renewal; suspended recovery uses the existing RenewalAttempt period boundaries. |
 
-There is no `canceled -> active`, `expired -> active`, or `canceled -> pending` transition. In the current state machine, `canceled` and `expired` are terminal. `cancel_at_period_end` is a boolean update action, not a status transition. The due-renewal query excludes subscriptions with that flag, but no inspected worker explicitly transitions the record to `canceled` at the period boundary.
+There is no `canceled -> active`, `expired -> active`, or `canceled -> pending` transition. `canceled` and `expired` remain terminal. `suspended` is commercially open, is excluded from due/dispatch status sets, and can be repaired only by exact same-renewal Commerce success. `cancel_at_period_end` is a boolean update action, not a status transition. The due-renewal query excludes subscriptions with that flag, but no inspected worker explicitly transitions the record to `canceled` at the period boundary.
 
-**GAP:** Subscription transitions pass `lock_attribute: nil` to `TransitionState`. The subscription status graph is explicit, but its state transitions do not use the optimistic-locking version strategy used by Order, PaymentIntent, Refund, and InventoryReservation. The resource also exposes generic field updates for dunning, pending plan changes, and period fields.
+Subscription transitions pass `lock_attribute: nil` to `TransitionState`; material resource writes use `aggregate_version` through `OptimisticAggregateLock`. The state graph and version write are covered by the Subscription aggregate-version tests.
 
 ## Activation, cancellation, failure, recovery, and expiry
 
-**FACT:** A payment-success worker creates the initial active subscription after a paid order. Renewal payment failure records a failed RenewalAttempt and moves an active subscription to `past_due`; missing payment methods, disabled providers, hard shipping/cost blockers, and other mapped reasons can suppress retries. A successful paid renewal calls `extend_period` and can recover `past_due` to `active`.
+**FACT:** A payment-success worker creates the initial active subscription after a paid order. Renewal payment failure records a failed RenewalAttempt and moves an active subscription to `past_due`; retry/grace exhaustion moves it to `suspended` and revokes current access. An exact existing paid renewal can recover `past_due` or `suspended` to `active` using the attempt's original period boundaries. Cancellation remains terminal under JC-281 precedence.
 
 Immediate cancellation calls the cancellation transition, clears renewal scheduling fields, and invokes entitlement revocation. Grace expiry calls the expired transition and invokes entitlement revocation. The current state machine makes cancellation terminal even though the field name is `canceled` and no resume action exists.
 
@@ -366,7 +368,7 @@ Renewal creates a virtual renewal order and payment intent, reserves inventory f
 
 **FACT:** Subscription plan or variant changes are stored as pending fields with pending amount/currency and effective timing. Renewal reconciliation promotes them once after paid renewal. A subscription can store a new stored-payment-method relationship/reference used by later renewal attempts.
 
-**GAP:** The current plan/variant change path is a subscription-field update rather than a separate lifecycle resource or versioned command. It can race with renewal reads because the subscription has no optimistic-lock field in the transition configuration. Stored-payment-method status changes have the same non-formal lifecycle property described in the payment section.
+**GAP:** The current plan/variant change path is a subscription-field update rather than a separate lifecycle resource or versioned command. Its write uses `aggregate_version`, but the current contract read and later renewal writes still require cross-action race coverage. Stored-payment-method status changes have the same non-formal lifecycle property described in the payment section.
 
 ## Subscription data and cache behaviour
 
@@ -421,7 +423,7 @@ The resource does not declare an AshStateMachine or version field. `issue` is an
 
 **FACT:** `Store.Entitlements.Facade.issue_subscription_entitlement_for_system/2` requires the subscription plan to provide entitlement kind and scope. It uses the subscription period end as the grant validity boundary, creates/reuses the grant, and invalidates the user’s entitlement cache after a successful write. Initial subscription creation invokes this facade after commit; renewal reconciliation synchronizes entitlement validity after a successful period update.
 
-**FACT:** Immediate cancellation and grace expiry invoke source-grant revocation. Expiry evaluation also treats a grant with a `valid_to` in the past as ineffective, even if the status has not yet been updated to `expired`.
+**FACT:** Immediate cancellation and grace-exhaustion suspension invoke source-grant revocation. Exact paid renewal reconciliation upserts the grant for the same Subscription source and frozen period boundary. Expiry evaluation also treats a grant with a `valid_to` in the past as ineffective, even if the status has not yet been updated to `expired`.
 
 **GAP:** Initial entitlement issuance errors are converted to a skipped result during subscription creation. Cancellation and expiry paths ignore the revoke result. The current implementation therefore does not prove the stronger invariant that every paid/active subscription has a durable active grant or that every canceled/expired subscription has a completed revoke before the operation returns.
 
@@ -443,9 +445,9 @@ The grant row and subscription remain Postgres truth. Cachex is an access-read o
 
 ## Current protection
 
-**FACT:** The common `Store.Support.Governance.TransitionState` helper checks current state, accepts an already-equal target as a replay/no-op, and delegates allowed transitions to AshStateMachine. With the default configuration it uses an optimistic lock on `version` and maps stale writes to the repository stale-record error. The formal state-machine resources in the scoped slice are Order, PaymentIntent, Refund, InventoryReservation, and Subscription.
+**FACT:** The common `Store.Support.Governance.TransitionState` helper checks current state, accepts an already-equal target as a replay/no-op, and delegates allowed transitions to AshStateMachine. With the default configuration it uses an optimistic lock on `version` and maps stale writes to the repository stale-record error. Subscription transitions pass `lock_attribute: nil` and use the resource's `OptimisticAggregateLock` with `aggregate_version`; the other formal state-machine resources in the scoped slice are Order, PaymentIntent, Refund, and InventoryReservation.
 
-**FACT:** Order, PaymentIntent, Refund, and InventoryReservation declare explicit transition graphs and version fields. Tests cover allowed transitions, forbidden transitions, replay/no-op behaviour, and stale-record handling for the governed resources. The subscription graph is explicit but passes `lock_attribute: nil`, so it does not have the same version protection.
+**FACT:** Order, PaymentIntent, Refund, and InventoryReservation declare explicit transition graphs and version fields. Tests cover allowed transitions, forbidden transitions, replay/no-op behaviour, and stale-record handling for the governed resources. Subscription uses a separate aggregate-version change for material lifecycle writes, though generic evidence updates do not all share that guard.
 
 **FACT:** Provider adapters do not call `Repo`, Ash actions, or Oban. Webhook controllers verify and normalize provider input, persist a receipt, and enqueue a worker. System workers call domain facades. These boundaries prevent a provider adapter or controller from directly applying an order/subscription transition.
 
@@ -453,7 +455,7 @@ The grant row and subscription remain Postgres truth. Cachex is an access-read o
 
 The governance documents describe stronger uniform guarantees than the current executable paths provide:
 
-- `docs/governance/state_machines.md` requires lifecycle writes to use optimistic locking. Order, PaymentIntent, Refund, and InventoryReservation formal transitions have version fields, but Subscription transitions set `lock_attribute: nil`, and non-state-machine lifecycle records have no shared version guard.
+- `docs/governance/state_machines.md` requires lifecycle writes to use optimistic locking. Order, PaymentIntent, Refund, and InventoryReservation formal transitions use version fields. Subscription actions set `lock_attribute: nil` in `TransitionState`, then apply `OptimisticAggregateLock` to material writes with `aggregate_version`; non-state-machine lifecycle records have no shared version guard.
 - `docs/governance/inventory_reservations.md` describes transition-only state changes. `Store.Orders.InventoryReservations` directly updates reservation state with `Repo.update_all` and inserts active state from its checkout CTE.
 - `docs/governance/idempotency.md` requires duplicate ProviderEvent processing to be a no-op. The current payment interlock persists one ProviderEvent row but does not use the skipped-upsert result as a complete downstream no-op gate.
 - `docs/governance/idempotency.md` and `docs/governance/payment_provider_contract.md` describe receipt lineage for normalized provider evidence. `ProviderEvent` has no `receipt_id` field or foreign key in the current resource/migration.
@@ -636,7 +638,7 @@ Checkout and cart facades load related catalog data in batches and use locks for
 
 - Cart writes remain durable in Postgres and use version/CAS plus row locks; the stock ETS value is only an availability precheck.
 - Payment evidence and payment application remain durable in Postgres; receipt/provider uniqueness and PaymentApplication protect replay, while worker enqueue and receipt processing are separate concerns.
-- Renewals remain durable in Postgres and are scheduled by Oban; worker uniqueness and RenewalAttempt identities protect duplicate work, while subscription status has no version lock.
+- Renewals remain durable in Postgres and are scheduled by Oban; worker uniqueness and RenewalAttempt identities protect duplicate work, while Subscription material writes use `aggregate_version` through the optimistic aggregate lock.
 - Entitlements are durable in Postgres; Cachex only accelerates effective-grant reads and is invalidated by grant operations. Cache invalidation failure can leave stale reads for the configured TTL.
 
 The performance governance document describes a hot/warm/cold model and Redis as an optional warm layer. The executable implementation uses Redis for the catalog list warm cache and optional rate limiting, not as billing authority or a general subscription/entitlement state cache. That difference is recorded here rather than inferred as a future architecture.
@@ -651,7 +653,7 @@ The performance governance document describes a hot/warm/cold model and Redis as
 | Orders | PARTIAL | Explicit AshStateMachine, version locking, immutable line/adjustment evidence, payment relationship, refund evidence, and governance tests exist. | Governance state list is stale; general order totals/shipping updates are not uniformly frozen after paid; payment side effects extend beyond the order transition. |
 | Payments | PARTIAL | PaymentIntent state graph/version, provider verification, unique receipt/provider evidence, amount/currency reconciliation, PaymentApplication, refund checks, and worker paths exist. | Receipt processing lacks CAS; duplicate ProviderEvent is not an explicit no-op gate; PaymentAttempt/RefundAttempt lack lifecycles; downstream fanout is procedural and post-commit. |
 | InventoryReservation | PARTIAL | State graph, unique identities, row locks, binary UUID lock ordering, quantity constraints, expiry worker, cache invalidation, and concurrency tests exist. | Raw `Repo.update_all` and CTE paths bypass transition actions, so lifecycle authority is not uniform. |
-| Subscriptions | NOT READY | Source-line uniqueness, paid creation checks, explicit status graph, renewal key uniqueness, SQL claim, Oban scheduling, dunning, stored renewal pricing, and replay tests exist. | Creation bypasses the resource default state, transitions disable optimistic locking, renewal/cancel/plan-change races are not comprehensively guarded, and entitlement/payment/order coupling is broad. |
+| Subscriptions | NOT READY | Source-line uniqueness, paid creation checks, explicit status graph, renewal key uniqueness, SQL claim, Oban scheduling, dunning, stored renewal pricing, and replay tests exist. | Creation bypasses the resource default state, material lifecycle actions use `aggregate_version` but generic evidence updates vary, renewal/cancel/plan-change races are not comprehensively guarded, and entitlement/payment/order coupling is broad. |
 | Entitlements | NOT READY | Durable grant identity, subscription source relationship, effective-status evaluation, Cachex TTL, PubSub invalidation, and grant tests exist. | No formal grant state machine/version, revoke-all is not atomic, subscription-side errors are ignored or swallowed, and the global access boundary is not proven. |
 
-The classifications describe extraction readiness of the current invariants, not the value or quality of individual modules. The reusable portions are the deterministic pricing evaluator, immutable order evidence model, explicit PaymentIntent/Order transition helpers, database-backed reservation arithmetic, and renewal-key uniqueness. The main extraction blockers are incomplete evidence lifecycles, bypassed transition authority, broad payment/subscription fanout, missing subscription locking, and subscription/entitlement consistency gaps.
+The classifications describe extraction readiness of the current invariants, not the value or quality of individual modules. Reusable portions include the deterministic pricing evaluator, immutable order evidence model, explicit PaymentIntent/Order transition helpers, database-backed reservation arithmetic, and renewal-key uniqueness. The main extraction blockers are incomplete evidence lifecycles, bypassed transition authority, broad payment/subscription fanout, nonuniform Subscription write guards, and subscription/entitlement consistency gaps.
