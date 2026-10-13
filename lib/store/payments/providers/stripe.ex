@@ -102,6 +102,8 @@ defmodule Store.Payments.Providers.Stripe do
     with {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
          {:ok, currency} <- fetch_required_binary(attrs, :currency),
          {:ok, renewal_key} <- fetch_required_binary(attrs, :renewal_key),
+         {:ok, idempotency_key} <- fetch_optional_binary(attrs, :idempotency_key, renewal_key),
+         {:ok, collection_attempt_id} <- fetch_optional_binary(attrs, :collection_attempt_id),
          {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
          {:ok, order_id} <- fetch_required_binary(attrs, :order_id),
          {:ok, renewal_attempt_id} <- fetch_required_binary(attrs, :renewal_attempt_id),
@@ -112,28 +114,34 @@ defmodule Store.Payments.Providers.Stripe do
          {:ok, response} <-
            stripe_post(
              "/v1/payment_intents",
-             %{
-               "amount" => Integer.to_string(amount_minor),
-               "confirm" => "true",
-               "currency" => stripe_currency(currency),
-               "customer" => provider_customer_ref,
-               "description" => "Subscription renewal #{renewal_key}",
-               "metadata[local_intent_id]" => local_intent_id,
-               "metadata[order_id]" => order_id,
-               "metadata[renewal_attempt_id]" => renewal_attempt_id,
-               "metadata[renewal_key]" => renewal_key,
-               "metadata[subscription_id]" => subscription_id,
-               "off_session" => "true",
-               "payment_method" => provider_payment_method_ref
-             },
-             renewal_key,
+             Map.merge(
+               %{
+                 "amount" => Integer.to_string(amount_minor),
+                 "confirm" => "true",
+                 "currency" => stripe_currency(currency),
+                 "customer" => provider_customer_ref,
+                 "description" => "Subscription renewal #{renewal_key}",
+                 "metadata[local_intent_id]" => local_intent_id,
+                 "metadata[order_id]" => order_id,
+                 "metadata[renewal_attempt_id]" => renewal_attempt_id,
+                 "metadata[renewal_key]" => renewal_key,
+                 "metadata[subscription_id]" => subscription_id,
+                 "off_session" => "true",
+                 "payment_method" => provider_payment_method_ref
+               },
+               if(is_binary(collection_attempt_id),
+                 do: %{"metadata[collection_attempt_id]" => collection_attempt_id},
+                 else: %{}
+               )
+             ),
+             idempotency_key,
              opts
            ),
          {:ok, payment_intent} <- extract_payment_intent_response(response) do
       {:ok,
        %{
          status: normalize_charge_status(payment_intent, response),
-         idempotency_key: renewal_key,
+         idempotency_key: idempotency_key,
          confirm: true,
          off_session: true,
          amount_minor: payment_intent_amount(payment_intent),
@@ -146,13 +154,20 @@ defmodule Store.Payments.Providers.Stripe do
            payment_intent["payment_method"] || provider_payment_method_ref,
          provider_client_secret: payment_intent["client_secret"],
          action_url: extract_action_url(%{"data" => %{"object" => payment_intent}}),
-         metadata: %{
-           local_intent_id: local_intent_id,
-           order_id: order_id,
-           renewal_attempt_id: renewal_attempt_id,
-           subscription_id: subscription_id,
-           renewal_key: renewal_key
-         }
+         metadata:
+           Map.merge(
+             %{
+               local_intent_id: local_intent_id,
+               order_id: order_id,
+               renewal_attempt_id: renewal_attempt_id,
+               subscription_id: subscription_id,
+               renewal_key: renewal_key
+             },
+             if(is_binary(collection_attempt_id),
+               do: %{collection_attempt_id: collection_attempt_id},
+               else: %{}
+             )
+           )
        }}
     end
   end
@@ -1077,6 +1092,15 @@ defmodule Store.Payments.Providers.Stripe do
     case attr(attrs, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} is required")}
+    end
+  end
+
+  defp fetch_optional_binary(attrs, key, default \\ nil) do
+    case attr(attrs, key) do
+      nil when is_binary(default) and default != "" -> {:ok, default}
+      nil -> {:ok, nil}
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} must be a non-empty string")}
     end
   end
 

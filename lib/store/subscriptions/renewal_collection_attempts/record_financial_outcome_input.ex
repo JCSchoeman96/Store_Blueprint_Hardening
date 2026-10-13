@@ -6,7 +6,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
   @outcomes [:requires_action, :verified_success, :verified_terminal_financial_non_success]
 
   @enforce_keys [:collection_attempt_id, :payment_intent_id, :financial_outcome]
-  defstruct [:collection_attempt_id, :payment_intent_id, :financial_outcome]
+  defstruct [
+    :collection_attempt_id,
+    :payment_intent_id,
+    :financial_outcome,
+    :renewal_attempt_id,
+    :subscription_id
+  ]
 
   @type financial_outcome ::
           :requires_action | :verified_success | :verified_terminal_financial_non_success
@@ -14,19 +20,26 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
   @type t :: %__MODULE__{
           collection_attempt_id: Ecto.UUID.t(),
           payment_intent_id: Ecto.UUID.t(),
-          financial_outcome: financial_outcome()
+          financial_outcome: financial_outcome(),
+          renewal_attempt_id: Ecto.UUID.t() | nil,
+          subscription_id: Ecto.UUID.t() | nil
         }
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
   def new(params) when is_map(params) do
     with {:ok, collection_attempt_id} <- required_uuid(params, :collection_attempt_id),
          {:ok, payment_intent_id} <- required_uuid(params, :payment_intent_id),
-         {:ok, financial_outcome} <- required_outcome(params) do
+         {:ok, financial_outcome} <- required_outcome(params),
+         {:ok, renewal_attempt_id} <- optional_uuid(params, :renewal_attempt_id),
+         {:ok, subscription_id} <- optional_uuid(params, :subscription_id),
+         :ok <- validate_expected_identity_pair(renewal_attempt_id, subscription_id) do
       {:ok,
        %__MODULE__{
          collection_attempt_id: collection_attempt_id,
          payment_intent_id: payment_intent_id,
-         financial_outcome: financial_outcome
+         financial_outcome: financial_outcome,
+         renewal_attempt_id: renewal_attempt_id,
+         subscription_id: subscription_id
        }}
     end
   end
@@ -45,6 +58,31 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
         invalid("#{key} must be a valid UUID")
     end
   end
+
+  defp optional_uuid(params, key) do
+    case Map.get(params, key) do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Ecto.UUID.cast(value) do
+          {:ok, uuid} -> {:ok, uuid}
+          :error -> invalid("#{key} must be a valid UUID")
+        end
+
+      _ ->
+        invalid("#{key} must be a valid UUID")
+    end
+  end
+
+  defp validate_expected_identity_pair(nil, nil), do: :ok
+
+  defp validate_expected_identity_pair(renewal_attempt_id, subscription_id)
+       when is_binary(renewal_attempt_id) and is_binary(subscription_id),
+       do: :ok
+
+  defp validate_expected_identity_pair(_renewal_attempt_id, _subscription_id),
+    do: invalid("renewal_attempt_id and subscription_id must be provided together")
 
   defp required_outcome(params) do
     case Map.get(params, :financial_outcome) do

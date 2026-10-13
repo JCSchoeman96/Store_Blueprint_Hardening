@@ -1,5 +1,6 @@
 defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   use Store.DataCase, async: false
+  use Oban.Testing, repo: Store.DirectRepo
 
   import Ecto.Query
   import Ash.Expr
@@ -7,10 +8,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
   alias Store.Payments.PaymentIntent
   alias Store.Repo
-  alias Store.Orders.{InventoryReservation, Order}
+  alias Store.Orders.{InventoryReservation, Order, PaymentApplication}
   alias Store.Orders.InventoryAdmission.Request
   alias Store.Pricing.Contract
   alias Store.Support.ID.UUIDv7
+  alias Store.Support.Telemetry.RepoStats
 
   alias Store.Subscriptions.{
     RenewalAttempt,
@@ -25,6 +27,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   alias Store.Subscriptions.RenewalCollectionAttempts.{
     PaymentIntentBindingInput,
     ClaimDispatchInput,
+    AttachAndClaimInput,
     RecordFinancialOutcomeInput,
     FenceInput,
     ReservationGenerationInput,
@@ -76,19 +79,45 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              PaymentIntentBindingInput.new(%{input_attrs | payment_intent_id: "bad"})
   end
 
+  test "attach and claim rejects identity hints that differ from the locked collection owner" do
+    {attempt, now} = create_bound_attempt!("jc229_attach_claim_identity_hint")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, input} =
+             AttachAndClaimInput.new(%{
+               collection_attempt_id: collection.id,
+               renewal_attempt_id: Ecto.UUID.generate(),
+               subscription_id: attempt.subscription_id,
+               payment_intent_id: payment_intent.id,
+               expected_epoch: 1,
+               now: now
+             })
+
+    assert {:error, %{code: "NOT_FOUND"}} =
+             RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
+
+    assert is_nil(fetch_collection!(collection.id).payment_intent_id)
+    assert fetch_collection!(collection.id).dispatch_state == :not_started
+  end
+
   test "collection binds an exact PaymentIntent to the bound renewal Order and deterministic key" do
     {attempt, now} = create_bound_attempt!("jc229_collection_bind_pi")
     order = bind_attempt_to_fixture_order!(attempt)
     {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
     payment_intent = create_collection_payment_intent!(collection, order, attempt)
 
-    assert {:ok, bound} =
-             RenewalCollectionAttempts.attach_payment_intent_for_system(
-               %PaymentIntentBindingInput{
-                 collection_attempt_id: collection.id,
-                 payment_intent_id: payment_intent.id
-               }
-             )
+    {bound_result, bind_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.attach_payment_intent_for_system(%PaymentIntentBindingInput{
+          collection_attempt_id: collection.id,
+          payment_intent_id: payment_intent.id
+        })
+      end)
+
+    assert bind_stats.query_count <= 10
+    assert {:ok, bound} = bound_result
 
     assert bound.collection_attempt.payment_intent_id == payment_intent.id
     assert bound.renewal_attempt.id == attempt.id
@@ -335,6 +364,95 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert fetch_collection!(collection.id).dispatch_state == :not_started
   end
 
+  test "dispatch replay returns the same exact PaymentIntent and epoch without another claim" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_dispatch_replay")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    {first_claim_result, claim_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.claim_dispatch_for_system(
+          claim_dispatch_input!(collection.id, 1, now)
+        )
+      end)
+
+    assert claim_stats.query_count <= 13
+    assert {:ok, first_claim} = first_claim_result
+
+    assert {:ok, replay} =
+             RenewalCollectionAttempts.replay_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
+    assert replay.collection_attempt.id == first_claim.collection_attempt.id
+
+    assert replay.collection_attempt.dispatch_epoch ==
+             first_claim.collection_attempt.dispatch_epoch
+
+    assert replay.collection_attempt.dispatch_state == :may_have_been_reached
+    assert replay.payment_intent.id == first_claim.payment_intent.id
+
+    assert replay.payment_intent.payment_intent_key ==
+             first_claim.payment_intent.payment_intent_key
+
+    assert replay.provider_payment_method == first_claim.provider_payment_method
+  end
+
+  test "reached dispatch replay uses its persisted provider method after cancellation" do
+    {attempt, now} = create_bound_attempt!("jc229_replay_after_cancellation")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert {:ok, first_claim} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
+    assert first_claim.payment_intent.provider_customer_ref ==
+             first_claim.provider_payment_method.provider_customer_ref
+
+    assert first_claim.payment_intent.provider_payment_method_ref ==
+             first_claim.provider_payment_method.provider_payment_method_ref
+
+    subscription = fetch_subscription!(attempt.subscription_id)
+
+    assert {:ok, %{status: :canceled}} =
+             subscription
+             |> Ash.Changeset.for_update(:cancel_now_transition, %{}, context: %{system?: true})
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert {:ok, replay} =
+             RenewalCollectionAttempts.replay_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
+    assert replay.collection_attempt.dispatch_state == :may_have_been_reached
+    assert replay.payment_intent.id == first_claim.payment_intent.id
+    assert replay.provider_payment_method == first_claim.provider_payment_method
+  end
+
   test "physical dispatch requires the assigned exact active reservation generation" do
     {attempt, now} = create_bound_attempt!("jc229_collection_dispatch_generation")
     order = bind_attempt_to_fixture_order!(attempt)
@@ -414,15 +532,25 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
     payment_intent = mark_payment_intent!(payment_intent, :mark_succeeded)
 
-    assert {:ok, succeeded} =
-             RenewalCollectionAttempts.record_financial_outcome_for_system(
-               financial_outcome_input!(collection.id, payment_intent.id, :verified_success)
-             )
+    {success_result, success_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.record_financial_outcome_for_system(
+          financial_outcome_input!(collection.id, payment_intent.id, :verified_success)
+        )
+      end)
+
+    assert success_stats.query_count <= 8
+    assert {:ok, succeeded} = success_result
 
     assert succeeded.financial_outcome == :verified_success
 
-    assert {:ok, handoff} =
-             RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    {handoff_result, handoff_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+      end)
+
+    assert {:ok, handoff} = handoff_result
+    assert handoff_stats.query_count <= 1
 
     assert handoff == %{
              order_id: order.id,
@@ -471,12 +599,20 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     {attempt, now} = create_bound_attempt!("jc229_collection_start_replay")
     input = start_input!(attempt.id, now)
 
-    assert {:ok, first} = RenewalCollectionAttempts.start_for_system(input)
+    {first_result, first_stats} =
+      RepoStats.capture(fn -> RenewalCollectionAttempts.start_for_system(input) end)
+
+    assert first_stats.query_count <= 7
+    assert {:ok, first} = first_result
     assert first.collection_ordinal == 1
     assert first.financial_outcome == :unresolved
     assert first.dispatch_state == :not_started
 
-    assert {:ok, replay} = RenewalCollectionAttempts.start_for_system(input)
+    {replay_result, replay_stats} =
+      RepoStats.capture(fn -> RenewalCollectionAttempts.start_for_system(input) end)
+
+    assert replay_stats.query_count <= 6
+    assert {:ok, replay} = replay_result
     assert replay.id == first.id
     assert replay.renewal_attempt_id == first.renewal_attempt_id
     assert replay.collection_ordinal == first.collection_ordinal
@@ -584,6 +720,58 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert [] == list_collections!(attempt.id)
   end
 
+  test "legacy renewal PaymentIntent cannot enqueue reconciliation without a collection identity" do
+    {attempt, _now} = create_bound_attempt!("jc229_legacy_payment_handoff")
+    order = bind_attempt_to_fixture_order!(attempt)
+    subscription = fetch_subscription!(attempt.subscription_id)
+
+    {:ok, result} =
+      Store.Payments.create_or_reuse_payment_intent(
+        %{
+          order_id: order.id,
+          amount_received_minor: order.grand_total_minor,
+          currency: attempt.currency,
+          provider: subscription.provider,
+          payment_intent_key: "jc229_legacy_collectionless:#{Ecto.UUID.generate()}"
+        },
+        context: %{system?: true}
+      )
+
+    payment_intent = submit_payment_intent!(result.payment_intent)
+
+    assert {:ok, _updated_attempt} =
+             attempt
+             |> Ash.Changeset.for_update(
+               :mark_processing,
+               %{order_id: order.id, payment_intent_id: payment_intent.id},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
+
+    assert fetch_order!(order.id).state == :paid
+
+    assert 1 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    assert [] ==
+             all_enqueued(
+               worker: Store.Workers.ReconcilePaidSubscriptionRenewalWorker,
+               args: %{
+                 "order_id" => order.id,
+                 "renewal_attempt_id" => attempt.id
+               }
+             )
+  end
+
   test "requires_action remains the active collection and does not allocate an ordinal" do
     {attempt, now} = create_bound_attempt!("jc229_collection_requires_action")
     input = start_input!(attempt.id, now)
@@ -606,6 +794,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
     assert {:error, error} = RenewalCollectionAttempts.start_for_system(input)
     assert error.code == "INVALID_STATE_TRANSITION"
+    assert error.meta.already_succeeded?
   end
 
   test "certified terminal non-success permits the next contiguous ordinal when retry is due" do
@@ -621,7 +810,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
     mark_past_due!(attempt.subscription_id, now, DateTime.add(now, -1, :second))
 
-    assert {:ok, second} = RenewalCollectionAttempts.start_for_system(input)
+    {second_result, next_stats} =
+      RepoStats.capture(fn -> RenewalCollectionAttempts.start_for_system(input) end)
+
+    assert next_stats.query_count <= 7
+    assert {:ok, second} = second_result
     assert second.collection_ordinal == 2
     assert second.id != first.id
   end
@@ -943,8 +1136,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
                now: now
              })
 
-    assert {:ok, fenced} =
-             RenewalCollectionAttempts.fence_before_submission_for_system(fence_input)
+    {fence_result, fence_stats} =
+      RepoStats.capture(fn ->
+        RenewalCollectionAttempts.fence_before_submission_for_system(fence_input)
+      end)
+
+    assert fence_stats.query_count <= 15
+    assert {:ok, fenced} = fence_result
 
     assert fenced.dispatch_state == :not_submitted
     assert fenced.dispatch_epoch == 1
@@ -1517,6 +1715,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     Subscription
     |> Ash.Query.filter(expr(id == ^subscription_id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_order!(order_id) do
+    Order
+    |> Ash.Query.filter(expr(id == ^order_id))
+    |> Ash.read_one!(domain: Store.Orders, authorize?: false, context: %{system?: true})
   end
 
   defp fetch_renewal_attempt!(attempt_id) do

@@ -6,7 +6,7 @@ defmodule Store.Subscriptions.RenewalAttemptMonotonicityTest do
 
   alias Store.Orders.Order
   alias Store.Payments.PaymentIntent
-  alias Store.Subscriptions.{Facade, RenewalAttempt, Subscription}
+  alias Store.Subscriptions.{Facade, RenewalAttempt, RenewalCollectionAttempt, Subscription}
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
 
@@ -342,9 +342,25 @@ defmodule Store.Subscriptions.RenewalAttemptMonotonicityTest do
     assert {:ok, %{applied?: true}} =
              Store.Payments.apply_payment_success_once(payment_intent.id)
 
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(
+        expr(
+          renewal_attempt_id == ^attempt.id and
+            financial_outcome == :verified_success
+        )
+      )
+      |> Ash.read_one!(
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
     assert {:ok, :reconciled} =
              Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: collection.payment_intent_id
              )
 
     Agent.update(barrier, &Map.put(&1, :release_charge?, true))

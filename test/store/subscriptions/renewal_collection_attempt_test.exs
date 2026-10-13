@@ -1,10 +1,9 @@
 defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
   use Store.DataCase, async: false
 
-  import Ash.Expr
-  require Ash.Query
-
-  alias Store.Subscriptions.{Facade, RenewalAttempt, RenewalCollectionAttempt}
+  alias Store.Orders.Order
+  alias Store.Payments.PaymentIntent
+  alias Store.Subscriptions.{RenewalAttempt, RenewalCollectionAttempt, Scheduler}
   alias Store.Orders.InventoryReservation
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
@@ -259,23 +258,91 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
     plan = SubscriptionsFixtures.create_subscription_plan!()
     SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
 
-    %{subscription: subscription} =
+    %{subscription: subscription, revision: revision} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
         next_renewal_at: DateTime.add(now, -10, :second),
         provider_billing_ref: "pm_#{label}"
       })
 
-    assert {:ok, :processed} =
-             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+    period = Scheduler.next_period(subscription.current_period_end_at, revision)
+
+    order =
+      Order
+      |> Ash.Changeset.for_create(:create, %{user_id: customer.id})
+      |> Ash.create!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    payment_intent =
+      PaymentIntent
+      |> Ash.Changeset.for_create(
+        :create_or_reuse,
+        %{
+          order_id: order.id,
+          amount_received_minor: plan.amount_minor * subscription.quantity,
+          currency: plan.currency,
+          provider: subscription.provider,
+          subscription_id: subscription.id,
+          payment_intent_key: "jc229-resource-test:#{Ecto.UUID.generate()}"
+        },
+        context: %{system?: true}
+      )
+      |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
 
     attempt =
       RenewalAttempt
-      |> Ash.Query.filter(expr(subscription_id == ^subscription.id))
-      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
-      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+      |> Ash.Changeset.for_create(
+        :create_or_reuse,
+        %{
+          subscription_id: subscription.id,
+          period_start_at: subscription.current_period_end_at,
+          period_end_at: period.current_period_end_at,
+          renewal_key: "jc229-resource-test:#{Ecto.UUID.generate()}",
+          plan_revision_id: revision.id,
+          variant_id: variant.id,
+          quantity: subscription.quantity,
+          amount_minor: plan.amount_minor,
+          currency: plan.currency,
+          expected_subscription_version: subscription.aggregate_version,
+          charged_contract_version: 1,
+          charged_contract_snapshot: charged_contract_snapshot(revision, plan),
+          status: :processing,
+          order_id: order.id,
+          payment_intent_id: payment_intent.id
+        },
+        context: %{system?: true}
+      )
+      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
 
     {attempt, now}
   end
+
+  defp charged_contract_snapshot(revision, plan) do
+    %{
+      "version" => 1,
+      "subscription_plan_key" => plan.key,
+      "interval_unit" => Atom.to_string(revision.interval_unit),
+      "interval_count" => revision.interval_count,
+      "trial_days" => revision.trial_days,
+      "anchor_mode" => Atom.to_string(revision.anchor_mode),
+      "anchor_day_of_month" => revision.anchor_day_of_month,
+      "billing_timezone" => revision.billing_timezone,
+      "term_mode" => Atom.to_string(revision.term_mode),
+      "term_cycles" => revision.term_cycles,
+      "term_end_at" => maybe_iso8601(revision.term_end_at),
+      "access_on_past_due" => Atom.to_string(revision.access_on_past_due),
+      "access_on_cancel" => Atom.to_string(revision.access_on_cancel),
+      "grace_period_days" => revision.grace_period_days,
+      "max_retry_attempts" => revision.max_retry_attempts,
+      "retry_schedule_hours" => revision.retry_schedule_hours,
+      "entitlement_kind" => maybe_string(revision.entitlement_kind),
+      "entitlement_scope_key" => revision.entitlement_scope_key
+    }
+  end
+
+  defp maybe_iso8601(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp maybe_iso8601(_value), do: nil
+  defp maybe_string(nil), do: nil
+  defp maybe_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp maybe_string(_value), do: nil
 
   defp create_collection!(renewal_attempt_id, ordinal) do
     RenewalCollectionAttempt

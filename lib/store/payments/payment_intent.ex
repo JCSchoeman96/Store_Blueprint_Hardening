@@ -103,6 +103,7 @@ defmodule Store.Payments.PaymentIntent do
 
     transitions do
       transition(:submit, from: :created, to: :submitted)
+      transition(:prepare_renewal_dispatch, from: :created, to: :submitted)
       transition(:mark_requires_action, from: :submitted, to: :requires_action)
       transition(:mark_succeeded, from: :submitted, to: :succeeded)
       transition(:mark_succeeded, from: :requires_action, to: :succeeded)
@@ -192,6 +193,12 @@ defmodule Store.Payments.PaymentIntent do
         :provider_checkout_url,
         :provider_client_secret
       ])
+    end
+
+    update :prepare_renewal_dispatch do
+      require_atomic?(false)
+      accept([:provider_customer_ref, :provider_payment_method_ref])
+      change({Store.Support.Governance.TransitionState, target: :submitted})
     end
 
     update :submit do
@@ -298,6 +305,11 @@ defmodule Store.Payments.PaymentIntent do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:prepare_renewal_dispatch) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
     end
 
     policy action(:mark_requires_action) do

@@ -10,7 +10,16 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
   alias Store.Subscriptions.Inputs.QueueSubscriptionVariantChangeInput
-  alias Store.Subscriptions.{RenewalAttempt, Subscription, SubscriptionPlan}
+
+  alias Store.Subscriptions.{
+    RenewalAttempt,
+    RenewalCollectionAttempt,
+    RenewalCollectionAttempts,
+    Subscription,
+    SubscriptionPlan
+  }
+
+  alias Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeInput
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
   alias Store.TestSupport.StripeAPIStub
@@ -517,9 +526,12 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
     |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
 
+    mark_collection_successful!(attempt)
+
     assert {:error, %Error{code: "VALIDATION_ERROR"}} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     after_subscription = fetch_subscription!(subscription.id)
@@ -555,8 +567,9 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
              Store.Payments.apply_payment_success_once(payment_intent.id)
 
     assert {:ok, :reconciled} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     succeeded_attempt = fetch_attempt!(attempt.id)
@@ -575,8 +588,9 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert contract_before_replay.status == :queued
 
     assert {:ok, :noop} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     assert fetch_attempt!(attempt.id).status == :succeeded
@@ -677,9 +691,12 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
     |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
 
+    mark_collection_successful!(attempt)
+
     assert {:error, %Error{code: "VALIDATION_ERROR"}} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     after_subscription = fetch_subscription!(subscription.id)
@@ -896,6 +913,35 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     PaymentIntent
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+  end
+
+  defp exact_reconciliation_opts!(attempt) do
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    [
+      renewal_attempt_id: attempt.id,
+      collection_attempt_id: collection.id,
+      payment_intent_id: collection.payment_intent_id
+    ]
+  end
+
+  defp mark_collection_successful!(attempt) do
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert {:ok, %{financial_outcome: :verified_success}} =
+             RenewalCollectionAttempts.record_financial_outcome_for_system(
+               %RecordFinancialOutcomeInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: collection.payment_intent_id,
+                 financial_outcome: :verified_success
+               }
+             )
   end
 
   defp count_rows(table, subscription_id)

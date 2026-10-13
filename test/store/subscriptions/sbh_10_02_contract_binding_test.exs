@@ -327,7 +327,10 @@ defmodule Store.Subscriptions.Sbh1002ContractBindingTest do
     assert count_entitlements(subscription.id) == 0
 
     assert {:error,
-            %{code: "VALIDATION_ERROR", message: "subscription commercial contract is unresolved"}} =
+            %{
+              code: "VALIDATION_ERROR",
+              message: "renewal attempt has no durable charged-contract binding"
+            }} =
              SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(order.id,
                renewal_attempt_id: attempt.id
              )

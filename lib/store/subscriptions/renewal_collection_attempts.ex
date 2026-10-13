@@ -3,6 +3,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   Starts and replays durable payment collections within one bound renewal.
   """
 
+  import Ecto.Query
   import Ash.Expr
   require Ash.Query
 
@@ -16,7 +17,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
   alias Store.Subscriptions.RenewalCollectionAttempts.{
     ClaimDispatchInput,
+    AttachAndClaimInput,
+    CancellationReservationInput,
     FenceInput,
+    PaymentApplicationSettlementInput,
     PaymentIntentBindingInput,
     RecordFinancialOutcomeInput,
     ReservationGenerationInput,
@@ -50,6 +54,19 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     {:error, Error.new("VALIDATION_ERROR", "typed renewal collection input is required")}
   end
 
+  @spec start_and_assign_for_system(StartInput.t()) ::
+          {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
+  def start_and_assign_for_system(%StartInput{} = input) do
+    with {:ok, canonical_input} <- StartInput.new(Map.from_struct(input)),
+         {:ok, subscription_id} <- start_input_subscription_id(canonical_input) do
+      start_and_assign_locked(subscription_id, canonical_input)
+    end
+  end
+
+  def start_and_assign_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed renewal collection input is required")}
+  end
+
   @spec payment_intent_key(String.t()) :: String.t()
   def payment_intent_key(collection_attempt_id) when is_binary(collection_attempt_id),
     do: "renewal-collection:" <> collection_attempt_id
@@ -58,17 +75,15 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
           {:ok, map()} | {:error, Error.t() | term()}
   def attach_payment_intent_for_system(%PaymentIntentBindingInput{} = input) do
     with {:ok, canonical_input} <- PaymentIntentBindingInput.new(Map.from_struct(input)),
-         {:ok, collection} <-
-           run_collection_transition(
+         {:ok, collection,
+          %{renewal_attempt: attempt, order: order, payment_intent: payment_intent}} <-
+           run_collection_transition_with_result(
              canonical_input.collection_attempt_id,
              :attach_renewal_collection_payment_intent,
              fn collection, attempt, subscription ->
                attach_payment_intent_locked(collection, attempt, subscription, canonical_input)
              end
-           ),
-         {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
-         {:ok, order} <- fetch_order(attempt.order_id),
-         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id) do
+           ) do
       {:ok,
        %{
          collection_attempt: collection,
@@ -87,19 +102,24 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
           {:ok, map()} | {:error, Error.t() | term()}
   def claim_dispatch_for_system(%ClaimDispatchInput{} = input) do
     with {:ok, canonical_input} <- ClaimDispatchInput.new(Map.from_struct(input)),
-         {:ok, collection, provider_payment_method} <-
+         {:ok, collection,
+          %{
+            subscription: subscription,
+            renewal_attempt: attempt,
+            order: order,
+            payment_intent: payment_intent,
+            provider_payment_method: provider_payment_method
+          }} <-
            run_collection_transition_with_result(
              canonical_input.collection_attempt_id,
              :claim_renewal_collection_dispatch,
              fn collection, attempt, subscription ->
                claim_dispatch_locked(collection, attempt, subscription, canonical_input)
              end
-           ),
-         {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
-         {:ok, order} <- fetch_order(attempt.order_id),
-         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id) do
+           ) do
       {:ok,
        %{
+         subscription: subscription,
          collection_attempt: collection,
          renewal_attempt: attempt,
          order: order,
@@ -113,17 +133,149 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     {:error, Error.new("VALIDATION_ERROR", "typed collection dispatch input is required")}
   end
 
+  @spec attach_and_claim_dispatch_for_system(AttachAndClaimInput.t()) ::
+          {:ok, map()} | {:error, Error.t() | term()}
+  def attach_and_claim_dispatch_for_system(%AttachAndClaimInput{} = input) do
+    with {:ok, canonical_input} <- AttachAndClaimInput.new(Map.from_struct(input)),
+         {:ok, collection, result} <-
+           run_collection_transition_with_expected_identity(
+             canonical_input.collection_attempt_id,
+             %{
+               renewal_attempt_id: canonical_input.renewal_attempt_id,
+               subscription_id: canonical_input.subscription_id
+             },
+             :attach_and_claim_renewal_collection_dispatch,
+             fn collection, attempt, subscription ->
+               attach_and_claim_dispatch_locked(
+                 collection,
+                 attempt,
+                 subscription,
+                 canonical_input
+               )
+             end
+           ) do
+      {:ok, Map.put(result, :collection_attempt, collection)}
+    end
+  end
+
+  def attach_and_claim_dispatch_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection attach and claim input is required")}
+  end
+
+  @spec replay_dispatch_for_system(ClaimDispatchInput.t()) ::
+          {:ok, map()} | {:error, Error.t() | term()}
+  def replay_dispatch_for_system(%ClaimDispatchInput{} = input) do
+    with {:ok, canonical_input} <- ClaimDispatchInput.new(Map.from_struct(input)),
+         {:ok, collection,
+          %{
+            subscription: subscription,
+            renewal_attempt: attempt,
+            order: order,
+            payment_intent: payment_intent,
+            provider_payment_method: provider_payment_method
+          }} <-
+           run_collection_transition_with_result(
+             canonical_input.collection_attempt_id,
+             :replay_renewal_collection_dispatch,
+             fn collection, attempt, subscription ->
+               replay_dispatch_locked(collection, attempt, subscription, canonical_input)
+             end
+           ) do
+      {:ok,
+       %{
+         subscription: subscription,
+         collection_attempt: collection,
+         renewal_attempt: attempt,
+         order: order,
+         payment_intent: payment_intent,
+         provider_payment_method: provider_payment_method
+       }}
+    end
+  end
+
+  def replay_dispatch_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection dispatch input is required")}
+  end
+
+  @spec recover_reached_for_subscription_for_system(String.t(), DateTime.t()) ::
+          {:ok, map() | nil} | {:error, Error.t() | term()}
+  def recover_reached_for_subscription_for_system(subscription_id, now)
+      when is_binary(subscription_id) and is_struct(now, DateTime) do
+    query = """
+    SELECT collection.id::text, collection.dispatch_epoch
+    FROM renewal_collection_attempts AS collection
+    JOIN renewal_attempts AS attempt
+      ON attempt.id = collection.renewal_attempt_id
+    WHERE attempt.subscription_id = $1::text::uuid
+      AND collection.dispatch_state = 'may_have_been_reached'
+      AND collection.financial_outcome IN ('unresolved', 'requires_action')
+    LIMIT 2
+    """
+
+    case Repo.query(query, [subscription_id]) do
+      {:ok, %{rows: []}} ->
+        {:ok, nil}
+
+      {:ok, %{rows: [[collection_attempt_id, expected_epoch]]}} ->
+        with {:ok, input} <-
+               ClaimDispatchInput.new(%{
+                 collection_attempt_id: collection_attempt_id,
+                 expected_epoch: expected_epoch,
+                 now: now
+               }),
+             {:ok, claim} <- replay_dispatch_for_system(input) do
+          {:ok, claim}
+        end
+
+      {:ok, %{rows: [_first, _second | _rest]}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_OUTCOME_UNRESOLVED",
+           "multiple reached renewal collections require exact reconciliation"
+         )}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  def recover_reached_for_subscription_for_system(_subscription_id, _now) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "subscription_id and current time are required to recover a reached collection"
+     )}
+  end
+
   @spec record_financial_outcome_for_system(RecordFinancialOutcomeInput.t()) ::
           {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
   def record_financial_outcome_for_system(%RecordFinancialOutcomeInput{} = input) do
     with {:ok, canonical_input} <- RecordFinancialOutcomeInput.new(Map.from_struct(input)) do
-      run_collection_transition(
-        canonical_input.collection_attempt_id,
-        :record_renewal_collection_financial_outcome,
-        fn collection, _attempt, _subscription ->
-          record_financial_outcome_locked(collection, canonical_input)
-        end
-      )
+      transition = fn collection, _attempt, _subscription ->
+        record_financial_outcome_locked(collection, canonical_input)
+      end
+
+      case {canonical_input.renewal_attempt_id, canonical_input.subscription_id} do
+        {renewal_attempt_id, subscription_id}
+        when is_binary(renewal_attempt_id) and is_binary(subscription_id) ->
+          run_collection_transition_with_identity(
+            canonical_input.collection_attempt_id,
+            %{
+              renewal_attempt_id: renewal_attempt_id,
+              subscription_id: subscription_id
+            },
+            :record_renewal_collection_financial_outcome,
+            transition,
+            false
+          )
+
+        _ ->
+          run_collection_transition(
+            canonical_input.collection_attempt_id,
+            :record_renewal_collection_financial_outcome,
+            transition
+          )
+      end
     end
   end
 
@@ -133,24 +285,218 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
   @spec success_handoff_for_system(String.t()) :: {:ok, map()} | {:error, Error.t() | term()}
   def success_handoff_for_system(collection_attempt_id) when is_binary(collection_attempt_id) do
-    with {:ok, collection} <- fetch_collection(collection_attempt_id),
-         :ok <- ensure_collection_verified_success(collection),
-         {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
-         {:ok, order} <- fetch_order(attempt.order_id),
-         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id),
-         :ok <- ensure_success_handoff_identity(collection, attempt, order, payment_intent) do
-      {:ok,
-       %{
-         order_id: order.id,
-         renewal_attempt_id: attempt.id,
-         collection_attempt_id: collection.id,
-         payment_intent_id: payment_intent.id
-       }}
+    case success_handoff_context_for_system(collection_attempt_id) do
+      {:ok, %{handoff: handoff}} -> {:ok, handoff}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   def success_handoff_for_system(_collection_attempt_id) do
     {:error, Error.new("VALIDATION_ERROR", "collection_attempt_id must be a UUID")}
+  end
+
+  @spec success_handoff_context_for_system(String.t()) ::
+          {:ok, %{handoff: map(), reconciliation: atom()}} | {:error, Error.t() | term()}
+  def success_handoff_context_for_system(collection_attempt_id)
+      when is_binary(collection_attempt_id) do
+    query = """
+    SELECT
+      order_row.id::text,
+      attempt.id::text,
+      collection.id::text,
+      payment_intent.id::text,
+      attempt.failure_code,
+      subscription.status::text
+    FROM renewal_collection_attempts AS collection
+    JOIN renewal_attempts AS attempt
+      ON attempt.id = collection.renewal_attempt_id
+    JOIN subscriptions AS subscription
+      ON subscription.id = attempt.subscription_id
+    JOIN orders AS order_row
+      ON order_row.id = attempt.order_id
+    JOIN payment_intents AS payment_intent
+      ON payment_intent.id = collection.payment_intent_id
+     AND payment_intent.order_id = order_row.id
+     AND payment_intent.state = 'succeeded'
+    WHERE collection.id = $1::text::uuid
+      AND collection.financial_outcome = 'verified_success'
+    LIMIT 1
+    """
+
+    case Repo.query(query, [collection_attempt_id]) do
+      {:ok,
+       %{
+         rows: [
+           [order_id, renewal_attempt_id, collection_id, payment_intent_id, failure_code, status]
+         ]
+       }} ->
+        reconciliation =
+          if failure_code == @renewal_authority_withdrawn_code or status == "suspended" do
+            :recovery_required
+          else
+            :handoff_only
+          end
+
+        {:ok,
+         %{
+           handoff: %{
+             order_id: order_id,
+             renewal_attempt_id: renewal_attempt_id,
+             collection_attempt_id: collection_id,
+             payment_intent_id: payment_intent_id
+           },
+           reconciliation: reconciliation
+         }}
+
+      {:ok, %{rows: []}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "verified collection success identity conflicts"
+         )}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  def success_handoff_context_for_system(_collection_attempt_id) do
+    {:error, Error.new("VALIDATION_ERROR", "collection_attempt_id must be a UUID")}
+  end
+
+  @spec settle_successful_collection_reservation_for_payment_application(
+          PaymentApplicationSettlementInput.t()
+        ) :: {:ok, map()} | {:error, Error.t() | term()}
+  def settle_successful_collection_reservation_for_payment_application(
+        %PaymentApplicationSettlementInput{} = input
+      ) do
+    with {:ok, canonical_input} <- PaymentApplicationSettlementInput.new(Map.from_struct(input)),
+         :ok <- ensure_caller_transaction(),
+         {:ok, collection, attempt} <- payment_application_settlement_identity(canonical_input),
+         false <- attempt.failure_code == @renewal_authority_withdrawn_code,
+         {:ok, physical?} <- physical_renewal?(attempt.variant_id),
+         {:ok, result} <-
+           settle_collection_reservation(
+             collection,
+             attempt,
+             physical?,
+             :consume
+           ) do
+      {:ok, result}
+    else
+      true ->
+        {:error,
+         Error.new(
+           "RENEWAL_AUTHORITY_WITHDRAWN",
+           "withdrawn renewal collection cannot consume inventory"
+         )}
+
+      false ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "collection settlement identity conflicts")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def settle_successful_collection_reservation_for_payment_application(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection settlement identity is required")}
+  end
+
+  @spec release_withdrawn_collection_reservation_for_payment_application(
+          PaymentApplicationSettlementInput.t()
+        ) :: {:ok, map()} | {:error, Error.t() | term()}
+  def release_withdrawn_collection_reservation_for_payment_application(
+        %PaymentApplicationSettlementInput{} = input
+      ) do
+    with {:ok, canonical_input} <- PaymentApplicationSettlementInput.new(Map.from_struct(input)),
+         :ok <- ensure_caller_transaction(),
+         {:ok, collection, attempt} <- payment_application_settlement_identity(canonical_input),
+         true <- attempt.failure_code == @renewal_authority_withdrawn_code,
+         {:ok, physical?} <- physical_renewal?(attempt.variant_id),
+         {:ok, result} <-
+           settle_collection_reservation(
+             collection,
+             attempt,
+             physical?,
+             :release
+           ) do
+      {:ok, result}
+    else
+      false ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal authority is not withdrawn")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def release_withdrawn_collection_reservation_for_payment_application(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection settlement identity is required")}
+  end
+
+  @spec release_terminal_collection_reservation_for_payment_application(
+          PaymentApplicationSettlementInput.t()
+        ) :: {:ok, map()} | {:error, Error.t() | term()}
+  def release_terminal_collection_reservation_for_payment_application(
+        %PaymentApplicationSettlementInput{} = input
+      ) do
+    with {:ok, canonical_input} <- PaymentApplicationSettlementInput.new(Map.from_struct(input)),
+         :ok <- ensure_caller_transaction(),
+         {:ok, collection, attempt, _payment_intent} <-
+           terminal_payment_application_identity(canonical_input),
+         :ok <- ensure_collection_dispatch_reached(collection),
+         true <-
+           collection.financial_outcome in [
+             :unresolved,
+             :requires_action,
+             :verified_terminal_financial_non_success
+           ],
+         {:ok, result} <- release_collection_generation_if_present(collection, attempt) do
+      {:ok, result}
+    else
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "terminal collection settlement identity or outcome conflicts"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def release_terminal_collection_reservation_for_payment_application(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection settlement identity is required")}
+  end
+
+  @spec release_withdrawn_collection_reservation_for_cancellation(
+          CancellationReservationInput.t()
+        ) :: {:ok, map()} | {:error, Error.t() | term()}
+  def release_withdrawn_collection_reservation_for_cancellation(
+        %CancellationReservationInput{} = input
+      ) do
+    with {:ok, canonical_input} <- CancellationReservationInput.new(Map.from_struct(input)),
+         :ok <- ensure_caller_transaction(),
+         {:ok, attempt} <- fetch_renewal_attempt(canonical_input.renewal_attempt_id),
+         true <- attempt.failure_code == @renewal_authority_withdrawn_code,
+         {:ok, collections} <- fetch_collections(attempt.id),
+         {:ok, collection} <- active_collection_for_reservation_release(collections),
+         {:ok, result} <- release_collection_generation_if_present(collection, attempt) do
+      {:ok, result}
+    else
+      false ->
+        {:error, Error.new("RENEWAL_AUTHORITY_WITHDRAWN", "renewal authority is not withdrawn")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def release_withdrawn_collection_reservation_for_cancellation(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed cancellation reservation input is required")}
   end
 
   @spec assign_reservation_generation_for_system(ReservationGenerationInput.t()) ::
@@ -207,6 +553,230 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     {:error, Error.new("VALIDATION_ERROR", "typed collection resume input is required")}
   end
 
+  defp ensure_caller_transaction do
+    if Repo.in_transaction?() do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "INVALID_STATE_TRANSITION",
+         "collection inventory settlement requires the payment application transaction"
+       )}
+    end
+  end
+
+  defp payment_application_settlement_identity(input) do
+    query =
+      from collection in RenewalCollectionAttempt,
+        join: attempt in RenewalAttempt,
+        on: attempt.id == collection.renewal_attempt_id,
+        join: order in Order,
+        on: order.id == attempt.order_id,
+        join: payment_intent in PaymentIntent,
+        on: payment_intent.id == collection.payment_intent_id,
+        where:
+          collection.id == ^input.collection_attempt_id and
+            collection.renewal_attempt_id == ^input.renewal_attempt_id and
+            collection.payment_intent_id == ^input.payment_intent_id and
+            collection.dispatch_state == :may_have_been_reached and
+            attempt.id == ^input.renewal_attempt_id and attempt.order_id == ^input.order_id and
+            payment_intent.order_id == order.id and payment_intent.state == :succeeded,
+        select: {collection, attempt}
+
+    case Repo.one(query) do
+      {%RenewalCollectionAttempt{} = collection, %RenewalAttempt{} = attempt} ->
+        {:ok, collection, attempt}
+
+      nil ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "collection settlement identity conflicts")}
+    end
+  end
+
+  defp terminal_payment_application_identity(input) do
+    query =
+      from collection in RenewalCollectionAttempt,
+        join: attempt in RenewalAttempt,
+        on: attempt.id == collection.renewal_attempt_id,
+        join: order in Order,
+        on: order.id == attempt.order_id,
+        join: payment_intent in PaymentIntent,
+        on: payment_intent.id == collection.payment_intent_id,
+        where:
+          collection.id == ^input.collection_attempt_id and
+            collection.renewal_attempt_id == ^input.renewal_attempt_id and
+            collection.payment_intent_id == ^input.payment_intent_id and
+            attempt.id == ^input.renewal_attempt_id and attempt.order_id == ^input.order_id and
+            payment_intent.order_id == order.id and payment_intent.state == :failed,
+        select: {collection, attempt, payment_intent}
+
+    case Repo.one(query) do
+      {%RenewalCollectionAttempt{} = collection, %RenewalAttempt{} = attempt,
+       %PaymentIntent{} = payment_intent} ->
+        {:ok, collection, attempt, payment_intent}
+
+      nil ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "terminal collection identity is not exact")}
+    end
+  end
+
+  defp active_collection_for_reservation_release(collections) do
+    case Enum.filter(collections, &active_collection?/1) do
+      [] ->
+        {:ok, nil}
+
+      [%RenewalCollectionAttempt{} = collection] ->
+        {:ok, collection}
+
+      _ ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "renewal attempt has multiple active collection identities"
+         )}
+    end
+  end
+
+  defp release_collection_generation_if_present(nil, _attempt),
+    do: {:ok, %{reservation: nil, changed?: false, inventory_variant_ids_to_invalidate: []}}
+
+  defp release_collection_generation_if_present(
+         %RenewalCollectionAttempt{reservation_generation_id: nil},
+         _attempt
+       ),
+       do: {:ok, %{reservation: nil, changed?: false, inventory_variant_ids_to_invalidate: []}}
+
+  defp release_collection_generation_if_present(
+         %RenewalCollectionAttempt{} = collection,
+         %RenewalAttempt{} = attempt
+       ) do
+    with {:ok, true} <- physical_renewal?(attempt.variant_id),
+         {:ok, result} <- settle_collection_reservation(collection, attempt, true, :release) do
+      {:ok, result}
+    else
+      {:ok, false} ->
+        {:error,
+         Error.new(
+           "RESERVATION_CONFLICT",
+           "nonphysical renewal collection cannot own an inventory generation"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp ensure_collection_dispatch_reached(%RenewalCollectionAttempt{
+         dispatch_state: :may_have_been_reached
+       }),
+       do: :ok
+
+  defp ensure_collection_dispatch_reached(_collection) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "successful renewal payment has no reached collection dispatch"
+     )}
+  end
+
+  defp settle_collection_reservation(collection, _attempt, false, _action) do
+    if is_nil(collection.reservation_generation_id) do
+      {:ok, %{reservation: nil, changed?: false, inventory_variant_ids_to_invalidate: []}}
+    else
+      {:error,
+       Error.new(
+         "RESERVATION_CONFLICT",
+         "nonphysical renewal collection cannot settle an inventory generation"
+       )}
+    end
+  end
+
+  defp settle_collection_reservation(
+         %RenewalCollectionAttempt{reservation_generation_id: generation_id} = collection,
+         attempt,
+         true,
+         action
+       )
+       when is_binary(generation_id) and action in [:consume, :release] do
+    with {:ok, reservation_key} <- reservation_key_for_collection(collection, attempt),
+         {:ok, %{reservation: %InventoryReservation{} = reservation, changed?: changed?}} <-
+           Store.Orders.settle_exact_generation_in_caller_transaction(
+             attempt.order_id,
+             attempt.variant_id,
+             reservation_key,
+             action,
+             now: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+           ),
+         :ok <-
+           ensure_settled_generation_identity(
+             reservation,
+             collection,
+             attempt,
+             reservation_key,
+             action
+           ) do
+      {:ok,
+       %{
+         reservation: reservation,
+         changed?: changed?,
+         inventory_variant_ids_to_invalidate: if(changed?, do: [attempt.variant_id], else: [])
+       }}
+    end
+  end
+
+  defp settle_collection_reservation(
+         %RenewalCollectionAttempt{reservation_generation_id: nil},
+         _attempt,
+         true,
+         _action
+       ) do
+    {:error,
+     Error.new(
+       "RESERVATION_CONFLICT",
+       "physical renewal collection has no assigned inventory generation"
+     )}
+  end
+
+  defp ensure_settled_generation_identity(
+         %InventoryReservation{} = reservation,
+         collection,
+         attempt,
+         reservation_key,
+         :consume
+       ) do
+    if reservation.id == collection.reservation_generation_id and
+         reservation.order_id == attempt.order_id and
+         reservation.variant_id == attempt.variant_id and
+         reservation.reservation_key == reservation_key and
+         reservation.quantity == attempt.quantity and reservation.state == :consumed do
+      :ok
+    else
+      {:error,
+       Error.new("RESERVATION_CONFLICT", "consumed inventory generation identity conflicts")}
+    end
+  end
+
+  defp ensure_settled_generation_identity(
+         %InventoryReservation{} = reservation,
+         collection,
+         attempt,
+         reservation_key,
+         :release
+       ) do
+    if reservation.id == collection.reservation_generation_id and
+         reservation.order_id == attempt.order_id and
+         reservation.variant_id == attempt.variant_id and
+         reservation.reservation_key == reservation_key and
+         reservation.quantity == attempt.quantity and
+         reservation.state in [:cancelled, :expired] do
+      :ok
+    else
+      {:error,
+       Error.new("RESERVATION_CONFLICT", "released inventory generation identity conflicts")}
+    end
+  end
+
   defp run_collection_transition(collection_attempt_id, flow, transition) do
     run_collection_transition(collection_attempt_id, flow, transition, false)
   end
@@ -216,56 +786,96 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   end
 
   defp run_collection_transition(collection_attempt_id, flow, transition, return_result?) do
-    with {:ok, observed_collection} <- fetch_collection(collection_attempt_id),
-         {:ok, observed_attempt} <- fetch_renewal_attempt(observed_collection.renewal_attempt_id) do
-      transaction_result =
-        Repo.transaction(fn ->
-          with :ok <- lock_subscription(observed_attempt.subscription_id),
-               :ok <-
-                 lock_renewal_attempt(
-                   observed_attempt.id,
-                   observed_attempt.subscription_id
-                 ),
-               :ok <- lock_collection(collection_attempt_id, observed_attempt.id),
-               {:ok, attempt} <- fetch_renewal_attempt(observed_attempt.id),
-               {:ok, collection} <- fetch_collection(collection_attempt_id),
-               {:ok, subscription} <- fetch_subscription(attempt.subscription_id) do
-            case transition.(collection, attempt, subscription) do
-              {:ok, %RenewalCollectionAttempt{} = updated, notifications, result} ->
-                %{collection: updated, notifications: notifications, result: result}
+    with {:ok, identity} <- fetch_collection_transition_identity(collection_attempt_id) do
+      run_collection_transition_with_identity(
+        collection_attempt_id,
+        identity,
+        flow,
+        transition,
+        return_result?
+      )
+    end
+  end
 
-              {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
-                %{collection: updated, notifications: notifications, result: nil}
+  defp run_collection_transition_with_expected_identity(
+         collection_attempt_id,
+         identity,
+         flow,
+         transition
+       ) do
+    run_collection_transition_with_identity(
+      collection_attempt_id,
+      identity,
+      flow,
+      transition,
+      true
+    )
+  end
 
-              {:error, reason} ->
-                Repo.rollback(reason)
-            end
-          else
-            {:error, reason} -> Repo.rollback(reason)
+  defp run_collection_transition_with_identity(
+         collection_attempt_id,
+         identity,
+         flow,
+         transition,
+         return_result?
+       ) do
+    transaction_result =
+      Repo.transaction(fn ->
+        with {:ok, subscription} <- fetch_subscription(identity.subscription_id, true),
+             {:ok, attempt} <- fetch_renewal_attempt(identity.renewal_attempt_id, true),
+             :ok <-
+               ensure_transition_attempt_subscription(
+                 attempt,
+                 identity.subscription_id
+               ),
+             {:ok, collection} <- fetch_collection(collection_attempt_id, true),
+             :ok <- ensure_transition_collection_attempt(collection, attempt) do
+          case transition.(collection, attempt, subscription) do
+            {:ok, %RenewalCollectionAttempt{} = updated, notifications, result} ->
+              %{collection: updated, notifications: notifications, result: result}
+
+            {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
+              %{collection: updated, notifications: notifications, result: nil}
+
+            {:error, reason} ->
+              Repo.rollback(reason)
           end
-        end)
-        |> normalize_transition_notifications()
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> normalize_transition_notifications()
 
-      case transaction_result do
-        {:ok,
-         %{
-           collection: %RenewalCollectionAttempt{} = collection,
-           result: result
-         }, notifications} ->
-          :ok =
-            AshNotifications.notify_post_commit(notifications,
-              context: %{flow: flow, collection_attempt_id: collection_attempt_id}
-            )
+    case transaction_result do
+      {:ok,
+       %{
+         collection: %RenewalCollectionAttempt{} = collection,
+         result: result
+       }, notifications} ->
+        :ok =
+          AshNotifications.notify_post_commit(notifications,
+            context: %{flow: flow, collection_attempt_id: collection_attempt_id}
+          )
 
-          if return_result? do
-            {:ok, collection, result}
-          else
-            {:ok, collection}
-          end
+        if return_result? do
+          {:ok, collection, result}
+        else
+          {:ok, collection}
+        end
 
-        {:error, reason} ->
-          {:error, Normalize.normalize(reason)}
-      end
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp assign_locked_generation(
+         %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached} = collection,
+         attempt,
+         _subscription,
+         _input
+       ) do
+    with :ok <- SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt) do
+      {:ok, collection, []}
     end
   end
 
@@ -273,20 +883,19 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     with :ok <-
            SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
          :ok <- ensure_collection_dispatch_authority(subscription, attempt, input.now),
-         :ok <- ensure_assignable_collection(collection),
          {:ok, physical?} <- physical_renewal?(attempt.variant_id) do
-      case {physical?, collection.reservation_generation_id} do
-        {false, nil} ->
+      case {collection.dispatch_state, physical?, collection.reservation_generation_id} do
+        {state, false, nil} when state in [:not_started, :may_have_been_reached] ->
           {:ok, collection, []}
 
-        {false, _generation_id} ->
+        {state, false, _generation_id} when state in [:not_started, :may_have_been_reached] ->
           {:error,
            Error.new(
              "RESERVATION_CONFLICT",
              "nonphysical renewal collection cannot own an inventory generation"
            )}
 
-        {true, nil} ->
+        {:not_started, true, nil} ->
           with :ok <- ensure_bound_order(attempt),
                {:ok, reservation} <-
                  reserve_new_generation(collection, attempt, input.now),
@@ -304,7 +913,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
             {:ok, updated, notifications}
           end
 
-        {true, generation_id} when is_binary(generation_id) ->
+        {state, true, generation_id}
+        when state in [:not_started, :may_have_been_reached] and is_binary(generation_id) ->
           with :ok <- ensure_bound_order(attempt),
                {:ok, reservation_key} <-
                  reservation_key_for_collection(collection, attempt),
@@ -317,6 +927,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
                  ) do
             {:ok, collection, []}
           end
+
+        _ ->
+          {:error,
+           Error.new(
+             "INVALID_STATE_TRANSITION",
+             "collection cannot acquire an inventory generation in its current state"
+           )}
       end
     end
   end
@@ -340,7 +957,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
            update_collection(collection, :attach_payment_intent, %{
              payment_intent_id: payment_intent.id
            }) do
-      {:ok, updated, notifications}
+      {:ok, updated, notifications,
+       %{renewal_attempt: attempt, order: order, payment_intent: payment_intent}}
     end
   end
 
@@ -361,13 +979,211 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              subscription
            ),
          :ok <- ensure_collection_has_exact_inventory_generation(collection, attempt),
-         :ok <- ensure_collection_dispatch_authority(subscription, attempt, input.now),
-         :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
-         {:ok, provider_payment_method} <- lock_active_stored_payment_method(subscription),
+         {:ok, payment_intent, provider_payment_method, method_notifications} <-
+           prepare_dispatch_provider_method(
+             collection,
+             payment_intent,
+             subscription,
+             attempt,
+             input.now
+           ),
          {:ok, updated, notifications} <-
            claim_collection_dispatch(collection, input.expected_epoch) do
-      {:ok, updated, notifications, provider_payment_method}
+      {:ok, updated, method_notifications ++ notifications,
+       %{
+         subscription: subscription,
+         renewal_attempt: attempt,
+         order: order,
+         payment_intent: payment_intent,
+         provider_payment_method: provider_payment_method
+       }}
     end
+  end
+
+  defp replay_dispatch_locked(collection, attempt, subscription, input) do
+    with :ok <- ensure_exact_replay_dispatch_epoch(collection, input.expected_epoch),
+         :ok <- SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
+         :ok <- ensure_bound_order(attempt),
+         :ok <- ensure_collection_has_exact_payment_intent(collection),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id),
+         :ok <- ensure_bound_order_matches_attempt(order, attempt),
+         :ok <-
+           ensure_payment_intent_matches_collection(
+             payment_intent,
+             collection,
+             order,
+             attempt,
+             subscription
+           ),
+         :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+         {:ok, provider_payment_method} <- provider_method_from_payment_intent(payment_intent) do
+      {:ok, collection, [],
+       %{
+         subscription: subscription,
+         renewal_attempt: attempt,
+         order: order,
+         payment_intent: payment_intent,
+         provider_payment_method: provider_payment_method
+       }}
+    end
+  end
+
+  defp prepare_dispatch_provider_method(
+         %RenewalCollectionAttempt{dispatch_state: :not_started},
+         %PaymentIntent{} = payment_intent,
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt,
+         now
+       ) do
+    with :ok <- ensure_collection_dispatch_authority(subscription, attempt, now),
+         :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+         {:ok, provider_payment_method} <- lock_active_stored_payment_method(subscription),
+         {:ok, updated_payment_intent, notifications} <-
+           bind_dispatch_provider_method(payment_intent, provider_payment_method) do
+      {:ok, updated_payment_intent, provider_payment_method, notifications}
+    end
+  end
+
+  defp prepare_dispatch_provider_method(
+         %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached},
+         %PaymentIntent{} = payment_intent,
+         %Subscription{} = subscription,
+         _attempt,
+         _now
+       ) do
+    with :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+         {:ok, provider_payment_method} <- provider_method_from_payment_intent(payment_intent) do
+      {:ok, payment_intent, provider_payment_method, []}
+    end
+  end
+
+  defp prepare_dispatch_provider_method(
+         _collection,
+         _payment_intent,
+         _subscription,
+         _attempt,
+         _now
+       ) do
+    {:error, Error.new("STALE_RECORD", "collection is not at a dispatchable state")}
+  end
+
+  defp bind_dispatch_provider_method(
+         %PaymentIntent{} = payment_intent,
+         %{provider_customer_ref: customer_ref, provider_payment_method_ref: method_ref}
+       )
+       when is_binary(customer_ref) and customer_ref != "" and is_binary(method_ref) and
+              method_ref != "" do
+    case {payment_intent.provider_customer_ref, payment_intent.provider_payment_method_ref} do
+      {nil, nil} ->
+        update_payment_intent_provider_method(payment_intent, customer_ref, method_ref)
+
+      {^customer_ref, ^method_ref} ->
+        if payment_intent.state == :created do
+          prepare_payment_intent_for_dispatch(payment_intent, customer_ref, method_ref)
+        else
+          {:ok, payment_intent, []}
+        end
+
+      _conflicting_reference ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "PaymentIntent already has a conflicting provider method identity"
+         )}
+    end
+  end
+
+  defp bind_dispatch_provider_method(_payment_intent, _provider_payment_method) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "provider payment method identity is incomplete"
+     )}
+  end
+
+  defp update_payment_intent_provider_method(
+         %PaymentIntent{state: :created} = payment_intent,
+         customer_ref,
+         method_ref
+       ),
+       do: prepare_payment_intent_for_dispatch(payment_intent, customer_ref, method_ref)
+
+  defp update_payment_intent_provider_method(payment_intent, customer_ref, method_ref) do
+    payment_intent
+    |> Ash.Changeset.for_update(
+      :set_provider_reference,
+      %{
+        provider_customer_ref: customer_ref,
+        provider_payment_method_ref: method_ref
+      },
+      context: %{system?: true}
+    )
+    |> update_payment_intent_with_notifications()
+  end
+
+  defp prepare_payment_intent_for_dispatch(payment_intent, customer_ref, method_ref) do
+    payment_intent
+    |> Ash.Changeset.for_update(
+      :prepare_renewal_dispatch,
+      %{
+        provider_customer_ref: customer_ref,
+        provider_payment_method_ref: method_ref
+      },
+      context: %{system?: true}
+    )
+    |> update_payment_intent_with_notifications()
+  end
+
+  defp update_payment_intent_with_notifications(changeset) do
+    case Ash.update(changeset,
+           domain: Store.Payments,
+           authorize?: false,
+           context: %{system?: true},
+           return_notifications?: true
+         ) do
+      {:ok, %PaymentIntent{} = updated, notifications} -> {:ok, updated, notifications}
+      {:ok, %PaymentIntent{} = updated} -> {:ok, updated, []}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp provider_method_from_payment_intent(%PaymentIntent{
+         provider_customer_ref: customer_ref,
+         provider_payment_method_ref: method_ref
+       })
+       when is_binary(customer_ref) and customer_ref != "" and is_binary(method_ref) and
+              method_ref != "" do
+    {:ok,
+     %{
+       provider_customer_ref: customer_ref,
+       provider_payment_method_ref: method_ref
+     }}
+  end
+
+  defp provider_method_from_payment_intent(_payment_intent) do
+    {:error,
+     Error.new(
+       "PAYMENT_OUTCOME_UNRESOLVED",
+       "reached renewal dispatch has no persisted provider method identity",
+       %{existing_collection_replay?: true}
+     )}
+  end
+
+  defp ensure_generation_before_dispatch_or_replay(
+         %RenewalCollectionAttempt{dispatch_state: :not_started} = collection,
+         attempt
+       ),
+       do: ensure_collection_has_exact_inventory_generation(collection, attempt)
+
+  defp ensure_generation_before_dispatch_or_replay(
+         %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached},
+         _attempt
+       ),
+       do: :ok
+
+  defp ensure_generation_before_dispatch_or_replay(_collection, _attempt) do
+    {:error, Error.new("STALE_RECORD", "collection is not at a dispatchable epoch")}
   end
 
   defp record_financial_outcome_locked(collection, input) do
@@ -457,28 +1273,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
      )}
   end
 
-  defp ensure_collection_verified_success(%RenewalCollectionAttempt{
-         financial_outcome: :verified_success,
-         payment_intent_id: id
-       })
-       when is_binary(id),
-       do: :ok
-
-  defp ensure_collection_verified_success(_collection) do
-    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "collection has no exact verified success")}
-  end
-
-  defp ensure_success_handoff_identity(collection, attempt, order, payment_intent) do
-    if collection.renewal_attempt_id == attempt.id and order.id == attempt.order_id and
-         payment_intent.id == collection.payment_intent_id and
-         payment_intent.order_id == order.id and payment_intent.state == :succeeded do
-      :ok
-    else
-      {:error,
-       Error.new("PAYMENT_EVENT_UNVERIFIED", "verified collection success identity conflicts")}
-    end
-  end
-
   defp lock_active_stored_payment_method(%Subscription{
          stored_payment_method_id: payment_method_id,
          user_id: user_id,
@@ -552,6 +1346,25 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
   defp ensure_exact_dispatch_epoch(_collection, _expected_epoch) do
     {:error, Error.new("STALE_RECORD", "collection is not at the exact dispatch epoch to claim")}
+  end
+
+  defp ensure_exact_replay_dispatch_epoch(
+         %RenewalCollectionAttempt{
+           dispatch_state: :may_have_been_reached,
+           financial_outcome: financial_outcome,
+           dispatch_epoch: epoch
+         },
+         epoch
+       )
+       when financial_outcome in [:unresolved, :requires_action],
+       do: :ok
+
+  defp ensure_exact_replay_dispatch_epoch(_collection, _expected_epoch) do
+    {:error,
+     Error.new(
+       "STALE_RECORD",
+       "collection is not at the exact unresolved dispatch epoch to replay"
+     )}
   end
 
   defp ensure_collection_has_exact_payment_intent(%RenewalCollectionAttempt{
@@ -956,20 +1769,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
      Error.new("VALIDATION_ERROR", "renewal Order must be bound before inventory assignment")}
   end
 
-  defp ensure_assignable_collection(%RenewalCollectionAttempt{
-         dispatch_state: :not_started,
-         financial_outcome: :unresolved
-       }),
-       do: :ok
-
-  defp ensure_assignable_collection(_collection) do
-    {:error,
-     Error.new(
-       "INVALID_STATE_TRANSITION",
-       "only an unresolved collection that has not started dispatch can own a reservation generation"
-     )}
-  end
-
   defp ensure_exact_fence_epoch(
          %RenewalCollectionAttempt{
            dispatch_state: :not_started,
@@ -1100,10 +1899,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp start_locked(%RenewalAttempt{} = attempt, input) do
     transaction_result =
       Repo.transaction(fn ->
-        with :ok <- lock_subscription(attempt.subscription_id),
-             :ok <- lock_renewal_attempt(attempt.id, attempt.subscription_id),
-             {:ok, locked_attempt} <- fetch_renewal_attempt(attempt.id),
-             {:ok, subscription} <- fetch_subscription(attempt.subscription_id),
+        with {:ok, subscription} <- fetch_subscription(attempt.subscription_id, true),
+             {:ok, locked_attempt} <- fetch_renewal_attempt(attempt.id, true),
+             :ok <-
+               ensure_transition_attempt_subscription(
+                 locked_attempt,
+                 subscription.id
+               ),
              {:ok, collections} <- fetch_collections(locked_attempt.id),
              {:ok, collection, notifications} <-
                start_or_replay(locked_attempt, subscription, collections, input) do
@@ -1125,6 +1927,255 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
       {:error, reason} ->
         {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp start_and_assign_locked(subscription_id, input) do
+    transaction_result =
+      Repo.transaction(fn ->
+        with {:ok, subscription} <- fetch_subscription(subscription_id, true),
+             {:ok, locked_attempt} <- fetch_renewal_attempt(input.renewal_attempt_id, true),
+             :ok <- ensure_transition_attempt_subscription(locked_attempt, subscription.id),
+             {:ok, collections} <- fetch_collections(locked_attempt.id),
+             {:ok, collection, start_notifications} <-
+               start_or_replay(locked_attempt, subscription, collections, input),
+             {:ok, resumed_collection, resume_notifications} <-
+               resume_collection_if_fenced(collection, locked_attempt, subscription, input.now),
+             {:ok, assigned_collection, assign_notifications} <-
+               assign_locked_generation(
+                 resumed_collection,
+                 locked_attempt,
+                 subscription,
+                 %ReservationGenerationInput{
+                   collection_attempt_id: resumed_collection.id,
+                   now: input.now
+                 }
+               ) do
+          %{
+            collection: assigned_collection,
+            notifications: start_notifications ++ resume_notifications ++ assign_notifications
+          }
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> normalize_transaction_notifications()
+
+    case transaction_result do
+      {:ok, %{collection: %RenewalCollectionAttempt{} = collection}, notifications} ->
+        :ok =
+          AshNotifications.notify_post_commit(notifications,
+            context: %{
+              flow: :start_and_assign_renewal_collection,
+              renewal_attempt_id: input.renewal_attempt_id
+            }
+          )
+
+        {:ok, collection}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp start_input_subscription_id(%StartInput{subscription_id: subscription_id})
+       when is_binary(subscription_id),
+       do: {:ok, subscription_id}
+
+  defp start_input_subscription_id(%StartInput{renewal_attempt_id: renewal_attempt_id}) do
+    with {:ok, attempt} <- fetch_renewal_attempt(renewal_attempt_id) do
+      {:ok, attempt.subscription_id}
+    end
+  end
+
+  defp resume_collection_if_fenced(
+         %RenewalCollectionAttempt{dispatch_state: :not_submitted} = collection,
+         attempt,
+         subscription,
+         now
+       ) do
+    resume_locked_collection(
+      collection,
+      attempt,
+      subscription,
+      %ResumeInput{
+        collection_attempt_id: collection.id,
+        expected_epoch: collection.dispatch_epoch,
+        now: now
+      }
+    )
+  end
+
+  defp resume_collection_if_fenced(
+         %RenewalCollectionAttempt{} = collection,
+         _attempt,
+         _subscription,
+         _now
+       ),
+       do: {:ok, collection, []}
+
+  defp attach_and_claim_dispatch_locked(collection, attempt, subscription, input) do
+    with :ok <- SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
+         :ok <- ensure_collection_can_bind_payment_intent(collection, input.payment_intent_id),
+         :ok <- ensure_bound_order(attempt),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
+         :ok <- ensure_bound_order_matches_attempt(order, attempt),
+         :ok <-
+           ensure_payment_intent_matches_collection(
+             payment_intent,
+             collection,
+             order,
+             attempt,
+             subscription
+           ),
+         {:ok, bound_collection, bind_notifications} <-
+           bind_collection_payment_intent(collection, payment_intent.id),
+         :ok <- ensure_collection_has_exact_dispatch_epoch(bound_collection, input),
+         :ok <-
+           ensure_generation_before_dispatch_or_replay(
+             bound_collection,
+             attempt
+           ),
+         {:ok, payment_intent, provider_payment_method, method_notifications} <-
+           prepare_dispatch_provider_method(
+             bound_collection,
+             payment_intent,
+             subscription,
+             attempt,
+             input.now
+           ),
+         {:ok, updated_attempt, attempt_notifications} <-
+           maybe_mirror_collection_payment_intent(attempt, order, payment_intent),
+         {:ok, updated_collection, dispatch_notifications} <-
+           claim_or_replay_collection_dispatch(
+             bound_collection,
+             payment_intent.id,
+             input.expected_epoch
+           ) do
+      {:ok, updated_collection,
+       bind_notifications ++
+         method_notifications ++
+         attempt_notifications ++
+         dispatch_notifications,
+       %{
+         renewal_attempt: updated_attempt,
+         order: order,
+         payment_intent: payment_intent,
+         provider_payment_method: provider_payment_method
+       }}
+    end
+  end
+
+  defp maybe_mirror_collection_payment_intent(
+         %RenewalAttempt{payment_intent_id: nil} = attempt,
+         %Order{} = order,
+         %PaymentIntent{} = payment_intent
+       ) do
+    attempt
+    |> Ash.Changeset.for_update(
+      :mark_processing,
+      %{order_id: order.id, payment_intent_id: payment_intent.id},
+      context: %{system?: true}
+    )
+    |> Ash.update(
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true},
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, %RenewalAttempt{} = updated, notifications} -> {:ok, updated, notifications}
+      {:ok, %RenewalAttempt{} = updated} -> {:ok, updated, []}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp maybe_mirror_collection_payment_intent(
+         %RenewalAttempt{} = attempt,
+         _order,
+         _payment_intent
+       ),
+       do: {:ok, attempt, []}
+
+  defp bind_collection_payment_intent(collection, payment_intent_id) do
+    case collection.payment_intent_id do
+      ^payment_intent_id ->
+        {:ok, collection, []}
+
+      nil when collection.dispatch_state == :not_started ->
+        {:ok, collection, []}
+
+      nil ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "reached collection has no exact bound PaymentIntent"
+         )}
+
+      _other_id ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "collection cannot bind a different or late PaymentIntent"
+         )}
+    end
+  end
+
+  defp ensure_collection_has_exact_dispatch_epoch(
+         %RenewalCollectionAttempt{dispatch_state: :not_started} = collection,
+         %AttachAndClaimInput{expected_epoch: epoch}
+       ),
+       do: ensure_exact_dispatch_epoch(collection, epoch)
+
+  defp ensure_collection_has_exact_dispatch_epoch(
+         %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached} = collection,
+         %AttachAndClaimInput{expected_epoch: epoch}
+       ),
+       do: ensure_exact_replay_dispatch_epoch(collection, epoch)
+
+  defp ensure_collection_has_exact_dispatch_epoch(_collection, _input) do
+    {:error, Error.new("STALE_RECORD", "collection dispatch epoch is not replayable")}
+  end
+
+  defp claim_or_replay_collection_dispatch(
+         %RenewalCollectionAttempt{dispatch_state: :not_started} = collection,
+         payment_intent_id,
+         expected_epoch
+       ),
+       do: attach_and_claim_collection_dispatch(collection, payment_intent_id, expected_epoch)
+
+  defp claim_or_replay_collection_dispatch(
+         %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached} = collection,
+         payment_intent_id,
+         _expected_epoch
+       ) do
+    case collection.payment_intent_id do
+      ^payment_intent_id ->
+        {:ok, collection, []}
+
+      _ ->
+        {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "replay PaymentIntent identity changed")}
+    end
+  end
+
+  defp attach_and_claim_collection_dispatch(collection, payment_intent_id, expected_epoch) do
+    changeset =
+      collection
+      |> Ash.Changeset.new()
+      |> Ash.Changeset.set_argument(:payment_intent_id, payment_intent_id)
+      |> Ash.Changeset.set_argument(:expected_epoch, expected_epoch)
+      |> Ash.Changeset.for_update(:attach_and_claim_dispatch, %{}, context: %{system?: true})
+
+    case Ash.update(changeset,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true},
+           return_notifications?: true
+         ) do
+      {:ok, %RenewalCollectionAttempt{} = updated, notifications} -> {:ok, updated, notifications}
+      {:ok, %RenewalCollectionAttempt{} = updated} -> {:ok, updated, []}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
     end
   end
 
@@ -1345,7 +2396,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       {:error,
        Error.new(
          "INVALID_STATE_TRANSITION",
-         "a successful renewal cannot start another collection"
+         "a successful renewal cannot start another collection",
+         %{already_succeeded?: true}
        )}
     else
       :ok
@@ -1355,55 +2407,50 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp active_collection?(%RenewalCollectionAttempt{financial_outcome: outcome}),
     do: outcome in [:unresolved, :requires_action]
 
-  defp lock_subscription(subscription_id) do
-    case Repo.query("SELECT id FROM subscriptions WHERE id = $1::text::uuid FOR UPDATE", [
-           subscription_id
-         ]) do
-      {:ok, %{num_rows: 1}} ->
-        :ok
+  defp fetch_collection_transition_identity(collection_attempt_id) do
+    query = """
+    SELECT collection.renewal_attempt_id::text, attempt.subscription_id::text
+    FROM renewal_collection_attempts collection
+    JOIN renewal_attempts attempt ON attempt.id = collection.renewal_attempt_id
+    WHERE collection.id = $1::text::uuid
+    LIMIT 1
+    """
 
-      {:ok, %{num_rows: 0}} ->
-        {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
+    case Repo.query(query, [collection_attempt_id]) do
+      {:ok, %{rows: [[renewal_attempt_id, subscription_id]]}} ->
+        {:ok, %{renewal_attempt_id: renewal_attempt_id, subscription_id: subscription_id}}
+
+      {:ok, %{rows: []}} ->
+        {:error, Error.new("NOT_FOUND", "renewal collection was not found")}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, Normalize.normalize(reason)}
     end
   end
 
-  defp lock_renewal_attempt(attempt_id, subscription_id) do
-    case Repo.query(
-           "SELECT id FROM renewal_attempts WHERE id = $1::text::uuid AND subscription_id = $2::text::uuid FOR UPDATE",
-           [attempt_id, subscription_id]
-         ) do
-      {:ok, %{num_rows: 1}} ->
-        :ok
+  defp ensure_transition_attempt_subscription(
+         %RenewalAttempt{subscription_id: subscription_id},
+         subscription_id
+       ),
+       do: :ok
 
-      {:ok, %{num_rows: 0}} ->
-        {:error, Error.new("STALE_RECORD", "renewal attempt changed during collection start")}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp ensure_transition_attempt_subscription(_attempt, _subscription_id) do
+    {:error, Error.new("STALE_RECORD", "renewal attempt changed during collection transition")}
   end
 
-  defp lock_collection(collection_attempt_id, renewal_attempt_id) do
-    case Repo.query(
-           "SELECT id FROM renewal_collection_attempts WHERE id = $1::text::uuid AND renewal_attempt_id = $2::text::uuid FOR UPDATE",
-           [collection_attempt_id, renewal_attempt_id]
-         ) do
-      {:ok, %{num_rows: 1}} ->
-        :ok
+  defp ensure_transition_collection_attempt(
+         %RenewalCollectionAttempt{renewal_attempt_id: renewal_attempt_id},
+         %RenewalAttempt{id: renewal_attempt_id}
+       ),
+       do: :ok
 
-      {:ok, %{num_rows: 0}} ->
-        {:error, Error.new("STALE_RECORD", "renewal collection changed during transition")}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp ensure_transition_collection_attempt(_collection, _attempt) do
+    {:error, Error.new("STALE_RECORD", "renewal collection changed during transition")}
   end
 
-  defp fetch_renewal_attempt(attempt_id) do
+  defp fetch_renewal_attempt(attempt_id, lock? \\ false) do
     query = RenewalAttempt |> Ash.Query.filter(expr(id == ^attempt_id))
+    query = if lock?, do: Ash.Query.lock(query, "FOR UPDATE"), else: query
 
     case Ash.read_one(query,
            domain: Store.Subscriptions,
@@ -1416,8 +2463,9 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp fetch_collection(collection_attempt_id) do
+  defp fetch_collection(collection_attempt_id, lock?) do
     query = RenewalCollectionAttempt |> Ash.Query.filter(expr(id == ^collection_attempt_id))
+    query = if lock?, do: Ash.Query.lock(query, "FOR UPDATE"), else: query
 
     case Ash.read_one(query,
            domain: Store.Subscriptions,
@@ -1430,8 +2478,9 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp fetch_subscription(subscription_id) do
+  defp fetch_subscription(subscription_id, lock?) do
     query = Subscription |> Ash.Query.filter(expr(id == ^subscription_id))
+    query = if lock?, do: Ash.Query.lock(query, "FOR UPDATE"), else: query
 
     case Ash.read_one(query,
            domain: Store.Subscriptions,
