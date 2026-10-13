@@ -694,6 +694,32 @@ defmodule Store.Orders.InventoryReservations do
     |> maybe_invalidate_after_consume_or_expire(Keyword.get(opts, :invalidate?, true))
   end
 
+  @spec settle_withdrawn_renewal_reservations_for_payment(String.t()) ::
+          {:ok, %{consumed_count: 0, reservations: []}} | {:error, term()}
+  @doc false
+  def settle_withdrawn_renewal_reservations_for_payment(order_id) when is_binary(order_id) do
+    Repo.transaction(fn ->
+      unsettled_reservations? =
+        InventoryReservation
+        |> where([r], r.order_id == ^order_id and r.state != :cancelled)
+        |> where_generic_reservation_key()
+        |> Repo.exists?()
+
+      if unsettled_reservations? do
+        Repo.rollback(
+          Error.new(
+            "RESERVATION_CONFLICT",
+            "Withdrawn renewal has a reservation that is not cancelled",
+            %{order_id: order_id}
+          )
+        )
+      else
+        %{consumed_count: 0, reservations: []}
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
   @spec release_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{released_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}
@@ -926,7 +952,7 @@ defmodule Store.Orders.InventoryReservations do
   defp ensure_no_terminal_blockers(order_id) do
     blocker_exists? =
       InventoryReservation
-      |> where([r], r.order_id == ^order_id and r.state == :expired)
+      |> where([r], r.order_id == ^order_id and r.state in [:expired, :cancelled])
       |> where_generic_reservation_key()
       |> Repo.exists?()
 

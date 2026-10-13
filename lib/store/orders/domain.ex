@@ -266,6 +266,13 @@ defmodule Store.Orders do
     InventoryReservations.consume_reservations_for_order(order_id, opts)
   end
 
+  @spec settle_withdrawn_renewal_reservations_for_payment(String.t()) ::
+          {:ok, %{consumed_count: 0, reservations: []}} | {:error, term()}
+  @doc false
+  def settle_withdrawn_renewal_reservations_for_payment(order_id) when is_binary(order_id) do
+    InventoryReservations.settle_withdrawn_renewal_reservations_for_payment(order_id)
+  end
+
   @spec release_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{released_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}

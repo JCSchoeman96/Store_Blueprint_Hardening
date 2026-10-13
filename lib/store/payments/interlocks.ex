@@ -261,7 +261,7 @@ defmodule Store.Payments.Interlocks do
     result =
       with true <- is_binary(payment_intent.order_id),
            {:ok, order} <- fetch_order(payment_intent.order_id),
-           {:ok, result, notifications} <-
+           {:ok, %{result: result, renewal_attempt_lookup: renewal_attempt_lookup}, notifications} <-
              Repo.transaction(fn ->
                run_apply_payment_success_once(payment_intent, order, verified_correction?)
              end)
@@ -282,7 +282,6 @@ defmodule Store.Payments.Interlocks do
                :payment_succeeded
              ),
            :ok <- maybe_enqueue_fulfillment(result),
-           renewal_attempt_lookup <- renewal_attempt_for_payment_result(result),
            :ok <- maybe_enqueue_digital_grants(result, renewal_attempt_lookup),
            :ok <- maybe_enqueue_subscriptions(result, renewal_attempt_lookup),
            :ok <- maybe_enqueue_order_receipt(result) do
@@ -1103,6 +1102,8 @@ defmodule Store.Payments.Interlocks do
          {:ok, current_order} <- fetch_order(order.id),
          {:ok, existing_application} <- fetch_payment_application(current_intent),
          :ok <- ensure_payment_application_identity(existing_application, current_intent),
+         {:ok, renewal_attempt_lookup} <-
+           renewal_attempt_lookup_for_payment_application(current_order, current_intent),
          {:ok, status} <-
            insert_payment_application(
              current_order.id,
@@ -1112,12 +1113,19 @@ defmodule Store.Payments.Interlocks do
          {:ok, updated_intent, intent_notifications} <-
            maybe_mark_payment_intent_succeeded(current_intent, verified_correction?),
          {:ok, updated_order, order_notifications} <- maybe_mark_order_paid(current_order, status),
-         {:ok, _consume_result} <-
-           Store.Orders.consume_reservations_for_order(current_order.id,
-             context: %{system?: true}
+         {:ok, _settlement_result} <-
+           settle_payment_order_reservations(
+             current_order,
+             current_intent,
+             renewal_attempt_lookup
            ) do
       notifications = intent_notifications ++ order_notifications
-      {:ok, apply_once_result(status, updated_order, updated_intent), notifications}
+
+      {:ok,
+       %{
+         result: apply_once_result(status, updated_order, updated_intent),
+         renewal_attempt_lookup: renewal_attempt_lookup
+       }, notifications}
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
       {:error, other} -> Repo.rollback(other)
@@ -1512,6 +1520,47 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp renewal_attempt_for_payment_result(_result), do: :none
+
+  defp renewal_attempt_lookup_for_payment_application(order, payment_intent) do
+    {:ok, renewal_attempt_for_payment_result(%{order: order, payment_intent: payment_intent})}
+  end
+
+  defp settle_payment_order_reservations(
+         %Order{id: order_id},
+         %PaymentIntent{id: payment_intent_id},
+         {:ok,
+          %RenewalAttempt{
+            order_id: order_id,
+            payment_intent_id: payment_intent_id,
+            failure_code: "RENEWAL_AUTHORITY_WITHDRAWN"
+          }}
+       ) do
+    Store.Orders.settle_withdrawn_renewal_reservations_for_payment(order_id)
+  end
+
+  defp settle_payment_order_reservations(
+         %Order{id: order_id},
+         %PaymentIntent{id: payment_intent_id},
+         {:ok, %RenewalAttempt{order_id: order_id, payment_intent_id: payment_intent_id}}
+       ) do
+    Store.Orders.consume_reservations_for_order(order_id, context: %{system?: true})
+  end
+
+  defp settle_payment_order_reservations(%Order{id: order_id}, %PaymentIntent{}, :none) do
+    Store.Orders.consume_reservations_for_order(order_id, context: %{system?: true})
+  end
+
+  defp settle_payment_order_reservations(
+         %Order{id: order_id},
+         %PaymentIntent{},
+         {:error, _identity_error}
+       ) do
+    Store.Orders.consume_reservations_for_order(order_id, context: %{system?: true})
+  end
+
+  defp settle_payment_order_reservations(_order, _payment_intent, _renewal_attempt_lookup) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
+  end
 
   defp maybe_enqueue_initial_subscriptions(%Order{} = order) do
     case SubscriptionsFacade.order_has_subscription_lines_for_system(order.id) do
