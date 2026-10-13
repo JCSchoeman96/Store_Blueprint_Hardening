@@ -160,7 +160,9 @@ Interpretation:
   - set `billing_status_reason = :payment_failed`
 - Retry until:
   - success → `:active` and extend period, clear past_due markers
-  - grace expires (`now > past_due_since_at + grace_period_days`) → `:canceled` with `canceled_reason = :dunning_expired`
+  - the configured retry or grace boundary is exhausted → `:suspended`, clear automatic retry scheduling, and make current access non-effective while keeping the commercial contract open
+- `:suspended` is not cancellation or terminal expiry. Only authoritative Commerce success for the exact already-authorized RenewalAttempt can restore it, using that attempt's original period boundaries.
+- A customer or admin may cancel a suspended contract; cancellation remains terminal and follows the established payment-versus-cancellation precedence.
 
 ### Missing payment method
 - If `provider_billing_ref` is missing at renewal time:

@@ -1,0 +1,48 @@
+# JC-265 Pre-JIT Conformance Record
+
+This implementation record covers the NewYou CER-PT-006 retry-exhaustion and late-provider-success pressure test. Store behavior remains provider-independent; NewYou's grace duration and future Paystack recurring mechanics are not defined here.
+
+## Lifecycle
+
+| State | Meaning | Automatic collection | Current access |
+|---|---|---|---|
+| `active` | Current paid period is authoritative. | Due at `next_renewal_at`. | Valid through the granted period boundary. |
+| `past_due` | Renewal is unresolved and configured grace/dunning remains. | Only while existing retry policy permits it. | Existing entitlement policy and validity apply. |
+| `suspended` | Recovery boundary is exhausted; the commercial contract remains open. | None. | Revoked through the Entitlements facade. |
+| `canceled` | Continuation authority was withdrawn. | None. | Revoked according to cancellation policy. |
+| `expired` | True terminal expiry. | None. | Not recoverable. |
+
+Retry exhaustion or an observed grace boundary moves `active`/`past_due` to `suspended`. Suspension keeps `ended_at`, `canceled_at`, and `canceled_reason` nil, clears retry scheduling, and leaves duplicate-membership fences active. A suspended Subscription can be canceled by its customer or an authorized administrator.
+
+## Authority and late success
+
+- Provider observations are evidence. They do not directly change Subscription or Entitlement state.
+- Commerce payment truth requires the exact existing PaymentIntent and a durable `PaymentApplication` for its Order.
+- Recovery requires the exact Subscription, RenewalAttempt, Order, PaymentIntent, and PaymentApplication chain. Suspension does not create a replacement collection or provider reference.
+- The existing renewal reconciliation installs `RenewalAttempt.period_start_at` and `period_end_at`. Reconciliation time does not shift the paid period, including when its end is already in the past.
+- Entitlements remains the access authority. Suspension revokes the subscription-source grant; paid reconciliation issues/upserts that same source identity and invalidates the entitlement cache. Replaying reconciliation after Subscription repair converges grant state without another PaymentApplication.
+- JC-281 precedence remains in force: cancellation-first withdraws renewal authority and routes a later applied payment to remediation; payment-first preserves payment history and never reactivates a cancel-now Subscription.
+
+## Status sets and schema
+
+Commercially open membership is `pending`, `active`, `past_due`, or `suspended` with `ended_at` nil. Both the application admission guard and `subscriptions_unique_open_membership_key_index` include `suspended`. The database status check also permits `suspended`.
+
+Automatic due selection and provider dispatch remain `active`/`past_due`. Plan and variant changes remain unavailable while suspended. The new state adds no table or column; the migration replaces the partial-index predicate and status check constraint.
+
+## Verification evidence
+
+- Lifecycle/version tests cover direct active and past-due suspension, cleared retry scheduling, exact paid extension from suspended, cancellation from suspended, and terminal rejection from canceled/expired.
+- Facade tests cover retry exhaustion, grace suspension, access revocation, telemetry, and scheduler exclusion.
+- Renewal authority tests cover unresolved provider-transaction exclusion, exact late-success repair, historical period preservation, replay, entitlement convergence after restart, and JC-281 cancellation precedence.
+- Membership uniqueness tests cover the admission guard and PostgreSQL partial unique index.
+- Query-contract tests allow `suspended` filtering for user and admin indexes.
+
+## Performance & Scaling Review
+
+Renewal and reconciliation are hot paths; subscription detail and admin filtering are warm paths; the conformance record is cold. The implementation adds no hot-path scan or per-row query. Due selection remains bounded and uses existing status/time indexes. The membership admission fence uses the existing `(user_id, membership_key)` lookup and partial unique index; the updated predicate adds `suspended`.
+
+No cache was added. Entitlements uses its existing per-user Cachex invalidation and PubSub notification. RenewalAttempt and Oban uniqueness/idempotency are unchanged; exact renewal and PaymentApplication identities continue to protect replay. Existing dunning telemetry reports the resulting status as a low-cardinality value. The targeted renewal fixture measured 77 queries against the existing budget of 80. The budget did not change.
+
+## Scope
+
+This change does not create post-suspension collection UX, a new payment outcome resource, `RenewalCollectionAttempt`, a new Entitlements resource, or provider-specific retry rules. JC-229, JC-230, JC-272, JC-284, and JC-290 remain separate.
