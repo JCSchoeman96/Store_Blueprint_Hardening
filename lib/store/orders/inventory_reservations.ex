@@ -701,7 +701,7 @@ defmodule Store.Orders.InventoryReservations do
     Repo.transaction(fn ->
       unsettled_reservations? =
         InventoryReservation
-        |> where([r], r.order_id == ^order_id and r.state != :cancelled)
+        |> where([r], r.order_id == ^order_id and r.state not in [:cancelled, :expired])
         |> where_generic_reservation_key()
         |> Repo.exists?()
 
@@ -709,7 +709,7 @@ defmodule Store.Orders.InventoryReservations do
         Repo.rollback(
           Error.new(
             "RESERVATION_CONFLICT",
-            "Withdrawn renewal has a reservation that is not cancelled",
+            "Withdrawn renewal has a reservation with stock authority",
             %{order_id: order_id}
           )
         )

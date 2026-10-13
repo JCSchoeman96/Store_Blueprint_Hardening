@@ -287,6 +287,61 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     assert inventory_after_payment.stock_on_hand == 4
   end
 
+  @tag :jc281_expired_reservation_scope
+  test "ordinary checkout payment fails closed after its physical reservation expires" do
+    order = create_customer_order!()
+    variant_id = create_physical_variant!()
+    create_physical_order_line_item!(order.id, variant_id)
+    payment_intent = create_submitted_payment_intent!(order.id)
+
+    assert {:ok, %{reserved_rows: [reservation]}} =
+             Store.Orders.reserve_inventory_for_checkout(
+               order.id,
+               [%{variant_id: variant_id, quantity: 1}],
+               context: %{system?: true}
+             )
+
+    reservation_record = Repo.get!(InventoryReservation, reservation.reservation_id)
+
+    inventory_before_expiry = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_before_expiry.reserved_count == 1
+    assert inventory_before_expiry.stock_on_hand == 4
+
+    assert {:ok, %{expired_count: expired_count, reservations: expired_reservations}} =
+             Store.Orders.expire_reservations(
+               DateTime.add(reservation_record.expires_at, 1, :second)
+             )
+
+    assert expired_count >= 1
+
+    assert Enum.any?(
+             expired_reservations,
+             &(&1.id == reservation_record.id and &1.state == :expired)
+           )
+
+    expired_reservation = Repo.get!(InventoryReservation, reservation_record.id)
+    assert expired_reservation.state == :expired
+
+    inventory_after_expiry = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_after_expiry.reserved_count == 0
+    assert inventory_after_expiry.stock_on_hand == 4
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
+
+    assert fetch_order!(order.id).state == :pending_payment
+    assert fetch_payment_intent!(payment_intent.id).state == :submitted
+
+    assert 0 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+    inventory_after_payment = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_after_payment.reserved_count == 0
+    assert inventory_after_payment.stock_on_hand == 4
+  end
+
   test "apply-once refuses to attribute an order application to a different payment intent" do
     order = create_customer_order!()
     first_intent = create_submitted_payment_intent!(order.id)
