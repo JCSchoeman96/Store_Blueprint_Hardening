@@ -178,6 +178,11 @@ defmodule Store.Orders do
     InventoryReservations.reserve_inventory_for_checkout(order_id, items, opts)
   end
 
+  @spec invalidate_inventory_availability_for_variants([String.t()]) :: :ok
+  def invalidate_inventory_availability_for_variants(variant_ids) when is_list(variant_ids) do
+    InventoryReservations.invalidate_variant_availability_for_variants(variant_ids)
+  end
+
   @spec reserve_exact_generation(String.t(), String.t(), String.t(), non_neg_integer(), keyword()) ::
           {:ok,
            %{
@@ -259,6 +264,13 @@ defmodule Store.Orders do
   def consume_reservations_for_order(order_id, opts \\ [])
       when is_binary(order_id) and is_list(opts) do
     InventoryReservations.consume_reservations_for_order(order_id, opts)
+  end
+
+  @spec settle_withdrawn_renewal_reservations_for_payment(String.t()) ::
+          {:ok, %{consumed_count: 0, reservations: []}} | {:error, term()}
+  @doc false
+  def settle_withdrawn_renewal_reservations_for_payment(order_id) when is_binary(order_id) do
+    InventoryReservations.settle_withdrawn_renewal_reservations_for_payment(order_id)
   end
 
   @spec release_reservations_for_order(String.t(), keyword()) ::

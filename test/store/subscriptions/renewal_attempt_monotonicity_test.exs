@@ -339,13 +339,8 @@ defmodule Store.Subscriptions.RenewalAttemptMonotonicityTest do
       |> Ash.Query.filter(expr(id == ^attempt.payment_intent_id))
       |> Ash.read_one!(domain: Store.Payments, authorize?: false, context: %{system?: true})
 
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    renewal_order
-    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    assert {:ok, %{applied?: true}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
 
     assert {:ok, :reconciled} =
              Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,

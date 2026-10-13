@@ -5,8 +5,9 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   require Ash.Query
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Store.Catalog.{InventoryItem, Product}
   alias Store.OrderFixtures
-  alias Store.Orders.{Order, PaymentApplication}
+  alias Store.Orders.{InventoryReservation, Order, OrderLineItem, PaymentApplication}
   alias Store.Payments.{Facade, ObservationEvidence, PaymentIntent}
   alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
@@ -240,6 +241,105 @@ defmodule Store.Governance.CheckoutInterlocksTest do
     after
       :telemetry.detach(handler_id)
     end
+  end
+
+  @tag :jc281_cancelled_reservation_scope
+  test "ordinary checkout payment fails closed after its physical reservation is cancelled" do
+    order = create_customer_order!()
+    variant_id = create_physical_variant!()
+    create_physical_order_line_item!(order.id, variant_id)
+    payment_intent = create_submitted_payment_intent!(order.id)
+
+    assert {:ok, %{reserved_rows: [_reservation]}} =
+             Store.Orders.reserve_inventory_for_checkout(
+               order.id,
+               [%{variant_id: variant_id, quantity: 1}],
+               context: %{system?: true}
+             )
+
+    inventory_before_release = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_before_release.reserved_count == 1
+    assert inventory_before_release.stock_on_hand == 4
+
+    assert {:ok, %{released_count: 1}} =
+             Store.Orders.release_reservations_for_order(order.id, context: %{system?: true})
+
+    reservation = Repo.get_by!(InventoryReservation, order_id: order.id, variant_id: variant_id)
+    assert reservation.state == :cancelled
+
+    inventory_after_release = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_after_release.reserved_count == 0
+    assert inventory_after_release.stock_on_hand == 4
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
+
+    assert fetch_order!(order.id).state == :pending_payment
+    assert fetch_payment_intent!(payment_intent.id).state == :submitted
+
+    assert 0 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+    inventory_after_payment = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_after_payment.reserved_count == 0
+    assert inventory_after_payment.stock_on_hand == 4
+  end
+
+  @tag :jc281_expired_reservation_scope
+  test "ordinary checkout payment fails closed after its physical reservation expires" do
+    order = create_customer_order!()
+    variant_id = create_physical_variant!()
+    create_physical_order_line_item!(order.id, variant_id)
+    payment_intent = create_submitted_payment_intent!(order.id)
+
+    assert {:ok, %{reserved_rows: [reservation]}} =
+             Store.Orders.reserve_inventory_for_checkout(
+               order.id,
+               [%{variant_id: variant_id, quantity: 1}],
+               context: %{system?: true}
+             )
+
+    reservation_record = Repo.get!(InventoryReservation, reservation.reservation_id)
+
+    inventory_before_expiry = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_before_expiry.reserved_count == 1
+    assert inventory_before_expiry.stock_on_hand == 4
+
+    assert {:ok, %{expired_count: expired_count, reservations: expired_reservations}} =
+             Store.Orders.expire_reservations(
+               DateTime.add(reservation_record.expires_at, 1, :second)
+             )
+
+    assert expired_count >= 1
+
+    assert Enum.any?(
+             expired_reservations,
+             &(&1.id == reservation_record.id and &1.state == :expired)
+           )
+
+    expired_reservation = Repo.get!(InventoryReservation, reservation_record.id)
+    assert expired_reservation.state == :expired
+
+    inventory_after_expiry = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_after_expiry.reserved_count == 0
+    assert inventory_after_expiry.stock_on_hand == 4
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
+
+    assert fetch_order!(order.id).state == :pending_payment
+    assert fetch_payment_intent!(payment_intent.id).state == :submitted
+
+    assert 0 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+    inventory_after_payment = Repo.get_by!(InventoryItem, variant_id: variant_id)
+    assert inventory_after_payment.reserved_count == 0
+    assert inventory_after_payment.stock_on_hand == 4
   end
 
   test "apply-once refuses to attribute an order application to a different payment intent" do
@@ -654,6 +754,46 @@ defmodule Store.Governance.CheckoutInterlocksTest do
   defp create_order! do
     Order
     |> Ash.Changeset.for_create(:create, %{})
+    |> Ash.create!(domain: Store.Orders, authorize?: false)
+  end
+
+  defp create_physical_variant! do
+    unique = System.unique_integer([:positive])
+
+    product =
+      Product
+      |> Ash.Changeset.for_create(:create_draft, %{
+        slug: "jc281-physical-checkout-#{unique}",
+        title: "JC281 physical checkout #{unique}",
+        base_variant_sku: "JC281-PHYSICAL-#{unique}",
+        base_variant_currency_code: "USD",
+        base_variant_price_minor: 1_000,
+        base_variant_stock_on_hand: 4
+      })
+      |> Ash.create!(domain: Store.Catalog, authorize?: false)
+
+    product
+    |> Ash.Changeset.for_update(:publish, %{})
+    |> Ash.update!(domain: Store.Catalog, authorize?: false)
+    |> Map.fetch!(:default_variant_id)
+  end
+
+  defp create_physical_order_line_item!(order_id, variant_id) do
+    OrderLineItem
+    |> Ash.Changeset.for_create(:create, %{
+      order_id: order_id,
+      line_no: 1,
+      currency: "USD",
+      quantity: 1,
+      unit_price_minor: 1_000,
+      line_total_minor: 1_000,
+      sku_snapshot: "JC281-PHYSICAL-CHECKOUT",
+      product_title_snapshot: "JC281 physical checkout",
+      variant_title_snapshot: "Default",
+      variant_id_snapshot: variant_id,
+      discount_allocated_minor: 0,
+      net_line_total_minor: 1_000
+    })
     |> Ash.create!(domain: Store.Orders, authorize?: false)
   end
 

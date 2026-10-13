@@ -21,6 +21,8 @@ defmodule Store.Payments.Refunds do
     WebhookReceipt
   }
 
+  alias Store.Payments.Inputs.RenewalCancellationRemediationInput
+
   alias Store.Repo
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.Error
@@ -37,6 +39,7 @@ defmodule Store.Payments.Refunds do
           required(:currency) => String.t(),
           required(:provider) => Providers.provider(),
           optional(:reason) => String.t(),
+          optional(:idempotency_key) => String.t(),
           optional(:line_item_ids) => [String.t()],
           optional(:scope_kind) => :full_refund | :partial_refund | :shipping_refund | String.t()
         }
@@ -51,6 +54,44 @@ defmodule Store.Payments.Refunds do
     with {:ok, request} <- normalize_request(attrs),
          :ok <- enforce_refund_actor!(actor, context, authorize?) do
       request_refund_transaction(request, actor, context, authorize?)
+    end
+  end
+
+  @spec request_renewal_cancellation_remediation_for_system(
+          RenewalCancellationRemediationInput.t()
+        ) :: {:ok, Refund.t()} | {:error, Error.t() | term()}
+  def request_renewal_cancellation_remediation_for_system(
+        %RenewalCancellationRemediationInput{} = input
+      ) do
+    with {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
+         :ok <- ensure_matching_order_id(input.order_id, payment_intent.order_id),
+         :ok <- ensure_refundable_payment_intent(payment_intent),
+         true <- is_integer(payment_intent.amount_received_minor),
+         true <- payment_intent.amount_received_minor > 0 do
+      request_refund(
+        %{
+          order_id: input.order_id,
+          payment_intent_id: input.payment_intent_id,
+          requested_amount_minor: payment_intent.amount_received_minor,
+          currency: payment_intent.currency,
+          provider: payment_intent.provider,
+          reason: "renewal_collected_after_cancellation",
+          scope_kind: :full_refund,
+          line_item_ids: [],
+          idempotency_key:
+            "renewal-cancel-remediation:#{input.renewal_attempt_id}:#{input.payment_intent_id}"
+        },
+        actor: nil,
+        context: %{system?: true},
+        authorize?: false
+      )
+    else
+      false ->
+        {:error,
+         Error.new("REFUND_NOT_ALLOWED", "renewal payment does not have a refundable amount")}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -79,10 +120,10 @@ defmodule Store.Payments.Refunds do
          :ok <- ensure_refundable_payment_intent(payment_intent),
          :ok <- ensure_matching_order_id(request.order_id, payment_intent.order_id),
          {:ok, order} <- fetch_order(request.order_id),
-         :ok <- ensure_order_state_allows_refund(order),
          :ok <- ensure_matching_currency(request.currency, payment_intent.currency),
          {:ok, existing_refund} <-
            find_refund_by_idempotency_key_for_update(request.idempotency_key),
+         :ok <- ensure_existing_refund_or_order_refundable(existing_refund, order),
          {:ok, refund, notifications} <-
            create_or_reuse_refund(
              existing_refund,
@@ -145,6 +186,19 @@ defmodule Store.Payments.Refunds do
   @spec refundable_base_minor(String.t(), integer()) :: {:ok, integer()} | {:error, Error.t()}
   def refundable_base_minor(order_id, captured_amount_minor)
       when is_binary(order_id) and is_integer(captured_amount_minor) do
+    case fetch_order(order_id) do
+      {:ok, %Order{totals_finalized_at: %DateTime{}, grand_total_minor: grand_total_minor}} ->
+        {:ok, min(captured_amount_minor, grand_total_minor)}
+
+      {:ok, %Order{}} ->
+        refundable_snapshot_base_minor(order_id, captured_amount_minor)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp refundable_snapshot_base_minor(order_id, captured_amount_minor) do
     with {:ok, line_total} <- sum_order_line_item_net_total(order_id),
          {:ok, adjustment_total} <- sum_order_adjustments(order_id) do
       snapshot_total = line_total + adjustment_total
@@ -790,6 +844,7 @@ defmodule Store.Payments.Refunds do
   end
 
   defp ensure_refundable_payment_intent(%{state: "succeeded"}), do: :ok
+  defp ensure_refundable_payment_intent(%{state: :succeeded}), do: :ok
 
   defp ensure_refundable_payment_intent(_payment_intent) do
     {:error, Error.new("REFUND_NOT_ALLOWED", "refund requires succeeded payment intent")}
@@ -812,6 +867,11 @@ defmodule Store.Payments.Refunds do
   defp ensure_order_state_allows_refund(_order) do
     {:error, Error.new("REFUND_NOT_ALLOWED", "refund requires paid order state")}
   end
+
+  defp ensure_existing_refund_or_order_refundable(%Refund{}, _order), do: :ok
+
+  defp ensure_existing_refund_or_order_refundable(nil, order),
+    do: ensure_order_state_allows_refund(order)
 
   defp find_refund_by_idempotency_key_for_update(idempotency_key) do
     query = """
