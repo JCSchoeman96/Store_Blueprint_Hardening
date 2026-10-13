@@ -125,6 +125,15 @@ defmodule Store.Subscriptions.Facade do
     {:error, Error.new("VALIDATION_ERROR", "typed Subscription is required")}
   end
 
+  @spec validate_complete_bound_renewal_attempt_for_system(RenewalAttempt.t()) ::
+          :ok | {:error, Error.t() | term()}
+  def validate_complete_bound_renewal_attempt_for_system(%RenewalAttempt{} = attempt),
+    do: ensure_complete_bound_renewal_attempt(attempt)
+
+  def validate_complete_bound_renewal_attempt_for_system(_attempt) do
+    {:error, Error.new("VALIDATION_ERROR", "typed RenewalAttempt is required")}
+  end
+
   @spec mark_access_effect_pending_for_system(AccessEffect.t()) ::
           {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
   def mark_access_effect_pending_for_system(%AccessEffect{} = effect) do
