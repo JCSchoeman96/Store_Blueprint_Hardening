@@ -15,6 +15,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias Store.Subscriptions.RenewalCollectionAttempts.{
+    ClaimDispatchInput,
     FenceInput,
     PaymentIntentBindingInput,
     ReservationGenerationInput,
@@ -79,6 +80,35 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
   def attach_payment_intent_for_system(_input) do
     {:error, Error.new("VALIDATION_ERROR", "typed collection PaymentIntent binding is required")}
+  end
+
+  @spec claim_dispatch_for_system(ClaimDispatchInput.t()) ::
+          {:ok, map()} | {:error, Error.t() | term()}
+  def claim_dispatch_for_system(%ClaimDispatchInput{} = input) do
+    with {:ok, canonical_input} <- ClaimDispatchInput.new(Map.from_struct(input)),
+         {:ok, collection} <-
+           run_collection_transition(
+             canonical_input.collection_attempt_id,
+             :claim_renewal_collection_dispatch,
+             fn collection, attempt, subscription ->
+               claim_dispatch_locked(collection, attempt, subscription, canonical_input)
+             end
+           ),
+         {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id) do
+      {:ok,
+       %{
+         collection_attempt: collection,
+         renewal_attempt: attempt,
+         order: order,
+         payment_intent: payment_intent
+       }}
+    end
+  end
+
+  def claim_dispatch_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection dispatch input is required")}
   end
 
   @spec assign_reservation_generation_for_system(ReservationGenerationInput.t()) ::
@@ -250,6 +280,112 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              payment_intent_id: payment_intent.id
            }) do
       {:ok, updated, notifications}
+    end
+  end
+
+  defp claim_dispatch_locked(collection, attempt, subscription, input) do
+    with :ok <- ensure_exact_dispatch_epoch(collection, input.expected_epoch),
+         :ok <- SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
+         :ok <- ensure_bound_order(attempt),
+         :ok <- ensure_collection_has_exact_payment_intent(collection),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id),
+         :ok <- ensure_bound_order_matches_attempt(order, attempt),
+         :ok <-
+           ensure_payment_intent_matches_collection(
+             payment_intent,
+             collection,
+             order,
+             attempt,
+             subscription
+           ),
+         :ok <- ensure_collection_has_exact_inventory_generation(collection, attempt),
+         :ok <- ensure_collection_dispatch_authority(subscription, attempt, input.now),
+         {:ok, updated, notifications} <-
+           claim_collection_dispatch(collection, input.expected_epoch) do
+      {:ok, updated, notifications}
+    end
+  end
+
+  defp ensure_exact_dispatch_epoch(
+         %RenewalCollectionAttempt{
+           dispatch_state: :not_started,
+           financial_outcome: :unresolved,
+           dispatch_epoch: epoch,
+           fenced_through_epoch: fenced_through_epoch
+         },
+         epoch
+       )
+       when fenced_through_epoch == epoch - 1,
+       do: :ok
+
+  defp ensure_exact_dispatch_epoch(_collection, _expected_epoch) do
+    {:error, Error.new("STALE_RECORD", "collection is not at the exact dispatch epoch to claim")}
+  end
+
+  defp ensure_collection_has_exact_payment_intent(%RenewalCollectionAttempt{
+         payment_intent_id: payment_intent_id
+       })
+       when is_binary(payment_intent_id),
+       do: :ok
+
+  defp ensure_collection_has_exact_payment_intent(_collection) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "collection has no exact bound PaymentIntent")}
+  end
+
+  defp ensure_collection_has_exact_inventory_generation(collection, attempt) do
+    with {:ok, physical?} <- physical_renewal?(attempt.variant_id) do
+      case {physical?, collection.reservation_generation_id} do
+        {false, nil} ->
+          :ok
+
+        {false, _generation_id} ->
+          {:error,
+           Error.new(
+             "RESERVATION_CONFLICT",
+             "nonphysical renewal collection cannot own an inventory generation"
+           )}
+
+        {true, nil} ->
+          {:error,
+           Error.new(
+             "RESERVATION_CONFLICT",
+             "physical renewal collection has no exact inventory generation"
+           )}
+
+        {true, generation_id} ->
+          with {:ok, reservation_key} <- reservation_key_for_collection(collection, attempt) do
+            guard_collection_generation(collection, attempt, reservation_key, generation_id)
+          end
+      end
+    end
+  end
+
+  defp claim_collection_dispatch(collection, expected_epoch) do
+    changeset =
+      collection
+      |> Ash.Changeset.new()
+      |> Ash.Changeset.set_argument(:expected_epoch, expected_epoch)
+      |> Ash.Changeset.for_update(
+        :claim_dispatch,
+        %{},
+        context: %{system?: true}
+      )
+
+    case Ash.update(changeset,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true},
+           return_notifications?: true
+         ) do
+      {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
+        {:ok, updated, notifications}
+
+      {:ok, %RenewalCollectionAttempt{} = updated} ->
+        {:ok, updated, []}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
   end
 

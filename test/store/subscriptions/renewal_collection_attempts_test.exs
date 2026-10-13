@@ -24,6 +24,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
   alias Store.Subscriptions.RenewalCollectionAttempts.{
     PaymentIntentBindingInput,
+    ClaimDispatchInput,
     FenceInput,
     ReservationGenerationInput,
     ResumeInput
@@ -249,6 +250,121 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert bound.order.currency_code == attempt.currency
     assert bound.payment_intent.amount_received_minor == bound.order.grand_total_minor
     assert bound.payment_intent.currency == attempt.currency
+  end
+
+  test "concurrent dispatch claims commit may_have_been_reached once at the exact epoch" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_dispatch_claim")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          send(parent, {:claim_waiting, self()})
+
+          receive do
+            :claim ->
+              RenewalCollectionAttempts.claim_dispatch_for_system(
+                claim_dispatch_input!(collection.id, 1, now)
+              )
+          after
+            5_000 -> {:error, :claim_barrier_timeout}
+          end
+        end)
+      end
+
+    claim_pids =
+      for _ <- 1..2 do
+        assert_receive {:claim_waiting, claim_pid}, 5_000
+        claim_pid
+      end
+
+    Enum.each(claim_pids, &send(&1, :claim))
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+
+    assert [claimed] = Enum.filter(results, &match?({:ok, _}, &1))
+    assert [{:error, %{code: "STALE_RECORD"}}] = Enum.filter(results, &match?({:error, _}, &1))
+    {:ok, claimed} = claimed
+
+    assert claimed.collection_attempt.dispatch_state == :may_have_been_reached
+    assert claimed.collection_attempt.dispatch_epoch == 1
+    assert claimed.payment_intent.id == payment_intent.id
+
+    assert claimed.payment_intent.payment_intent_key ==
+             RenewalCollectionAttempts.payment_intent_key(collection.id)
+
+    assert {:error, %{code: "STALE_RECORD"}} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
+    assert fetch_collection!(collection.id).dispatch_state == :may_have_been_reached
+  end
+
+  test "dispatch claim rejects a stale epoch before changing collection state" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_stale_dispatch_epoch")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert {:error, %{code: "STALE_RECORD"}} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 2, now)
+             )
+
+    assert fetch_collection!(collection.id).dispatch_state == :not_started
+  end
+
+  test "physical dispatch requires the assigned exact active reservation generation" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_dispatch_generation")
+    order = bind_attempt_to_fixture_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 1)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert {:error, %{code: "RESERVATION_CONFLICT"}} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
+    assigned = assign_generation!(collection.id, now)
+
+    assert {:ok, claimed} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
+    assert claimed.collection_attempt.reservation_generation_id ==
+             assigned.reservation_generation_id
+
+    assert claimed.collection_attempt.dispatch_state == :may_have_been_reached
   end
 
   test "first start creates ordinal one and active replay returns that exact collection" do
@@ -1001,6 +1117,17 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   defp fence_input!(collection_id, epoch, now) do
     assert {:ok, input} =
              FenceInput.new(%{
+               collection_attempt_id: collection_id,
+               expected_epoch: epoch,
+               now: now
+             })
+
+    input
+  end
+
+  defp claim_dispatch_input!(collection_id, epoch, now) do
+    assert {:ok, input} =
+             ClaimDispatchInput.new(%{
                collection_attempt_id: collection_id,
                expected_epoch: epoch,
                now: now

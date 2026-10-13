@@ -125,6 +125,28 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
       accept([:payment_intent_id])
     end
 
+    update :claim_dispatch do
+      public?(false)
+      require_atomic?(false)
+
+      argument :expected_epoch, :integer do
+        allow_nil?(false)
+        constraints(min: 1)
+      end
+
+      change(
+        filter(
+          expr(
+            dispatch_state == :not_started and
+              financial_outcome == :unresolved and
+              dispatch_epoch == ^arg(:expected_epoch)
+          )
+        )
+      )
+
+      change(set_attribute(:dispatch_state, :may_have_been_reached))
+    end
+
     update :fence_before_submission do
       public?(false)
       require_atomic?(false)
