@@ -7,18 +7,24 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Oban.Job
+  alias Store.Catalog.{InventoryItem, Variant}
   alias Store.Digital.{DigitalAsset, DownloadGrant, ProductDigitalLink}
   alias Store.Digital.Workers.IssueGrantsForPaidOrderWorker
   alias Store.Entitlements.EntitlementGrant
   alias Store.Entitlements.Facade, as: EntitlementsFacade
-  alias Store.Orders.PaymentApplication
-  alias Store.Payments.{PaymentIntent, WebhookReceipt}
+  alias Store.Orders.{InventoryReservation, Order, PaymentApplication}
+  alias Store.Payments.{PaymentIntent, Refunds, WebhookReceipt}
   alias Store.Payments.Types.ProviderObservation
+  alias Store.Pricing.TaxRate
   alias Store.Repo
+  alias Store.Shipping.Facade, as: ShippingFacade
+  alias Store.Shipping.Inputs.QuoteRequest
+  alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.Subscriptions.{RenewalAttempt, Subscription}
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
+  alias Store.Support.Telemetry.RepoStats
   alias Store.TestSupport.StripeAPIStub
   alias Store.Workers.ReconcilePaidSubscriptionRenewalWorker
 
@@ -425,6 +431,308 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert fetch_subscription!(subscription.id).status == :canceled
     assert fetch_attempt!(subscription.id).status == :succeeded
     assert count_payment_applications(attempt.order_id) == 1
+  end
+
+  @tag :jc281_physical
+  test "cancellation after physical reservation releases stock before provider dispatch" do
+    fixture = physical_renewal_fixture!("cancel_after_reservation", 3)
+    enable_stripe!()
+    owner = self()
+    post_count = :atomics.new(1, [])
+    handler_id = "jc281-physical-cancel-after-reserve-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :renewal_charge_dispatch_check],
+        fn _event, _measurements, metadata, config ->
+          if metadata.subscription_id == config.subscription.id do
+            reservation = fetch_reservation!(metadata.order_id, config.variant.id)
+            inventory = Repo.get_by!(InventoryItem, variant_id: config.variant.id)
+
+            send(
+              config.owner,
+              {:physical_reservation_before_cancel, reservation.state, inventory.reserved_count,
+               inventory.stock_on_hand, :atomics.get(config.post_count, 1)}
+            )
+
+            result =
+              SubscriptionsFacade.cancel_subscription_for_user(
+                config.customer,
+                config.subscription.id,
+                :period_end
+              )
+
+            send(config.owner, {:physical_cancel_after_reserve, result})
+          end
+        end,
+        %{
+          customer: fixture.customer,
+          owner: owner,
+          subscription: fixture.subscription,
+          variant: fixture.variant,
+          post_count: post_count
+        }
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(post_count, 1, 1)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(
+               fixture.subscription.id,
+               now: fixture.now
+             )
+
+    assert_receive {:physical_reservation_before_cancel, :active, 1, 3, 0}
+    assert_receive {:physical_cancel_after_reserve, {:ok, %{status: :canceled}}}
+
+    attempt = fetch_attempt!(fixture.subscription.id)
+    reservation = fetch_reservation!(attempt.order_id, fixture.variant.id)
+    inventory = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+
+    assert attempt.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert reservation.state == :cancelled
+    assert inventory.reserved_count == 0
+    assert inventory.stock_on_hand == 3
+    assert :atomics.get(post_count, 1) == 0
+
+    assert {:ok, :noop} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(
+               fixture.subscription.id,
+               now: fixture.now
+             )
+
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
+    assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).reserved_count == 0
+  end
+
+  @tag :jc281_physical
+  test "cancellation before physical reservation prevents stale worker stock authority" do
+    fixture = physical_renewal_fixture!("cancel_before_reservation", 4)
+    enable_stripe!()
+    owner = self()
+    post_count = :atomics.new(1, [])
+    handler_id = "jc281-physical-cancel-before-reserve-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :renewal_inventory_reservation_check],
+        fn _event, _measurements, metadata, config ->
+          if metadata.subscription_id == config.subscription.id do
+            result =
+              SubscriptionsFacade.cancel_subscription_for_user(
+                config.customer,
+                config.subscription.id,
+                :period_end
+              )
+
+            send(config.owner, {:physical_cancel_before_reservation, result})
+          end
+        end,
+        %{customer: fixture.customer, owner: owner, subscription: fixture.subscription}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(post_count, 1, 1)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(
+               fixture.subscription.id,
+               now: fixture.now
+             )
+
+    assert_receive {:physical_cancel_before_reservation, {:ok, %{status: :canceled}}}
+
+    attempt = fetch_attempt!(fixture.subscription.id)
+    inventory = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+
+    assert attempt.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert active_reservations_for_order(attempt.order_id) == 0
+    assert inventory.reserved_count == 0
+    assert inventory.stock_on_hand == 4
+    assert :atomics.get(post_count, 1) == 0
+  end
+
+  @tag :jc281_physical
+  test "late physical renewal success preserves payment truth without consuming withdrawn stock" do
+    fixture = physical_renewal_fixture!("late_physical_success", 5)
+    enable_stripe!()
+    post_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(post_count, 1, 1)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(
+               fixture.subscription.id,
+               now: fixture.now
+             )
+
+    attempt = fetch_attempt!(fixture.subscription.id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    reservation = fetch_reservation!(attempt.order_id, fixture.variant.id)
+
+    assert reservation.state == :active
+    assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).reserved_count == 1
+    assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).stock_on_hand == 5
+
+    assert {:ok, %{status: :canceled}} =
+             SubscriptionsFacade.cancel_subscription_for_user(
+               fixture.customer,
+               fixture.subscription.id,
+               :period_end
+             )
+
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
+    inventory_after_cancel = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+    assert inventory_after_cancel.reserved_count == 0
+    assert inventory_after_cancel.stock_on_hand == 5
+
+    observation = authoritative_success_observation(payment_intent)
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               observation
+             )
+
+    assert fetch_payment_intent!(payment_intent.id).state == :succeeded
+    assert fetch_order!(attempt.order_id).state == :paid
+    assert count_payment_applications(attempt.order_id) == 1
+    assert fetch_subscription!(fixture.subscription.id).status == :canceled
+    assert fetch_attempt!(fixture.subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert active_reservations_for_order(attempt.order_id) == 0
+
+    inventory_after_success = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+    assert inventory_after_success.reserved_count == 0
+    assert inventory_after_success.stock_on_hand == 5
+
+    reconciliation_args = %{"order_id" => attempt.order_id, "renewal_attempt_id" => attempt.id}
+
+    assert {:ok, payment_intent.amount_received_minor} ==
+             Refunds.refundable_base_minor(
+               attempt.order_id,
+               payment_intent.amount_received_minor
+             )
+
+    assert :ok ==
+             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
+               args: reconciliation_args
+             })
+
+    assert {:ok, %{outcome: :already_applied_success}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               observation
+             )
+
+    assert :ok ==
+             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
+               args: reconciliation_args
+             })
+
+    assert count_payment_applications(attempt.order_id) == 1
+    refunds = refunds_for(attempt.order_id, payment_intent.id)
+    assert length(refunds) == 1
+    assert hd(refunds).reason == "renewal_collected_after_cancellation"
+    assert hd(refunds).scope_kind == :full_refund
+    assert active_reservations_for_order(attempt.order_id) == 0
+
+    inventory_after_replay = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+    assert inventory_after_replay.reserved_count == 0
+    assert inventory_after_replay.stock_on_hand == 5
+    assert :atomics.get(post_count, 1) == 1
+  end
+
+  @tag :jc281_physical
+  test "payment-first physical renewal consumes stock once before period-end cancellation" do
+    fixture = physical_renewal_fixture!("payment_first_physical", 6)
+    enable_stripe!()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    {renewal_result, renewal_stats} =
+      RepoStats.capture(fn ->
+        SubscriptionsFacade.process_due_subscription_renewal_for_system(
+          fixture.subscription.id,
+          now: fixture.now
+        )
+      end)
+
+    assert {:ok, :processed} = renewal_result
+    assert renewal_stats.query_count <= 80
+
+    attempt = fetch_attempt!(fixture.subscription.id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :active
+
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               authoritative_success_observation(payment_intent)
+             )
+
+    inventory_after_payment = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :consumed
+    assert inventory_after_payment.reserved_count == 0
+    assert inventory_after_payment.stock_on_hand == 5
+    assert count_payment_applications(attempt.order_id) == 1
+
+    assert {:ok, %{status: :active, cancel_at_period_end: true}} =
+             SubscriptionsFacade.cancel_subscription_for_user(
+               fixture.customer,
+               fixture.subscription.id,
+               :period_end
+             )
+
+    assert refunds_for(attempt.order_id, payment_intent.id) == []
+
+    assert :ok ==
+             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
+               args: %{"order_id" => attempt.order_id, "renewal_attempt_id" => attempt.id}
+             })
+
+    assert :ok ==
+             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
+               args: %{"order_id" => attempt.order_id, "renewal_attempt_id" => attempt.id}
+             })
+
+    assert fetch_subscription!(fixture.subscription.id).status == :active
+    assert fetch_subscription!(fixture.subscription.id).cancel_at_period_end
+    assert fetch_attempt!(fixture.subscription.id).status == :succeeded
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :consumed
+    assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).stock_on_hand == 5
+    assert count_payment_applications(attempt.order_id) == 1
+    assert refunds_for(attempt.order_id, payment_intent.id) == []
   end
 
   test "payment application and cancellation serialize on the renewal Order" do
@@ -865,6 +1173,169 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert :atomics.get(post_count, 1) == 1
   end
 
+  defp physical_renewal_fixture!(prefix, stock_on_hand) do
+    customer = SubscriptionsFixtures.create_customer!("jc281_#{prefix}")
+
+    %{variant: base_variant} =
+      SubscriptionsFixtures.create_subscription_sellable!(%{
+        base_variant_stock_on_hand: stock_on_hand
+      })
+
+    variant = set_variant_weight!(base_variant, 250)
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription, order: source_order} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider: :stripe,
+        provider_billing_ref: "pm_jc281_#{prefix}",
+        started_at: DateTime.add(now, -40 * 86_400, :second),
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    configure_physical_renewal_shipping!(source_order, variant)
+
+    %{
+      customer: customer,
+      now: now,
+      subscription: subscription,
+      variant: variant
+    }
+  end
+
+  defp configure_physical_renewal_shipping!(%Order{} = order, %Variant{} = variant) do
+    zone = create_shipping_zone!("US", "CA")
+    method = create_shipping_method!("GROUND")
+    _tax_rate = create_tax_rate!("US", "CA")
+    _rule = create_shipping_rule!(zone.id, method.id, 400)
+
+    {:ok, request} =
+      QuoteRequest.new(%{
+        destination_country_code: "US",
+        destination_region_code: "CA",
+        destination_postal_code: "94105",
+        currency_code: "USD",
+        shipping_weight_grams: variant.weight_grams
+      })
+
+    {:ok, options} = ShippingFacade.quote_options_for_system(request)
+    option = Enum.find(options, &(&1.shipping_method_code == method.code))
+    assert option
+
+    order
+    |> Ash.Changeset.for_update(
+      :set_shipping_address,
+      %{
+        shipping_country_code: "US",
+        shipping_region_code: "CA",
+        shipping_postal_code: "94105",
+        shipping_address_line1: "1 Market St",
+        shipping_address_line2: "Suite 100"
+      },
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    |> Ash.Changeset.for_update(
+      :set_shipping_method,
+      %{shipping_rate_code: method.code},
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    |> Ash.Changeset.for_update(
+      :set_shipping_quote_evidence,
+      %{
+        shipping_quote_hash: "jc281-baseline-#{System.unique_integer([:positive])}",
+        shipping_quote_currency_code: option.currency_code,
+        shipping_quote_amount_minor: 400,
+        shipping_weight_grams: option.shipping_weight_grams,
+        shipping_method_code: method.code,
+        shipping_zone_id: option.zone_id
+      },
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+  end
+
+  defp create_shipping_zone!(country_code, region_code) do
+    ShippingZone
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        code: "JC281-ZONE-#{System.unique_integer([:positive])}",
+        country_code: country_code,
+        region_code: region_code,
+        active: true
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
+  end
+
+  defp create_shipping_method!(code) do
+    ShippingMethod
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        code: code,
+        name: code,
+        active: true,
+        sort_order: 100
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
+  end
+
+  defp create_shipping_rule!(zone_id, method_id, shipping_cost_minor) do
+    ShippingRateRule
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        code: "JC281-RULE-#{System.unique_integer([:positive])}",
+        shipping_zone_id: zone_id,
+        shipping_method_id: method_id,
+        currency: "USD",
+        shipping_cost_minor: shipping_cost_minor,
+        active: true,
+        precedence_rank: 10
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
+  end
+
+  defp create_tax_rate!(country_code, region_code) do
+    TaxRate
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        code: "JC281-TAX-#{System.unique_integer([:positive])}",
+        country_code: country_code,
+        region_code: region_code,
+        product_tax_category: "STANDARD",
+        rate_basis_points: 0,
+        shipping_taxable: true,
+        active: true,
+        precedence_rank: 10
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Pricing, authorize?: false, context: %{system?: true})
+  end
+
+  defp set_variant_weight!(%Variant{} = variant, weight_grams) do
+    variant
+    |> Ash.Changeset.for_update(:update, %{weight_grams: weight_grams}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Catalog, authorize?: false, context: %{system?: true})
+  end
+
+  defp active_reservations_for_order(order_id) do
+    InventoryReservation
+    |> Ash.Query.filter(expr(order_id == ^order_id and state == :active))
+    |> Ash.count!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+  end
+
   defp enable_stripe! do
     Application.put_env(:store, :payments,
       enabled_providers: [:stripe],
@@ -1186,6 +1657,13 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
   defp fetch_order!(order_id) do
     Store.Orders.Order
     |> Ash.Query.filter(expr(id == ^order_id))
+    |> Ash.read!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    |> List.first()
+  end
+
+  defp fetch_reservation!(order_id, variant_id) do
+    InventoryReservation
+    |> Ash.Query.filter(expr(order_id == ^order_id and variant_id == ^variant_id))
     |> Ash.read!(domain: Store.Orders, authorize?: false, context: %{system?: true})
     |> List.first()
   end

@@ -11,6 +11,8 @@ Cancellation locks the Subscription aggregate, then serializes on the exact rene
 
 A terminal `PAYMENT_FAILED` classification remains intact when cancellation follows a final provider failure. Cancellation marks unresolved attempts as withdrawn; it does not rewrite a completed provider failure.
 
+For physical renewals, cancellation releases active generic inventory reservations for the exact renewal Order in the same transaction that withdraws the attempt. Reservation admission takes fresh Subscription, Order, and RenewalAttempt locks before reserving, then commits before any provider request. If reservation commits first, the serialized cancellation releases it; if cancellation commits first, stale preparation cannot reserve stock. A cancelled reservation remains historical evidence but carries no stock authority, so later PaymentApplication can preserve real collection truth without consuming inventory.
+
 Payment-success fanout resolves the exact RenewalAttempt by Order and PaymentIntent on first application and authoritative replay. A replay already recognized as applied retries only renewal reconciliation enqueue, without repeating payment effects. Multiple attempts bound to one Order fail closed. Lookup and enqueue errors propagate to the observation worker for retry; Oban uniqueness keeps insertion idempotent.
 
 Provider status, callback arrival time, webhook time, and wall-clock guesses do not decide precedence. The durable application row and the serialized Order lock do.
@@ -38,6 +40,10 @@ Cancellation does not mutate provider evidence or payment outcome. A collection 
 | Cancel → stale renewal worker | Worker exits without a provider mutation. |
 | Bound attempt → cancel → dispatch check | Fresh authority check refuses the provider mutation. |
 | Provider request crossed boundary → cancel → late success | Payment truth remains; Subscription stays canceled; no entitlement or digital grant is issued; one exact remediation Refund is requested. |
+| Physical reservation → cancellation before dispatch | Reservation is cancelled; reserved count returns to zero; stock is unchanged; provider POST is refused. |
+| Cancellation → stale physical reservation preparation | No active reservation is created; stock and reserved count remain unchanged. |
+| Physical cancellation → late authoritative success | Payment truth and one full Refund use the exact Order and PaymentIntent; stock remains unconsumed. |
+| Payment first → physical period-end cancellation | Reservation is consumed once; stock decrements once; no cancellation remediation Refund is created. |
 | Exact PaymentApplication → period-end cancel → delayed renewal reconcile | Original paid period is applied; cancellation stays scheduled; no refund. |
 | Exact PaymentApplication → cancel-now → delayed renewal reconcile | Paid history remains; Subscription stays canceled; access stays revoked; no refund. |
 | Cancel first → duplicate late success | One PaymentApplication and one remediation Refund; replays are idempotent. |
@@ -45,8 +51,8 @@ Cancellation does not mutate provider evidence or payment outcome. A collection 
 
 ## Scope and performance
 
-Schema change: **No**. The implementation uses `RenewalAttempt`, `PaymentApplication`, existing Subscription transitions, and the existing Refund lifecycle. It adds no payment outcome resource and no `RenewalCollectionAttempt`.
+Schema change: **No**. The implementation uses `RenewalAttempt`, `PaymentApplication`, existing Subscription transitions, inventory reservation state, and the existing Refund lifecycle. Refund eligibility uses the finalized Order grand total, including shipping, for full refunds. It adds no payment outcome resource and no `RenewalCollectionAttempt`.
 
-Hot path: due renewal dispatch and payment application. Warm path: delayed payment/renewal reconciliation and Refund creation. Cold path: explicit cancellation and operator investigation. The final authority check adds one bounded, indexed query keyed by Subscription and RenewalAttempt; its PaymentIntent and stored-payment-method joins are by primary key. It replaces the pre-dispatch stored-payment-method query: the changed-contract renewal fixture measures 80 SQL queries end to end against the existing 80-query budget. No global scan, N+1, cache, polling loop, or provider retry is added. Existing Oban uniqueness and the exact Refund idempotency key preserve replay safety. Telemetry records the pre-dispatch authority check; existing payment telemetry remains in place.
+Hot path: due renewal dispatch and payment application. Warm path: delayed payment/renewal reconciliation and Refund creation. Cold path: explicit cancellation and operator investigation. Physical renewal reservation admission adds three bounded row-lock checks keyed by exact Subscription, Order, and RenewalAttempt identity, only on physical-renewal preparation. The physical renewal fixture measures 77 SQL queries; the changed-contract renewal fixture measures 80, both within the existing 80-query budget. The final provider-dispatch authority check replaces the pre-dispatch stored-payment-method query. No global scan, N+1, polling loop, extra virtual-renewal query, or provider retry is added. Existing Oban uniqueness and the exact Refund idempotency key preserve replay safety. Telemetry records the reservation and pre-dispatch authority checks; existing payment telemetry remains in place.
 
 JC-265 recoverable suspension, JC-229 collection identity, JC-230 charged-contract application, JC-272 payment-method replacement races, JC-284 Paystack certification, and JC-290 collection-attempt work remain downstream scope.

@@ -178,6 +178,11 @@ defmodule Store.Orders do
     InventoryReservations.reserve_inventory_for_checkout(order_id, items, opts)
   end
 
+  @spec invalidate_inventory_availability_for_variants([String.t()]) :: :ok
+  def invalidate_inventory_availability_for_variants(variant_ids) when is_list(variant_ids) do
+    InventoryReservations.invalidate_variant_availability_for_variants(variant_ids)
+  end
+
   @spec reserve_exact_generation(String.t(), String.t(), String.t(), non_neg_integer(), keyword()) ::
           {:ok,
            %{

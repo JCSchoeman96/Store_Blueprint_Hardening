@@ -142,7 +142,10 @@ defmodule Store.Orders.InventoryReservations do
 
         run_checkout_reservation_transaction(order_id, requests, expires_at, now)
         |> unwrap_transaction_error("Checkout reservation transaction failed")
-        |> maybe_invalidate_after_checkout_reserve(requests)
+        |> maybe_invalidate_after_checkout_reserve(
+          requests,
+          Keyword.get(opts, :invalidate?, true)
+        )
 
       {:error, error} ->
         {:error, error}
@@ -688,7 +691,7 @@ defmodule Store.Orders.InventoryReservations do
 
     Repo.transaction(fn -> consume_for_order_transaction(order_id, now) end)
     |> unwrap_transaction_result()
-    |> maybe_invalidate_after_consume_or_expire()
+    |> maybe_invalidate_after_consume_or_expire(Keyword.get(opts, :invalidate?, true))
   end
 
   @spec release_reservations_for_order(String.t(), keyword()) ::
@@ -700,7 +703,12 @@ defmodule Store.Orders.InventoryReservations do
 
     Repo.transaction(fn -> release_for_order_transaction(order_id, now) end)
     |> unwrap_transaction_result()
-    |> maybe_invalidate_after_consume_or_expire()
+    |> maybe_invalidate_after_consume_or_expire(Keyword.get(opts, :invalidate?, true))
+  end
+
+  @spec invalidate_variant_availability_for_variants([String.t()]) :: :ok
+  def invalidate_variant_availability_for_variants(variant_ids) when is_list(variant_ids) do
+    invalidate_variant_availability(variant_ids)
   end
 
   @spec expire_reservations(DateTime.t(), keyword()) ::
@@ -720,7 +728,7 @@ defmodule Store.Orders.InventoryReservations do
       end
     end)
     |> unwrap_transaction_result()
-    |> maybe_invalidate_after_consume_or_expire()
+    |> maybe_invalidate_after_consume_or_expire(Keyword.get(opts, :invalidate?, true))
   end
 
   defp reserve_variants(order_id, variant_ids, desired_quantities, expires_at, now) do
@@ -918,7 +926,7 @@ defmodule Store.Orders.InventoryReservations do
   defp ensure_no_terminal_blockers(order_id) do
     blocker_exists? =
       InventoryReservation
-      |> where([r], r.order_id == ^order_id and r.state in [:expired, :cancelled])
+      |> where([r], r.order_id == ^order_id and r.state == :expired)
       |> where_generic_reservation_key()
       |> Repo.exists?()
 
@@ -1849,23 +1857,33 @@ defmodule Store.Orders.InventoryReservations do
 
   defp maybe_invalidate_after_reserve({:error, _} = error), do: error
 
-  defp maybe_invalidate_after_checkout_reserve({:ok, %{reserved_rows: _rows} = result}, requests) do
-    requests
-    |> Enum.map(& &1.variant_id)
-    |> invalidate_variant_availability()
-
+  defp maybe_invalidate_after_checkout_reserve(
+         {:ok, %{reserved_rows: _rows} = result},
+         requests,
+         true
+       ) do
+    requests |> Enum.map(& &1.variant_id) |> invalidate_variant_availability()
     {:ok, result}
   end
 
-  defp maybe_invalidate_after_checkout_reserve({:error, _} = error, _requests), do: error
+  defp maybe_invalidate_after_checkout_reserve({:ok, result}, _requests, false),
+    do: {:ok, result}
 
-  defp maybe_invalidate_after_consume_or_expire({:ok, %{reservations: reservations} = result}) do
+  defp maybe_invalidate_after_checkout_reserve({:error, _} = error, _requests, _invalidate?),
+    do: error
+
+  defp maybe_invalidate_after_consume_or_expire(
+         {:ok, %{reservations: reservations} = result},
+         true
+       ) do
     variant_ids = Enum.map(reservations, & &1.variant_id)
     invalidate_variant_availability(variant_ids)
     {:ok, result}
   end
 
-  defp maybe_invalidate_after_consume_or_expire({:error, _} = error), do: error
+  defp maybe_invalidate_after_consume_or_expire({:ok, result}, false), do: {:ok, result}
+
+  defp maybe_invalidate_after_consume_or_expire({:error, _} = error, _invalidate?), do: error
 
   defp invalidate_variant_availability(variant_ids) do
     variant_ids =
@@ -1873,16 +1891,18 @@ defmodule Store.Orders.InventoryReservations do
       |> Enum.filter(&is_binary/1)
       |> Enum.uniq()
 
-    _ = StockFastPath.invalidate_variant_ids(variant_ids)
+    if variant_ids != [] do
+      _ = StockFastPath.invalidate_variant_ids(variant_ids)
 
-    product_ids =
-      Variant
-      |> where([variant], variant.id in ^variant_ids)
-      |> select([variant], variant.product_id)
-      |> Repo.all()
-      |> Enum.uniq()
+      product_ids =
+        Variant
+        |> where([variant], variant.id in ^variant_ids)
+        |> select([variant], variant.product_id)
+        |> Repo.all()
+        |> Enum.uniq()
 
-    _ = AvailabilityCache.invalidate_products(product_ids)
+      _ = AvailabilityCache.invalidate_products(product_ids)
+    end
 
     :ok
   end

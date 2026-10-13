@@ -2851,7 +2851,14 @@ defmodule Store.Subscriptions.Facade do
       |> normalize_transaction_notifications()
 
     case transaction_result do
-      {:ok, %{subscription: canceled, effective_mode: effective_mode}, notifications} ->
+      {:ok,
+       %{
+         subscription: canceled,
+         effective_mode: effective_mode,
+         inventory_variant_ids: inventory_variant_ids
+       }, notifications} ->
+        _ = Orders.invalidate_inventory_availability_for_variants(inventory_variant_ids)
+
         :ok =
           AshNotifications.notify_post_commit(
             notifications,
@@ -2909,6 +2916,8 @@ defmodule Store.Subscriptions.Facade do
              payment_application_status,
              requested_mode
            ),
+         {:ok, released_inventory_reservations} <-
+           release_withdrawn_renewal_inventory(renewal_attempt, payment_application_status),
          action <- cancellation_action(effective_mode),
          attrs <- cancellation_attrs(attrs, effective_mode),
          {:ok, current_target} <- current_contract_change(subscription),
@@ -2921,7 +2930,9 @@ defmodule Store.Subscriptions.Facade do
          subscription: canceled,
          effective_mode: effective_mode,
          notifications:
-           attempt_notifications ++ transition_notifications ++ subscription_notifications
+           attempt_notifications ++ transition_notifications ++ subscription_notifications,
+         inventory_variant_ids:
+           Enum.map(released_inventory_reservations, & &1.variant_id) |> Enum.uniq()
        }}
     else
       {:error, reason} -> Repo.rollback(reason)
@@ -3050,6 +3061,23 @@ defmodule Store.Subscriptions.Facade do
   defp classify_renewal_attempt_for_cancellation(attempt, :unapplied, _requested_mode) do
     mark_attempt_authority_withdrawn(attempt)
   end
+
+  defp release_withdrawn_renewal_inventory(
+         %RenewalAttempt{order_id: order_id, status: status, failure_code: failure_code},
+         :unapplied
+       )
+       when is_binary(order_id) and not (status == :failed and failure_code == "PAYMENT_FAILED") do
+    case Orders.release_reservations_for_order(order_id,
+           context: %{system?: true},
+           invalidate?: false
+         ) do
+      {:ok, %{reservations: reservations}} -> {:ok, reservations}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp release_withdrawn_renewal_inventory(_attempt, _payment_application_status),
+    do: {:ok, []}
 
   defp mark_attempt_authority_withdrawn(%RenewalAttempt{
          status: :failed,
@@ -4026,7 +4054,14 @@ defmodule Store.Subscriptions.Facade do
              now
            ),
          {:ok, order} <-
-           prepare_renewal_order(order, subscription, effective_contract, renewal_period, now),
+           prepare_renewal_order(
+             order,
+             subscription,
+             effective_contract,
+             renewal_period,
+             now,
+             attempt
+           ),
          {:ok, payment_intent_result} <-
            Store.Payments.create_or_reuse_payment_intent(
              %{
@@ -4082,7 +4117,8 @@ defmodule Store.Subscriptions.Facade do
          %Subscription{} = subscription,
          %{physical?: true} = effective_contract,
          renewal_period,
-         now
+         now,
+         %RenewalAttempt{} = attempt
        ) do
     with {:ok, shipping_profile} <- fetch_subscription_shipping_profile(subscription),
          {:ok, order} <- apply_shipping_profile_to_order(order, shipping_profile),
@@ -4090,7 +4126,7 @@ defmodule Store.Subscriptions.Facade do
            quote_physical_renewal_shipping(shipping_profile, effective_contract),
          :ok <- ensure_shipping_quote_within_surge_limit(quote_option, shipping_profile),
          {:ok, _reservation_result} <-
-           reserve_renewal_inventory(order, effective_contract, renewal_period, now) do
+           reserve_renewal_inventory(order, attempt, effective_contract, renewal_period, now) do
       case prepare_reserved_physical_renewal_order(order, effective_contract, quote_option) do
         {:ok, prepared_order} ->
           {:ok, prepared_order}
@@ -4107,7 +4143,8 @@ defmodule Store.Subscriptions.Facade do
          %Subscription{} = _subscription,
          effective_contract,
          _renewal_period,
-         _now
+         _now,
+         _attempt
        ) do
     case write_virtual_renewal_snapshot(order, effective_contract) do
       {:ok, _snapshot} ->
@@ -4461,12 +4498,222 @@ defmodule Store.Subscriptions.Facade do
          diff * 10_000 > baseline_amount_minor * @shipping_surge_percent_bps)
   end
 
-  defp reserve_renewal_inventory(%Order{} = order, effective_contract, _renewal_period, _now) do
-    Orders.reserve_inventory_for_checkout(
-      order.id,
-      [%{variant_id: effective_contract.variant_id, quantity: effective_contract.quantity}],
-      context: %{system?: true}
+  defp reserve_renewal_inventory(
+         %Order{} = order,
+         %RenewalAttempt{} = attempt,
+         effective_contract,
+         _renewal_period,
+         now
+       ) do
+    :telemetry.execute(
+      [:store, :subscriptions, :renewal_inventory_reservation_check],
+      %{attempt_no: attempt.attempt_no},
+      %{
+        subscription_id: attempt.subscription_id,
+        renewal_attempt_id: attempt.id,
+        order_id: order.id
+      }
     )
+
+    case Repo.transaction(fn ->
+           reserve_renewal_inventory_in_transaction(attempt, order, effective_contract, now)
+         end) do
+      {:ok, :withdrawn} ->
+        {:ok, %{reserved_rows: []}}
+
+      {:ok, %{reserved_rows: reserved_rows} = result} ->
+        if reserved_rows != [] do
+          _ =
+            Orders.invalidate_inventory_availability_for_variants([
+              effective_contract.variant_id
+            ])
+        end
+
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp reserve_renewal_inventory_in_transaction(attempt, order, effective_contract, now) do
+    case lock_current_renewal_inventory_authority(attempt, order, effective_contract) do
+      :authorized -> reserve_current_renewal_inventory(order, effective_contract, now)
+      :withdrawn -> :withdrawn
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp reserve_current_renewal_inventory(order, effective_contract, now) do
+    case Orders.reserve_inventory_for_checkout(
+           order.id,
+           [
+             %{
+               variant_id: effective_contract.variant_id,
+               quantity: effective_contract.quantity
+             }
+           ],
+           context: %{system?: true},
+           now: now,
+           invalidate?: false
+         ) do
+      {:ok, result} -> result
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp lock_current_renewal_inventory_authority(attempt, order, effective_contract) do
+    with {:ok, period_start_at} <- to_naive_datetime(attempt.period_start_at),
+         {:ok, period_end_at} <- to_naive_datetime(attempt.period_end_at),
+         :authorized <- lock_and_check_renewal_inventory_subscription(attempt, period_start_at),
+         :ok <- lock_renewal_inventory_order(order.id),
+         :authorized <-
+           lock_and_check_renewal_inventory_attempt(
+             attempt,
+             order,
+             effective_contract,
+             period_start_at,
+             period_end_at
+           ) do
+      :authorized
+    else
+      :withdrawn -> :withdrawn
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp lock_and_check_renewal_inventory_subscription(attempt, period_start_at) do
+    query = """
+    SELECT
+      status::text,
+      cancel_at_period_end,
+      canceled_at IS NOT NULL,
+      ended_at IS NOT NULL,
+      current_period_end_at = $2::timestamp,
+      aggregate_version
+    FROM subscriptions
+    WHERE id = $1::text::uuid
+    FOR UPDATE
+    """
+
+    case Repo.query(query, [attempt.subscription_id, period_start_at]) do
+      {:ok, %{rows: [[status, false, false, false, true, version]]}}
+      when status in ["active", "past_due"] and is_integer(version) and
+             version >= attempt.expected_subscription_version ->
+        :authorized
+
+      {:ok, %{rows: [[_status, _scheduled, _canceled, _ended, _same_period, _version]]}} ->
+        :withdrawn
+
+      {:ok, %{rows: []}} ->
+        {:error, Error.new("STALE_RECORD", "renewal Subscription is no longer available")}
+
+      {:ok, _result} ->
+        {:error, Error.new("STALE_RECORD", "renewal Subscription authority is incomplete")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp lock_renewal_inventory_order(order_id) do
+    case Repo.query("SELECT id FROM orders WHERE id = $1::text::uuid FOR UPDATE", [order_id]) do
+      {:ok, %{rows: [[_id]]}} -> :ok
+      {:ok, %{rows: []}} -> {:error, Error.new("STALE_RECORD", "renewal Order is unavailable")}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp lock_and_check_renewal_inventory_attempt(
+         attempt,
+         order,
+         effective_contract,
+         period_start_at,
+         period_end_at
+       ) do
+    query = """
+    SELECT
+      renewal_key,
+      period_start_at = $3::timestamp,
+      period_end_at = $4::timestamp,
+      variant_id::text,
+      quantity,
+      status::text,
+      order_id::text,
+      failure_code,
+      expected_subscription_version
+    FROM renewal_attempts
+    WHERE id = $1::text::uuid AND subscription_id = $2::text::uuid
+    FOR UPDATE
+    """
+
+    case Repo.query(query, [attempt.id, attempt.subscription_id, period_start_at, period_end_at]) do
+      {:ok, %{rows: [row]}} ->
+        renewal_inventory_attempt_authority(row, attempt, order, effective_contract)
+
+      {:ok, %{rows: []}} ->
+        {:error, Error.new("STALE_RECORD", "renewal attempt is no longer available")}
+
+      {:ok, _result} ->
+        {:error, Error.new("STALE_RECORD", "renewal attempt authority is incomplete")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp renewal_inventory_attempt_authority(
+         [
+           _key,
+           _start,
+           _end,
+           _variant,
+           _quantity,
+           _status,
+           _order,
+           @renewal_authority_withdrawn_code,
+           _version
+         ],
+         _attempt,
+         _order_record,
+         _effective_contract
+       ),
+       do: :withdrawn
+
+  defp renewal_inventory_attempt_authority(
+         [
+           renewal_key,
+           true,
+           true,
+           variant_id,
+           quantity,
+           "processing",
+           order_id,
+           failure_code,
+           expected_subscription_version
+         ],
+         attempt,
+         order,
+         effective_contract
+       ) do
+    identity_matches? =
+      failure_code != @renewal_authority_withdrawn_code and
+        renewal_key == attempt.renewal_key and variant_id == effective_contract.variant_id and
+        quantity == effective_contract.quantity and order_id == order.id and
+        expected_subscription_version == attempt.expected_subscription_version
+
+    if identity_matches? do
+      :authorized
+    else
+      stale_renewal_inventory_attempt()
+    end
+  end
+
+  defp renewal_inventory_attempt_authority(_row, _attempt, _order, _effective_contract),
+    do: stale_renewal_inventory_attempt()
+
+  defp stale_renewal_inventory_attempt do
+    {:error, Error.new("STALE_RECORD", "renewal attempt changed before inventory reservation")}
   end
 
   defp evaluate_physical_renewal_quote_output(

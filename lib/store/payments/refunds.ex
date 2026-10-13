@@ -186,6 +186,19 @@ defmodule Store.Payments.Refunds do
   @spec refundable_base_minor(String.t(), integer()) :: {:ok, integer()} | {:error, Error.t()}
   def refundable_base_minor(order_id, captured_amount_minor)
       when is_binary(order_id) and is_integer(captured_amount_minor) do
+    case fetch_order(order_id) do
+      {:ok, %Order{totals_finalized_at: %DateTime{}, grand_total_minor: grand_total_minor}} ->
+        {:ok, min(captured_amount_minor, grand_total_minor)}
+
+      {:ok, %Order{}} ->
+        refundable_snapshot_base_minor(order_id, captured_amount_minor)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp refundable_snapshot_base_minor(order_id, captured_amount_minor) do
     with {:ok, line_total} <- sum_order_line_item_net_total(order_id),
          {:ok, adjustment_total} <- sum_order_adjustments(order_id) do
       snapshot_total = line_total + adjustment_total
