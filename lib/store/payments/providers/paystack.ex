@@ -19,9 +19,27 @@ defmodule Store.Payments.Providers.Paystack do
       supports_tokenization?: false,
       supports_merchant_initiated_charges?: false,
       supports_provider_managed_subscriptions?: false,
+      supports_same_request_replay?: false,
+      supports_request_reference_observation?: false,
       webhook_verification_mode: :offline_hmac,
       supports_webhooks?: true
     }
+  end
+
+  @impl true
+  def renewal_collection_request_reference(collection_attempt_id)
+      when is_binary(collection_attempt_id) do
+    case Ecto.UUID.cast(collection_attempt_id) do
+      {:ok, uuid} ->
+        {:ok, "renewal-" <> String.replace(uuid, "-", "")}
+
+      :error ->
+        {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
+    end
+  end
+
+  def renewal_collection_request_reference(_collection_attempt_id) do
+    {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
   end
 
   @impl true

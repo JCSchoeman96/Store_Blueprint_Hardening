@@ -28,9 +28,27 @@ defmodule Store.Payments.Providers.Stripe do
       supports_merchant_initiated_charges?: true,
       supports_provider_managed_subscriptions?: true,
       supports_transaction_observation?: true,
+      supports_same_request_replay?: true,
+      supports_request_reference_observation?: false,
       webhook_verification_mode: :offline_hmac,
       supports_webhooks?: true
     }
+  end
+
+  @impl true
+  def renewal_collection_request_reference(collection_attempt_id)
+      when is_binary(collection_attempt_id) do
+    case Ecto.UUID.cast(collection_attempt_id) do
+      {:ok, uuid} ->
+        {:ok, "renewal-collection:" <> uuid}
+
+      :error ->
+        {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
+    end
+  end
+
+  def renewal_collection_request_reference(_collection_attempt_id) do
+    {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
   end
 
   @impl true
@@ -102,15 +120,21 @@ defmodule Store.Payments.Providers.Stripe do
     with {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
          {:ok, currency} <- fetch_required_binary(attrs, :currency),
          {:ok, renewal_key} <- fetch_required_binary(attrs, :renewal_key),
-         {:ok, idempotency_key} <- fetch_optional_binary(attrs, :idempotency_key, renewal_key),
+         {:ok, provider_request_reference} <-
+           fetch_required_binary(attrs, :provider_request_reference),
          {:ok, collection_attempt_id} <- fetch_optional_binary(attrs, :collection_attempt_id),
-         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
+         {:ok, local_intent_id} <-
+           fetch_required_binary_from(attrs, :payment_intent_id, :local_intent_id),
          {:ok, order_id} <- fetch_required_binary(attrs, :order_id),
          {:ok, renewal_attempt_id} <- fetch_required_binary(attrs, :renewal_attempt_id),
          {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
          {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
          {:ok, provider_payment_method_ref} <-
-           fetch_required_binary(attrs, :provider_payment_method_ref),
+           fetch_required_binary_from(
+             attrs,
+             :provider_credential_ref,
+             :provider_payment_method_ref
+           ),
          {:ok, response} <-
            stripe_post(
              "/v1/payment_intents",
@@ -134,14 +158,15 @@ defmodule Store.Payments.Providers.Stripe do
                  else: %{}
                )
              ),
-             idempotency_key,
+             provider_request_reference,
              opts
            ),
          {:ok, payment_intent} <- extract_payment_intent_response(response) do
       {:ok,
        %{
          status: normalize_charge_status(payment_intent, response),
-         idempotency_key: idempotency_key,
+         idempotency_key: provider_request_reference,
+         provider_request_reference: provider_request_reference,
          confirm: true,
          off_session: true,
          amount_minor: payment_intent_amount(payment_intent),
@@ -198,6 +223,7 @@ defmodule Store.Payments.Providers.Stripe do
          provider_session_id: provider_session_id,
          provider_payment_id: provider_payment_id,
          provider_idempotency_key: extract_idempotency_key(payload),
+         provider_request_reference: extract_idempotency_key(payload),
          provider_customer_ref: extract_provider_customer_ref(payload),
          provider_payment_method_ref: extract_provider_payment_method_ref(payload),
          local_payment_intent_id: extract_local_payment_intent_id(payload),
@@ -1095,9 +1121,15 @@ defmodule Store.Payments.Providers.Stripe do
     end
   end
 
-  defp fetch_optional_binary(attrs, key, default \\ nil) do
+  defp fetch_required_binary_from(attrs, primary_key, fallback_key) do
+    case attr(attrs, primary_key) || attr(attrs, fallback_key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, Error.new("VALIDATION_ERROR", "#{primary_key} is required")}
+    end
+  end
+
+  defp fetch_optional_binary(attrs, key) do
     case attr(attrs, key) do
-      nil when is_binary(default) and default != "" -> {:ok, default}
       nil -> {:ok, nil}
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} must be a non-empty string")}

@@ -31,8 +31,8 @@ defmodule Store.Payments.Interlocks do
   alias Store.Subscriptions.RenewalAttempt
   alias Store.Subscriptions.RenewalCollectionAttempt
   alias Store.Subscriptions.RenewalCollectionAttempts
-  alias Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeInput
   alias Store.Subscriptions.RenewalCollectionAttempts.PaymentApplicationSettlementInput
+  alias Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeInput
   alias Store.Support.AshNotifications
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.Governance.Idempotency
@@ -44,7 +44,8 @@ defmodule Store.Payments.Interlocks do
           required(:amount_received_minor) => integer(),
           required(:currency) => String.t(),
           optional(:provider) => Providers.provider(),
-          optional(:payment_intent_key) => String.t()
+          optional(:payment_intent_key) => String.t(),
+          optional(:provider_request_reference) => String.t() | nil
         }
 
   @spec create_or_reuse_payment_intent(payment_intent_request(), keyword()) ::
@@ -323,6 +324,7 @@ defmodule Store.Payments.Interlocks do
     amount_received_minor = attr(attrs, :amount_received_minor)
     currency = attr(attrs, :currency)
     provider_input = attr(attrs, :provider)
+    provider_request_reference = attr(attrs, :provider_request_reference)
 
     with {:ok, provider} <- normalize_provider(provider_input),
          :ok <- Providers.ensure_enabled_provider(provider),
@@ -333,6 +335,7 @@ defmodule Store.Payments.Interlocks do
              "amount_received_minor must be >= 0"
            ),
          :ok <- require_binary(currency, "currency is required"),
+         :ok <- optional_binary(provider_request_reference, "provider_request_reference"),
          payment_intent_key =
            attr(
              attrs,
@@ -356,7 +359,8 @@ defmodule Store.Payments.Interlocks do
          amount_received_minor: amount_received_minor,
          currency: currency,
          provider: provider,
-         payment_intent_key: payment_intent_key
+         payment_intent_key: payment_intent_key,
+         provider_request_reference: provider_request_reference
        }}
     end
   end
@@ -373,7 +377,15 @@ defmodule Store.Payments.Interlocks do
          _ash_opts
        )
        when payment_intent_key == request.payment_intent_key do
-    {:ok, intent, true}
+    if reusable_payment_intent_matches?(intent, request) do
+      {:ok, intent, true}
+    else
+      {:error,
+       Error.new(
+         "PAYMENT_INTENT_DUPLICATE",
+         "payment intent does not match its immutable collection identity"
+       )}
+    end
   end
 
   defp create_or_reuse_payment_intent_from_preflight(
@@ -394,13 +406,23 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
+  defp reusable_payment_intent_matches?(intent, request) do
+    intent.provider_request_reference == request.provider_request_reference or
+      (String.starts_with?(request.payment_intent_key, "renewal-collection:") and
+         intent.provider == request.provider and intent.order_id == request.order_id and
+         intent.amount_received_minor == request.amount_received_minor and
+         String.upcase(intent.currency || "") == String.upcase(request.currency) and
+         is_binary(intent.provider_request_reference) and intent.provider_request_reference != "")
+  end
+
   defp create_or_reuse_intent(request, ash_opts) do
     attrs = %{
       order_id: request.order_id,
       amount_received_minor: request.amount_received_minor,
       currency: String.upcase(request.currency),
       provider: request.provider,
-      payment_intent_key: request.payment_intent_key
+      payment_intent_key: request.payment_intent_key,
+      provider_request_reference: request.provider_request_reference
     }
 
     PaymentIntent
@@ -515,6 +537,7 @@ defmodule Store.Payments.Interlocks do
   defp fetch_payment_intent_for_canonical(%CanonicalReceipt{} = canonical) do
     provider_session_id = canonical.provider_session_id
     provider_payment_id = canonical.provider_payment_id
+    provider_request_reference = canonical.provider_request_reference
     local_payment_intent_id = canonical.local_payment_intent_id
 
     with {:ok, provider} <- normalize_provider(canonical.provider),
@@ -522,6 +545,11 @@ defmodule Store.Payments.Interlocks do
            fetch_payment_intent_by_provider_session_id(provider, provider_session_id),
          {:ok, by_provider_payment_id} <-
            fetch_payment_intent_by_provider_payment_id(provider, provider_payment_id),
+         {:ok, by_provider_request_reference} <-
+           fetch_payment_intent_by_provider_request_reference(
+             provider,
+             provider_request_reference
+           ),
          {:ok, by_local_payment_intent_id} <-
            fetch_payment_intent_if_present(local_payment_intent_id) do
       cond do
@@ -531,12 +559,16 @@ defmodule Store.Payments.Interlocks do
         match?(%PaymentIntent{}, by_provider_payment_id) ->
           {:ok, by_provider_payment_id}
 
+        match?(%PaymentIntent{}, by_provider_request_reference) ->
+          {:ok, by_provider_request_reference}
+
         match?(%PaymentIntent{}, by_local_payment_intent_id) ->
           {:ok, by_local_payment_intent_id}
 
         true ->
           fallback_fetch_payment_intent(
-            provider_payment_id || provider_session_id || local_payment_intent_id
+            provider_payment_id || provider_session_id || provider_request_reference ||
+              local_payment_intent_id
           )
       end
     end
@@ -576,6 +608,24 @@ defmodule Store.Payments.Interlocks do
   end
 
   defp fetch_payment_intent_by_provider_payment_id(_provider, _provider_payment_id),
+    do: {:ok, nil}
+
+  defp fetch_payment_intent_by_provider_request_reference(provider, provider_request_reference)
+       when is_atom(provider) and is_binary(provider_request_reference) do
+    query =
+      PaymentIntent
+      |> Ash.Query.filter(
+        expr(provider == ^provider and provider_request_reference == ^provider_request_reference)
+      )
+
+    case Ash.read(query, payment_ash_opts([])) do
+      {:ok, [payment_intent | _]} -> {:ok, payment_intent}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_payment_intent_by_provider_request_reference(_provider, _provider_request_reference),
     do: {:ok, nil}
 
   defp hydrate_payment_intent_provider_references(
@@ -683,7 +733,9 @@ defmodule Store.Payments.Interlocks do
 
       observation = %ProviderObservation{
         provider: provider,
-        provider_reference: canonical.provider_payment_id || canonical.provider_session_id || "",
+        provider_reference:
+          canonical.provider_payment_id || canonical.provider_session_id ||
+            canonical.provider_request_reference || "",
         provider_reference_kind: canonical_reference_kind(canonical),
         provider_transaction_id: canonical.provider_payment_id,
         local_payment_intent_id: payment_intent.id,
@@ -718,6 +770,10 @@ defmodule Store.Payments.Interlocks do
   defp canonical_reference_kind(%CanonicalReceipt{provider_session_id: session_id})
        when is_binary(session_id),
        do: :checkout_session
+
+  defp canonical_reference_kind(%CanonicalReceipt{provider_request_reference: reference})
+       when is_binary(reference),
+       do: :transaction_reference
 
   defp canonical_reference_kind(_canonical), do: nil
 
@@ -1089,6 +1145,7 @@ defmodule Store.Payments.Interlocks do
   defp observation_reference_kind("payment_intent"), do: {:ok, :payment_intent}
   defp observation_reference_kind("checkout_session"), do: {:ok, :checkout_session}
   defp observation_reference_kind("setup_intent"), do: {:ok, :setup_intent}
+  defp observation_reference_kind("transaction_reference"), do: {:ok, :transaction_reference}
   defp observation_reference_kind(_value), do: :error
 
   defp fetch_payment_attempt(id) do
@@ -1465,38 +1522,45 @@ defmodule Store.Payments.Interlocks do
          %PaymentIntent{} = payment_intent
        ) do
     with {:ok, order} <- fetch_order(payment_intent.order_id) do
-      case renewal_attempt_for_payment_result(%{order: order, payment_intent: payment_intent}) do
-        {:ok,
-         %{
-           renewal_attempt: %RenewalAttempt{} = attempt,
-           collection_attempt_id: collection_attempt_id,
-           payment_intent_id: payment_intent_id
-         }}
-        when is_binary(collection_attempt_id) ->
-          case RenewalCollectionAttempts.release_terminal_collection_reservation_for_payment_application(
-                 %PaymentApplicationSettlementInput{
-                   collection_attempt_id: collection_attempt_id,
-                   order_id: order.id,
-                   renewal_attempt_id: attempt.id,
-                   payment_intent_id: payment_intent_id
-                 }
-               ) do
-            {:ok, result} ->
-              {:ok, Map.get(result, :inventory_variant_ids_to_invalidate, [])}
+      release_collection_reservation_for_payment(order, payment_intent)
+    end
+  end
 
-            {:error, reason} ->
-              {:error, reason}
-          end
+  defp release_collection_reservation_for_payment(order, payment_intent) do
+    case renewal_attempt_for_payment_result(%{order: order, payment_intent: payment_intent}) do
+      {:ok,
+       %{
+         renewal_attempt: %RenewalAttempt{} = attempt,
+         collection_attempt_id: collection_attempt_id,
+         payment_intent_id: payment_intent_id
+       }}
+      when is_binary(collection_attempt_id) ->
+        release_collection_reservation(order, attempt, collection_attempt_id, payment_intent_id)
 
-        {:ok, %{collection_attempt_id: nil}} ->
-          {:ok, []}
+      {:ok, %{collection_attempt_id: nil}} ->
+        {:ok, []}
 
-        :none ->
-          {:ok, []}
+      :none ->
+        {:ok, []}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp release_collection_reservation(order, attempt, collection_attempt_id, payment_intent_id) do
+    input = %PaymentApplicationSettlementInput{
+      collection_attempt_id: collection_attempt_id,
+      order_id: order.id,
+      renewal_attempt_id: attempt.id,
+      payment_intent_id: payment_intent_id
+    }
+
+    case RenewalCollectionAttempts.release_terminal_collection_reservation_for_payment_application(
+           input
+         ) do
+      {:ok, result} -> {:ok, Map.get(result, :inventory_variant_ids_to_invalidate, [])}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1729,53 +1793,66 @@ defmodule Store.Payments.Interlocks do
        }) do
     with {:ok, renewal_attempt} <- fetch_renewal_attempt_by_order_id(order_id),
          {:ok, collection} <- fetch_collection_for_payment_intent(payment_intent_id) do
-      case {renewal_attempt, collection} do
-        {nil, nil} ->
-          :none
-
-        {%RenewalAttempt{order_id: ^order_id, payment_intent_id: ^payment_intent_id} = attempt,
-         nil} ->
-          case fetch_collection_for_renewal_attempt(attempt.id) do
-            {:ok, nil} ->
-              {:ok,
-               %{
-                 renewal_attempt: attempt,
-                 collection_attempt_id: nil,
-                 payment_intent_id: payment_intent_id
-               }}
-
-            {:ok, %RenewalCollectionAttempt{}} ->
-              {:error,
-               Error.new(
-                 "PAYMENT_EVENT_UNVERIFIED",
-                 "renewal PaymentIntent has no exact collection identity"
-               )}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-
-        {%RenewalAttempt{id: attempt_id, order_id: ^order_id},
-         %RenewalCollectionAttempt{
-           renewal_attempt_id: attempt_id,
-           payment_intent_id: ^payment_intent_id
-         } = collection} ->
-          {:ok,
-           %{
-             renewal_attempt: renewal_attempt,
-             collection_attempt_id: collection.id,
-             payment_intent_id: payment_intent_id
-           }}
-
-        _ ->
-          {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
-      end
+      resolve_renewal_payment_identity(renewal_attempt, collection, order_id, payment_intent_id)
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp renewal_attempt_for_payment_result(_result), do: :none
+
+  defp resolve_renewal_payment_identity(nil, nil, _order_id, _payment_intent_id), do: :none
+
+  defp resolve_renewal_payment_identity(
+         %RenewalAttempt{order_id: order_id, payment_intent_id: payment_intent_id} = attempt,
+         nil,
+         order_id,
+         payment_intent_id
+       ),
+       do: legacy_renewal_payment_identity(attempt, payment_intent_id)
+
+  defp resolve_renewal_payment_identity(
+         %RenewalAttempt{id: attempt_id, order_id: order_id} = attempt,
+         %RenewalCollectionAttempt{
+           renewal_attempt_id: attempt_id,
+           payment_intent_id: payment_intent_id
+         } = collection,
+         order_id,
+         payment_intent_id
+       ) do
+    {:ok,
+     %{
+       renewal_attempt: attempt,
+       collection_attempt_id: collection.id,
+       payment_intent_id: payment_intent_id
+     }}
+  end
+
+  defp resolve_renewal_payment_identity(_attempt, _collection, _order_id, _payment_intent_id) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
+  end
+
+  defp legacy_renewal_payment_identity(attempt, payment_intent_id) do
+    case fetch_collection_for_renewal_attempt(attempt.id) do
+      {:ok, nil} ->
+        {:ok,
+         %{
+           renewal_attempt: attempt,
+           collection_attempt_id: nil,
+           payment_intent_id: payment_intent_id
+         }}
+
+      {:ok, %RenewalCollectionAttempt{}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "renewal PaymentIntent has no exact collection identity"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp fetch_collection_for_renewal_attempt(renewal_attempt_id) do
     query =
@@ -2027,6 +2104,14 @@ defmodule Store.Payments.Interlocks do
 
   defp require_binary(value, _message) when is_binary(value), do: :ok
   defp require_binary(_value, message), do: {:error, Error.new("VALIDATION_ERROR", message)}
+
+  defp optional_binary(nil, _field), do: :ok
+
+  defp optional_binary(value, _field) when is_binary(value) and value != "", do: :ok
+
+  defp optional_binary(_value, field) do
+    {:error, Error.new("VALIDATION_ERROR", "#{field} must be a non-empty string when provided")}
+  end
 
   defp require_non_negative_integer(value, _message) when is_integer(value) and value >= 0,
     do: :ok

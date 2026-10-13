@@ -28,9 +28,25 @@
 - Add no Redis/cache correctness dependency.
 - Human merge required.
 
+### PayStack-first proof order
+
+`PAYSTACK_IS_NEWU_PRIMARY_PROVIDER=YES`
+
+`STRIPE_IS_PRIMARY_JC229_PROVIDER_PROOF=NO`
+
+`STRIPE_REGRESSION_SUPPORT_RETAINED=YES`
+
+`PAYSTACK_RUNTIME_CERTIFICATION_OWNED_BY_JC284=YES`
+
+`JC229_GENERIC_LIFECYCLE_PAYSTACK_COMPATIBLE=YES` (contract-level proof; not PayStack runtime certification)
+
+NewU commercial truth leads the provider-independent Store invariant, PayStack validation, PayStack adapter mechanism, and optional later adapters. Keep internal collection identity, provider request/reference identity, and returned transaction identity separate. Stripe tests remain secondary regression coverage.
+
+The PayStack contract suite models the 40-character `renewal-<compact-lowercase-uuid>` request reference, ZAR minor-unit amount/currency, opaque authorization identity, exact-reference verification, and ambiguous timeout recovery. Existing PaymentIntent rows retain their stored request reference across adapter mapping changes. These tests do not certify production PayStack HTTP behavior. JC-284 owns the runtime adapter, authorization/email/reusable mapping, webhook processing, finality, and launch certification. JC-230 stays outside JC-229.
+
 ## Review Focus
 
-1. **Ambiguous provider result after dispatch claim:** same collection/PI must remain authoritative; test crash/timeout and replay.
+1. **Ambiguous provider result after dispatch claim:** same collection/PI/provider reference remains authoritative. Reconcile by exact reference by default. Replay the mutation only under an explicit adapter capability.
 2. **Cancellation/suspension between local claim and provider activity:** no unauthorized new provider mutation; already-reached evidence remains reconcilable.
 3. **Mutable plan/subscription drift after binding:** provider payload/order/PI must still match the bound RenewalAttempt.
 4. **Physical reservation generation replacement race:** stale collection must never dispatch against or release the wrong generation.
@@ -307,11 +323,11 @@ Mutate current Subscription/Plan after RenewalAttempt binding and prove provider
 
 Do not create a second order if the exact bound order already exists and validates.
 
-- [ ] **Step 3: Create/reuse PaymentIntent with exact collection idempotency key**
+- [ ] **Step 3: Create/reuse PaymentIntent with separate internal and provider request identities**
 
-`renewal-collection:<collection_attempt_id>`
+Store keeps `renewal-collection:<collection_attempt_id>` as its internal PaymentIntent key. Persist the adapter-derived provider request/reference before dispatch claim and provider I/O.
 
-Same collection replay => same PI. Later collection ordinal => distinct PI.
+Same collection replay => same PI and provider request/reference. Later collection ordinal => distinct PI and provider request/reference.
 
 - [ ] **Step 4: Persist exact PI association and enforce one-to-one**
 

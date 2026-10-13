@@ -8,6 +8,7 @@ defmodule Store.Payments.Providers.Behaviour do
 
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Payments.Types.ProviderObservation
+  alias Store.Payments.Types.RenewalCollectionChargeRequest
 
   @type capability_map :: %{
           optional(:supports_one_time_checkout?) => boolean(),
@@ -19,14 +20,20 @@ defmodule Store.Payments.Providers.Behaviour do
           optional(:webhook_verification_mode) =>
             :offline_hmac | :remote_verify | :ip_allowlist_plus_signature,
           optional(:supports_webhooks?) => boolean(),
-          optional(:supports_transaction_observation?) => boolean()
+          optional(:supports_transaction_observation?) => boolean(),
+          optional(:supports_same_request_replay?) => boolean(),
+          optional(:supports_request_reference_observation?) => boolean()
         }
 
   @callback capabilities() :: capability_map()
 
   @callback create_intent(map(), keyword()) :: {:ok, map()} | {:error, term()}
 
-  @callback charge_off_session(map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @callback charge_off_session(RenewalCollectionChargeRequest.t() | map(), keyword()) ::
+              {:ok, map()} | {:error, term()}
+
+  @callback renewal_collection_request_reference(String.t()) ::
+              {:ok, String.t()} | {:error, term()}
 
   @callback verify_webhook(map(), binary(), keyword()) ::
               {:ok, map()} | {:error, term()}
@@ -38,5 +45,5 @@ defmodule Store.Payments.Providers.Behaviour do
 
   @callback classify_payment_finality(ProviderObservation.t()) ::
               :authoritative_success | :terminal_non_success | :non_terminal | :unknown
-  @optional_callbacks classify_payment_finality: 1
+  @optional_callbacks classify_payment_finality: 1, renewal_collection_request_reference: 1
 end

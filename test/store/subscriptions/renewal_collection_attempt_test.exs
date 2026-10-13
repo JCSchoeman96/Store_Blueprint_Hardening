@@ -1,10 +1,10 @@
 defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
   use Store.DataCase, async: false
 
+  alias Store.Orders.InventoryReservation
   alias Store.Orders.Order
   alias Store.Payments.PaymentIntent
   alias Store.Subscriptions.{RenewalAttempt, RenewalCollectionAttempt, Scheduler}
-  alias Store.Orders.InventoryReservation
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
 

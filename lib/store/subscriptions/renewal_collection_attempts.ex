@@ -8,17 +8,17 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   require Ash.Query
 
   alias Store.Catalog.Variant
-  alias Store.Orders.InventoryReservation
   alias Store.Orders.InventoryAdmission.Request
-  alias Store.Orders.{Order, OrderLineItem}
+  alias Store.Orders.{InventoryReservation, Order, OrderLineItem}
   alias Store.Payments.PaymentIntent
+  alias Store.Payments.Providers
   alias Store.Repo
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias Store.Subscriptions.RenewalCollectionAttempts.{
-    ClaimDispatchInput,
     AttachAndClaimInput,
     CancellationReservationInput,
+    ClaimDispatchInput,
     FenceInput,
     PaymentApplicationSettlementInput,
     PaymentIntentBindingInput,
@@ -222,9 +222,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
                  collection_attempt_id: collection_attempt_id,
                  expected_epoch: expected_epoch,
                  now: now
-               }),
-             {:ok, claim} <- replay_dispatch_for_system(input) do
-          {:ok, claim}
+               }) do
+          replay_dispatch_for_system(input)
         end
 
       {:ok, %{rows: [_first, _second | _rest]}} ->
@@ -390,10 +389,6 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
            "RENEWAL_AUTHORITY_WITHDRAWN",
            "withdrawn renewal collection cannot consume inventory"
          )}
-
-      false ->
-        {:error,
-         Error.new("PAYMENT_EVENT_UNVERIFIED", "collection settlement identity conflicts")}
 
       {:error, reason} ->
         {:error, reason}
@@ -574,13 +569,14 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
         on: order.id == attempt.order_id,
         join: payment_intent in PaymentIntent,
         on: payment_intent.id == collection.payment_intent_id,
-        where:
-          collection.id == ^input.collection_attempt_id and
-            collection.renewal_attempt_id == ^input.renewal_attempt_id and
-            collection.payment_intent_id == ^input.payment_intent_id and
-            collection.dispatch_state == :may_have_been_reached and
-            attempt.id == ^input.renewal_attempt_id and attempt.order_id == ^input.order_id and
-            payment_intent.order_id == order.id and payment_intent.state == :succeeded,
+        where: collection.id == ^input.collection_attempt_id,
+        where: collection.renewal_attempt_id == ^input.renewal_attempt_id,
+        where: collection.payment_intent_id == ^input.payment_intent_id,
+        where: collection.dispatch_state == :may_have_been_reached,
+        where: attempt.id == ^input.renewal_attempt_id,
+        where: attempt.order_id == ^input.order_id,
+        where: payment_intent.order_id == order.id,
+        where: payment_intent.state == :succeeded,
         select: {collection, attempt}
 
     case Repo.one(query) do
@@ -821,25 +817,16 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
        ) do
     transaction_result =
       Repo.transaction(fn ->
-        with {:ok, subscription} <- fetch_subscription(identity.subscription_id, true),
+        with {:ok, subscription} <- fetch_subscription(identity.subscription_id),
              {:ok, attempt} <- fetch_renewal_attempt(identity.renewal_attempt_id, true),
              :ok <-
                ensure_transition_attempt_subscription(
                  attempt,
                  identity.subscription_id
                ),
-             {:ok, collection} <- fetch_collection(collection_attempt_id, true),
+             {:ok, collection} <- fetch_collection(collection_attempt_id),
              :ok <- ensure_transition_collection_attempt(collection, attempt) do
-          case transition.(collection, attempt, subscription) do
-            {:ok, %RenewalCollectionAttempt{} = updated, notifications, result} ->
-              %{collection: updated, notifications: notifications, result: result}
-
-            {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
-              %{collection: updated, notifications: notifications, result: nil}
-
-            {:error, reason} ->
-              Repo.rollback(reason)
-          end
+          apply_collection_transition(collection, attempt, subscription, transition)
         else
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -865,6 +852,19 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
       {:error, reason} ->
         {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp apply_collection_transition(collection, attempt, subscription, transition) do
+    case transition.(collection, attempt, subscription) do
+      {:ok, %RenewalCollectionAttempt{} = updated, notifications, result} ->
+        %{collection: updated, notifications: notifications, result: result}
+
+      {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
+        %{collection: updated, notifications: notifications, result: nil}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
     end
   end
 
@@ -896,37 +896,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
            )}
 
         {:not_started, true, nil} ->
-          with :ok <- ensure_bound_order(attempt),
-               {:ok, reservation} <-
-                 reserve_new_generation(collection, attempt, input.now),
-               :ok <-
-                 guard_collection_generation(
-                   collection,
-                   attempt,
-                   reservation.reservation_key,
-                   reservation.id
-                 ),
-               {:ok, updated, notifications} <-
-                 update_collection(collection, :assign_reservation_generation, %{
-                   reservation_generation_id: reservation.id
-                 }) do
-            {:ok, updated, notifications}
-          end
+          assign_new_generation(collection, attempt, input.now)
 
         {state, true, generation_id}
         when state in [:not_started, :may_have_been_reached] and is_binary(generation_id) ->
-          with :ok <- ensure_bound_order(attempt),
-               {:ok, reservation_key} <-
-                 reservation_key_for_collection(collection, attempt),
-               :ok <-
-                 guard_collection_generation(
-                   collection,
-                   attempt,
-                   reservation_key,
-                   generation_id
-                 ) do
-            {:ok, collection, []}
-          end
+          ensure_existing_generation(collection, attempt, generation_id)
 
         _ ->
           {:error,
@@ -935,6 +909,30 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              "collection cannot acquire an inventory generation in its current state"
            )}
       end
+    end
+  end
+
+  defp assign_new_generation(collection, attempt, now) do
+    with :ok <- ensure_bound_order(attempt),
+         {:ok, reservation} <- reserve_new_generation(collection, attempt, now),
+         :ok <-
+           guard_collection_generation(
+             collection,
+             attempt,
+             reservation.reservation_key,
+             reservation.id
+           ) do
+      update_collection(collection, :assign_reservation_generation, %{
+        reservation_generation_id: reservation.id
+      })
+    end
+  end
+
+  defp ensure_existing_generation(collection, attempt, generation_id) do
+    with :ok <- ensure_bound_order(attempt),
+         {:ok, reservation_key} <- reservation_key_for_collection(collection, attempt),
+         :ok <- guard_collection_generation(collection, attempt, reservation_key, generation_id) do
+      {:ok, collection, []}
     end
   end
 
@@ -1016,7 +1014,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              attempt,
              subscription
            ),
-         :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+         :ok <- Providers.ensure_enabled_provider(subscription.provider),
          {:ok, provider_payment_method} <- provider_method_from_payment_intent(payment_intent) do
       {:ok, collection, [],
        %{
@@ -1037,7 +1035,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          now
        ) do
     with :ok <- ensure_collection_dispatch_authority(subscription, attempt, now),
-         :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+         :ok <- Providers.ensure_enabled_provider(subscription.provider),
          {:ok, provider_payment_method} <- lock_active_stored_payment_method(subscription),
          {:ok, updated_payment_intent, notifications} <-
            bind_dispatch_provider_method(payment_intent, provider_payment_method) do
@@ -1052,7 +1050,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          _attempt,
          _now
        ) do
-    with :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+    with :ok <- Providers.ensure_enabled_provider(subscription.provider),
          {:ok, provider_payment_method} <- provider_method_from_payment_intent(payment_intent) do
       {:ok, payment_intent, provider_payment_method, []}
     end
@@ -1190,12 +1188,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     with :ok <- ensure_collection_payment_identity(collection, input.payment_intent_id),
          {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
          :ok <- ensure_payment_outcome_matches_intent(payment_intent, input.financial_outcome),
-         :ok <- ensure_financial_outcome_transition(collection, input.financial_outcome),
-         {:ok, updated, notifications} <-
-           update_collection(collection, :record_financial_outcome, %{
-             financial_outcome: input.financial_outcome
-           }) do
-      {:ok, updated, notifications}
+         :ok <- ensure_financial_outcome_transition(collection, input.financial_outcome) do
+      update_collection(collection, :record_financial_outcome, %{
+        financial_outcome: input.financial_outcome
+      })
     end
   end
 
@@ -1288,36 +1284,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     """
 
     case Repo.query(query, [payment_method_id, user_id]) do
-      {:ok,
-       %{
-         rows: [[^payment_method_id, ^user_id, stored_provider, status, customer_ref, method_ref]]
-       }} ->
-        if stored_provider == Atom.to_string(provider) and status == "active" and
-             is_binary(customer_ref) and customer_ref != "" and is_binary(method_ref) and
-             method_ref != "" do
-          {:ok,
-           %{
-             provider_customer_ref: customer_ref,
-             provider_payment_method_ref: method_ref
-           }}
-        else
-          {:error,
-           Error.new(
-             "PAYMENT_METHOD_REQUIRED",
-             "current provider payment method is inactive or does not match the subscription"
-           )}
-        end
-
-      {:ok, %{rows: []}} ->
-        {:error,
-         Error.new(
-           "PAYMENT_METHOD_REQUIRED",
-           "subscription has no current active provider payment method"
-         )}
-
-      {:ok, _result} ->
-        {:error,
-         Error.new("PAYMENT_METHOD_REQUIRED", "current provider payment method is invalid")}
+      {:ok, result} ->
+        stored_payment_method_from_result(result, payment_method_id, user_id, provider)
 
       {:error, reason} ->
         {:error, Normalize.normalize(reason)}
@@ -1331,6 +1299,48 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
        "subscription has no current active provider payment method"
      )}
   end
+
+  defp stored_payment_method_from_result(
+         %{
+           rows: [[payment_method_id, user_id, stored_provider, status, customer_ref, method_ref]]
+         },
+         payment_method_id,
+         user_id,
+         provider
+       ) do
+    if valid_stored_payment_method?(stored_provider, status, customer_ref, method_ref, provider) do
+      {:ok,
+       %{
+         provider_customer_ref: customer_ref,
+         provider_payment_method_ref: method_ref
+       }}
+    else
+      {:error,
+       Error.new(
+         "PAYMENT_METHOD_REQUIRED",
+         "current provider payment method is inactive or does not match the subscription"
+       )}
+    end
+  end
+
+  defp stored_payment_method_from_result(%{rows: []}, _payment_method_id, _user_id, _provider) do
+    {:error,
+     Error.new(
+       "PAYMENT_METHOD_REQUIRED",
+       "subscription has no current active provider payment method"
+     )}
+  end
+
+  defp stored_payment_method_from_result(_result, _payment_method_id, _user_id, _provider) do
+    {:error, Error.new("PAYMENT_METHOD_REQUIRED", "current provider payment method is invalid")}
+  end
+
+  defp valid_stored_payment_method?(stored_provider, status, customer_ref, method_ref, provider) do
+    stored_provider == Atom.to_string(provider) and status == "active" and
+      present_binary?(customer_ref) and present_binary?(method_ref)
+  end
+
+  defp present_binary?(value), do: is_binary(value) and value != ""
 
   defp ensure_exact_dispatch_epoch(
          %RenewalCollectionAttempt{
@@ -1398,10 +1408,14 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
            )}
 
         {true, generation_id} ->
-          with {:ok, reservation_key} <- reservation_key_for_collection(collection, attempt) do
-            guard_collection_generation(collection, attempt, reservation_key, generation_id)
-          end
+          guard_existing_collection_generation(collection, attempt, generation_id)
       end
+    end
+  end
+
+  defp guard_existing_collection_generation(collection, attempt, generation_id) do
+    with {:ok, reservation_key} <- reservation_key_for_collection(collection, attempt) do
+      guard_collection_generation(collection, attempt, reservation_key, generation_id)
     end
   end
 
@@ -1507,7 +1521,9 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          payment_intent.payment_intent_key == expected_key and
          payment_intent.amount_received_minor == order.grand_total_minor and
          String.upcase(payment_intent.currency || "") == attempt.currency and
-         payment_intent.provider == subscription.provider do
+         payment_intent.provider == subscription.provider and
+         is_binary(payment_intent.provider_request_reference) and
+         payment_intent.provider_request_reference != "" do
       :ok
     else
       {:error,
@@ -1567,15 +1583,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              collection,
              attempt,
              input.now
-           ),
-         {:ok, updated, notifications} <-
-           update_collection(collection, :fence_before_submission, %{
-             dispatch_state: :not_submitted,
-             fenced_through_epoch: input.expected_epoch,
-             last_fence_event_id: UUIDv7.generate(),
-             last_fenced_at: input.now
-           }) do
-      {:ok, updated, notifications}
+           ) do
+      update_collection(collection, :fence_before_submission, %{
+        dispatch_state: :not_submitted,
+        fenced_through_epoch: input.expected_epoch,
+        last_fence_event_id: UUIDv7.generate(),
+        last_fenced_at: input.now
+      })
     end
   end
 
@@ -1587,14 +1601,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          {:ok, physical?} <- physical_renewal?(attempt.variant_id),
          {:ok, generation_id, reservation} <-
            resume_generation(collection, attempt, physical?, input.now),
-         :ok <- maybe_guard_resume_generation(collection, attempt, physical?, reservation),
-         {:ok, updated, notifications} <-
-           update_collection(collection, :resume_after_fence, %{
-             dispatch_state: :not_started,
-             dispatch_epoch: input.expected_epoch + 1,
-             reservation_generation_id: generation_id
-           }) do
-      {:ok, updated, notifications}
+         :ok <- maybe_guard_resume_generation(collection, attempt, physical?, reservation) do
+      update_collection(collection, :resume_after_fence, %{
+        dispatch_state: :not_started,
+        dispatch_epoch: input.expected_epoch + 1,
+        reservation_generation_id: generation_id
+      })
     end
   end
 
@@ -1812,9 +1824,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     with :ok <- ensure_collection_attempt_dispatchable(attempt),
          :ok <- ensure_renewal_authority(subscription, attempt),
          :ok <- ensure_bound_period_is_current(subscription, attempt),
-         :ok <- ensure_due_for_collection(subscription, now),
-         :ok <- ensure_collection_retry_authority(subscription, attempt) do
-      :ok
+         :ok <- ensure_due_for_collection(subscription, now) do
+      ensure_collection_retry_authority(subscription, attempt)
     end
   end
 
@@ -1899,7 +1910,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp start_locked(%RenewalAttempt{} = attempt, input) do
     transaction_result =
       Repo.transaction(fn ->
-        with {:ok, subscription} <- fetch_subscription(attempt.subscription_id, true),
+        with {:ok, subscription} <- fetch_subscription(attempt.subscription_id),
              {:ok, locked_attempt} <- fetch_renewal_attempt(attempt.id, true),
              :ok <-
                ensure_transition_attempt_subscription(
@@ -1933,7 +1944,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp start_and_assign_locked(subscription_id, input) do
     transaction_result =
       Repo.transaction(fn ->
-        with {:ok, subscription} <- fetch_subscription(subscription_id, true),
+        with {:ok, subscription} <- fetch_subscription(subscription_id),
              {:ok, locked_attempt} <- fetch_renewal_attempt(input.renewal_attempt_id, true),
              :ok <- ensure_transition_attempt_subscription(locked_attempt, subscription.id),
              {:ok, collections} <- fetch_collections(locked_attempt.id),
@@ -2190,9 +2201,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              :ok <- ensure_no_success(collections),
              :ok <-
                SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
-             :ok <- ensure_collection_start_authority(subscription, attempt, collections, input),
-             {:ok, collection, notifications} <- create_next_collection(attempt, collections) do
-          {:ok, collection, notifications}
+             :ok <- ensure_collection_start_authority(subscription, attempt, collections, input) do
+          create_next_collection(attempt, collections)
         end
     end
   end
@@ -2257,9 +2267,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
     with :ok <- ensure_renewal_authority(subscription, attempt),
          :ok <- ensure_bound_period_is_current(subscription, attempt),
-         :ok <- ensure_due_for_collection(subscription, input.now),
-         :ok <- ensure_retry_allowed(subscription, attempt, previous) do
-      :ok
+         :ok <- ensure_due_for_collection(subscription, input.now) do
+      ensure_retry_allowed(subscription, attempt, previous)
     end
   end
 
@@ -2463,9 +2472,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp fetch_collection(collection_attempt_id, lock?) do
-    query = RenewalCollectionAttempt |> Ash.Query.filter(expr(id == ^collection_attempt_id))
-    query = if lock?, do: Ash.Query.lock(query, "FOR UPDATE"), else: query
+  defp fetch_collection(collection_attempt_id) do
+    query =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(id == ^collection_attempt_id))
+      |> Ash.Query.lock("FOR UPDATE")
 
     case Ash.read_one(query,
            domain: Store.Subscriptions,
@@ -2478,9 +2489,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp fetch_subscription(subscription_id, lock?) do
-    query = Subscription |> Ash.Query.filter(expr(id == ^subscription_id))
-    query = if lock?, do: Ash.Query.lock(query, "FOR UPDATE"), else: query
+  defp fetch_subscription(subscription_id) do
+    query =
+      Subscription
+      |> Ash.Query.filter(expr(id == ^subscription_id))
+      |> Ash.Query.lock("FOR UPDATE")
 
     case Ash.read_one(query,
            domain: Store.Subscriptions,

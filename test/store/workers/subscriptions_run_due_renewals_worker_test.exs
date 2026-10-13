@@ -5,9 +5,9 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Orders.Order
   alias Store.Digital.{DigitalAsset, DownloadGrant, ProductDigitalLink}
   alias Store.Digital.Workers.IssueGrantsForPaidOrderWorker
+  alias Store.Orders.Order
   alias Store.Payments.PaymentIntent
 
   alias Store.Subscriptions.{

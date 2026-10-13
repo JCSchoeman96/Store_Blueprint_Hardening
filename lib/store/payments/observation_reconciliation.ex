@@ -66,31 +66,39 @@ defmodule Store.Payments.ObservationReconciliation do
   end
 
   defp provider_identity(%PaymentIntent{} = payment_intent) do
-    {reference, kind} =
-      case {payment_intent.purpose, payment_intent.provider_payment_id,
-            payment_intent.provider_session_id} do
-        {:subscription_payment_method_update, payment_id, _session_id}
-        when is_binary(payment_id) and payment_id != "" ->
-          {payment_id, :setup_intent}
+    {reference, kind} = observation_reference(payment_intent)
 
-        {_purpose, payment_id, _session_id} when is_binary(payment_id) and payment_id != "" ->
-          {payment_id, :payment_intent}
+    case reference do
+      reference when is_binary(reference) ->
+        {:ok, %{provider_reference: reference, provider_reference_kind: kind}}
 
-        {_purpose, _payment_id, session_id} when is_binary(session_id) and session_id != "" ->
-          {session_id, :checkout_session}
-
-        _ ->
-          {nil, nil}
-      end
-
-    if is_binary(reference) do
-      {:ok, %{provider_reference: reference, provider_reference_kind: kind}}
-    else
-      {:error,
-       Error.new(
-         "PAYMENT_EVENT_UNVERIFIED",
-         "payment intent has no provider reference for observation"
-       )}
+      _ ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "payment intent has no provider reference for observation"
+         )}
     end
   end
+
+  defp observation_reference(%PaymentIntent{
+         purpose: :subscription_payment_method_update,
+         provider_payment_id: payment_id
+       })
+       when is_binary(payment_id) and payment_id != "",
+       do: {payment_id, :setup_intent}
+
+  defp observation_reference(%PaymentIntent{provider_payment_id: payment_id})
+       when is_binary(payment_id) and payment_id != "",
+       do: {payment_id, :payment_intent}
+
+  defp observation_reference(%PaymentIntent{provider_session_id: session_id})
+       when is_binary(session_id) and session_id != "",
+       do: {session_id, :checkout_session}
+
+  defp observation_reference(%PaymentIntent{provider_request_reference: request_reference})
+       when is_binary(request_reference) and request_reference != "",
+       do: {request_reference, :transaction_reference}
+
+  defp observation_reference(%PaymentIntent{}), do: {nil, nil}
 end

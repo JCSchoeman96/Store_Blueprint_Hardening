@@ -63,6 +63,36 @@ The Store implementation must remain generic. Examples:
 - If NewU requires a physical product renewal, Store must preserve exact reservation-generation correctness; do not make all subscriptions physical.
 - If NewU has access/membership recovery behavior, Store must expose the durable payment/renewal truth that later lifecycle code can consume; do not embed NewU membership product rules in the generic collection resource.
 
+## 3.1 PayStack-first provider compatibility
+
+`PAYSTACK_IS_NEWU_PRIMARY_PROVIDER=YES`
+
+`STRIPE_IS_PRIMARY_JC229_PROVIDER_PROOF=NO`
+
+`STRIPE_REGRESSION_SUPPORT_RETAINED=YES`
+
+`PAYSTACK_RUNTIME_CERTIFICATION_OWNED_BY_JC284=YES`
+
+`JC229_GENERIC_LIFECYCLE_PAYSTACK_COMPATIBLE=YES` (contract-level proof; not PayStack runtime certification)
+
+Provider order is NewU commercial truth, provider-independent Store invariant, PayStack validation, PayStack adapter mechanism, then optional later adapters. Stripe remains secondary regression coverage.
+
+Current [PayStack Transaction API documentation](https://paystack.com/docs/api/transaction/) defines Charge Authorization with an integer subunit amount, email, reusable authorization code, and an optional unique transaction reference. The reference accepts alphanumeric characters plus `-`, `.`, and `=`. The docs do not publish a reference length limit. JC-229 maps a Store collection UUID to `renewal-<compact-lowercase-uuid>` (40 characters), while Store keeps `renewal-collection:<collection-uuid>` as its internal PaymentIntent key. The product or subscription identity is not embedded in the provider reference.
+
+The three identities stay distinct. The exact provider request reference is stored on its PaymentIntent before dispatch. Binding and replay read that stored value; they do not recompute it from a later adapter version. A new PaymentIntent may use a new adapter mapping, but existing rows keep their original request identity.
+
+- Store collection identity: `RenewalCollectionAttempt.id` and the internal PaymentIntent key;
+- provider request/reference identity: `PaymentIntent.provider_request_reference`, persisted before the dispatch claim;
+- provider transaction identity: `PaymentIntent.provider_payment_id`, learned from a provider response or observation.
+
+Once dispatch is `may_have_been_reached`, a missing provider transaction ID does not authorize a new mutation. Store reconciles through the exact persisted request reference when the adapter supports that observation. Same-request mutation replay is allowed only when an adapter explicitly certifies it and Store reuses the exact reference and bound request. Stripe maps the generic request reference to its HTTP `Idempotency-Key` as adapter behavior. PayStack does not declare same-request mutation replay.
+
+The PayStack compatibility tests are contract tests. They model ZAR minor-unit money, opaque authorization credentials, customer/email evidence in the typed request, a timeout with no returned transaction ID, exact-reference verification, later success, and duplicate-reference rejection. They prove that the request boundary can represent these fields; they do not prove the current facade has durable sources for them. The production PayStack charge and observation implementation remains disabled and belongs to JC-284. Current [Recurring Charges documentation](https://paystack.com/docs/payments/recurring-charges/) requires `authorization.reusable == true` and the original email used to create the authorization. The current `StoredPaymentMethod` stores provider customer/payment-method references, status, and fingerprint; it has no email or reusable-evidence field, and the JC-229 facade leaves `provider_customer_email` unset. Before enabling PayStack charges, JC-284 must define a durable mapping for the opaque authorization credential, the email bound to that authorization, and fail-closed proof that it is reusable. JC-229 does not add authorization acquisition/replacement or change `StoredPaymentMethod`.
+
+JC-284 owns the current PayStack capability matrix and OQ-004 mechanism decision; Charge Authorization and Verify Transaction HTTP behavior; authorization acquisition/replacement; reusable, email, and customer matching; webhook HMAC and canonical normalization; finality classification; missing/reordered webhook recovery; refunds; disputes/chargebacks; and South African/ZAR launch certification.
+
+PayStack's [Verify Transaction API](https://paystack.com/docs/api/transaction/) verifies a transaction by exact reference. Current [Verify Payments guidance](https://paystack.com/docs/payments/verify-payments/) says its transaction webhooks currently cover successful transactions and lists statuses including `abandoned`, `failed`, `ongoing`, `pending`, `processing`, `queued`, and `reversed`. Pending or exceptional charge results need a later check, and an absent webhook is not failure proof. JC-229 routes observations through `ProviderObservation` and `PaymentOutcomeResolver`; it does not add a Subscriptions-specific outcome engine. Runtime finality, webhook normalization, and launch certification remain with JC-284. JC-230 remains out of scope.
+
 ## 4. Existing accepted semantics JC-229 must preserve
 
 ### JC-287 — provider observation
@@ -95,8 +125,7 @@ Use the accepted `Store.Orders.guard_exact_generation/4` seam and current exact-
 3. Allocate collection ordinals safely and monotonically.
 4. Bind each collection to at most one exact `PaymentIntent`; bind an intent to at most one collection.
 5. Construct/reuse the renewal Order and PaymentIntent from immutable bound RenewalAttempt evidence.
-6. Use deterministic collection idempotency key:
-   `renewal-collection:<collection_attempt_id>`.
+6. Keep the deterministic internal collection key `renewal-collection:<collection_attempt_id>` separate from the durable provider request/reference selected by the adapter.
 7. Make provider dispatch replay/crash safe:
    persist “may have been reached” before outbound provider mutation.
 8. Support pre-submission fencing and same-collection dispatch epoch resume.
@@ -186,7 +215,7 @@ For one collection:
 
 only by exact expected-epoch compare-and-set after validating exact Order/PaymentIntent/physical generation. Commit this transition **before outbound provider mutation**.
 
-If the worker dies or times out after that commit, the provider may have received the request. The same collection/PaymentIntent/idempotency key must be reconciled/replayed safely; never create a fresh collection merely because the caller lacks a response.
+If the worker dies or times out after that commit, the provider may have received the request. Never treat a missing provider transaction ID as proof that no mutation occurred. Reconcile the same exact provider request reference by default. A same-request mutation replay is allowed only when the provider adapter explicitly certifies that capability and the Store reuses the exact request. Never create a fresh collection merely because the caller lacks a response.
 
 Pre-submission fence:
 
@@ -252,10 +281,11 @@ For each collection:
 1. Reuse/create the exact Order for the bound occurrence through current Order/Payments domain surfaces.
 2. Validate existing Order identity/totals/currency/items against the bound contract.
 3. Create or reuse exactly one PaymentIntent for the collection.
-4. Its idempotency key is `renewal-collection:<collection_attempt_id>`.
-5. Same collection replay => same PaymentIntent/idempotency key.
-6. New collection ordinal after certified terminal non-success => new collection identity and therefore a new PaymentIntent identity/key.
-7. Do not fall back to legacy `RenewalAttempt.payment_intent_id` as downstream success authority once the collection lifecycle is active.
+4. Its internal PaymentIntent key is `renewal-collection:<collection_attempt_id>`.
+5. Persist the adapter's immutable `provider_request_reference` on the PaymentIntent before `may_have_been_reached` and before provider I/O.
+6. Same collection replay reuses the same collection, PaymentIntent, and provider request/reference identity. The provider-returned transaction ID remains a separate field.
+7. A new collection ordinal after certified terminal non-success gets a new internal and provider request/reference identity.
+8. Do not fall back to legacy `RenewalAttempt.payment_intent_id` as downstream success authority once the collection lifecycle is active.
 
 ## 10. Provider boundary
 
@@ -277,8 +307,11 @@ Before the outbound provider mutation, durable local state must already establis
 - exact collection id;
 - exact PaymentIntent id;
 - exact Order/renewal association;
+- provider-specific request/reference identity;
 - dispatch epoch;
 - `may_have_been_reached`.
+
+`provider_payment_id` is response/observation evidence and cannot serve as the only recoverable identity. JC-287 observations can use `transaction_reference` when the provider verifies requests by reference. A canonical webhook receipt may carry the same generic provider request reference without converting it into a payment/transaction ID.
 
 ## 11. Physical inventory
 
@@ -391,7 +424,10 @@ At minimum prove:
 
 ### Dispatch / crash / replay
 - claim persists `may_have_been_reached` before provider mutation;
-- crash after claim but before response does not create new collection/PI;
+- crash after claim but before response keeps the same collection, PI, and durable provider request/reference;
+- active/past_due timeout with nil `provider_payment_id` reconciles by the same request/reference by default and does not issue another independent mutation;
+- same-request mutation replay occurs only under an explicit provider capability;
+- PayStack contract test rejects a colon-containing internal key as a transaction reference;
 - timeout/unknown outcome keeps same collection active;
 - stale epoch claim loses;
 - pre-submission fence and dispatch claim race has one legal winner;

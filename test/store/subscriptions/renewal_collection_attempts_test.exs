@@ -6,11 +6,18 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Orders.{
+    InventoryAdmission.Request,
+    InventoryReservation,
+    Order,
+    PaymentApplication
+  }
+
   alias Store.Payments.PaymentIntent
-  alias Store.Repo
-  alias Store.Orders.{InventoryReservation, Order, PaymentApplication}
-  alias Store.Orders.InventoryAdmission.Request
+  alias Store.Payments.Providers
   alias Store.Pricing.Contract
+  alias Store.Pricing.Contract.{LineAllocation, LineEvaluation}
+  alias Store.Repo
   alias Store.Support.ID.UUIDv7
   alias Store.Support.Telemetry.RepoStats
 
@@ -22,16 +29,15 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     Subscription
   }
 
-  alias Store.Subscriptions.RenewalCollectionAttempts.StartInput
-
   alias Store.Subscriptions.RenewalCollectionAttempts.{
-    PaymentIntentBindingInput,
-    ClaimDispatchInput,
     AttachAndClaimInput,
-    RecordFinancialOutcomeInput,
+    ClaimDispatchInput,
     FenceInput,
+    PaymentIntentBindingInput,
+    RecordFinancialOutcomeInput,
     ReservationGenerationInput,
-    ResumeInput
+    ResumeInput,
+    StartInput
   }
 
   alias Store.SubscriptionsFixtures
@@ -139,6 +145,73 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert replay.payment_intent.id == payment_intent.id
   end
 
+  test "provider request reference is durable and immutable before dispatch" do
+    {attempt, now} = create_bound_attempt!("jc229_provider_request_reference_immutable")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, expected_reference} =
+             Providers.renewal_collection_request_reference(
+               payment_intent.provider,
+               collection.id
+             )
+
+    assert payment_intent.provider_request_reference == expected_reference
+
+    assert {:error, error} =
+             Repo.query(
+               "UPDATE payment_intents SET provider_request_reference = $2 WHERE id = $1::uuid",
+               [uuid_param(payment_intent.id), expected_reference <> "-changed"]
+             )
+
+    assert error.postgres.code == :check_violation
+
+    assert error.postgres.constraint ==
+             "payment_intents_provider_request_reference_immutable_check"
+  end
+
+  test "collection binding keeps the provider request reference stored on its PaymentIntent" do
+    {attempt, now} = create_bound_attempt!("jc229_historical_provider_request_reference")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+
+    payment_intent =
+      create_collection_payment_intent!(collection, order, attempt,
+        provider_request_reference_suffix: "-legacy-v0"
+      )
+
+    assert {:ok, bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert bound.payment_intent.provider_request_reference ==
+             payment_intent.provider_request_reference
+  end
+
+  test "PaymentIntent reuse keeps its stored request reference after adapter mapping changes" do
+    {attempt, now} = create_bound_attempt!("jc229_provider_reference_mapping_change")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+
+    original =
+      create_collection_payment_intent!(collection, order, attempt,
+        provider_request_reference_suffix: "-legacy-v0"
+      )
+
+    replay =
+      create_collection_payment_intent!(collection, order, attempt,
+        provider_request_reference_suffix: "-current-v1"
+      )
+
+    assert replay.id == original.id
+    assert replay.provider_request_reference == original.provider_request_reference
+  end
+
   test "collection rejects a PaymentIntent for a different Order" do
     {attempt, now} = create_bound_attempt!("jc229_collection_wrong_order")
     order = bind_attempt_to_fixture_order!(attempt)
@@ -169,7 +242,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     wrong_amount =
       create_collection_payment_intent!(collection, order, attempt,
         amount_received_minor: order.grand_total_minor + 1,
-        key_suffix: ":amount"
+        key_suffix: ":amount",
+        provider_request_reference_suffix: "-amount"
       )
 
     assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
@@ -183,7 +257,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     wrong_currency =
       create_collection_payment_intent!(collection, order, attempt,
         currency: "EUR",
-        key_suffix: ":currency"
+        key_suffix: ":currency",
+        provider_request_reference_suffix: "-currency"
       )
 
     assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
@@ -195,7 +270,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              )
 
     wrong_key =
-      create_collection_payment_intent!(collection, order, attempt, key_suffix: ":wrong-key")
+      create_collection_payment_intent!(collection, order, attempt,
+        key_suffix: ":wrong-key",
+        provider_request_reference_suffix: "-wrong-key"
+      )
 
     assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
              RenewalCollectionAttempts.attach_payment_intent_for_system(
@@ -1574,7 +1652,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
       discount_total_minor: 0,
       total_minor: total_minor,
       lines: [
-        %Contract.LineEvaluation{
+        %LineEvaluation{
           line_id: attempt.variant_id,
           line_no: 1,
           sku_snapshot: "JC229-SUB-RENEWAL",
@@ -1587,7 +1665,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
           net_line_total_minor: total_minor
         }
       ],
-      line_allocations: [%Contract.LineAllocation{line_id: attempt.variant_id, discount_minor: 0}],
+      line_allocations: [%LineAllocation{line_id: attempt.variant_id, discount_minor: 0}],
       applied_adjustments: []
     }
 
@@ -1618,12 +1696,23 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     subscription = fetch_subscription!(attempt.subscription_id)
     suffix = Keyword.get(opts, :key_suffix, "")
 
+    {:ok, provider_request_reference} =
+      Providers.renewal_collection_request_reference(
+        subscription.provider,
+        collection.id
+      )
+
+    provider_request_reference =
+      provider_request_reference <>
+        Keyword.get(opts, :provider_request_reference_suffix, "")
+
     attrs = %{
       order_id: order.id,
       amount_received_minor: Keyword.get(opts, :amount_received_minor, order.grand_total_minor),
       currency: Keyword.get(opts, :currency, attempt.currency),
       provider: subscription.provider,
-      payment_intent_key: RenewalCollectionAttempts.payment_intent_key(collection.id) <> suffix
+      payment_intent_key: RenewalCollectionAttempts.payment_intent_key(collection.id) <> suffix,
+      provider_request_reference: provider_request_reference
     }
 
     {:ok, result} =

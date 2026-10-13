@@ -264,7 +264,9 @@ defmodule Store.Orders do
           String.t(),
           :consume | :release,
           keyword()
-        ) :: {:ok, map()} | {:error, term()}
+        ) ::
+          {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
+          | {:error, term()}
   def settle_exact_generation_in_caller_transaction(
         order_id,
         variant_id,

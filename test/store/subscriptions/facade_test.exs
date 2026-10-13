@@ -414,6 +414,14 @@ defmodule Store.Subscriptions.FacadeTest do
                  [Ecto.UUID.dump!(collection_id)]
                )
 
+      assert {:ok, %{rows: [[^provider_idempotency_key, payment_intent_key]]}} =
+               Store.Repo.query(
+                 "SELECT provider_request_reference, payment_intent_key FROM payment_intents WHERE id = $1::uuid",
+                 [Ecto.UUID.dump!(local_payment_intent_id)]
+               )
+
+      assert payment_intent_key == "renewal-collection:" <> collection_id
+
       assert occurrence_key =~ "sub:#{subscription.id}:end:"
 
       StripeAPIStub.json_response(conn, StripeAPIStub.payment_intent_response(params))
@@ -437,6 +445,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert collection.dispatch_state == :may_have_been_reached
     assert collection.financial_outcome == :verified_success
     assert payment_intent.payment_intent_key == "renewal-collection:" <> collection.id
+    assert payment_intent.provider_request_reference == payment_intent.payment_intent_key
     assert payment_intent.id == attempt.payment_intent_id
   end
 
@@ -1078,7 +1087,8 @@ defmodule Store.Subscriptions.FacadeTest do
       assert evidence.provider_environment == evidence_env
 
       if suffix == "missing_id" do
-        assert evidence.provider_reference == nil
+        assert evidence.provider_reference == payment_intent.provider_request_reference
+        assert evidence.provider_reference_kind == "transaction_reference"
         assert attempt.status == :processing
       end
     end
