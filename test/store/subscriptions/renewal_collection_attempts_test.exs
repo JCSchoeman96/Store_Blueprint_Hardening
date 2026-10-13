@@ -1,11 +1,15 @@
 defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   use Store.DataCase, async: false
 
+  import Ecto.Query
   import Ash.Expr
   require Ash.Query
 
   alias Store.Payments.PaymentIntent
   alias Store.Repo
+  alias Store.Orders.{InventoryReservation, Order}
+  alias Store.Orders.InventoryAdmission.Request
+  alias Store.Support.ID.UUIDv7
 
   alias Store.Subscriptions.{
     RenewalAttempt,
@@ -16,6 +20,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   }
 
   alias Store.Subscriptions.RenewalCollectionAttempts.StartInput
+
+  alias Store.Subscriptions.RenewalCollectionAttempts.{
+    FenceInput,
+    ReservationGenerationInput,
+    ResumeInput
+  }
+
   alias Store.SubscriptionsFixtures
 
   test "start input accepts a UUID and an explicit current time" do
@@ -364,6 +375,361 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert [] == list_collections!(attempt.id)
   end
 
+  test "physical reservation assignment is exact and replayable" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_assignment")
+    collection = start_collection!(attempt, now)
+    order = bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+
+    assert {:ok, input} =
+             ReservationGenerationInput.new(%{
+               collection_attempt_id: collection.id,
+               now: now
+             })
+
+    assert {:ok, assigned} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(input)
+
+    assert is_binary(assigned.reservation_generation_id)
+    reservation = Repo.get!(InventoryReservation, assigned.reservation_generation_id)
+    assert reservation.order_id == order.id
+    assert reservation.variant_id == attempt.variant_id
+    assert reservation.quantity == attempt.quantity
+    assert reservation.state == :active
+
+    assert {:ok,
+            {:renewal_generation,
+             %{collection_attempt_id: collection_attempt_id, order_id: order_id}}} =
+             Request.classify_reservation_key(reservation.reservation_key)
+
+    assert collection_attempt_id == collection.id
+    assert order_id == order.id
+
+    assert {:ok, replay} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(input)
+
+    assert replay.id == assigned.id
+    assert replay.reservation_generation_id == assigned.reservation_generation_id
+    assert reservation_count(order.id, attempt.variant_id) == 1
+  end
+
+  test "a succeeded parent renewal cannot acquire a dispatch reservation" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_parent_succeeded")
+    collection = start_collection!(attempt, now)
+    order = bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+
+    assert {:ok, %{num_rows: 1}} =
+             Repo.query("UPDATE renewal_attempts SET status = 'succeeded' WHERE id = $1::uuid", [
+               uuid_param(attempt.id)
+             ])
+
+    assert {:error, error} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(
+               reservation_generation_input!(collection.id, now)
+             )
+
+    assert error.code == "INVALID_STATE_TRANSITION"
+    assert reservation_count(order.id, attempt.variant_id) == 0
+  end
+
+  test "concurrent physical assignment returns one exact generation" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_concurrent_assignment")
+    collection = start_collection!(attempt, now)
+    order = bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    input = reservation_generation_input!(collection.id, now)
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          send(parent, {:assignment_waiting, self()})
+
+          receive do
+            :assign ->
+              RenewalCollectionAttempts.assign_reservation_generation_for_system(input)
+          after
+            5_000 -> {:error, :assignment_barrier_timeout}
+          end
+        end)
+      end
+
+    task_pids =
+      for _ <- 1..2 do
+        assert_receive {:assignment_waiting, task_pid}, 5_000
+        task_pid
+      end
+
+    Enum.each(task_pids, &send(&1, :assign))
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+
+    assert [{:ok, first}, {:ok, second}] = results
+    assert first.id == second.id
+    assert first.reservation_generation_id == second.reservation_generation_id
+    assert reservation_count(order.id, attempt.variant_id) == 1
+  end
+
+  test "reservation creation rolls back when collection binding fails" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_assignment_rollback")
+    collection = start_collection!(attempt, now)
+    order = bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    trigger_suffix = System.unique_integer([:positive])
+    trigger_name = "jc229_reject_generation_assignment_#{trigger_suffix}"
+    function_name = "jc229_reject_generation_assignment_fn_#{trigger_suffix}"
+
+    assert {:ok, _} =
+             Repo.query(
+               "CREATE FUNCTION #{function_name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture rejects collection binding'; END; $$"
+             )
+
+    assert {:ok, _} =
+             Repo.query(
+               "CREATE TRIGGER #{trigger_name} BEFORE UPDATE OF reservation_generation_id ON renewal_collection_attempts FOR EACH ROW EXECUTE FUNCTION #{function_name}()"
+             )
+
+    input = reservation_generation_input!(collection.id, now)
+
+    assert {:error, _error} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(input)
+
+    assert {:ok, _} = Repo.query("DROP TRIGGER #{trigger_name} ON renewal_collection_attempts")
+    assert {:ok, _} = Repo.query("DROP FUNCTION #{function_name}()")
+
+    assert is_nil(fetch_collection!(collection.id).reservation_generation_id)
+    assert reservation_count(order.id, attempt.variant_id) == 0
+  end
+
+  test "nonphysical renewal does not require or create a reservation generation" do
+    {attempt, now} = create_bound_attempt!("jc229_virtual_generation")
+    collection = start_collection!(attempt, now)
+    order = bind_order!(attempt)
+
+    assert {:ok, input} =
+             ReservationGenerationInput.new(%{
+               collection_attempt_id: collection.id,
+               now: now
+             })
+
+    assert {:ok, assigned} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(input)
+
+    assert is_nil(assigned.reservation_generation_id)
+    assert reservation_count(order.id, attempt.variant_id) == 0
+  end
+
+  test "pre-submission fence releases only the bound generation and preserves unresolved truth" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_fence")
+    collection = start_collection!(attempt, now)
+    bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    assigned = assign_generation!(collection.id, now)
+    reservation_id = assigned.reservation_generation_id
+
+    assert {:ok, fence_input} =
+             FenceInput.new(%{
+               collection_attempt_id: assigned.id,
+               expected_epoch: 1,
+               now: now
+             })
+
+    assert {:ok, fenced} =
+             RenewalCollectionAttempts.fence_before_submission_for_system(fence_input)
+
+    assert fenced.dispatch_state == :not_submitted
+    assert fenced.dispatch_epoch == 1
+    assert fenced.fenced_through_epoch == 1
+    assert fenced.financial_outcome == :unresolved
+    assert is_binary(fenced.last_fence_event_id)
+    assert fenced.last_fenced_at == now
+    assert Repo.get!(InventoryReservation, reservation_id).state == :cancelled
+
+    assert {:ok, replacement} = reserve_replacement_generation!(attempt, fenced)
+
+    assert {:error, stale_fence} =
+             RenewalCollectionAttempts.fence_before_submission_for_system(fence_input)
+
+    assert stale_fence.code == "STALE_RECORD"
+    assert Repo.get!(InventoryReservation, replacement.reservation.id).state == :active
+  end
+
+  test "physical collection can be fenced before any reservation was acquired" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_unassigned_fence")
+    collection = start_collection!(attempt, now)
+    order = bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+
+    assert {:ok, fenced} = fence_collection!(collection.id, now)
+
+    assert fenced.dispatch_state == :not_submitted
+    assert fenced.financial_outcome == :unresolved
+    assert is_nil(fenced.reservation_generation_id)
+    assert reservation_count(order.id, attempt.variant_id) == 0
+  end
+
+  test "fence and replacement generation race cannot release the replacement" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_fence_replace_race")
+    collection = start_collection!(attempt, now)
+    bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    assigned = assign_generation!(collection.id, now)
+    fence_input = fence_input!(assigned.id, 1, now)
+    parent = self()
+
+    fence_task =
+      Task.async(fn ->
+        send(parent, {:fence_waiting, self()})
+
+        receive do
+          :race -> RenewalCollectionAttempts.fence_before_submission_for_system(fence_input)
+        after
+          5_000 -> {:error, :fence_barrier_timeout}
+        end
+      end)
+
+    replace_task =
+      Task.async(fn ->
+        send(parent, {:replace_waiting, self()})
+
+        receive do
+          :race -> reserve_replacement_generation!(attempt, assigned)
+        after
+          5_000 -> {:error, :replacement_barrier_timeout}
+        end
+      end)
+
+    assert_receive {:fence_waiting, fence_pid}, 5_000
+    assert_receive {:replace_waiting, replace_pid}, 5_000
+    send(fence_pid, :race)
+    send(replace_pid, :race)
+
+    assert {:ok, fenced} = Task.await(fence_task, 10_000)
+    assert fenced.dispatch_state == :not_submitted
+
+    case Task.await(replace_task, 10_000) do
+      {:ok, %{reservation: replacement}} ->
+        assert replacement.state == :active
+
+        assert Repo.get!(InventoryReservation, assigned.reservation_generation_id).state ==
+                 :cancelled
+
+      {:error, %{code: "RESERVATION_CONFLICT"}} ->
+        assert Repo.get!(InventoryReservation, assigned.reservation_generation_id).state ==
+                 :cancelled
+
+        assert reservation_count(fetch_renewal_attempt!(attempt.id).order_id, attempt.variant_id) ==
+                 1
+
+      other ->
+        flunk("replacement race returned an unexpected result: #{inspect(other)}")
+    end
+  end
+
+  test "replacement cannot begin before the assigned generation is fenced" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_replace_before_fence")
+    collection = start_collection!(attempt, now)
+    bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    assigned = assign_generation!(collection.id, now)
+
+    assert {:error, %{code: "RESERVATION_CONFLICT"}} =
+             reserve_replacement_generation!(attempt, assigned)
+
+    assert Repo.get!(InventoryReservation, assigned.reservation_generation_id).state == :active
+
+    assert {:ok, _fenced} = fence_collection!(assigned.id, now)
+
+    assert {:ok, %{reservation: replacement}} =
+             reserve_replacement_generation!(attempt, assigned)
+
+    assert Repo.get!(InventoryReservation, assigned.reservation_generation_id).state == :cancelled
+    assert Repo.get!(InventoryReservation, replacement.id).state == :active
+  end
+
+  test "resume reuses the collection and advances exactly one epoch with a new generation" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_resume")
+    collection = start_collection!(attempt, now)
+    bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    assigned = assign_generation!(collection.id, now)
+    previous_reservation_id = assigned.reservation_generation_id
+    fence_collection!(assigned.id, now)
+
+    assert {:ok, input} =
+             ResumeInput.new(%{
+               collection_attempt_id: assigned.id,
+               expected_epoch: 1,
+               now: now
+             })
+
+    assert {:ok, resumed} = RenewalCollectionAttempts.resume_after_fence_for_system(input)
+
+    assert resumed.id == assigned.id
+    assert resumed.collection_ordinal == 1
+    assert resumed.dispatch_state == :not_started
+    assert resumed.dispatch_epoch == 2
+    assert resumed.fenced_through_epoch == 1
+    assert resumed.financial_outcome == :unresolved
+    refute resumed.reservation_generation_id == previous_reservation_id
+    assert Repo.get!(InventoryReservation, previous_reservation_id).state == :cancelled
+    assert Repo.get!(InventoryReservation, resumed.reservation_generation_id).state == :active
+
+    assert {:error, stale_resume} =
+             RenewalCollectionAttempts.resume_after_fence_for_system(input)
+
+    assert stale_resume.code == "STALE_RECORD"
+  end
+
+  test "concurrent resume advances one epoch once and keeps one collection" do
+    {attempt, now} = create_bound_attempt!("jc229_generation_concurrent_resume")
+    collection = start_collection!(attempt, now)
+    bind_order!(attempt)
+    set_variant_weight!(attempt.variant_id, 500)
+    assigned = assign_generation!(collection.id, now)
+    fence_collection!(assigned.id, now)
+    input = resume_input!(assigned.id, 1, now)
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          send(parent, {:resume_waiting, self()})
+
+          receive do
+            :resume -> RenewalCollectionAttempts.resume_after_fence_for_system(input)
+          after
+            5_000 -> {:error, :resume_barrier_timeout}
+          end
+        end)
+      end
+
+    task_pids =
+      for _ <- 1..2 do
+        assert_receive {:resume_waiting, task_pid}, 5_000
+        task_pid
+      end
+
+    Enum.each(task_pids, &send(&1, :resume))
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+    successful = Enum.filter(results, &match?({:ok, _}, &1))
+    stale = Enum.filter(results, &match?({:error, %{code: "STALE_RECORD"}}, &1))
+
+    assert [{:ok, resumed}] = successful
+    assert length(stale) == 1
+    assert resumed.dispatch_epoch == 2
+    assert resumed.id == collection.id
+    assert length(list_collections!(attempt.id)) == 1
+  end
+
+  test "fence and resume inputs require exact ids, epochs, and current time" do
+    id = UUIDv7.generate()
+
+    assert {:error, _} = ReservationGenerationInput.new(%{collection_attempt_id: "bad"})
+    assert {:error, _} = FenceInput.new(%{collection_attempt_id: id, expected_epoch: 0})
+    assert {:error, _} = ResumeInput.new(%{collection_attempt_id: id, expected_epoch: 1})
+  end
+
   defp start_input!(renewal_attempt_id, now) do
     assert {:ok, input} =
              StartInput.new(%{
@@ -372,6 +738,114 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              })
 
     input
+  end
+
+  defp start_collection!(attempt, now) do
+    assert {:ok, collection} =
+             RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+
+    collection
+  end
+
+  defp bind_order!(attempt) do
+    order =
+      Order
+      |> Ash.Changeset.for_create(:create, %{})
+      |> Ash.create!(domain: Store.Orders, authorize?: false)
+
+    assert {:ok, _processing} =
+             attempt
+             |> Ash.Changeset.for_update(
+               :mark_processing,
+               %{order_id: order.id},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    order
+  end
+
+  defp set_variant_weight!(variant_id, grams) do
+    assert {:ok, %{num_rows: 1}} =
+             Repo.query("UPDATE variants SET weight_grams = $2 WHERE id = $1::uuid", [
+               uuid_param(variant_id),
+               grams
+             ])
+  end
+
+  defp assign_generation!(collection_id, now) do
+    input = reservation_generation_input!(collection_id, now)
+
+    assert {:ok, collection} =
+             RenewalCollectionAttempts.assign_reservation_generation_for_system(input)
+
+    collection
+  end
+
+  defp fence_collection!(collection_id, now) do
+    input = fence_input!(collection_id, 1, now)
+
+    assert {:ok, fenced} =
+             RenewalCollectionAttempts.fence_before_submission_for_system(input)
+
+    {:ok, fenced}
+  end
+
+  defp reservation_generation_input!(collection_id, now) do
+    assert {:ok, input} =
+             ReservationGenerationInput.new(%{
+               collection_attempt_id: collection_id,
+               now: now
+             })
+
+    input
+  end
+
+  defp fence_input!(collection_id, epoch, now) do
+    assert {:ok, input} =
+             FenceInput.new(%{
+               collection_attempt_id: collection_id,
+               expected_epoch: epoch,
+               now: now
+             })
+
+    input
+  end
+
+  defp resume_input!(collection_id, epoch, now) do
+    assert {:ok, input} =
+             ResumeInput.new(%{
+               collection_attempt_id: collection_id,
+               expected_epoch: epoch,
+               now: now
+             })
+
+    input
+  end
+
+  defp reserve_replacement_generation!(attempt, collection) do
+    attempt = fetch_renewal_attempt!(attempt.id)
+    generation_id = UUIDv7.generate()
+
+    assert {:ok, request} =
+             Request.new_renewal_generation(
+               attempt.order_id,
+               attempt.variant_id,
+               collection.id,
+               generation_id,
+               attempt.quantity
+             )
+
+    Store.Orders.reserve_exact_generation(
+      attempt.order_id,
+      attempt.variant_id,
+      request.reservation_key,
+      attempt.quantity
+    )
   end
 
   defp create_bound_attempt!(label) do
@@ -508,10 +982,25 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
+  defp fetch_collection!(collection_attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(id == ^collection_attempt_id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
   defp list_collections!(renewal_attempt_id) do
     RenewalCollectionAttempt
     |> Ash.Query.for_read(:read_for_renewal_attempt, %{renewal_attempt_id: renewal_attempt_id})
     |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp reservation_count(order_id, variant_id) do
+    query =
+      from reservation in InventoryReservation,
+        where: reservation.order_id == ^order_id and reservation.variant_id == ^variant_id,
+        select: count(reservation.id)
+
+    Repo.one!(query)
   end
 
   defp uuid_param(uuid) do

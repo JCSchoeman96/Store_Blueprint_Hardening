@@ -6,9 +6,20 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Catalog.Variant
+  alias Store.Orders.InventoryReservation
+  alias Store.Orders.InventoryAdmission.Request
   alias Store.Repo
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
-  alias Store.Subscriptions.RenewalCollectionAttempts.StartInput
+
+  alias Store.Subscriptions.RenewalCollectionAttempts.{
+    FenceInput,
+    ReservationGenerationInput,
+    ResumeInput,
+    StartInput
+  }
+
+  alias Store.Support.ID.UUIDv7
 
   alias Store.Subscriptions.{
     RenewalAttempt,
@@ -37,6 +48,507 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   @spec payment_intent_key(String.t()) :: String.t()
   def payment_intent_key(collection_attempt_id) when is_binary(collection_attempt_id),
     do: "renewal-collection:" <> collection_attempt_id
+
+  @spec assign_reservation_generation_for_system(ReservationGenerationInput.t()) ::
+          {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
+  def assign_reservation_generation_for_system(%ReservationGenerationInput{} = input) do
+    with {:ok, canonical_input} <- ReservationGenerationInput.new(Map.from_struct(input)) do
+      run_collection_transition(
+        canonical_input.collection_attempt_id,
+        :assign_renewal_collection_generation,
+        fn collection, attempt, subscription ->
+          assign_locked_generation(collection, attempt, subscription, canonical_input)
+        end
+      )
+    end
+  end
+
+  def assign_reservation_generation_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed reservation generation input is required")}
+  end
+
+  @spec fence_before_submission_for_system(FenceInput.t()) ::
+          {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
+  def fence_before_submission_for_system(%FenceInput{} = input) do
+    with {:ok, canonical_input} <- FenceInput.new(Map.from_struct(input)) do
+      run_collection_transition(
+        canonical_input.collection_attempt_id,
+        :fence_renewal_collection_before_submission,
+        fn collection, attempt, _subscription ->
+          fence_locked_collection(collection, attempt, canonical_input)
+        end
+      )
+    end
+  end
+
+  def fence_before_submission_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection fence input is required")}
+  end
+
+  @spec resume_after_fence_for_system(ResumeInput.t()) ::
+          {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
+  def resume_after_fence_for_system(%ResumeInput{} = input) do
+    with {:ok, canonical_input} <- ResumeInput.new(Map.from_struct(input)) do
+      run_collection_transition(
+        canonical_input.collection_attempt_id,
+        :resume_renewal_collection_after_fence,
+        fn collection, attempt, subscription ->
+          resume_locked_collection(collection, attempt, subscription, canonical_input)
+        end
+      )
+    end
+  end
+
+  def resume_after_fence_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection resume input is required")}
+  end
+
+  defp run_collection_transition(collection_attempt_id, flow, transition) do
+    with {:ok, observed_collection} <- fetch_collection(collection_attempt_id),
+         {:ok, observed_attempt} <- fetch_renewal_attempt(observed_collection.renewal_attempt_id) do
+      transaction_result =
+        Repo.transaction(fn ->
+          with :ok <- lock_subscription(observed_attempt.subscription_id),
+               :ok <-
+                 lock_renewal_attempt(
+                   observed_attempt.id,
+                   observed_attempt.subscription_id
+                 ),
+               :ok <- lock_collection(collection_attempt_id, observed_attempt.id),
+               {:ok, attempt} <- fetch_renewal_attempt(observed_attempt.id),
+               {:ok, collection} <- fetch_collection(collection_attempt_id),
+               {:ok, subscription} <- fetch_subscription(attempt.subscription_id) do
+            case transition.(collection, attempt, subscription) do
+              {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
+                %{collection: updated, notifications: notifications}
+
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+        |> normalize_transition_notifications()
+
+      case transaction_result do
+        {:ok, %{collection: %RenewalCollectionAttempt{} = collection}, notifications} ->
+          :ok =
+            AshNotifications.notify_post_commit(notifications,
+              context: %{flow: flow, collection_attempt_id: collection_attempt_id}
+            )
+
+          {:ok, collection}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  defp assign_locked_generation(collection, attempt, subscription, input) do
+    with :ok <-
+           SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
+         :ok <- ensure_collection_dispatch_authority(subscription, attempt, input.now),
+         :ok <- ensure_assignable_collection(collection),
+         {:ok, physical?} <- physical_renewal?(attempt.variant_id) do
+      case {physical?, collection.reservation_generation_id} do
+        {false, nil} ->
+          {:ok, collection, []}
+
+        {false, _generation_id} ->
+          {:error,
+           Error.new(
+             "RESERVATION_CONFLICT",
+             "nonphysical renewal collection cannot own an inventory generation"
+           )}
+
+        {true, nil} ->
+          with :ok <- ensure_bound_order(attempt),
+               {:ok, reservation} <-
+                 reserve_new_generation(collection, attempt, input.now),
+               :ok <-
+                 guard_collection_generation(
+                   collection,
+                   attempt,
+                   reservation.reservation_key,
+                   reservation.id
+                 ),
+               {:ok, updated, notifications} <-
+                 update_collection(collection, :assign_reservation_generation, %{
+                   reservation_generation_id: reservation.id
+                 }) do
+            {:ok, updated, notifications}
+          end
+
+        {true, generation_id} when is_binary(generation_id) ->
+          with :ok <- ensure_bound_order(attempt),
+               {:ok, reservation_key} <-
+                 reservation_key_for_collection(collection, attempt),
+               :ok <-
+                 guard_collection_generation(
+                   collection,
+                   attempt,
+                   reservation_key,
+                   generation_id
+                 ) do
+            {:ok, collection, []}
+          end
+      end
+    end
+  end
+
+  defp fence_locked_collection(collection, attempt, input) do
+    # Fencing before inventory assignment is valid: there is no generation to release,
+    # and a later physical dispatch must acquire and guard one during resume.
+    with :ok <- ensure_exact_fence_epoch(collection, input.expected_epoch),
+         :ok <-
+           release_collection_generation_before_fence(
+             collection,
+             attempt,
+             input.now
+           ),
+         {:ok, updated, notifications} <-
+           update_collection(collection, :fence_before_submission, %{
+             dispatch_state: :not_submitted,
+             fenced_through_epoch: input.expected_epoch,
+             last_fence_event_id: UUIDv7.generate(),
+             last_fenced_at: input.now
+           }) do
+      {:ok, updated, notifications}
+    end
+  end
+
+  defp resume_locked_collection(collection, attempt, subscription, input) do
+    with :ok <- ensure_exact_resume_epoch(collection, input.expected_epoch),
+         :ok <-
+           SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
+         :ok <- ensure_collection_dispatch_authority(subscription, attempt, input.now),
+         {:ok, physical?} <- physical_renewal?(attempt.variant_id),
+         {:ok, generation_id, reservation} <-
+           resume_generation(collection, attempt, physical?, input.now),
+         :ok <- maybe_guard_resume_generation(collection, attempt, physical?, reservation),
+         {:ok, updated, notifications} <-
+           update_collection(collection, :resume_after_fence, %{
+             dispatch_state: :not_started,
+             dispatch_epoch: input.expected_epoch + 1,
+             reservation_generation_id: generation_id
+           }) do
+      {:ok, updated, notifications}
+    end
+  end
+
+  defp resume_generation(collection, attempt, true, now) do
+    with :ok <- ensure_bound_order(attempt),
+         {:ok, reservation} <- reserve_new_generation(collection, attempt, now) do
+      {:ok, reservation.id, reservation}
+    end
+  end
+
+  defp resume_generation(
+         %RenewalCollectionAttempt{reservation_generation_id: nil},
+         _attempt,
+         false,
+         _now
+       ),
+       do: {:ok, nil, nil}
+
+  defp resume_generation(_collection, _attempt, false, _now) do
+    {:error,
+     Error.new(
+       "RESERVATION_CONFLICT",
+       "nonphysical renewal collection cannot own an inventory generation"
+     )}
+  end
+
+  defp maybe_guard_resume_generation(_collection, _attempt, false, nil), do: :ok
+
+  defp maybe_guard_resume_generation(collection, attempt, true, reservation) do
+    guard_collection_generation(
+      collection,
+      attempt,
+      reservation.reservation_key,
+      reservation.id
+    )
+  end
+
+  defp reserve_new_generation(collection, attempt, now) do
+    with :ok <- ensure_bound_order(attempt),
+         {:ok, request} <-
+           Request.new_renewal_generation(
+             attempt.order_id,
+             attempt.variant_id,
+             collection.id,
+             UUIDv7.generate(),
+             attempt.quantity
+           ) do
+      case Store.Orders.reserve_exact_generation(
+             attempt.order_id,
+             attempt.variant_id,
+             request.reservation_key,
+             attempt.quantity,
+             now: now
+           ) do
+        {:ok, %{reservation: %InventoryReservation{} = reservation}} ->
+          {:ok, reservation}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  defp guard_collection_generation(collection, attempt, reservation_key, expected_id) do
+    with :ok <-
+           validate_collection_generation_key(
+             reservation_key,
+             collection.id,
+             attempt
+           ),
+         {:ok, facts} <-
+           Store.Orders.guard_exact_generation(
+             attempt.order_id,
+             attempt.variant_id,
+             reservation_key,
+             attempt.quantity
+           ),
+         true <- facts.id == expected_id and facts.state == :active do
+      :ok
+    else
+      {:error, reason} ->
+        {:error,
+         Error.new(
+           "RESERVATION_CONFLICT",
+           "exact renewal inventory generation is not active or does not match the collection",
+           %{reason: inspect(reason)}
+         )}
+
+      false ->
+        {:error,
+         Error.new(
+           "RESERVATION_CONFLICT",
+           "exact renewal inventory generation does not match the assigned row"
+         )}
+    end
+  end
+
+  defp release_collection_generation_before_fence(
+         %RenewalCollectionAttempt{reservation_generation_id: nil},
+         _attempt,
+         _now
+       ),
+       do: :ok
+
+  defp release_collection_generation_before_fence(collection, attempt, now) do
+    with :ok <- ensure_bound_order(attempt),
+         {:ok, reservation_key} <- reservation_key_for_collection(collection, attempt),
+         {:ok, %{reservation: %InventoryReservation{} = reservation}} <-
+           Store.Orders.release_exact_generation(
+             attempt.order_id,
+             attempt.variant_id,
+             reservation_key,
+             now: now
+           ),
+         true <- reservation.id == collection.reservation_generation_id,
+         true <- reservation.state in [:cancelled, :expired] do
+      :ok
+    else
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+
+      _ ->
+        {:error,
+         Error.new(
+           "RESERVATION_CONFLICT",
+           "pre-submission fence could not release its exact active generation"
+         )}
+    end
+  end
+
+  defp reservation_key_for_collection(collection, attempt) do
+    case Repo.get(InventoryReservation, collection.reservation_generation_id) do
+      %InventoryReservation{reservation_key: key} when is_binary(key) ->
+        case validate_collection_generation_key(key, collection.id, attempt) do
+          :ok -> {:ok, key}
+          {:error, _reason} = error -> error
+        end
+
+      _ ->
+        {:error,
+         Error.new(
+           "RESERVATION_CONFLICT",
+           "assigned renewal reservation generation is missing"
+         )}
+    end
+  end
+
+  defp validate_collection_generation_key(reservation_key, collection_attempt_id, attempt) do
+    case Request.classify_reservation_key(reservation_key) do
+      {:ok,
+       {:renewal_generation,
+        %{
+          order_id: order_id,
+          variant_id: variant_id,
+          collection_attempt_id: ^collection_attempt_id
+        }}} ->
+        if order_id == attempt.order_id and variant_id == attempt.variant_id do
+          :ok
+        else
+          {:error, :contradictory_identity}
+        end
+
+      _ ->
+        {:error, :invalid_reservation_key}
+    end
+  end
+
+  defp ensure_bound_order(%RenewalAttempt{order_id: order_id}) when is_binary(order_id), do: :ok
+
+  defp ensure_bound_order(_attempt) do
+    {:error,
+     Error.new("VALIDATION_ERROR", "renewal Order must be bound before inventory assignment")}
+  end
+
+  defp ensure_assignable_collection(%RenewalCollectionAttempt{
+         dispatch_state: :not_started,
+         financial_outcome: :unresolved
+       }),
+       do: :ok
+
+  defp ensure_assignable_collection(_collection) do
+    {:error,
+     Error.new(
+       "INVALID_STATE_TRANSITION",
+       "only an unresolved collection that has not started dispatch can own a reservation generation"
+     )}
+  end
+
+  defp ensure_exact_fence_epoch(
+         %RenewalCollectionAttempt{
+           dispatch_state: :not_started,
+           financial_outcome: :unresolved,
+           dispatch_epoch: epoch,
+           fenced_through_epoch: fenced_through_epoch
+         },
+         epoch
+       )
+       when fenced_through_epoch == epoch - 1,
+       do: :ok
+
+  defp ensure_exact_fence_epoch(_collection, _expected_epoch) do
+    {:error,
+     Error.new(
+       "STALE_RECORD",
+       "collection is not at the exact not-started dispatch epoch to fence"
+     )}
+  end
+
+  defp ensure_exact_resume_epoch(
+         %RenewalCollectionAttempt{
+           dispatch_state: :not_submitted,
+           financial_outcome: :unresolved,
+           dispatch_epoch: epoch,
+           fenced_through_epoch: epoch
+         },
+         epoch
+       ),
+       do: :ok
+
+  defp ensure_exact_resume_epoch(_collection, _expected_epoch) do
+    {:error,
+     Error.new(
+       "STALE_RECORD",
+       "collection is not at the exact fenced dispatch epoch to resume"
+     )}
+  end
+
+  defp ensure_collection_dispatch_authority(subscription, attempt, now) do
+    with :ok <- ensure_collection_attempt_dispatchable(attempt),
+         :ok <- ensure_renewal_authority(subscription, attempt),
+         :ok <- ensure_bound_period_is_current(subscription, attempt),
+         :ok <- ensure_due_for_collection(subscription, now),
+         :ok <- ensure_collection_retry_authority(subscription, attempt) do
+      :ok
+    end
+  end
+
+  defp ensure_collection_attempt_dispatchable(%RenewalAttempt{status: :succeeded}) do
+    {:error,
+     Error.new(
+       "INVALID_STATE_TRANSITION",
+       "a succeeded renewal attempt cannot start or resume collection dispatch"
+     )}
+  end
+
+  defp ensure_collection_attempt_dispatchable(%RenewalAttempt{}), do: :ok
+
+  defp ensure_collection_retry_authority(%Subscription{status: :active}, _attempt), do: :ok
+
+  defp ensure_collection_retry_authority(
+         %Subscription{status: :past_due, dunning_attempt_count: count},
+         %RenewalAttempt{charged_contract_snapshot: snapshot}
+       ) do
+    max_retry_attempts = Map.get(snapshot, "max_retry_attempts")
+
+    if is_integer(count) and count > 0 and is_integer(max_retry_attempts) and
+         count <= max_retry_attempts do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "INVALID_STATE_TRANSITION",
+         "renewal retry policy does not permit provider dispatch"
+       )}
+    end
+  end
+
+  defp ensure_collection_retry_authority(_subscription, _attempt) do
+    {:error, Error.new("RENEWAL_AUTHORITY_WITHDRAWN", "renewal authority is withdrawn")}
+  end
+
+  defp physical_renewal?(variant_id) do
+    query = Variant |> Ash.Query.filter(expr(id == ^variant_id))
+
+    case Ash.read_one(query,
+           domain: Store.Catalog,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %Variant{weight_grams: weight_grams}} when is_integer(weight_grams) ->
+        {:ok, weight_grams > 0}
+
+      {:ok, %Variant{}} ->
+        {:ok, false}
+
+      {:ok, nil} ->
+        {:error, Error.new("NOT_FOUND", "bound renewal variant was not found")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp update_collection(collection, action, attrs) do
+    changeset =
+      collection
+      |> Ash.Changeset.for_update(action, attrs, context: %{system?: true})
+
+    case Ash.update(changeset,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true},
+           return_notifications?: true
+         ) do
+      {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
+        {:ok, updated, notifications}
+
+      {:ok, %RenewalCollectionAttempt{} = updated} ->
+        {:ok, updated, []}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
 
   defp start_locked(%RenewalAttempt{} = attempt, input) do
     transaction_result =
@@ -327,6 +839,22 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
+  defp lock_collection(collection_attempt_id, renewal_attempt_id) do
+    case Repo.query(
+           "SELECT id FROM renewal_collection_attempts WHERE id = $1::text::uuid AND renewal_attempt_id = $2::text::uuid FOR UPDATE",
+           [collection_attempt_id, renewal_attempt_id]
+         ) do
+      {:ok, %{num_rows: 1}} ->
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        {:error, Error.new("STALE_RECORD", "renewal collection changed during transition")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp fetch_renewal_attempt(attempt_id) do
     query = RenewalAttempt |> Ash.Query.filter(expr(id == ^attempt_id))
 
@@ -337,6 +865,20 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          ) do
       {:ok, %RenewalAttempt{} = attempt} -> {:ok, attempt}
       {:ok, nil} -> {:error, Error.new("NOT_FOUND", "renewal attempt was not found")}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp fetch_collection(collection_attempt_id) do
+    query = RenewalCollectionAttempt |> Ash.Query.filter(expr(id == ^collection_attempt_id))
+
+    case Ash.read_one(query,
+           domain: Store.Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %RenewalCollectionAttempt{} = collection} -> {:ok, collection}
+      {:ok, nil} -> {:error, Error.new("NOT_FOUND", "renewal collection was not found")}
       {:error, reason} -> {:error, Normalize.normalize(reason)}
     end
   end
@@ -375,5 +917,14 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   end
 
   defp normalize_transaction_notifications({:error, reason}),
+    do: {:error, Normalize.normalize(reason)}
+
+  defp normalize_transition_notifications({:ok, transaction_result})
+       when is_map(transaction_result) do
+    {:ok, Map.delete(transaction_result, :notifications),
+     Map.get(transaction_result, :notifications, [])}
+  end
+
+  defp normalize_transition_notifications({:error, reason}),
     do: {:error, Normalize.normalize(reason)}
 end

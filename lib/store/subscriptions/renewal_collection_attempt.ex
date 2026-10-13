@@ -112,6 +112,30 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
       public?(false)
       accept([:renewal_attempt_id, :collection_ordinal])
     end
+
+    update :assign_reservation_generation do
+      public?(false)
+      require_atomic?(false)
+      accept([:reservation_generation_id])
+    end
+
+    update :fence_before_submission do
+      public?(false)
+      require_atomic?(false)
+
+      accept([
+        :dispatch_state,
+        :fenced_through_epoch,
+        :last_fence_event_id,
+        :last_fenced_at
+      ])
+    end
+
+    update :resume_after_fence do
+      public?(false)
+      require_atomic?(false)
+      accept([:dispatch_state, :dispatch_epoch, :reservation_generation_id])
+    end
   end
 
   code_interface do
