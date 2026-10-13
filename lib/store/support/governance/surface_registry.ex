@@ -198,6 +198,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_entitlements_for_user, 2},
         {:entitlement_set_for_user, 1},
         {:issue_subscription_entitlement_for_system, 2},
+        {:issue_subscription_source_grant_strict_for_system, 2},
         {:revoke_subscription_entitlements_for_system, 1},
         {:revoke_subscription_entitlements_for_system, 2},
         {:revoke_subscription_source_grants_strict_for_system, 2},
