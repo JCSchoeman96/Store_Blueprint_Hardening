@@ -2193,6 +2193,9 @@ defmodule Store.Subscriptions.Facade do
         :suspended ->
           :ok
 
+        {:suspension_failed, reason} ->
+          {:error, reason}
+
         {:error,
          %Error{
            code: "VALIDATION_ERROR",
@@ -5476,33 +5479,91 @@ defmodule Store.Subscriptions.Facade do
   defp maybe_suspend_past_due(%Subscription{}, _plan, _now), do: :continue
 
   defp suspend_past_due_subscription(subscription, attrs) do
-    case subscription
-         |> Ash.Changeset.for_update(
-           :mark_suspended_transition,
-           Map.take(attrs, [:billing_status_reason, :past_due_since_at, :dunning_attempt_count]),
-           context: %{system?: true}
-         )
-         |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true}) do
-      {:ok, suspended} ->
-        plan =
-          case fetch_plan(suspended.subscription_plan_id) do
-            {:ok, fetched_plan} -> fetched_plan
-            _ -> nil
-          end
+    transaction_result = suspend_subscription_and_revoke_in_transaction(subscription, attrs)
 
-        _ =
-          EntitlementsFacade.revoke_subscription_entitlements_for_system(
-            suspended.id,
-            "grace_expired"
-          )
-
-        _ = maybe_enqueue_membership_access_ended_email(suspended, plan, "grace_expired")
-
-        :suspended
+    case transaction_result do
+      {:ok, %{subscription: suspended, user_ids: user_ids}, notifications} ->
+        project_suspension_after_commit(suspended, user_ids, notifications)
 
       {:error, reason} ->
-        normalize_subscription_update_result({:error, reason}, subscription)
+        {:suspension_failed, Normalize.normalize(reason)}
     end
+  end
+
+  defp suspend_subscription_and_revoke_in_transaction(subscription, attrs) do
+    Repo.transaction(fn ->
+      with :ok <- lock_subscription_aggregate_version(subscription),
+           {:ok, suspended, subscription_notifications} <-
+             mark_subscription_suspended_in_transaction(subscription, attrs),
+           {:ok, %{notifications: grant_notifications, user_ids: user_ids}} <-
+             EntitlementsFacade.revoke_subscription_source_grants_strict_for_system(
+               suspended.id,
+               "grace_expired"
+             ) do
+        {:ok,
+         %{
+           subscription: suspended,
+           notifications: subscription_notifications ++ grant_notifications,
+           user_ids: user_ids
+         }}
+      else
+        {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
+      end
+    end)
+    |> normalize_transaction_notifications()
+  end
+
+  defp mark_subscription_suspended_in_transaction(subscription, attrs) do
+    subscription
+    |> Ash.Changeset.for_update(
+      :mark_suspended_transition,
+      Map.take(attrs, [:billing_status_reason, :past_due_since_at, :dunning_attempt_count]),
+      context: %{system?: true}
+    )
+    |> Ash.update(
+      domain: Subscriptions,
+      authorize?: false,
+      context: %{system?: true},
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, suspended, notifications} when is_list(notifications) ->
+        {:ok, suspended, notifications}
+
+      {:ok, suspended} ->
+        {:ok, suspended, []}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp project_suspension_after_commit(suspended, user_ids, notifications) do
+    :ok =
+      AshNotifications.notify_post_commit(
+        notifications,
+        context: %{
+          flow: :suspend_subscription,
+          subscription_id: suspended.id,
+          reason: "grace_expired"
+        }
+      )
+
+    :ok =
+      EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
+        user_ids,
+        "grace_expired"
+      )
+
+    plan =
+      case fetch_plan(suspended.subscription_plan_id) do
+        {:ok, fetched_plan} -> fetched_plan
+        _ -> nil
+      end
+
+    _ = maybe_enqueue_membership_access_ended_email(suspended, plan, "grace_expired")
+
+    :suspended
   end
 
   defp mark_attempt_succeeded(attempt, order_id, payment_intent_id) do
@@ -5549,12 +5610,22 @@ defmodule Store.Subscriptions.Facade do
       retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
     }
 
-    result =
-      persist_subscription_dunning_update(subscription, status, attrs)
-      |> stale_result_or(:ok)
+    subscription
+    |> persist_subscription_dunning_update(status, attrs)
+    |> finish_subscription_dunning_update(subscription, status, next_attempt_count)
+  end
 
-    emit_subscription_dunning_telemetry(subscription, status, next_attempt_count)
-    result
+  defp finish_subscription_dunning_update(
+         {:suspension_failed, reason},
+         _subscription,
+         _status,
+         _attempt_count
+       ),
+       do: {:error, reason}
+
+  defp finish_subscription_dunning_update(result, subscription, status, attempt_count) do
+    emit_subscription_dunning_telemetry(subscription, status, attempt_count)
+    stale_result_or(result, :ok)
   end
 
   defp persist_subscription_dunning_update(subscription, :suspended, attrs) do

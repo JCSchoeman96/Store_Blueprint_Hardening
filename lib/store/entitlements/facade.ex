@@ -11,6 +11,7 @@ defmodule Store.Entitlements.Facade do
   alias Store.Entitlements.EntitlementGrant
   alias Store.Entitlements.Queries.UserEntitlementIndexQuery
   alias Store.Entitlements.Types.EntitlementSet
+  alias Store.Repo
   alias Store.Support.Errors.{Error, Normalize}
 
   @spec list_entitlements_for_user(map(), UserEntitlementIndexQuery.t()) ::
@@ -129,6 +130,109 @@ defmodule Store.Entitlements.Facade do
 
   def revoke_subscription_entitlements_for_system(_subscription_id, _reason) do
     {:error, Error.new("VALIDATION_ERROR", "subscription_id must be a UUID")}
+  end
+
+  @spec revoke_subscription_source_grants_strict_for_system(Ecto.UUID.t(), String.t()) ::
+          {:ok, %{notifications: [Ash.Notifier.Notification.t()], user_ids: [Ecto.UUID.t()]}}
+          | {:error, term()}
+  def revoke_subscription_source_grants_strict_for_system(subscription_id, reason)
+      when is_binary(subscription_id) and is_binary(reason) do
+    if Repo.in_transaction?() do
+      query =
+        EntitlementGrant
+        |> Ash.Query.filter(expr(source_kind == :subscription and source_id == ^subscription_id))
+        |> Ash.Query.sort(id: :asc)
+
+      case Ash.read(query, domain: Entitlements, authorize?: false, context: %{system?: true}) do
+        {:ok, grants} -> revoke_suspension_source_grants(grants, reason)
+        {:error, read_error} -> {:error, Normalize.normalize(read_error)}
+      end
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "suspension grant revocation requires a caller-owned transaction"
+       )}
+    end
+  end
+
+  def revoke_subscription_source_grants_strict_for_system(_subscription_id, _reason) do
+    {:error, Error.new("VALIDATION_ERROR", "subscription_id and reason are required")}
+  end
+
+  @spec invalidate_subscription_source_users_after_commit_for_system(
+          [Ecto.UUID.t()],
+          String.t()
+        ) :: :ok
+  def invalidate_subscription_source_users_after_commit_for_system(user_ids, reason)
+      when is_list(user_ids) and is_binary(reason) do
+    user_ids
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.each(&maybe_invalidate_user(&1, reason))
+
+    :ok
+  end
+
+  defp revoke_suspension_source_grants(grants, reason) do
+    user_ids =
+      grants
+      |> Enum.map(& &1.user_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    Enum.reduce_while(grants, {:ok, []}, fn grant, {:ok, notifications} ->
+      case revoke_suspension_source_grant(grant, reason) do
+        {:ok, grant_notifications} ->
+          {:cont, {:ok, notifications ++ grant_notifications}}
+
+        {:error, mutation_error} ->
+          {:halt, {:error, Normalize.normalize(mutation_error)}}
+      end
+    end)
+    |> case do
+      {:ok, notifications} -> {:ok, %{notifications: notifications, user_ids: user_ids}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp revoke_suspension_source_grant(%EntitlementGrant{status: :active} = grant, reason) do
+    attrs = if reason == "", do: %{}, else: %{revoked_reason: reason}
+
+    grant
+    |> Ash.Changeset.for_update(:revoke, attrs, context: %{system?: true})
+    |> Ash.update(
+      domain: Entitlements,
+      authorize?: false,
+      context: %{system?: true},
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, %EntitlementGrant{status: :revoked}, notifications} when is_list(notifications) ->
+        {:ok, notifications}
+
+      {:ok, %EntitlementGrant{status: :revoked}} ->
+        {:ok, []}
+
+      {:ok, updated, _notifications} ->
+        {:error, suspension_grant_convergence_error(updated)}
+
+      {:ok, updated} ->
+        {:error, suspension_grant_convergence_error(updated)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp revoke_suspension_source_grant(%EntitlementGrant{}, _reason), do: {:ok, []}
+
+  defp suspension_grant_convergence_error(%EntitlementGrant{} = grant) do
+    Error.new(
+      "INTERNAL_ERROR",
+      "subscription grant did not converge to revoked",
+      %{grant_id: grant.id, status: grant.status}
+    )
   end
 
   defp revoke_grant(grant, reason) do

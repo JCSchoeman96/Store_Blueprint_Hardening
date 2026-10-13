@@ -8,7 +8,7 @@ This implementation record covers the NewYou CER-PT-006 retry-exhaustion and lat
 |---|---|---|---|
 | `active` | Current paid period is authoritative. | Due at `next_renewal_at`. | Valid through the granted period boundary. |
 | `past_due` | Renewal is unresolved and configured grace/dunning remains. | Only while existing retry policy permits it. | Existing entitlement policy and validity apply. |
-| `suspended` | Recovery boundary is exhausted; the commercial contract remains open. | None. | Revoked through the Entitlements facade. |
+| `suspended` | Recovery boundary is exhausted; the commercial contract remains open. | None. | Exact subscription-source grants are revoked in the same database transaction as suspension. |
 | `canceled` | Continuation authority was withdrawn. | None. | Revoked according to cancellation policy. |
 | `expired` | True terminal expiry. | None. | Not recoverable. |
 
@@ -20,7 +20,7 @@ Retry exhaustion or an observed grace boundary moves `active`/`past_due` to `sus
 - Commerce payment truth requires the exact existing PaymentIntent and a durable `PaymentApplication` for its Order.
 - Recovery requires the exact Subscription, RenewalAttempt, Order, PaymentIntent, and PaymentApplication chain. Suspension does not create a replacement collection or provider reference.
 - The existing renewal reconciliation installs `RenewalAttempt.period_start_at` and `period_end_at`. Reconciliation time does not shift the paid period, including when its end is already in the past.
-- Entitlements remains the access authority. Suspension revokes the subscription-source grant; paid reconciliation issues/upserts that same source identity and invalidates the entitlement cache. Replaying reconciliation after Subscription repair converges grant state without another PaymentApplication.
+- Entitlements remains the access authority. Suspension changes Subscription and strictly revokes every active grant for its exact subscription source in one `Store.Repo` transaction. Any required grant mutation failure rolls back the suspension and all earlier grant mutations; cache invalidation, Ash notification delivery, and membership communications happen after commit. Paid reconciliation issues/upserts that same source identity and invalidates the entitlement cache. Replaying reconciliation after Subscription repair converges grant state without another PaymentApplication.
 - JC-281 precedence remains in force: cancellation-first withdraws renewal authority and routes a later applied payment to remediation; payment-first preserves payment history and never reactivates a cancel-now Subscription.
 
 ## Status sets and schema
@@ -34,14 +34,15 @@ Automatic due selection and provider dispatch remain `active`/`past_due`. Plan a
 - Lifecycle/version tests cover direct active and past-due suspension, cleared retry scheduling, exact paid extension from suspended, cancellation from suspended, and terminal rejection from canceled/expired.
 - Facade tests cover retry exhaustion, grace suspension, access revocation, telemetry, and scheduler exclusion.
 - Renewal authority tests cover unresolved provider-transaction exclusion, exact late-success repair, historical period preservation, replay, entitlement convergence after restart, and JC-281 cancellation precedence.
+- Suspension access convergence tests inject a failure during exact-source grant revocation, prove the suspension and all grant writes roll back, then rerun due processing to converge. They cover a still-valid grant at the failure boundary, multiple grants with one failed mutation, an untouched grant from another Subscription source, and replay without provider calls or new renewal/payment identities. This proves the suspension-to-revocation direction alongside the existing payment-application-to-entitlement-restoration restart proof.
 - Membership uniqueness tests cover the admission guard and PostgreSQL partial unique index.
 - Query-contract tests allow `suspended` filtering for user and admin indexes.
 
 ## Performance & Scaling Review
 
-Renewal and reconciliation are hot paths; subscription detail and admin filtering are warm paths; the conformance record is cold. The implementation adds no hot-path scan or per-row query. Due selection remains bounded and uses existing status/time indexes. The membership admission fence uses the existing `(user_id, membership_key)` lookup and partial unique index; the updated predicate adds `suspended`.
+Renewal and reconciliation are hot paths; subscription detail and admin filtering are warm paths; the conformance record is cold. Suspension adds one indexed exact-source grant read and one update per active grant within the transaction; it does not scan unrelated grants. The source index is `(source_kind, source_id)`, and grant updates use UUID primary keys. Due selection remains bounded and uses existing status/time indexes. The membership admission fence uses the existing `(user_id, membership_key)` lookup and partial unique index; the updated predicate adds `suspended`.
 
-No cache was added. Entitlements uses its existing per-user Cachex invalidation and PubSub notification. RenewalAttempt and Oban uniqueness/idempotency are unchanged; exact renewal and PaymentApplication identities continue to protect replay. Existing dunning telemetry reports the resulting status as a low-cardinality value. The targeted renewal fixture measured 77 queries against the existing budget of 80. The budget did not change.
+No cache was added. Entitlements uses its existing per-user Cachex invalidation and PubSub notification after the authoritative transaction commits. RenewalAttempt and Oban uniqueness/idempotency are unchanged; exact renewal and PaymentApplication identities continue to protect replay. Existing dunning telemetry reports the resulting status as a low-cardinality value. The targeted renewal fixture measured 77 queries against the existing budget of 80. The budget did not change.
 
 ## Scope
 
