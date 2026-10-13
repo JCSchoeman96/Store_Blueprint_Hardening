@@ -150,6 +150,72 @@ defmodule Store.Subscriptions.FacadeTest do
     assert attempt.failure_code == "PAYMENT_METHOD_REQUIRED"
   end
 
+  test "zero retry allowance suspends an exhausted renewal without ending the contract" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_zero_retry")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        max_retry_attempts: 0,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:jc265-zero-retry"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    assert {:ok, _grant} =
+             EntitlementsFacade.issue_subscription_entitlement_for_system(subscription, plan)
+
+    parent = self()
+    handler_id = {__MODULE__, :jc265_dunning_exhaustion, System.unique_integer([:positive])}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :dunning],
+        fn event, measurements, metadata, pid ->
+          send(pid, {List.to_tuple(event), measurements, metadata})
+        end,
+        parent
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert {:ok, %{due_count: 1, failed_count: 1}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+
+    assert_receive {{:store, :subscriptions, :dunning}, %{count: 1}, dunning_metadata}
+    assert dunning_metadata.subscription_id == subscription.id
+    assert dunning_metadata.status == :suspended
+
+    suspended = fetch_subscription!(subscription.id)
+    assert suspended.status == :suspended
+    assert is_nil(suspended.ended_at)
+    assert is_nil(suspended.canceled_at)
+    assert is_nil(suspended.canceled_reason)
+    assert is_nil(suspended.next_retry_at)
+
+    assert {:ok, detail} =
+             SubscriptionsFacade.get_subscription_detail_for_user(customer, subscription.id)
+
+    assert detail.action_capabilities.can_cancel_now?
+    assert detail.action_capabilities.can_cancel_at_period_end?
+    refute detail.action_capabilities.can_queue_plan_change?
+    refute detail.action_capabilities.can_queue_variant_change?
+
+    entitlement = fetch_entitlement!(subscription.id)
+    assert entitlement.status == :revoked
+
+    assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+  end
+
   test "run_due_renewals_for_system requires stored payment method to be active" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_inactive_method")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -643,7 +709,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert unresolved.pending_renewal_currency == upgraded_plan.currency
   end
 
-  test "run_due_renewals_for_system expires subscriptions past grace and revokes entitlements" do
+  test "run_due_renewals_for_system suspends subscriptions past grace and revokes entitlements" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_grace")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
@@ -689,8 +755,12 @@ defmodule Store.Subscriptions.FacadeTest do
     assert result.success_count == 1
     assert result.failed_count == 0
 
-    expired = fetch_subscription!(subscription.id)
-    assert expired.status == :expired
+    suspended = fetch_subscription!(subscription.id)
+    assert suspended.status == :suspended
+    assert is_nil(suspended.ended_at)
+    assert is_nil(suspended.canceled_at)
+    assert is_nil(suspended.canceled_reason)
+    assert is_nil(suspended.next_retry_at)
 
     entitlement = fetch_entitlement!(subscription.id)
     assert entitlement.status == :revoked
@@ -702,6 +772,9 @@ defmodule Store.Subscriptions.FacadeTest do
                expr(subscription_id == ^subscription.id and template_kind == :access_ended)
              )
              |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
   end
 
   test "create_subscriptions_from_paid_order_for_system fails closed when provider selection is missing" do

@@ -634,8 +634,8 @@ defmodule Store.Subscriptions.Facade do
       subscription.status in [:active, :past_due] and not subscription.cancel_at_period_end
 
     %{
-      can_cancel_now?: subscription.status in [:active, :past_due],
-      can_cancel_at_period_end?: subscription.status in [:active, :past_due],
+      can_cancel_now?: subscription.status in [:active, :past_due, :suspended],
+      can_cancel_at_period_end?: subscription.status in [:active, :past_due, :suspended],
       can_queue_plan_change?: can_queue_change?,
       can_queue_variant_change?: can_queue_change?,
       can_update_payment_method?: payment_method_update_supported?(subscription),
@@ -2167,7 +2167,7 @@ defmodule Store.Subscriptions.Facade do
              Scheduler.renewal_key(subscription.id, renewal_identity_period.current_period_end_at),
            {:ok, expiry_policy} <-
              renewal_policy_for_occurrence(subscription, renewal_key, live_revision),
-           :continue <- maybe_expire_past_due(subscription, expiry_policy, now),
+           :continue <- maybe_suspend_past_due(subscription, expiry_policy, now),
            {:ok, binding} <- bind_renewal_attempt(subscription, renewal_key) do
         bound_subscription = binding.subscription
         bound_attempt = binding.attempt
@@ -2190,7 +2190,7 @@ defmodule Store.Subscriptions.Facade do
 
         settle_claimed_due_renewal_result(bound_subscription, bound_policy, result, now)
       else
-        :expired ->
+        :suspended ->
           :ok
 
         {:error,
@@ -5457,13 +5457,13 @@ defmodule Store.Subscriptions.Facade do
 
   defp effective_subscription_plan_id(%Subscription{subscription_plan_id: plan_id}), do: plan_id
 
-  defp maybe_expire_past_due(%Subscription{status: :past_due} = subscription, plan, now) do
+  defp maybe_suspend_past_due(%Subscription{status: :past_due} = subscription, plan, now) do
     case subscription.past_due_since_at do
       %DateTime{} = past_due_since_at ->
         grace_expires_at = Scheduler.grace_expires_at(past_due_since_at, plan)
 
         if DateTime.compare(now, grace_expires_at) in [:gt, :eq] do
-          expire_past_due_subscription(subscription)
+          suspend_past_due_subscription(subscription, %{})
         else
           :continue
         end
@@ -5473,32 +5473,32 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp maybe_expire_past_due(%Subscription{}, _plan, _now), do: :continue
+  defp maybe_suspend_past_due(%Subscription{}, _plan, _now), do: :continue
 
-  defp expire_past_due_subscription(subscription) do
+  defp suspend_past_due_subscription(subscription, attrs) do
     case subscription
          |> Ash.Changeset.for_update(
-           :mark_expired_transition,
-           %{canceled_reason: "grace_expired"},
+           :mark_suspended_transition,
+           Map.take(attrs, [:billing_status_reason, :past_due_since_at, :dunning_attempt_count]),
            context: %{system?: true}
          )
          |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true}) do
-      {:ok, expired} ->
+      {:ok, suspended} ->
         plan =
-          case fetch_plan(subscription.subscription_plan_id) do
+          case fetch_plan(suspended.subscription_plan_id) do
             {:ok, fetched_plan} -> fetched_plan
             _ -> nil
           end
 
         _ =
           EntitlementsFacade.revoke_subscription_entitlements_for_system(
-            expired.id,
+            suspended.id,
             "grace_expired"
           )
 
-        _ = maybe_enqueue_membership_access_ended_email(expired, plan, "grace_expired")
+        _ = maybe_enqueue_membership_access_ended_email(suspended, plan, "grace_expired")
 
-        :expired
+        :suspended
 
       {:error, reason} ->
         normalize_subscription_update_result({:error, reason}, subscription)
@@ -5529,7 +5529,7 @@ defmodule Store.Subscriptions.Facade do
 
     status =
       if next_attempt_count > max_retry_attempts do
-        :expired
+        :suspended
       else
         :past_due
       end
@@ -5557,8 +5557,8 @@ defmodule Store.Subscriptions.Facade do
     result
   end
 
-  defp persist_subscription_dunning_update(subscription, :expired, _attrs) do
-    expire_past_due_subscription(subscription)
+  defp persist_subscription_dunning_update(subscription, :suspended, attrs) do
+    suspend_past_due_subscription(subscription, attrs)
   end
 
   defp persist_subscription_dunning_update(subscription, _status, attrs) do
@@ -5678,7 +5678,7 @@ defmodule Store.Subscriptions.Facade do
         subscription.user_id == ^user_id and
           subscription.membership_key in ^membership_keys and
           is_nil(subscription.ended_at) and
-          subscription.status in ^[:pending, :active, :past_due]
+          subscription.status in ^[:pending, :active, :past_due, :suspended]
       )
       |> select([subscription], subscription.id)
       |> limit(1)

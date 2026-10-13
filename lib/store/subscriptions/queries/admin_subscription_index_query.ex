@@ -21,6 +21,7 @@ defmodule Store.Subscriptions.Queries.AdminSubscriptionIndexQuery do
     "pending" => :pending,
     "active" => :active,
     "past_due" => :past_due,
+    "suspended" => :suspended,
     "canceled" => :canceled,
     "expired" => :expired
   }
@@ -104,7 +105,7 @@ defmodule Store.Subscriptions.Queries.AdminSubscriptionIndexQuery do
   end
 
   defp validate_status(status)
-       when status in [:pending, :active, :past_due, :canceled, :expired],
+       when status in [:pending, :active, :past_due, :suspended, :canceled, :expired],
        do: {:ok, status}
 
   defp validate_status(_status), do: {:error, Error.new("VALIDATION_ERROR", "status is invalid")}

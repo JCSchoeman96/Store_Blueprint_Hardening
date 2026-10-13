@@ -351,6 +351,15 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert attempt.status == :processing
     assert count_payment_applications(attempt.order_id) == 1
 
+    assert {:ok, _revoked} =
+             EntitlementsFacade.revoke_subscription_entitlements_for_system(
+               subscription.id,
+               "grace_expired"
+             )
+
+    suspended = suspend_subscription!(fetch_subscription!(subscription.id))
+    assert suspended.status == :suspended
+
     assert {:ok, scheduled} =
              SubscriptionsFacade.cancel_subscription_for_user(
                customer,
@@ -360,7 +369,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
 
     assert count_payment_applications(attempt.order_id) == 1
 
-    assert scheduled.status == :active
+    assert scheduled.status == :suspended
     assert scheduled.cancel_at_period_end
     assert fetch_attempt!(subscription.id).failure_code == nil
     assert count_refunds() == 0
@@ -381,6 +390,268 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
 
     assert valid_to_at == attempt.period_end_at
     assert count_refunds() == 0
+    assert count_payment_applications(attempt.order_id) == 1
+  end
+
+  test "very late suspended renewal repair preserves the original paid period" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_very_late_repair")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:jc265-very-late"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc265_very_late",
+        started_at: DateTime.add(now, -70 * 86_400, :second)
+      })
+
+    enable_stripe!()
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_attempt!(subscription.id)
+    assert DateTime.compare(attempt.period_end_at, now) == :lt
+    assert count_payment_applications(attempt.order_id) == 1
+
+    assert {:ok, _grant} =
+             EntitlementsFacade.issue_subscription_entitlement_for_system(subscription, plan)
+
+    assert {:ok, _revoked} =
+             EntitlementsFacade.revoke_subscription_entitlements_for_system(
+               subscription.id,
+               "grace_expired"
+             )
+
+    assert suspend_subscription!(fetch_subscription!(subscription.id)).status == :suspended
+
+    assert {:ok, :reconciled} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id
+             )
+
+    repaired = fetch_subscription!(subscription.id)
+    assert repaired.status == :active
+    assert repaired.current_period_start_at == attempt.period_start_at
+    assert repaired.current_period_end_at == attempt.period_end_at
+    assert repaired.next_renewal_at == attempt.period_end_at
+    assert fetch_attempt!(subscription.id).status == :succeeded
+
+    assert [%EntitlementGrant{status: :active, valid_to_at: valid_to_at}] =
+             grants_for(subscription.id, :active)
+
+    assert valid_to_at == attempt.period_end_at
+    assert count_payment_applications(attempt.order_id) == 1
+
+    version = repaired.aggregate_version
+
+    assert {:ok, :noop} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id
+             )
+
+    assert fetch_subscription!(subscription.id).aggregate_version == version
+    assert count_payment_applications(attempt.order_id) == 1
+  end
+
+  test "suspended subscriptions do not dispatch or replace an unresolved renewal payment" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_suspended_no_dispatch")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc265_no_dispatch",
+        started_at: DateTime.add(now, -40 * 86_400, :second)
+      })
+
+    enable_stripe!()
+    post_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(post_count, 1, 1)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    original_attempt = fetch_attempt!(subscription.id)
+    original_payment_intent = fetch_payment_intent!(original_attempt.payment_intent_id)
+    assert original_attempt.status == :processing
+    assert count_payment_applications(original_attempt.order_id) == 0
+    assert :atomics.get(post_count, 1) == 1
+
+    assert suspend_subscription!(fetch_subscription!(subscription.id)).status == :suspended
+    StripeAPIStub.stub_unexpected!("suspended renewal attempted another provider request")
+
+    assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: DateTime.add(now, 86_400))
+
+    assert {:ok, :noop} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: DateTime.add(now, 86_400)
+             )
+
+    assert fetch_attempt!(subscription.id) == original_attempt
+    assert fetch_payment_intent!(original_payment_intent.id) == original_payment_intent
+    assert :atomics.get(post_count, 1) == 1
+    assert count_payment_applications(original_attempt.order_id) == 0
+  end
+
+  test "cancellation of a suspended contract withdraws later same-renewal success" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_suspended_cancel_first")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc265_cancel_first",
+        started_at: DateTime.add(now, -40 * 86_400, :second)
+      })
+
+    enable_stripe!()
+    post_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(post_count, 1, 1)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_attempt!(subscription.id)
+    assert count_payment_applications(attempt.order_id) == 0
+    assert suspend_subscription!(fetch_subscription!(subscription.id)).status == :suspended
+
+    assert {:ok, canceled} =
+             SubscriptionsFacade.cancel_subscription_for_user(customer, subscription.id, :now)
+
+    assert canceled.status == :canceled
+    assert %DateTime{} = canceled.ended_at
+    assert fetch_attempt!(subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+
+    assert {:ok, %{applied?: true}} =
+             Store.Payments.apply_payment_success_once(attempt.payment_intent_id)
+
+    assert {:ok, :noop} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id
+             )
+
+    assert fetch_subscription!(subscription.id).status == :canceled
+    assert fetch_attempt!(subscription.id).status == :failed
+    assert count_payment_applications(attempt.order_id) == 1
+    assert count_refunds() == 1
+    assert :atomics.get(post_count, 1) == 1
+  end
+
+  test "reconciliation replay restores entitlement after period repair already committed" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_entitlement_restart")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:jc265-restart"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc265_entitlement_restart",
+        started_at: DateTime.add(now, -40 * 86_400, :second)
+      })
+
+    assert {:ok, _grant} =
+             EntitlementsFacade.issue_subscription_entitlement_for_system(subscription, plan)
+
+    enable_stripe!()
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_attempt!(subscription.id)
+    assert count_payment_applications(attempt.order_id) == 1
+    assert suspend_subscription!(fetch_subscription!(subscription.id)).status == :suspended
+
+    assert {:ok, _revoked} =
+             EntitlementsFacade.revoke_subscription_entitlements_for_system(
+               subscription.id,
+               "grace_expired"
+             )
+
+    current = fetch_subscription!(subscription.id)
+
+    assert {:ok, repaired_before_replay} =
+             current
+             |> Ash.Changeset.for_update(
+               :extend_period,
+               %{
+                 current_period_start_at: attempt.period_start_at,
+                 current_period_end_at: attempt.period_end_at,
+                 next_renewal_at: attempt.period_end_at
+               },
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert repaired_before_replay.status == :active
+    assert fetch_attempt!(subscription.id).status == :processing
+    assert [] == grants_for(subscription.id, :active)
+
+    assert {:ok, :reconciled} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id
+             )
+
+    repaired = fetch_subscription!(subscription.id)
+    assert repaired.status == :active
+    assert repaired.current_period_start_at == attempt.period_start_at
+    assert repaired.current_period_end_at == attempt.period_end_at
+    assert repaired.next_renewal_at == attempt.period_end_at
+    assert fetch_attempt!(subscription.id).status == :succeeded
+
+    assert [%EntitlementGrant{status: :active, valid_to_at: valid_to_at}] =
+             grants_for(subscription.id, :active)
+
+    assert valid_to_at == attempt.period_end_at
+    assert length(grants_for(subscription.id)) == 1
+    assert count_payment_applications(attempt.order_id) == 1
   end
 
   test "payment application before cancel-now preserves payment history without reactivation" do
@@ -414,6 +685,8 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
 
     attempt = fetch_attempt!(subscription.id)
     assert count_payment_applications(attempt.order_id) == 1
+
+    assert suspend_subscription!(fetch_subscription!(subscription.id)).status == :suspended
 
     assert {:ok, canceled} =
              SubscriptionsFacade.cancel_subscription_for_user(customer, subscription.id, :now)
@@ -1449,6 +1722,16 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
         request_options: StripeAPIStub.req_options()
       ]
     )
+  end
+
+  defp suspend_subscription!(subscription) do
+    subscription
+    |> Ash.Changeset.for_update(
+      :mark_suspended_transition,
+      %{billing_status_reason: "PAYMENT_FAILED"},
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp create_committed_renewal_race_fixture!(suffix) do
