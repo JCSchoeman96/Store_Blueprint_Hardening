@@ -119,6 +119,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
       accept([:reservation_generation_id])
     end
 
+    update :attach_payment_intent do
+      public?(false)
+      require_atomic?(false)
+      accept([:payment_intent_id])
+    end
+
     update :fence_before_submission do
       public?(false)
       require_atomic?(false)

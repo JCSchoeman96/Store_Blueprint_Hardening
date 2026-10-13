@@ -9,6 +9,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   alias Store.Repo
   alias Store.Orders.{InventoryReservation, Order}
   alias Store.Orders.InventoryAdmission.Request
+  alias Store.Pricing.Contract
   alias Store.Support.ID.UUIDv7
 
   alias Store.Subscriptions.{
@@ -22,6 +23,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   alias Store.Subscriptions.RenewalCollectionAttempts.StartInput
 
   alias Store.Subscriptions.RenewalCollectionAttempts.{
+    PaymentIntentBindingInput,
     FenceInput,
     ReservationGenerationInput,
     ResumeInput
@@ -56,6 +58,197 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
     assert RenewalCollectionAttempts.payment_intent_key(collection_attempt_id) ==
              "renewal-collection:" <> collection_attempt_id
+  end
+
+  test "payment intent binding input validates both UUIDs" do
+    input_attrs = %{
+      collection_attempt_id: Ecto.UUID.generate(),
+      payment_intent_id: Ecto.UUID.generate()
+    }
+
+    assert {:ok, input} = PaymentIntentBindingInput.new(input_attrs)
+    assert input.collection_attempt_id == input_attrs.collection_attempt_id
+    assert input.payment_intent_id == input_attrs.payment_intent_id
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             PaymentIntentBindingInput.new(%{input_attrs | payment_intent_id: "bad"})
+  end
+
+  test "collection binds an exact PaymentIntent to the bound renewal Order and deterministic key" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_bind_pi")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert bound.collection_attempt.payment_intent_id == payment_intent.id
+    assert bound.renewal_attempt.id == attempt.id
+    assert bound.order.id == order.id
+    assert bound.payment_intent.order_id == order.id
+
+    assert bound.payment_intent.payment_intent_key ==
+             RenewalCollectionAttempts.payment_intent_key(collection.id)
+
+    assert {:ok, replay} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert replay.collection_attempt.id == collection.id
+    assert replay.payment_intent.id == payment_intent.id
+  end
+
+  test "collection rejects a PaymentIntent for a different Order" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_wrong_order")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    other_order = create_renewal_order_for_attempt!(attempt)
+
+    payment_intent =
+      create_collection_payment_intent!(collection, other_order, attempt)
+
+    assert {:error, error} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert error.code == "PAYMENT_EVENT_UNVERIFIED"
+    assert is_binary(order.id)
+    assert is_nil(fetch_collection!(collection.id).payment_intent_id)
+  end
+
+  test "collection rejects totals, currency, and key conflicts with the bound Order" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_wrong_totals")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+
+    wrong_amount =
+      create_collection_payment_intent!(collection, order, attempt,
+        amount_received_minor: order.grand_total_minor + 1,
+        key_suffix: ":amount"
+      )
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: wrong_amount.id
+               }
+             )
+
+    wrong_currency =
+      create_collection_payment_intent!(collection, order, attempt,
+        currency: "EUR",
+        key_suffix: ":currency"
+      )
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: wrong_currency.id
+               }
+             )
+
+    wrong_key =
+      create_collection_payment_intent!(collection, order, attempt, key_suffix: ":wrong-key")
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: wrong_key.id
+               }
+             )
+
+    assert is_nil(fetch_collection!(collection.id).payment_intent_id)
+  end
+
+  test "a stale legacy RenewalAttempt PaymentIntent cannot override the collection identity" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_stale_legacy_pi")
+    subscription = fetch_subscription!(attempt.subscription_id)
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    stale_intent = create_legacy_payment_intent!(subscription)
+    exact_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _updated} =
+             attempt
+             |> Ash.Changeset.for_update(
+               :mark_processing,
+               %{order_id: order.id, payment_intent_id: stale_intent.id},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert {:ok, bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: exact_intent.id
+               }
+             )
+
+    assert bound.renewal_attempt.payment_intent_id == stale_intent.id
+    assert bound.payment_intent.id == exact_intent.id
+    assert bound.collection_attempt.payment_intent_id == exact_intent.id
+  end
+
+  test "mutated current subscription and plan values do not change bound collection construction" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_bound_contract")
+    subscription = fetch_subscription!(attempt.subscription_id)
+    %{variant: changed_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    assert {:ok, %{num_rows: 1}} =
+             Repo.query(
+               "UPDATE subscriptions SET renewal_amount_minor = 9900, renewal_currency = 'EUR', quantity = 4, variant_id = $2::uuid WHERE id = $1::uuid",
+               [uuid_param(subscription.id), uuid_param(changed_variant.id)]
+             )
+
+    assert {:ok, %{num_rows: 1}} =
+             Repo.query(
+               "UPDATE subscription_plans SET amount_minor = 8800, currency = 'EUR' WHERE id = $1::uuid",
+               [uuid_param(subscription.subscription_plan_id)]
+             )
+
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert bound.renewal_attempt.amount_minor == attempt.amount_minor
+    assert bound.renewal_attempt.currency == attempt.currency
+    assert bound.renewal_attempt.variant_id == attempt.variant_id
+    assert bound.renewal_attempt.quantity == attempt.quantity
+    assert bound.renewal_attempt.period_start_at == attempt.period_start_at
+    assert bound.renewal_attempt.period_end_at == attempt.period_end_at
+    assert bound.order.currency_code == attempt.currency
+    assert bound.payment_intent.amount_received_minor == bound.order.grand_total_minor
+    assert bound.payment_intent.currency == attempt.currency
   end
 
   test "first start creates ordinal one and active replay returns that exact collection" do
@@ -889,6 +1082,108 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
       |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
 
     {attempt, now}
+  end
+
+  defp bind_attempt_to_fixture_order!(attempt) do
+    order = create_renewal_order_for_attempt!(attempt)
+
+    assert {:ok, _attempt} =
+             attempt
+             |> Ash.Changeset.for_update(
+               :mark_processing,
+               %{order_id: order.id, payment_intent_id: nil},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    order
+  end
+
+  defp create_renewal_order_for_attempt!(attempt) do
+    subscription = fetch_subscription!(attempt.subscription_id)
+
+    {:ok, %{order: order}} =
+      Store.Orders.begin_checkout(
+        %{
+          user_id: subscription.user_id,
+          line_items: [%{variant_id: attempt.variant_id, quantity: attempt.quantity}],
+          checkout_scope: "jc229-test-#{Ecto.UUID.generate()}",
+          currency: attempt.currency,
+          as_of: attempt.period_start_at,
+          pricing_contract_version: "jc229_test_renewal",
+          tax_shipping_inputs: %{}
+        },
+        context: %{system?: true}
+      )
+
+    total_minor = attempt.amount_minor * attempt.quantity
+
+    output = %Contract.Output{
+      currency: attempt.currency,
+      subtotal_minor: total_minor,
+      discount_total_minor: 0,
+      total_minor: total_minor,
+      lines: [
+        %Contract.LineEvaluation{
+          line_id: attempt.variant_id,
+          line_no: 1,
+          sku_snapshot: "JC229-SUB-RENEWAL",
+          product_title_snapshot: "Renewal",
+          variant_title_snapshot: "Renewal",
+          quantity: attempt.quantity,
+          unit_price_minor: attempt.amount_minor,
+          line_total_minor: total_minor,
+          discount_allocated_minor: 0,
+          net_line_total_minor: total_minor
+        }
+      ],
+      line_allocations: [%Contract.LineAllocation{line_id: attempt.variant_id, discount_minor: 0}],
+      applied_adjustments: []
+    }
+
+    assert {:ok, _snapshot} = Store.Orders.write_priced_snapshot(order.id, output)
+
+    assert {:ok, finalized} =
+             order
+             |> Ash.Changeset.for_update(
+               :finalize_checkout_totals,
+               %{
+                 currency_code: attempt.currency,
+                 items_subtotal_minor: total_minor,
+                 shipping_total_minor: 0,
+                 grand_total_minor: total_minor
+               },
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Orders,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    finalized
+  end
+
+  defp create_collection_payment_intent!(collection, order, attempt, opts \\ []) do
+    subscription = fetch_subscription!(attempt.subscription_id)
+    suffix = Keyword.get(opts, :key_suffix, "")
+
+    attrs = %{
+      order_id: order.id,
+      amount_received_minor: Keyword.get(opts, :amount_received_minor, order.grand_total_minor),
+      currency: Keyword.get(opts, :currency, attempt.currency),
+      provider: subscription.provider,
+      payment_intent_key: RenewalCollectionAttempts.payment_intent_key(collection.id) <> suffix
+    }
+
+    {:ok, result} =
+      Store.Payments.create_or_reuse_payment_intent(attrs, context: %{system?: true})
+
+    result.payment_intent
   end
 
   defp create_unbound_attempt!(attempt) do

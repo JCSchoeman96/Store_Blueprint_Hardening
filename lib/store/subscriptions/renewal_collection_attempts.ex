@@ -9,11 +9,14 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   alias Store.Catalog.Variant
   alias Store.Orders.InventoryReservation
   alias Store.Orders.InventoryAdmission.Request
+  alias Store.Orders.{Order, OrderLineItem}
+  alias Store.Payments.PaymentIntent
   alias Store.Repo
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias Store.Subscriptions.RenewalCollectionAttempts.{
     FenceInput,
+    PaymentIntentBindingInput,
     ReservationGenerationInput,
     ResumeInput,
     StartInput
@@ -48,6 +51,35 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   @spec payment_intent_key(String.t()) :: String.t()
   def payment_intent_key(collection_attempt_id) when is_binary(collection_attempt_id),
     do: "renewal-collection:" <> collection_attempt_id
+
+  @spec attach_payment_intent_for_system(PaymentIntentBindingInput.t()) ::
+          {:ok, map()} | {:error, Error.t() | term()}
+  def attach_payment_intent_for_system(%PaymentIntentBindingInput{} = input) do
+    with {:ok, canonical_input} <- PaymentIntentBindingInput.new(Map.from_struct(input)),
+         {:ok, collection} <-
+           run_collection_transition(
+             canonical_input.collection_attempt_id,
+             :attach_renewal_collection_payment_intent,
+             fn collection, attempt, subscription ->
+               attach_payment_intent_locked(collection, attempt, subscription, canonical_input)
+             end
+           ),
+         {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id) do
+      {:ok,
+       %{
+         collection_attempt: collection,
+         renewal_attempt: attempt,
+         order: order,
+         payment_intent: payment_intent
+       }}
+    end
+  end
+
+  def attach_payment_intent_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection PaymentIntent binding is required")}
+  end
 
   @spec assign_reservation_generation_for_system(ReservationGenerationInput.t()) ::
           {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
@@ -195,6 +227,154 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
             {:ok, collection, []}
           end
       end
+    end
+  end
+
+  defp attach_payment_intent_locked(collection, attempt, subscription, input) do
+    with :ok <- SubscriptionsFacade.validate_complete_bound_renewal_attempt_for_system(attempt),
+         :ok <- ensure_collection_can_bind_payment_intent(collection, input.payment_intent_id),
+         :ok <- ensure_bound_order(attempt),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
+         :ok <- ensure_bound_order_matches_attempt(order, attempt),
+         :ok <-
+           ensure_payment_intent_matches_collection(
+             payment_intent,
+             collection,
+             order,
+             attempt,
+             subscription
+           ),
+         {:ok, updated, notifications} <-
+           update_collection(collection, :attach_payment_intent, %{
+             payment_intent_id: payment_intent.id
+           }) do
+      {:ok, updated, notifications}
+    end
+  end
+
+  defp ensure_collection_can_bind_payment_intent(
+         %RenewalCollectionAttempt{payment_intent_id: payment_intent_id},
+         payment_intent_id
+       )
+       when is_binary(payment_intent_id),
+       do: :ok
+
+  defp ensure_collection_can_bind_payment_intent(
+         %RenewalCollectionAttempt{
+           payment_intent_id: nil,
+           dispatch_state: :not_started,
+           financial_outcome: :unresolved
+         },
+         _payment_intent_id
+       ),
+       do: :ok
+
+  defp ensure_collection_can_bind_payment_intent(_collection, _payment_intent_id) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "collection cannot bind a different or late PaymentIntent"
+     )}
+  end
+
+  defp ensure_bound_order_matches_attempt(
+         %Order{} = order,
+         %RenewalAttempt{} = attempt
+       ) do
+    expected_subtotal = attempt.amount_minor * attempt.quantity
+
+    with true <- order.id == attempt.order_id,
+         true <- not is_nil(order.totals_finalized_at),
+         true <- String.upcase(order.currency_code || "") == attempt.currency,
+         true <- order.items_subtotal_minor == expected_subtotal,
+         {:ok, line_items} <- fetch_order_line_items(order.id),
+         true <- exact_bound_order_line?(line_items, attempt) do
+      :ok
+    else
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "renewal Order conflicts with the immutable bound contract"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp exact_bound_order_line?([line_item], attempt) do
+    line_item.variant_id_snapshot == attempt.variant_id and
+      line_item.quantity == attempt.quantity and
+      line_item.unit_price_minor == attempt.amount_minor and
+      line_item.line_total_minor == attempt.amount_minor * attempt.quantity and
+      String.upcase(line_item.currency || "") == attempt.currency
+  end
+
+  defp exact_bound_order_line?(_line_items, _attempt), do: false
+
+  defp ensure_payment_intent_matches_collection(
+         %PaymentIntent{} = payment_intent,
+         %RenewalCollectionAttempt{} = collection,
+         %Order{} = order,
+         %RenewalAttempt{} = attempt,
+         %Subscription{} = subscription
+       ) do
+    expected_key = payment_intent_key(collection.id)
+
+    if payment_intent.order_id == order.id and
+         payment_intent.payment_intent_key == expected_key and
+         payment_intent.amount_received_minor == order.grand_total_minor and
+         String.upcase(payment_intent.currency || "") == attempt.currency and
+         payment_intent.provider == subscription.provider do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "PAYMENT_EVENT_UNVERIFIED",
+         "PaymentIntent conflicts with the exact collection Order or bound contract"
+       )}
+    end
+  end
+
+  defp fetch_order(order_id) when is_binary(order_id) do
+    query = Order |> Ash.Query.filter(expr(id == ^order_id))
+
+    case Ash.read_one(query, domain: Store.Orders, authorize?: false, context: %{system?: true}) do
+      {:ok, %Order{} = order} -> {:ok, order}
+      {:ok, nil} -> {:error, Error.new("ORDER_NOT_FOUND", "renewal Order was not found")}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp fetch_order(_order_id) do
+    {:error, Error.new("ORDER_NOT_FOUND", "renewal attempt has no bound Order")}
+  end
+
+  defp fetch_order_line_items(order_id) do
+    query =
+      OrderLineItem
+      |> Ash.Query.filter(expr(order_id == ^order_id))
+      |> Ash.Query.sort(line_no: :asc)
+
+    case Ash.read(query, domain: Store.Orders, authorize?: false, context: %{system?: true}) do
+      {:ok, line_items} -> {:ok, line_items}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp fetch_payment_intent(payment_intent_id) when is_binary(payment_intent_id) do
+    query = PaymentIntent |> Ash.Query.filter(expr(id == ^payment_intent_id))
+
+    case Ash.read_one(query,
+           domain: Store.Payments,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %PaymentIntent{} = payment_intent} -> {:ok, payment_intent}
+      {:ok, nil} -> {:error, Error.new("PAYMENT_INTENT_NOT_FOUND", "PaymentIntent was not found")}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
     end
   end
 
