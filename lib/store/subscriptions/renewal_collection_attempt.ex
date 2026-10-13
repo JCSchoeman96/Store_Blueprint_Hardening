@@ -147,6 +147,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
       change(set_attribute(:dispatch_state, :may_have_been_reached))
     end
 
+    update :record_financial_outcome do
+      public?(false)
+      require_atomic?(false)
+      accept([:financial_outcome])
+    end
+
     update :fence_before_submission do
       public?(false)
       require_atomic?(false)

@@ -25,6 +25,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   alias Store.Subscriptions.RenewalCollectionAttempts.{
     PaymentIntentBindingInput,
     ClaimDispatchInput,
+    RecordFinancialOutcomeInput,
     FenceInput,
     ReservationGenerationInput,
     ResumeInput
@@ -365,6 +366,105 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              assigned.reservation_generation_id
 
     assert claimed.collection_attempt.dispatch_state == :may_have_been_reached
+  end
+
+  test "requires_action remains active and exact success exposes all JC-230 identity fields" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_success_handoff")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    stale_intent = create_legacy_payment_intent!(fetch_subscription!(attempt.subscription_id))
+
+    assert {:ok, _stale_mirror} =
+             attempt
+             |> Ash.Changeset.for_update(
+               :mark_processing,
+               %{order_id: order.id, payment_intent_id: stale_intent.id},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    payment_intent = submit_payment_intent!(payment_intent)
+    payment_intent = mark_payment_intent!(payment_intent, :mark_requires_action)
+
+    assert {:ok, active} =
+             RenewalCollectionAttempts.record_financial_outcome_for_system(
+               financial_outcome_input!(collection.id, payment_intent.id, :requires_action)
+             )
+
+    assert active.financial_outcome == :requires_action
+
+    assert {:ok, replay} =
+             RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+
+    assert replay.id == collection.id
+
+    payment_intent = mark_payment_intent!(payment_intent, :mark_succeeded)
+
+    assert {:ok, succeeded} =
+             RenewalCollectionAttempts.record_financial_outcome_for_system(
+               financial_outcome_input!(collection.id, payment_intent.id, :verified_success)
+             )
+
+    assert succeeded.financial_outcome == :verified_success
+
+    assert {:ok, handoff} =
+             RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert handoff == %{
+             order_id: order.id,
+             renewal_attempt_id: attempt.id,
+             collection_attempt_id: collection.id,
+             payment_intent_id: payment_intent.id
+           }
+
+    assert {:error, %{code: "INVALID_STATE_TRANSITION"}} =
+             RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+  end
+
+  test "local PaymentIntent failure does not set provider-verified collection failure" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_local_failure")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    payment_intent = submit_payment_intent!(payment_intent)
+    _payment_intent = mark_payment_intent!(payment_intent, :mark_failed)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             RecordFinancialOutcomeInput.new(%{
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent.id,
+               financial_outcome: :failed
+             })
+
+    assert fetch_collection!(collection.id).financial_outcome == :unresolved
+
+    assert {:ok, replay} =
+             RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+
+    assert replay.id == collection.id
   end
 
   test "first start creates ordinal one and active replay returns that exact collection" do
@@ -1134,6 +1234,27 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              })
 
     input
+  end
+
+  defp financial_outcome_input!(collection_id, payment_intent_id, outcome) do
+    assert {:ok, input} =
+             RecordFinancialOutcomeInput.new(%{
+               collection_attempt_id: collection_id,
+               payment_intent_id: payment_intent_id,
+               financial_outcome: outcome
+             })
+
+    input
+  end
+
+  defp submit_payment_intent!(payment_intent) do
+    mark_payment_intent!(payment_intent, :submit)
+  end
+
+  defp mark_payment_intent!(payment_intent, action) do
+    payment_intent
+    |> Ash.Changeset.for_update(action, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
   end
 
   defp resume_input!(collection_id, epoch, now) do

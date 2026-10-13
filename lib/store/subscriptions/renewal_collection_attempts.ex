@@ -18,6 +18,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     ClaimDispatchInput,
     FenceInput,
     PaymentIntentBindingInput,
+    RecordFinancialOutcomeInput,
     ReservationGenerationInput,
     ResumeInput,
     StartInput
@@ -86,8 +87,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
           {:ok, map()} | {:error, Error.t() | term()}
   def claim_dispatch_for_system(%ClaimDispatchInput{} = input) do
     with {:ok, canonical_input} <- ClaimDispatchInput.new(Map.from_struct(input)),
-         {:ok, collection} <-
-           run_collection_transition(
+         {:ok, collection, provider_payment_method} <-
+           run_collection_transition_with_result(
              canonical_input.collection_attempt_id,
              :claim_renewal_collection_dispatch,
              fn collection, attempt, subscription ->
@@ -102,13 +103,54 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          collection_attempt: collection,
          renewal_attempt: attempt,
          order: order,
-         payment_intent: payment_intent
+         payment_intent: payment_intent,
+         provider_payment_method: provider_payment_method
        }}
     end
   end
 
   def claim_dispatch_for_system(_input) do
     {:error, Error.new("VALIDATION_ERROR", "typed collection dispatch input is required")}
+  end
+
+  @spec record_financial_outcome_for_system(RecordFinancialOutcomeInput.t()) ::
+          {:ok, RenewalCollectionAttempt.t()} | {:error, Error.t() | term()}
+  def record_financial_outcome_for_system(%RecordFinancialOutcomeInput{} = input) do
+    with {:ok, canonical_input} <- RecordFinancialOutcomeInput.new(Map.from_struct(input)) do
+      run_collection_transition(
+        canonical_input.collection_attempt_id,
+        :record_renewal_collection_financial_outcome,
+        fn collection, _attempt, _subscription ->
+          record_financial_outcome_locked(collection, canonical_input)
+        end
+      )
+    end
+  end
+
+  def record_financial_outcome_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection financial outcome is required")}
+  end
+
+  @spec success_handoff_for_system(String.t()) :: {:ok, map()} | {:error, Error.t() | term()}
+  def success_handoff_for_system(collection_attempt_id) when is_binary(collection_attempt_id) do
+    with {:ok, collection} <- fetch_collection(collection_attempt_id),
+         :ok <- ensure_collection_verified_success(collection),
+         {:ok, attempt} <- fetch_renewal_attempt(collection.renewal_attempt_id),
+         {:ok, order} <- fetch_order(attempt.order_id),
+         {:ok, payment_intent} <- fetch_payment_intent(collection.payment_intent_id),
+         :ok <- ensure_success_handoff_identity(collection, attempt, order, payment_intent) do
+      {:ok,
+       %{
+         order_id: order.id,
+         renewal_attempt_id: attempt.id,
+         collection_attempt_id: collection.id,
+         payment_intent_id: payment_intent.id
+       }}
+    end
+  end
+
+  def success_handoff_for_system(_collection_attempt_id) do
+    {:error, Error.new("VALIDATION_ERROR", "collection_attempt_id must be a UUID")}
   end
 
   @spec assign_reservation_generation_for_system(ReservationGenerationInput.t()) ::
@@ -166,6 +208,14 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   end
 
   defp run_collection_transition(collection_attempt_id, flow, transition) do
+    run_collection_transition(collection_attempt_id, flow, transition, false)
+  end
+
+  defp run_collection_transition_with_result(collection_attempt_id, flow, transition) do
+    run_collection_transition(collection_attempt_id, flow, transition, true)
+  end
+
+  defp run_collection_transition(collection_attempt_id, flow, transition, return_result?) do
     with {:ok, observed_collection} <- fetch_collection(collection_attempt_id),
          {:ok, observed_attempt} <- fetch_renewal_attempt(observed_collection.renewal_attempt_id) do
       transaction_result =
@@ -181,8 +231,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
                {:ok, collection} <- fetch_collection(collection_attempt_id),
                {:ok, subscription} <- fetch_subscription(attempt.subscription_id) do
             case transition.(collection, attempt, subscription) do
+              {:ok, %RenewalCollectionAttempt{} = updated, notifications, result} ->
+                %{collection: updated, notifications: notifications, result: result}
+
               {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
-                %{collection: updated, notifications: notifications}
+                %{collection: updated, notifications: notifications, result: nil}
 
               {:error, reason} ->
                 Repo.rollback(reason)
@@ -194,13 +247,21 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
         |> normalize_transition_notifications()
 
       case transaction_result do
-        {:ok, %{collection: %RenewalCollectionAttempt{} = collection}, notifications} ->
+        {:ok,
+         %{
+           collection: %RenewalCollectionAttempt{} = collection,
+           result: result
+         }, notifications} ->
           :ok =
             AshNotifications.notify_post_commit(notifications,
               context: %{flow: flow, collection_attempt_id: collection_attempt_id}
             )
 
-          {:ok, collection}
+          if return_result? do
+            {:ok, collection, result}
+          else
+            {:ok, collection}
+          end
 
         {:error, reason} ->
           {:error, Normalize.normalize(reason)}
@@ -301,10 +362,180 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
            ),
          :ok <- ensure_collection_has_exact_inventory_generation(collection, attempt),
          :ok <- ensure_collection_dispatch_authority(subscription, attempt, input.now),
+         :ok <- Store.Payments.Providers.ensure_enabled_provider(subscription.provider),
+         {:ok, provider_payment_method} <- lock_active_stored_payment_method(subscription),
          {:ok, updated, notifications} <-
            claim_collection_dispatch(collection, input.expected_epoch) do
+      {:ok, updated, notifications, provider_payment_method}
+    end
+  end
+
+  defp record_financial_outcome_locked(collection, input) do
+    with :ok <- ensure_collection_payment_identity(collection, input.payment_intent_id),
+         {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
+         :ok <- ensure_payment_outcome_matches_intent(payment_intent, input.financial_outcome),
+         :ok <- ensure_financial_outcome_transition(collection, input.financial_outcome),
+         {:ok, updated, notifications} <-
+           update_collection(collection, :record_financial_outcome, %{
+             financial_outcome: input.financial_outcome
+           }) do
       {:ok, updated, notifications}
     end
+  end
+
+  defp ensure_collection_payment_identity(
+         %RenewalCollectionAttempt{payment_intent_id: payment_intent_id},
+         payment_intent_id
+       )
+       when is_binary(payment_intent_id),
+       do: :ok
+
+  defp ensure_collection_payment_identity(_collection, _payment_intent_id) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "financial outcome does not match the exact collection"
+     )}
+  end
+
+  defp ensure_payment_outcome_matches_intent(
+         %PaymentIntent{state: :requires_action},
+         :requires_action
+       ),
+       do: :ok
+
+  defp ensure_payment_outcome_matches_intent(
+         %PaymentIntent{state: :succeeded},
+         :verified_success
+       ),
+       do: :ok
+
+  defp ensure_payment_outcome_matches_intent(
+         %PaymentIntent{state: state},
+         :verified_terminal_financial_non_success
+       )
+       when state in [:failed, :cancelled],
+       do: :ok
+
+  defp ensure_payment_outcome_matches_intent(_payment_intent, _outcome) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "Payments finality result does not match the exact PaymentIntent state"
+     )}
+  end
+
+  defp ensure_financial_outcome_transition(
+         %RenewalCollectionAttempt{financial_outcome: current},
+         target
+       )
+       when current == target and
+              target in [
+                :requires_action,
+                :verified_success,
+                :verified_terminal_financial_non_success
+              ],
+       do: :ok
+
+  defp ensure_financial_outcome_transition(
+         %RenewalCollectionAttempt{financial_outcome: current},
+         target
+       )
+       when current in [:unresolved, :requires_action] and
+              target in [
+                :requires_action,
+                :verified_success,
+                :verified_terminal_financial_non_success
+              ],
+       do: :ok
+
+  defp ensure_financial_outcome_transition(_collection, _target) do
+    {:error,
+     Error.new(
+       "INVALID_STATE_TRANSITION",
+       "terminal collection financial outcome cannot regress"
+     )}
+  end
+
+  defp ensure_collection_verified_success(%RenewalCollectionAttempt{
+         financial_outcome: :verified_success,
+         payment_intent_id: id
+       })
+       when is_binary(id),
+       do: :ok
+
+  defp ensure_collection_verified_success(_collection) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "collection has no exact verified success")}
+  end
+
+  defp ensure_success_handoff_identity(collection, attempt, order, payment_intent) do
+    if collection.renewal_attempt_id == attempt.id and order.id == attempt.order_id and
+         payment_intent.id == collection.payment_intent_id and
+         payment_intent.order_id == order.id and payment_intent.state == :succeeded do
+      :ok
+    else
+      {:error,
+       Error.new("PAYMENT_EVENT_UNVERIFIED", "verified collection success identity conflicts")}
+    end
+  end
+
+  defp lock_active_stored_payment_method(%Subscription{
+         stored_payment_method_id: payment_method_id,
+         user_id: user_id,
+         provider: provider
+       })
+       when is_binary(payment_method_id) and is_binary(user_id) do
+    query = """
+    SELECT id::text, user_id::text, provider::text, status::text,
+           provider_customer_ref, provider_payment_method_ref
+    FROM stored_payment_methods
+    WHERE id = $1::text::uuid AND user_id = $2::text::uuid
+    FOR UPDATE
+    """
+
+    case Repo.query(query, [payment_method_id, user_id]) do
+      {:ok,
+       %{
+         rows: [[^payment_method_id, ^user_id, stored_provider, status, customer_ref, method_ref]]
+       }} ->
+        if stored_provider == Atom.to_string(provider) and status == "active" and
+             is_binary(customer_ref) and customer_ref != "" and is_binary(method_ref) and
+             method_ref != "" do
+          {:ok,
+           %{
+             provider_customer_ref: customer_ref,
+             provider_payment_method_ref: method_ref
+           }}
+        else
+          {:error,
+           Error.new(
+             "PAYMENT_METHOD_REQUIRED",
+             "current provider payment method is inactive or does not match the subscription"
+           )}
+        end
+
+      {:ok, %{rows: []}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_METHOD_REQUIRED",
+           "subscription has no current active provider payment method"
+         )}
+
+      {:ok, _result} ->
+        {:error,
+         Error.new("PAYMENT_METHOD_REQUIRED", "current provider payment method is invalid")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp lock_active_stored_payment_method(_subscription) do
+    {:error,
+     Error.new(
+       "PAYMENT_METHOD_REQUIRED",
+       "subscription has no current active provider payment method"
+     )}
   end
 
   defp ensure_exact_dispatch_epoch(
