@@ -42,6 +42,8 @@
 
 NewU commercial truth leads the provider-independent Store invariant, PayStack validation, PayStack adapter mechanism, and optional later adapters. Keep internal collection identity, provider request/reference identity, and returned transaction identity separate. Stripe tests remain secondary regression coverage.
 
+Stripe same-request mutation replay is disabled. API v1 may prune idempotency keys after 24 hours, and the generic recovery path has no durable first-request time or provider-specific replay-window decision. A future adapter must provide bounded replay evidence before enabling it. Only `active` and `past_due` subscriptions can dispatch; suspended, canceled, and expired subscriptions can reconcile existing requests only.
+
 The PayStack contract suite models the 40-character `renewal-<compact-lowercase-uuid>` request reference, ZAR minor-unit amount/currency, opaque authorization identity, exact-reference verification, and ambiguous timeout recovery. Existing PaymentIntent rows retain their stored request reference across adapter mapping changes. These tests do not certify production PayStack HTTP behavior. JC-284 owns the runtime adapter, authorization/email/reusable mapping, webhook processing, finality, and launch certification. JC-230 stays outside JC-229.
 
 ## Review Focus

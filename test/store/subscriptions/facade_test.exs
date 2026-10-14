@@ -449,7 +449,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert payment_intent.id == attempt.payment_intent_id
   end
 
-  test "unknown provider response replays the same collection PaymentIntent and key" do
+  test "old ambiguous Stripe request is not posted again when its idempotency key is known" do
     customer = SubscriptionsFixtures.create_customer!("jc229_unknown_provider_replay")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
@@ -497,20 +497,28 @@ defmodule Store.Subscriptions.FacadeTest do
                now: now
              )
 
-    assert_receive {:renewal_provider_request, first_key, first_collection_id,
+    assert_receive {:renewal_provider_request, _first_key, first_collection_id,
                     first_payment_intent_id},
                    5_000
 
-    assert {:ok, :processed} =
+    old_request_time = DateTime.add(now, -25 * 60 * 60, :second)
+
+    assert {:ok, _result} =
+             Store.Repo.query(
+               "UPDATE payment_intents SET inserted_at = $2 WHERE id = $1::uuid",
+               [Ecto.UUID.dump!(first_payment_intent_id), old_request_time]
+             )
+
+    StripeAPIStub.stub_unexpected!(
+      "stale ambiguous Stripe request must not be posted again from its idempotency key"
+    )
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
 
-    assert_receive {:renewal_provider_request, ^first_key, ^first_collection_id,
-                    ^first_payment_intent_id},
-                   5_000
-
-    refute_receive {:renewal_provider_request, _key, _collection_id, _payment_intent_id}
+    refute_receive {:renewal_provider_request, _key, _collection_id, _payment_intent_id}, 100
 
     attempt = fetch_latest_attempt!(subscription.id)
 
@@ -521,9 +529,11 @@ defmodule Store.Subscriptions.FacadeTest do
 
     assert collection.collection_ordinal == 1
     assert collection.dispatch_state == :may_have_been_reached
-    assert collection.financial_outcome == :verified_success
+    assert collection.financial_outcome == :unresolved
     assert collection.payment_intent_id == first_payment_intent_id
     assert collection.id == first_collection_id
+    assert :atomics.get(request_count, 1) == 1
+    assert fetch_payment_intent!(first_payment_intent_id).provider_payment_id == nil
   end
 
   test "unresolved reached collection with local requires action is not charged again" do
@@ -702,7 +712,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert collection.collection_ordinal == 1
   end
 
-  test "reached collection recovery after suspension replays its exact PaymentIntent and key" do
+  test "reached collection recovery after suspension does not dispatch another charge" do
     customer = SubscriptionsFixtures.create_customer!("jc229_suspended_reached_replay")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
@@ -739,7 +749,7 @@ defmodule Store.Subscriptions.FacadeTest do
                now: now
              )
 
-    assert_receive {:renewal_provider_request, first_key, first_collection_id,
+    assert_receive {:renewal_provider_request, _first_key, first_collection_id,
                     first_payment_intent_id},
                    5_000
 
@@ -754,16 +764,14 @@ defmodule Store.Subscriptions.FacadeTest do
 
     assert suspended.status == :suspended
 
-    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
 
-    assert_receive {:renewal_provider_request, ^first_key, ^first_collection_id,
-                    ^first_payment_intent_id},
-                   5_000
+    refute_receive {:renewal_provider_request, _, _, _}, 100
 
-    assert :atomics.get(request_count, 1) == 2
+    assert :atomics.get(request_count, 1) == 1
     assert fetch_subscription!(subscription.id).status == :suspended
 
     attempt = fetch_latest_attempt!(subscription.id)

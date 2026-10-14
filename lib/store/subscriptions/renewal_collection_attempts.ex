@@ -2064,6 +2064,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              payment_intent.id,
              input.expected_epoch
            ) do
+      dispatch_claimed? = bound_collection.dispatch_state == :not_started
+
       {:ok, updated_collection,
        bind_notifications ++
          method_notifications ++
@@ -2073,7 +2075,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          renewal_attempt: updated_attempt,
          order: order,
          payment_intent: payment_intent,
-         provider_payment_method: provider_payment_method
+         provider_payment_method: provider_payment_method,
+         dispatch_claimed?: dispatch_claimed?
        }}
     end
   end

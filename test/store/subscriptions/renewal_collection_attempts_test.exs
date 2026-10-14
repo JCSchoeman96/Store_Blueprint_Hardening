@@ -108,6 +108,57 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert fetch_collection!(collection.id).dispatch_state == :not_started
   end
 
+  test "attach and claim marks only the first transition as a fresh dispatch" do
+    {attempt, now} = create_bound_attempt!("jc229_attach_claim_fresh_dispatch")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    input = %AttachAndClaimInput{
+      collection_attempt_id: collection.id,
+      renewal_attempt_id: attempt.id,
+      subscription_id: attempt.subscription_id,
+      payment_intent_id: payment_intent.id,
+      expected_epoch: collection.dispatch_epoch,
+      now: now
+    }
+
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          send(parent, {:attach_claim_waiting, self()})
+
+          receive do
+            :attach_claim -> RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
+          after
+            5_000 -> {:error, :attach_claim_barrier_timeout}
+          end
+        end)
+      end
+
+    claim_pids =
+      for _ <- 1..2 do
+        assert_receive {:attach_claim_waiting, claim_pid}, 5_000
+        claim_pid
+      end
+
+    Enum.each(claim_pids, &send(&1, :attach_claim))
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+
+    assert Enum.all?(results, &match?({:ok, _}, &1))
+    claims = Enum.map(results, fn {:ok, claim} -> claim end)
+    assert Enum.sort(Enum.map(claims, & &1.dispatch_claimed?)) == [false, true]
+
+    first_claim = Enum.find(claims, & &1.dispatch_claimed?)
+    replayed_claim = Enum.find(claims, &(not &1.dispatch_claimed?))
+
+    assert first_claim.collection_attempt.dispatch_state == :may_have_been_reached
+    assert replayed_claim.collection_attempt.id == first_claim.collection_attempt.id
+    assert replayed_claim.payment_intent.id == first_claim.payment_intent.id
+  end
+
   test "collection binds an exact PaymentIntent to the bound renewal Order and deterministic key" do
     {attempt, now} = create_bound_attempt!("jc229_collection_bind_pi")
     order = bind_attempt_to_fixture_order!(attempt)

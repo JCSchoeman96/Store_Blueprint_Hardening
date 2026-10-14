@@ -1,6 +1,7 @@
 defmodule Store.Subscriptions.RenewalCollectionDispatchPolicyTest do
   use ExUnit.Case, async: true
 
+  alias Store.Payments.Providers
   alias Store.Subscriptions.RenewalCollectionDispatchPolicy
 
   for subscription_status <- [:active, :past_due] do
@@ -60,5 +61,48 @@ defmodule Store.Subscriptions.RenewalCollectionDispatchPolicyTest do
              :active,
              %{supports_same_request_replay?: true}
            ) == :reconcile
+  end
+
+  test "Stripe does not replay an old ambiguous request from its stored idempotency key" do
+    collection = %{
+      dispatch_state: :may_have_been_reached,
+      financial_outcome: :unresolved,
+      inserted_at: ~U[2026-10-12 00:00:00Z]
+    }
+
+    payment_intent = %{
+      provider_payment_id: nil,
+      provider_request_reference: "stripe-renewal-request-old",
+      state: :submitted
+    }
+
+    assert RenewalCollectionDispatchPolicy.recovery_action(
+             collection,
+             payment_intent,
+             :active,
+             Providers.capabilities(:stripe)
+           ) == :reconcile
+  end
+
+  for subscription_status <- [:suspended, :canceled, :expired] do
+    test "#{subscription_status} subscriptions cannot replay a reached collection" do
+      collection = %{
+        dispatch_state: :may_have_been_reached,
+        financial_outcome: :unresolved
+      }
+
+      payment_intent = %{
+        provider_payment_id: nil,
+        provider_request_reference: "provider-request-identity",
+        state: :submitted
+      }
+
+      assert RenewalCollectionDispatchPolicy.recovery_action(
+               collection,
+               payment_intent,
+               unquote(subscription_status),
+               %{supports_same_request_replay?: true}
+             ) == :reconcile
+    end
   end
 end

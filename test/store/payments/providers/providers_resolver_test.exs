@@ -43,7 +43,7 @@ defmodule Store.Payments.ProvidersResolverTest do
 
   test "same-request mutation replay is provider-specific and fail-closed by default" do
     assert Providers.capabilities(:paystack).supports_same_request_replay? == false
-    assert Providers.capabilities(:stripe).supports_same_request_replay? == true
+    assert Providers.capabilities(:stripe).supports_same_request_replay? == false
   end
 
   test "webhook verification fails for unknown providers" do

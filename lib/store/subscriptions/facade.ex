@@ -5057,16 +5057,25 @@ defmodule Store.Subscriptions.Facade do
   defp submit_claimed_renewal_collection(subscription, plan, bound_attempt, claim, now) do
     with {:ok, submitted_payment_intent} <-
            maybe_submit_virtual_payment_intent(claim.payment_intent) do
-      dispatch_off_session_renewal_charge(
-        subscription,
-        plan,
-        claim.renewal_attempt || bound_attempt,
-        claim.order,
-        submitted_payment_intent,
-        claim.provider_payment_method,
-        claim.collection_attempt,
-        now
-      )
+      case dispatch_action_for_claim(claim, subscription) do
+        :reconcile ->
+          reconcile_existing_renewal_collection(
+            submitted_payment_intent,
+            claim.collection_attempt
+          )
+
+        :submit ->
+          submit_off_session_renewal_charge(
+            subscription,
+            plan,
+            claim.renewal_attempt || bound_attempt,
+            claim.order,
+            submitted_payment_intent,
+            claim.provider_payment_method,
+            claim.collection_attempt,
+            now
+          )
+      end
     end
   end
 
@@ -5083,34 +5092,19 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp dispatch_off_session_renewal_charge(
-         subscription,
-         plan,
-         attempt,
-         order,
-         payment_intent,
-         stored_payment_method,
-         collection_attempt,
-         now
+  defp dispatch_action_for_claim(%{dispatch_claimed?: true}, _subscription), do: :submit
+
+  defp dispatch_action_for_claim(
+         %{collection_attempt: collection_attempt, payment_intent: payment_intent},
+         %Subscription{} = subscription
        ) do
     if reached_collection_requires_reconciliation?(
          collection_attempt,
          payment_intent,
          subscription
-       ) do
-      reconcile_existing_renewal_collection(payment_intent, collection_attempt)
-    else
-      submit_off_session_renewal_charge(
-        subscription,
-        plan,
-        attempt,
-        order,
-        payment_intent,
-        stored_payment_method,
-        collection_attempt,
-        now
-      )
-    end
+       ),
+       do: :reconcile,
+       else: :submit
   end
 
   defp reached_collection_requires_reconciliation?(

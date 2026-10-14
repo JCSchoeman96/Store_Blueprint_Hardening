@@ -28,7 +28,7 @@ defmodule Store.Payments.Providers.Stripe do
       supports_merchant_initiated_charges?: true,
       supports_provider_managed_subscriptions?: true,
       supports_transaction_observation?: true,
-      supports_same_request_replay?: true,
+      supports_same_request_replay?: false,
       supports_request_reference_observation?: false,
       webhook_verification_mode: :offline_hmac,
       supports_webhooks?: true

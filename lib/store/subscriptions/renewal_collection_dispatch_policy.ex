@@ -23,7 +23,7 @@ defmodule Store.Subscriptions.RenewalCollectionDispatchPolicy do
 
   defp may_replay_same_request?(collection, payment_intent, subscription_status, capabilities) do
     Map.get(collection, :financial_outcome) == :unresolved and
-      subscription_status not in [:canceled, :expired] and
+      subscription_status in [:active, :past_due] and
       Map.get(payment_intent, :state) != :requires_action and
       not present?(Map.get(payment_intent, :provider_payment_id)) and
       present?(Map.get(payment_intent, :provider_request_reference)) and
