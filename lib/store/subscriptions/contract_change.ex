@@ -163,6 +163,24 @@ defmodule Store.Subscriptions.ContractChange do
       change(filter(expr(status == :queued)))
       change(set_attribute(:status, :bound_to_renewal))
     end
+
+    update :apply do
+      public?(false)
+
+      require_atomic?(false)
+      accept([])
+
+      validate(fn changeset, _context ->
+        if changeset.data.status == :bound_to_renewal do
+          :ok
+        else
+          {:error, field: :status, message: "ContractChange is not bound to a renewal"}
+        end
+      end)
+
+      change(filter(expr(status == :bound_to_renewal)))
+      change(set_attribute(:status, :applied))
+    end
   end
 
   postgres do
