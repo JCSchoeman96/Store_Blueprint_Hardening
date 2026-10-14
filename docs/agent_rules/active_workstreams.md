@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `7bc76bb89afc32f23bedaea06089504a54cdacbd` (accepted tip after PR #136; tree `03349c04d93de2a55183207e0704a2a12ff7274a`) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `65b78196618406c58c3eae4d973f17758a158a01` (accepted post-IN-03 tip after PR #138; tree `c3381184be52f1eaa9deea0169ff83b8c886ac4e`) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -1630,8 +1630,8 @@ When updating:
 
 This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `5afa4acdce3ef6f5b26eac7f78a0047502e6665a` (governance base for JC-335; refresh with `git fetch origin && git rev-parse origin/main` before work).
-- `origin/hardening/s0-baseline` = `7bc76bb89afc32f23bedaea06089504a54cdacbd` (tree `03349c04d93de2a55183207e0704a2a12ff7274a`; PR #136 JC-331 / IN-02 merge)
+- `origin/main` = `bae20356ac19261384718561b03fb163ec7126bc` (after PR #140; refresh with `git fetch origin && git rev-parse origin/main` before work).
+- `origin/hardening/s0-baseline` = `65b78196618406c58c3eae4d973f17758a158a01` (tree `c3381184be52f1eaa9deea0169ff83b8c886ac4e`; accepted PR #138 JC-336 / IN-03 merge)
 - `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
 - `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
 - PR #90 = MERGED / ACCEPTED into `main`
@@ -1871,10 +1871,74 @@ customer PII, full order payloads, or payment data. This is generic Store correc
 NewYou grace, membership, subscription cancellation, entitlement, or product-specific
 inventory policy is authorized.
 
-JC-335 does not admit JC-229, start SUBS integration, implement IA-05, add an Oban
-recovery worker, or add Redis recovery resolution. JC-229 / SBH-10-04 remains under
-its existing separate SUBS integration and re-admission gates. Later Slice-3 work
-remains serially blocked on IN-03 acceptance, and IA-05+ remains `NOT AUTHORIZED`.
+At JC-335 admission, JC-335 did not admit JC-229, start SUBS integration, implement
+IA-05, add an Oban recovery worker, or add Redis recovery resolution. The remaining
+Slice-3 work was serially blocked on IN-03 acceptance at that point. PR #138 has since
+completed and accepted IN-03; its current status and the continuing JC-229 / SUBS
+integration and re-admission gates are recorded below. IA-05+ remains
+`NOT AUTHORIZED`.
+
+### JC-340 current S0/SUBS authority pins (2026-10-09)
+
+This dated state supersedes the earlier current S0 pin after PR #136. It preserves
+that admission and closure as historical evidence.
+
+```text
+MAIN_AUTHORITY_SHA = bae20356ac19261384718561b03fb163ec7126bc
+ACCEPTED_S0_SOURCE_SHA = 65b78196618406c58c3eae4d973f17758a158a01
+ACCEPTED_S0_SOURCE_TREE = c3381184be52f1eaa9deea0169ff83b8c886ac4e
+ACCEPTED_SUBS_TARGET_SHA = 8a21739555de1dde8f448bfd7e1172b1caeb54c3
+```
+
+PR #138, `[S0] Implement IA-04 IN-03 recovery snapshot`, is merged into
+`hardening/s0-baseline`. Its head is
+`ebfa6b0f58c50b1e2a7f956dd91bd49691be0def`; its merge is
+`65b78196618406c58c3eae4d973f17758a158a01`; and the accepted merge tree is
+`c3381184be52f1eaa9deea0169ff83b8c886ac4e`. Exact-head CI run 312
+(`37967214789`) passed `check_static`, `test_pr_strict`, `dialyzer_required`,
+`performance_smoke_required`, and `performance_smoke_chaos_required`.
+JC-336 is `Done`.
+
+JC-327 is `Done`; its exact-generation transaction guard remains accepted and
+frozen on S0. Its reviewed head is
+`562eed9fd7fe7adf6da1a9298856e651ef302582`, merge is
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, and tree is
+`3e6c79e823741b661ef96308aca320356580dfce`. These completed S0 capabilities do
+not make JC-229 executable.
+
+The next integration admission must use the following source and target evidence:
+
+```text
+SOURCE AUTHORITY = hardening/s0-baseline @ 65b78196618406c58c3eae4d973f17758a158a01
+TARGET AUTHORITY = hardening/subscriptions @ 8a21739555de1dde8f448bfd7e1172b1caeb54c3
+```
+
+This records refs for a separate bounded integration workstream only. Follow the
+normal bounded merge preference for published branches in `AGENTS.md`, declare the
+integration workstream's ownership and resolution rules, then run validation, exact-
+head CI, independent review, human merge, and post-merge commit/tree verification.
+This refresh performs no integration.
+
+Required order:
+
+1. Accept the S0 prerequisite runtime through JC-336 / IN-03 and the frozen JC-327 guard.
+2. Admit and complete the separate S0-to-SUBS integration and its verification gates.
+3. Re-admit JC-229 / SBH-10-04 separately on the integrated SUBS tip.
+4. Assign a new JC-229 implementation `task_base_sha` only after that re-admission.
+5. Keep JC-230 / SBH-10-05 downstream of JC-229.
+
+JC-229 remains `BLOCKED_AUTHORITY -> STOP`. PR #127 remains open and draft against
+`hardening/subscriptions` at head
+`c409a440dbb5f2ea2fb39e79e0f9b11787d38422`; do not modify or resume it. PR #78 is
+historical evidence only. No new JC-229 task base is assigned here.
+
+The exact-success SBH-10-05 handoff remains unresolved for its separate later
+re-admission. Preserve the requirement to match the exact PaymentApplication
+`payment_intent_id` to the exact successful RenewalCollectionAttempt, RenewalAttempt,
+renewal Order, and reservation generation where applicable. A mismatched
+PaymentApplication PaymentIntent fails closed. This refresh does not redefine
+`RenewalAttempt.payment_intent_id`, choose reconciliation payload semantics, change
+provider verification scope, or authorize JC-230.
 
 SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
 `main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source

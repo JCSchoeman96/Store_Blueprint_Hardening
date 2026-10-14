@@ -665,6 +665,86 @@ rules.
 
 This S0 admission preserves every JC-229 / SBH-10-04 authority boundary above. It
 does not re-admit SBH-10-04, authorize JC-229, start SUBS integration, implement
-IA-05, authorize an Oban recovery worker, or add Redis recovery resolution. Later
-Slice-3 microtasks remain serially blocked until IN-03 is accepted. IA-05+ remains
+IA-05, authorize an Oban recovery worker, or add Redis recovery resolution. At the
+time of that admission, later Slice-3 microtasks remained serially blocked until
+IN-03 was accepted. PR #138 has since completed IN-03. IA-05+ remains
 `NOT AUTHORIZED`.
+
+### JC-340 current S0/SUBS authority pins (2026-10-09)
+
+This current-state amendment supersedes the earlier S0 tip recorded for the JC-335
+IN-03 admission. That older value remains the historical task base and provenance;
+the accepted S0 branch now includes the completed IN-03 implementation.
+
+```text
+MAIN_AUTHORITY_SHA = bae20356ac19261384718561b03fb163ec7126bc
+ACCEPTED_S0_SOURCE_SHA = 65b78196618406c58c3eae4d973f17758a158a01
+ACCEPTED_S0_SOURCE_TREE = c3381184be52f1eaa9deea0169ff83b8c886ac4e
+ACCEPTED_SUBS_TARGET_SHA = 8a21739555de1dde8f448bfd7e1172b1caeb54c3
+```
+
+PR #138, `[S0] Implement IA-04 IN-03 recovery snapshot`, is `MERGED` into
+`hardening/s0-baseline`. Its head is
+`ebfa6b0f58c50b1e2a7f956dd91bd49691be0def`, merge is
+`65b78196618406c58c3eae4d973f17758a158a01`, and accepted merge tree is
+`c3381184be52f1eaa9deea0169ff83b8c886ac4e`. Exact-head CI run 312
+(`37967214789`) tested the PR head and passed all required jobs:
+
+```text
+check_static = success
+test_pr_strict = success
+dialyzer_required = success
+performance_smoke_required = success
+performance_smoke_chaos_required = success
+```
+
+JC-336 is `Done`. JC-327 is also `Done`, and its exact-generation transaction
+guard remains an accepted, frozen S0 capability:
+
+```text
+JC327_REVIEWED_HEAD = 562eed9fd7fe7adf6da1a9298856e651ef302582
+JC327_MERGE_SHA = dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e
+JC327_TREE = 3e6c79e823741b661ef96308aca320356580dfce
+```
+
+These S0 capabilities satisfy the accepted S0 prerequisite state for the next
+JC-229 admission sequence. They do not make JC-229 `READY` or executable.
+
+The exact source and target for the next separately admitted integration are:
+
+```text
+SOURCE AUTHORITY = hardening/s0-baseline @ 65b78196618406c58c3eae4d973f17758a158a01
+TARGET AUTHORITY = hardening/subscriptions @ 8a21739555de1dde8f448bfd7e1172b1caeb54c3
+```
+
+The integration must be its own bounded workstream. Use the normal bounded merge
+preference for published branches set by `AGENTS.md`, and record source SHAs,
+ownership, and resolution rules in that integration admission. It must pass its
+validation, exact-head CI, independent review, human merge, and post-merge commit/tree
+verification before a separate JC-229 / SBH-10-04 SUBS re-admission can begin.
+
+The required order is:
+
+```text
+JC-340 governance refresh
+→ separate S0-to-SUBS integration admission/workstream
+→ integration validation, exact-head CI, and independent review
+→ human merge
+→ post-merge commit/tree verification
+→ separate JC-229 SUBS re-admission on the integrated tip
+→ new JC-229 implementation task_base_sha
+→ bounded JC-229 implementation
+```
+
+This governance refresh performs no integration, assigns no new JC-229
+`task_base_sha`, and does not change JC-229 to executable. PR #127 remains open,
+draft, and stopped at head `c409a440dbb5f2ea2fb39e79e0f9b11787d38422` against
+`hardening/subscriptions`; do not modify, rebase, merge, or resume it. PR #78 remains
+historical evidence only. JC-230 / SBH-10-05 remains downstream of JC-229.
+
+The exact-success handoff remains a later SBH-10-05 re-admission decision. It must
+validate the exact PaymentApplication `payment_intent_id` against the exact successful
+RenewalCollectionAttempt, RenewalAttempt, renewal Order, and reservation generation
+where applicable. A PaymentApplication mismatch fails closed. This row does not
+change `RenewalAttempt.payment_intent_id` semantics, choose a reconciliation payload,
+implement reconciliation, change provider behavior, or authorize JC-230.
