@@ -668,13 +668,34 @@ defmodule Store.Subscriptions.Facade do
         future_target_base_from_contract_change(contract_change)
 
       {:ok, nil} ->
-        {:ok,
-         %{
-           subscription_plan_id: subscription.subscription_plan_id,
-           target_variant_id: subscription.variant_id,
-           target_quantity: subscription.quantity,
-           effective_at: nil
-         }}
+        case current_bound_renewal_attempt(subscription) do
+          {:ok, %RenewalAttempt{} = attempt} ->
+            with :ok <- ensure_complete_bound_renewal_attempt(attempt),
+                 {:ok, revision} <- fetch_plan_revision(attempt.plan_revision_id) do
+              {:ok,
+               %{
+                 subscription_plan_id: revision.subscription_plan_id,
+                 plan_revision_id: attempt.plan_revision_id,
+                 target_variant_id: attempt.variant_id,
+                 target_quantity: attempt.quantity,
+                 target_amount_minor: attempt.amount_minor,
+                 target_currency: attempt.currency,
+                 effective_at: attempt.period_end_at
+               }}
+            end
+
+          {:ok, nil} ->
+            {:ok,
+             %{
+               subscription_plan_id: subscription.subscription_plan_id,
+               target_variant_id: subscription.variant_id,
+               target_quantity: subscription.quantity,
+               effective_at: nil
+             }}
+
+          {:error, _reason} = error ->
+            error
+        end
 
       {:error, _reason} = error ->
         error
@@ -690,6 +711,32 @@ defmodule Store.Subscriptions.Facade do
          target_quantity: contract_change.target_quantity,
          effective_at: contract_change.effective_at
        }}
+    end
+  end
+
+  defp current_bound_renewal_attempt(%Subscription{
+         id: subscription_id,
+         current_period_end_at: %DateTime{} = period_start_at
+       }) do
+    query =
+      RenewalAttempt
+      |> Ash.Query.filter(
+        expr(subscription_id == ^subscription_id and period_start_at == ^period_start_at)
+      )
+      |> Ash.Query.limit(2)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, []} ->
+        {:ok, nil}
+
+      {:ok, [%RenewalAttempt{} = attempt]} ->
+        {:ok, attempt}
+
+      {:ok, _ambiguous} ->
+        {:error, Error.new("VALIDATION_ERROR", "current renewal attempt evidence is ambiguous")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
   end
 
@@ -883,7 +930,8 @@ defmodule Store.Subscriptions.Facade do
          :ok <- ensure_subscription_plan_active(plan),
          :ok <- ensure_variant_subscription_plan_active(variant.id, plan.id),
          :ok <- ensure_variant_catalog_renewable(variant),
-         {:ok, revision} <- fetch_effective_plan_revision(plan.id),
+         {:ok, revision, amount_minor, currency} <-
+           future_target_revision_and_price(base, plan.id),
          :ok <- ensure_revision_belongs_to_plan(revision, plan.id),
          {:ok, effective_at} <- effective_at_for_target(subscription, base) do
       target = %{
@@ -891,12 +939,31 @@ defmodule Store.Subscriptions.Facade do
         target_plan_revision_id: revision.id,
         target_variant_id: variant.id,
         target_quantity: base.target_quantity,
-        target_amount_minor: revision.amount_minor,
-        target_currency: revision.currency,
+        target_amount_minor: amount_minor,
+        target_currency: currency,
         effective_at: effective_at
       }
 
       {:ok, target, contract_change_projection(subscription, target, plan.id)}
+    end
+  end
+
+  defp future_target_revision_and_price(
+         %{
+           plan_revision_id: revision_id,
+           target_amount_minor: amount_minor,
+           target_currency: currency
+         },
+         _plan_id
+       ) do
+    with {:ok, %PlanRevision{} = revision} <- fetch_plan_revision(revision_id) do
+      {:ok, revision, amount_minor, currency}
+    end
+  end
+
+  defp future_target_revision_and_price(_base, plan_id) do
+    with {:ok, revision} <- fetch_effective_plan_revision(plan_id) do
+      {:ok, revision, revision.amount_minor, revision.currency}
     end
   end
 
