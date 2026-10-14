@@ -4,7 +4,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Subscriptions.{ContractChange, Facade, RenewalAttempt, Subscription}
+  alias Store.Subscriptions.{ContractChange, Facade, RenewalAttempt, Scheduler, Subscription}
 
   alias Store.Subscriptions.Inputs.{
     QueueSubscriptionPlanChangeInput,
@@ -63,6 +63,39 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert %Subscription{} = subscription
     assert {:ok, queued} = queue_plan_change(fixture.customer, subscription.id, target_plan)
     assert queued.change_effective_at == effective_at
+  end
+
+  test "ambiguous current renewal attempts fail closed without creating a target" do
+    fixture = fixture!("ambiguous_attempts")
+    {period_start_at, period_end_at} = current_renewal_period(fixture)
+
+    create_attempt!(fixture.subscription, period_start_at, period_end_at, "first")
+    create_attempt!(fixture.subscription, period_start_at, period_end_at, "second")
+
+    target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 3_700})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
+
+    assert_no_contract_change!(fixture.subscription.id)
+  end
+
+  test "an incomplete current renewal attempt fails closed without creating a target" do
+    fixture = fixture!("incomplete_attempt")
+    {period_start_at, period_end_at} = current_renewal_period(fixture)
+
+    create_attempt!(fixture.subscription, period_start_at, period_end_at, "incomplete")
+
+    target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 3_700})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
+
+    assert_no_contract_change!(fixture.subscription.id)
   end
 
   test "a plan change after B composes from the contract bound to the renewal" do
@@ -137,14 +170,55 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     due_boundary = DateTime.add(now, -10, :second)
     started_at = DateTime.add(due_boundary, -86_400, :second)
 
-    %{subscription: subscription} =
+    %{subscription: subscription, revision: revision} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
         started_at: started_at,
         quantity: 3,
         provider_billing_ref: "pm_sbh_20_03_#{suffix}"
       })
 
-    %{customer: customer, variant: variant, plan: plan, subscription: subscription, now: now}
+    %{
+      customer: customer,
+      variant: variant,
+      plan: plan,
+      revision: revision,
+      subscription: subscription,
+      now: now
+    }
+  end
+
+  defp current_renewal_period(%{subscription: subscription, revision: revision}) do
+    period_end_at =
+      Scheduler.next_period(subscription.current_period_end_at, revision).current_period_end_at
+
+    {subscription.current_period_end_at, period_end_at}
+  end
+
+  defp create_attempt!(subscription, period_start_at, period_end_at, suffix) do
+    RenewalAttempt
+    |> Ash.Changeset.for_create(
+      :create_or_reuse,
+      %{
+        subscription_id: subscription.id,
+        period_start_at: period_start_at,
+        period_end_at: period_end_at,
+        renewal_key: "sbh_20_03:#{subscription.id}:#{suffix}",
+        status: :pending
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp assert_no_contract_change!(subscription_id) do
+    query = ContractChange |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+
+    assert {:ok, []} =
+             Ash.read(query,
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
   end
 
   defp bind_renewal!(fixture) do
