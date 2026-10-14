@@ -4,7 +4,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Subscriptions.{ContractChange, Facade, RenewalAttempt}
+  alias Store.Subscriptions.{ContractChange, Facade, RenewalAttempt, Subscription}
 
   alias Store.Subscriptions.Inputs.{
     QueueSubscriptionPlanChangeInput,
@@ -37,6 +37,32 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert contract_change.target_amount_minor == revision.amount_minor
     assert contract_change.target_currency == revision.currency
     assert queued.change_effective_at == attempt.period_end_at
+  end
+
+  test "a legacy subscription without period end queues at next renewal" do
+    fixture = fixture!("legacy_period_end")
+    effective_at = DateTime.add(fixture.now, 86_400, :second)
+
+    subscription =
+      fixture.subscription
+      |> Ash.Changeset.for_update(
+        :extend_period,
+        %{current_period_end_at: nil, next_renewal_at: effective_at},
+        context: %{system?: true}
+      )
+      |> Ash.update!(
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 3_700})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    assert %Subscription{} = subscription
+    assert {:ok, queued} = queue_plan_change(fixture.customer, subscription.id, target_plan)
+    assert queued.change_effective_at == effective_at
   end
 
   test "a plan change after B composes from the contract bound to the renewal" do

@@ -740,6 +740,8 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
+  defp current_bound_renewal_attempt(%Subscription{}), do: {:ok, nil}
+
   defp effective_at_for_target(%Subscription{}, %{effective_at: %DateTime{} = at}), do: {:ok, at}
 
   defp effective_at_for_target(%Subscription{} = subscription, _base),
