@@ -97,13 +97,13 @@
 - [x] Run `mix format --check-formatted`, `git diff --check`, `mix ash_postgres.generate_migrations --check`, and strict Credo. Run `mix compile --warnings-as-errors`.
 - [x] Run `mix check`: static gates passed, 1093 tests ran, and one unrelated subscription-detail query-count assertion failed at 15 vs <=14. The same failure reproduced on the detached clean-base worktree at the exact base SHA. Remaining Credo, security, and docs steps completed.
 - [x] Run `mix check.types`; Dialyzer passed successfully.
-- [ ] Run repository normal performance smoke and mobile_realistic chaos performance smoke in CI. Record profile, exact SHA, counts, ceilings, and result.
-- [ ] Complete independent review of the exact final head, then confirm locks, replay/crash paths, lifecycle, performance, and scope. Fix critical/important findings and rerun affected checks.
+- [x] Run repository normal performance smoke and mobile_realistic chaos performance smoke in CI on `adc2b5f6fdb1f66ce5e806cb58112aa3f3f188b5`; both required performance jobs passed.
+- [x] Complete independent review of implementation head `adc2b5f6fdb1f66ce5e806cb58112aa3f3f188b5`. Review found no behavioral findings; its follow-up verified the plan whitespace fix and clean diff check.
 
 ## Task 5: Push and open the draft PR
 
-- [ ] Record base SHA, exact head SHA, commits, worktree status, red evidence, tests, query counts, performance, migration alignment, and CI status.
-- [ ] Push the exact reviewed head and open a draft PR to main titled `feat(subscriptions): reconcile exact charged renewal contract`.
-- [ ] Include a Performance & Scaling Review in the PR: hot/warm/cold classification, query count and N+1 risk, indexes, cache/TTL/invalidation/stampede behavior, Oban uniqueness/idempotency, and telemetry/logging.
-- [ ] Immediately register the full PR URL with this thread. Verify all five CI jobs on the exact head SHA: check_static, test_pr_strict, dialyzer_required, performance_smoke_required, and performance_smoke_chaos_required.
-- [ ] Leave the PR in draft for independent review. Do not merge.
+- [x] Record base SHA, reviewed code head SHA, commits, clean worktree status, red evidence, tests, query counts, performance, migration alignment, and CI status in the plan and PR.
+- [x] Push the reviewed implementation and open draft PR #152 to main with the required title.
+- [x] Include a Performance & Scaling Review in the PR: hot/warm/cold classification, query count and N+1 risk, indexes, cache/TTL/invalidation/stampede behavior, Oban uniqueness/idempotency, and telemetry/logging.
+- [x] Register the PR URL with this thread. All five CI jobs passed on reviewed implementation head `adc2b5f6fdb1f66ce5e806cb58112aa3f3f188b5`: check_static, test_pr_strict, dialyzer_required, performance_smoke_required, and performance_smoke_chaos_required.
+- [x] Leave the PR in draft for independent review. Do not merge.
