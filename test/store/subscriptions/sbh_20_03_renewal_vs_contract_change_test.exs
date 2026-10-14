@@ -88,7 +88,10 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
              queue_variant_change(fixture.customer, attempt.subscription_id, target_variant)
 
     contract_change = fetch_contract_change!(queued.current_contract_change_id)
+    bound_contract_change = fetch_contract_change!(attempt.contract_change_id)
 
+    assert contract_change.predecessor_contract_change_id == attempt.contract_change_id
+    assert bound_contract_change.status == :bound_to_renewal
     assert contract_change.target_plan_revision_id == bound_revision.id
     assert contract_change.target_variant_id == target_variant.id
     assert contract_change.target_amount_minor == bound_revision.amount_minor
