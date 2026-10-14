@@ -22,6 +22,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   alias Store.Repo
   alias Store.Support.ID.UUIDv7
   alias Store.Support.Telemetry.RepoStats
+  alias Store.TestSupport.StripeAPIStub
 
   alias Store.Subscriptions.{
     RenewalAttempt,
@@ -43,6 +44,18 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   }
 
   alias Store.SubscriptionsFixtures
+
+  test "outcome fixture config preserves the HTTP test transport" do
+    initial_config = Application.get_env(:store, :payments, [])
+    expected_options = StripeAPIStub.req_options()
+
+    assert initial_config[:stripe][:request_options] == expected_options
+
+    enable_stripe_for_outcome_test!()
+
+    assert Application.get_env(:store, :payments, [])[:stripe][:request_options] ==
+             expected_options
+  end
 
   test "start input accepts a UUID and an explicit current time" do
     renewal_attempt_id = Ecto.UUID.generate()
@@ -1666,10 +1679,19 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   end
 
   defp enable_stripe_for_outcome_test! do
-    Application.put_env(:store, :payments,
-      enabled_providers: [:stripe],
-      stripe: [secret_key: "sk_test_jc229_collection_outcomes"]
-    )
+    previous_config = Application.get_env(:store, :payments, [])
+    previous_stripe_config = Keyword.get(previous_config, :stripe, [])
+
+    updated_config =
+      previous_config
+      |> Keyword.put(:enabled_providers, [:stripe])
+      |> Keyword.put(
+        :stripe,
+        Keyword.put(previous_stripe_config, :secret_key, "sk_test_jc229_collection_outcomes")
+      )
+
+    Application.put_env(:store, :payments, updated_config)
+    on_exit(fn -> Application.put_env(:store, :payments, previous_config) end)
   end
 
   defp record_provider_outcome!(payment_intent, outcome) do
