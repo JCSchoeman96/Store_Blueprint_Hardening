@@ -5,9 +5,19 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Digital.{DigitalAsset, DownloadGrant, ProductDigitalLink}
+  alias Store.Digital.Workers.IssueGrantsForPaidOrderWorker
   alias Store.Orders.Order
   alias Store.Payments.PaymentIntent
-  alias Store.Subscriptions.{RenewalAttempt, Scheduler, Subscription}
+
+  alias Store.Subscriptions.{
+    RenewalAttempt,
+    RenewalCollectionAttempt,
+    RenewalCollectionAttempts,
+    Scheduler,
+    Subscription
+  }
+
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
   alias Store.Workers.ProcessSubscriptionRenewalWorker
@@ -19,11 +29,13 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
     StripeAPIStub.setup_default(context)
   end
 
-  test "tick worker enqueues one jittered renewal job and paid renewal reconciliation advances the period once" do
+  test "paid renewal exposes exact collection identity without applying the renewal" do
     customer = SubscriptionsFixtures.create_customer!("phase26_worker_due")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!()
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    digital_asset = create_digital_asset!()
+    create_variant_digital_link!(variant.id, digital_asset.id)
 
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
@@ -66,27 +78,45 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
     assert renewal_payment_intent.state == :succeeded
     assert is_binary(renewal_payment_intent.provider_payment_id)
 
+    refute_enqueued(
+      worker: IssueGrantsForPaidOrderWorker,
+      args: %{"order_id" => renewal_order.id}
+    )
+
+    assert [] ==
+             DownloadGrant
+             |> Ash.Query.filter(expr(order_id == ^renewal_order.id))
+             |> Ash.read!(domain: Store.Digital, authorize?: false, context: %{system?: true})
+
     receipt = create_success_webhook_receipt!(renewal_order, renewal_payment_intent)
 
     assert :ok =
              perform_job(ProcessWebhookReceiptWorker, %{"webhook_receipt_id" => receipt.id})
 
-    assert_enqueued(
-      worker: ReconcilePaidSubscriptionRenewalWorker,
-      args: %{"order_id" => renewal_order.id, "renewal_attempt_id" => attempt.id}
-    )
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
 
-    assert :ok =
-             perform_job(ReconcilePaidSubscriptionRenewalWorker, %{
-               "order_id" => renewal_order.id,
-               "renewal_attempt_id" => attempt.id
-             })
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
 
-    renewed = fetch_subscription!(subscription.id)
-    assert DateTime.compare(renewed.current_period_end_at, previous_period_end) == :gt
+    assert handoff == %{
+             order_id: renewal_order.id,
+             renewal_attempt_id: attempt.id,
+             collection_attempt_id: collection.id,
+             payment_intent_id: renewal_payment_intent.id
+           }
 
-    attempt = fetch_latest_attempt!(subscription.id)
-    assert attempt.status == :succeeded
+    refute_enqueued(worker: ReconcilePaidSubscriptionRenewalWorker)
+
+    unchanged = fetch_subscription!(subscription.id)
+    assert unchanged.current_period_end_at == previous_period_end
+    assert unchanged.status == :active
+    assert fetch_latest_attempt!(subscription.id).status == :processing
   end
 
   test "tick worker enqueues deterministic jitter within the expected window for multiple subscriptions" do
@@ -219,5 +249,30 @@ defmodule Store.Workers.SubscriptionsRunDueRenewalsWorkerTest do
       }
     )
     |> Ash.create!(domain: Store.Payments, authorize?: false)
+  end
+
+  defp create_digital_asset! do
+    DigitalAsset
+    |> Ash.Changeset.for_create(:create, %{
+      key: "jc229-worker-asset-#{System.unique_integer([:positive])}",
+      title: "JC-229 worker asset",
+      content_type: "application/pdf",
+      byte_size: 1024,
+      storage_provider: "s3",
+      storage_bucket: "downloads-bucket",
+      storage_object_key: "assets/jc229-worker.pdf",
+      status: :active
+    })
+    |> Ash.create!(domain: Store.Digital, authorize?: false, context: %{system?: true})
+  end
+
+  defp create_variant_digital_link!(variant_id, asset_id) do
+    ProductDigitalLink
+    |> Ash.Changeset.for_create(
+      :create,
+      %{variant_id: variant_id, digital_asset_id: asset_id, position: 0},
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Digital, authorize?: false, context: %{system?: true})
   end
 end

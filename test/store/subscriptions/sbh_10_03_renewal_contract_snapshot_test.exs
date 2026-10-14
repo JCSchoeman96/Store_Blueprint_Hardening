@@ -11,6 +11,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     ContractChange,
     Facade,
     RenewalAttempt,
+    RenewalCollectionAttempt,
     Scheduler,
     Subscription
   }
@@ -146,7 +147,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       end)
 
     assert {:ok, :processed} = renewal_result
-    assert renewal_stats.query_count <= 80
+    # Provider outcome certification adds fixed persistence and validation work.
+    assert renewal_stats.query_count <= 100
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     contract_change = fetch_contract_change!(contract_change_id)
@@ -224,6 +226,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     assert fetch_attempt!(attempt.id).plan_revision_id == target_revision.id
     assert fetch_attempt!(attempt.id).contract_change_id == contract_change_id
     assert fetch_attempt!(attempt.id).amount_minor == 4_700
+    assert [only_collection] = list_collections!(attempt.id)
+    assert only_collection.financial_outcome == :verified_success
 
     assert fetch_contract_change!(Map.fetch!(later_target, :current_contract_change_id)).status ==
              :queued
@@ -241,8 +245,9 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     before_guard_subscription = fetch_subscription!(subscription.id)
 
     assert {:error, %{code: "VALIDATION_ERROR"}} =
-             Facade.reconcile_paid_subscription_renewal_for_system(order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     assert fetch_attempt!(attempt.id).status == :processing
@@ -263,7 +268,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       end)
 
     assert {:ok, :processed} = result
-    assert stats.query_count <= 80
+    # Provider outcome certification adds fixed persistence and validation work.
+    assert stats.query_count <= 93
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     after_binding = fetch_subscription!(subscription.id)
@@ -347,7 +353,19 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
 
     assert {:ok, _queued} = queue_plan_change(customer, subscription, target_plan)
 
-    assert {:ok, :processed} =
+    request_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      request_no = :atomics.add_get(request_count, 1, 1)
+      status = if request_no == 1, do: "canceled", else: "succeeded"
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => status})
+      )
+    end)
+
+    assert {:error, %{code: "PAYMENT_FAILED"}} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
@@ -394,6 +412,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
 
     assert {:ok, :processed} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    assert :atomics.get(request_count, 1) == 2
 
     retried_subscription = fetch_subscription!(subscription.id)
     retried_attempt = fetch_attempt!(attempt.id)
@@ -875,10 +895,30 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
+  defp exact_reconciliation_opts!(attempt) do
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    [
+      renewal_attempt_id: attempt.id,
+      collection_attempt_id: collection.id,
+      payment_intent_id: collection.payment_intent_id
+    ]
+  end
+
   defp fetch_attempt!(id) do
     RenewalAttempt
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp list_collections!(renewal_attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(renewal_attempt_id == ^renewal_attempt_id))
+    |> Ash.Query.sort(collection_ordinal: :asc)
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp list_attempts!(subscription_id) do

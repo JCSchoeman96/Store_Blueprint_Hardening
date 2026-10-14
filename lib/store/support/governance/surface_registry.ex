@@ -180,6 +180,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_due_renewal_jobs_for_system, 1},
         {:process_due_subscription_renewal_for_system, 1},
         {:process_due_subscription_renewal_for_system, 2},
+        {:validate_complete_bound_renewal_attempt_for_system, 1},
         {:reconcile_paid_subscription_renewal_for_system, 1},
         {:reconcile_paid_subscription_renewal_for_system, 2},
         {:run_due_renewals_for_system, 0},

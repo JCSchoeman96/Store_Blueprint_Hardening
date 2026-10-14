@@ -258,6 +258,33 @@ defmodule Store.Orders do
     InventoryReservations.consume_exact_generation(order_id, variant_id, reservation_key, opts)
   end
 
+  @spec settle_exact_generation_in_caller_transaction(
+          String.t(),
+          String.t(),
+          String.t(),
+          :consume | :release,
+          keyword()
+        ) ::
+          {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
+          | {:error, term()}
+  def settle_exact_generation_in_caller_transaction(
+        order_id,
+        variant_id,
+        reservation_key,
+        action,
+        opts \\ []
+      )
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             action in [:consume, :release] and is_list(opts) do
+    InventoryReservations.settle_exact_generation_in_caller_transaction(
+      order_id,
+      variant_id,
+      reservation_key,
+      action,
+      opts
+    )
+  end
+
   @spec consume_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{consumed_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}

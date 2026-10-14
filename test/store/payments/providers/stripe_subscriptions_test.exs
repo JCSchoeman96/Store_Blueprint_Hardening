@@ -99,21 +99,31 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
   end
 
   test "charge_off_session returns provider payment details" do
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      [idempotency_key] = Plug.Conn.get_req_header(conn, "idempotency-key")
+      assert idempotency_key == "stripe-renewal-request-001"
+      StripeAPIStub.json_response(conn, StripeAPIStub.payment_intent_response(params))
+    end)
+
     attrs = %{
       amount_minor: 1_999,
       currency: "USD",
       renewal_key: "renewal_sub_20260401",
-      local_intent_id: "pi_local_001",
+      internal_collection_identity: "renewal-collection:collection_001",
+      provider_request_reference: "stripe-renewal-request-001",
+      collection_attempt_id: "collection_001",
+      payment_intent_id: "pi_local_001",
       order_id: "order_001",
       renewal_attempt_id: "attempt_001",
       subscription_id: "sub_001",
       provider_customer_ref: "cus_001",
-      provider_payment_method_ref: "pm_001"
+      provider_credential_ref: "pm_001"
     }
 
     assert {:ok, payload} = Stripe.charge_off_session(attrs, [])
     assert payload.status == :succeeded
-    assert payload.idempotency_key == "renewal_sub_20260401"
+    assert payload.idempotency_key == "stripe-renewal-request-001"
+    assert payload.provider_request_reference == "stripe-renewal-request-001"
     assert payload.metadata.local_intent_id == "pi_local_001"
     assert payload.metadata.order_id == "order_001"
     assert payload.metadata.renewal_attempt_id == "attempt_001"
@@ -140,7 +150,8 @@ defmodule Store.Payments.Providers.StripeSubscriptionsTest do
       amount_minor: 1_999,
       currency: "USD",
       renewal_key: "renewal_actual_response_facts",
-      local_intent_id: "pi_local_actual_response_facts",
+      provider_request_reference: "stripe-renewal-request-facts",
+      payment_intent_id: "pi_local_actual_response_facts",
       order_id: "order_actual_response_facts",
       renewal_attempt_id: "attempt_actual_response_facts",
       subscription_id: "sub_actual_response_facts",

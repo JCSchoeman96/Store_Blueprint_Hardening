@@ -115,6 +115,39 @@ defmodule Store.Payments.ProviderObservationTest do
              ProviderObservation.validate_target(intent, observation)
   end
 
+  test "a durable provider request reference can bind verification without a returned transaction ID" do
+    intent = %PaymentIntent{
+      id: "intent-1",
+      provider: :paystack,
+      provider_request_reference: "renewal-018f4a1c7b2d7a918f0162e0a3c4b5d6",
+      amount_received_minor: 25_750,
+      currency: "ZAR"
+    }
+
+    verified = %ProviderObservation{
+      provider: :paystack,
+      provider_reference: intent.provider_request_reference,
+      provider_reference_kind: :transaction_reference,
+      provider_transaction_id: "2046671778",
+      local_payment_intent_id: intent.id,
+      observation_source: :verification,
+      amount_minor: 25_750,
+      currency: "ZAR",
+      raw_provider_status: "success",
+      observed_at: DateTime.utc_now(),
+      normalized_outcome: :authoritative_success
+    }
+
+    assert :eligible = ProviderObservation.validate_target(intent, verified)
+
+    assert {:error, :provider_transaction_unverified} =
+             ProviderObservation.validate_target(intent, %{
+               verified
+               | provider_transaction_id: nil,
+                 observation_source: :direct_response
+             })
+  end
+
   test "unresolved and unknown outcomes never qualify as success" do
     intent = %PaymentIntent{
       id: "intent-1",

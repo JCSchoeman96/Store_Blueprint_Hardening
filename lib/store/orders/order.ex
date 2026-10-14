@@ -385,6 +385,20 @@ defmodule Store.Orders.Order do
       accept([:shipping_rate_id, :shipping_rate_code])
     end
 
+    update :set_renewal_shipping_profile do
+      public?(false)
+      require_atomic?(false)
+
+      accept([
+        :shipping_country_code,
+        :shipping_region_code,
+        :shipping_postal_code,
+        :shipping_address_line1,
+        :shipping_address_line2,
+        :shipping_rate_code
+      ])
+    end
+
     update :set_shipping_quote_evidence do
       require_atomic?(false)
 
@@ -597,6 +611,12 @@ defmodule Store.Orders.Order do
     end
 
     policy action(:set_shipping_method) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+      authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:set_renewal_shipping_profile) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})

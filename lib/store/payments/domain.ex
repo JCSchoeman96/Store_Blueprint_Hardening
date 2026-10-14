@@ -14,6 +14,7 @@ defmodule Store.Payments do
   alias Store.Orders.Order
   alias Store.Orders.OrderLineItem
   alias Store.Payments.Inputs.CreateIntentForOrderInput
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
 
   alias Store.Payments.{
     Interlocks,
@@ -34,6 +35,7 @@ defmodule Store.Payments do
   resources do
     resource(Store.Payments.PaymentIntent)
     resource(Store.Payments.PaymentAttempt)
+    resource(Store.Payments.PaymentOutcomeCertification)
     resource(Store.Payments.ProviderEvent)
     resource(Store.Payments.Refund)
     resource(Store.Payments.RefundAttempt)
@@ -193,6 +195,19 @@ defmodule Store.Payments do
   def apply_observed_payment_outcome_for_system(observation_result)
       when is_map(observation_result) do
     Interlocks.apply_observed_payment_outcome(observation_result)
+  end
+
+  @spec validate_collection_outcome_certification_for_system(
+          ValidateRenewalCollectionOutcomeInput.t()
+        ) :: :ok | {:error, term()}
+  def validate_collection_outcome_certification_for_system(
+        %ValidateRenewalCollectionOutcomeInput{} = input
+      ) do
+    Interlocks.validate_collection_outcome_certification(input)
+  end
+
+  def validate_collection_outcome_certification_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection outcome evidence is required")}
   end
 
   @spec record_and_apply_payment_observation_for_system(

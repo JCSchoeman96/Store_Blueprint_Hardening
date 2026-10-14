@@ -49,7 +49,8 @@ defmodule Store.Payments.Types.ProviderObservation do
   @type t :: %__MODULE__{
           provider: atom() | String.t(),
           provider_reference: String.t(),
-          provider_reference_kind: :payment_intent | :checkout_session | :setup_intent | nil,
+          provider_reference_kind:
+            :payment_intent | :checkout_session | :setup_intent | :transaction_reference | nil,
           provider_transaction_id: String.t() | nil,
           local_payment_intent_id: String.t() | nil,
           observation_source: source(),
@@ -112,6 +113,10 @@ defmodule Store.Payments.Types.ProviderObservation do
     expected_transaction = Map.get(payment_intent, :provider_payment_id)
 
     cond do
+      observation.observation_source == :direct_response and
+          is_nil(observation.provider_transaction_id) ->
+        {:error, :provider_transaction_unverified}
+
       is_nil(expected_transaction) ->
         :ok
 
@@ -167,15 +172,20 @@ defmodule Store.Payments.Types.ProviderObservation do
 
   defp provider_identity(payment_intent) do
     case {Map.get(payment_intent, :purpose), Map.get(payment_intent, :provider_payment_id),
-          Map.get(payment_intent, :provider_session_id)} do
-      {:subscription_payment_method_update, reference, _session} when is_binary(reference) ->
+          Map.get(payment_intent, :provider_session_id),
+          Map.get(payment_intent, :provider_request_reference)} do
+      {:subscription_payment_method_update, reference, _session, _request_reference}
+      when is_binary(reference) ->
         {reference, :setup_intent}
 
-      {_purpose, reference, _session} when is_binary(reference) ->
+      {_purpose, reference, _session, _request_reference} when is_binary(reference) ->
         {reference, :payment_intent}
 
-      {_purpose, _reference, session} when is_binary(session) ->
+      {_purpose, _reference, session, _request_reference} when is_binary(session) ->
         {session, :checkout_session}
+
+      {_purpose, _reference, _session, request_reference} when is_binary(request_reference) ->
+        {request_reference, :transaction_reference}
 
       _ ->
         {nil, nil}

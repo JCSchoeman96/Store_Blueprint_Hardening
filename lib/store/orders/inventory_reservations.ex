@@ -267,6 +267,56 @@ defmodule Store.Orders.InventoryReservations do
   def consume_exact_generation(_order_id, _variant_id, _reservation_key, _opts),
     do: {:error, Error.new("RESERVATION_CONFLICT", "Invalid exact consume input", %{})}
 
+  @spec settle_exact_generation_in_caller_transaction(
+          String.t(),
+          String.t(),
+          String.t(),
+          :consume | :release,
+          keyword()
+        ) ::
+          {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
+          | {:error, term()}
+  def settle_exact_generation_in_caller_transaction(
+        order_id,
+        variant_id,
+        reservation_key,
+        action,
+        opts \\ []
+      )
+
+  def settle_exact_generation_in_caller_transaction(
+        order_id,
+        variant_id,
+        reservation_key,
+        action,
+        opts
+      )
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             action in [:consume, :release] and is_list(opts) do
+    with true <- Repo.in_transaction?(),
+         {:ok, identity} <- exact_generation_identity(order_id, variant_id, reservation_key),
+         {:ok, now} <- exact_operation_now(opts),
+         {:ok, reservation, changed?} <- exact_generation_transaction(identity, now, action) do
+      {:ok, %{reservation: reservation, changed?: changed?}}
+    else
+      false -> {:error, :transaction_required}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    error in Postgrex.Error -> exact_mutation_database_error(error)
+    error in DBConnection.ConnectionError -> exact_mutation_database_error(error)
+    error in Ecto.ConstraintError -> exact_mutation_database_error(error)
+  end
+
+  def settle_exact_generation_in_caller_transaction(
+        _order_id,
+        _variant_id,
+        _reservation_key,
+        _action,
+        _opts
+      ),
+      do: {:error, :invalid_identity}
+
   defp exact_generation_identity(order_id, variant_id, reservation_key) do
     with {:ok, normalized_order_id} <- normalize_variant_id(order_id),
          {:ok, normalized_variant_id} <- normalize_variant_id(variant_id),
