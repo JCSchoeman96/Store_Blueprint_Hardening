@@ -86,17 +86,19 @@
 
 ## Task 4: Verify affected behavior and performance
 
-- [ ] Run each required suite:
+- [x] Run each required suite:
   `mix test test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`
   `mix test test/store/subscriptions/sbh_10_06_contract_change_test.exs`
   `mix test test/store/subscriptions/renewal_attempt_monotonicity_test.exs`
   `mix test test/store/subscriptions/cancellation_renewal_authority_test.exs`
   `mix test test/store/workers/reconcile_paid_subscription_renewal_worker_test.exs`
-- [ ] Run affected suspension/late-success, renewal collection lifecycle, Payments exact-application, and Entitlements subscription-source tests. Record command and result for each.
-- [ ] Measure successful first-application and exact-replay query counts using repository query telemetry. Account for each new exact read and lock. Confirm primary-key and subscription-scoped lookup indexes. Do not raise a ceiling without old/new counts and both performance gates.
-- [ ] Run `mix format --check-formatted`, `git diff --check`, `mix ash_postgres.generate_migrations --check`, `mix check`, and `mix check.types`.
-- [ ] Run repository normal performance smoke and mobile_realistic chaos performance smoke. Record profile, exact SHA, command, counts, ceilings, and result.
-- [ ] Request independent review of base SHA, exact head, changed files, acceptance criteria, locks, replay/crash paths, lifecycle, performance, and scope. Fix critical/important findings and rerun affected checks.
+- [x] Run affected suspension/late-success, renewal collection lifecycle, Payments exact-application, and Entitlements subscription-source tests. The combined affected suite passed: 186 tests, 0 failures.
+- [x] Measure query counts using repository query telemetry: first application 19, exact replay 15, unchanged renewal 15. Exact revision, Subscription, and ContractChange reads use primary-key indexes; subscription-scoped target lookup uses the existing ContractChange subscription index and queued partial index. No N+1 reads were observed.
+- [x] Run `mix format --check-formatted`, `git diff --check`, `mix ash_postgres.generate_migrations --check`, and strict Credo. Run `mix compile --warnings-as-errors`.
+- [x] Run `mix check`: static gates passed, 1093 tests ran, and one unrelated subscription-detail query-count assertion failed at 15 vs <=14. The same failure reproduced on the detached clean-base worktree at the exact base SHA. Remaining Credo, security, and docs steps completed.
+- [x] Run `mix check.types`; Dialyzer passed successfully.
+- [ ] Run repository normal performance smoke and mobile_realistic chaos performance smoke in CI. Record profile, exact SHA, counts, ceilings, and result.
+- [ ] Complete independent review of the exact final head, then confirm locks, replay/crash paths, lifecycle, performance, and scope. Fix critical/important findings and rerun affected checks.
 
 ## Task 5: Push and open the draft PR
 
@@ -105,4 +107,3 @@
 - [ ] Include a Performance & Scaling Review in the PR: hot/warm/cold classification, query count and N+1 risk, indexes, cache/TTL/invalidation/stampede behavior, Oban uniqueness/idempotency, and telemetry/logging.
 - [ ] Immediately register the full PR URL with this thread. Verify all five CI jobs on the exact head SHA: check_static, test_pr_strict, dialyzer_required, performance_smoke_required, and performance_smoke_chaos_required.
 - [ ] Leave the PR in draft for independent review. Do not merge.
-
