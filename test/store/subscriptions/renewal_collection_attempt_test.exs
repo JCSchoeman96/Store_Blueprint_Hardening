@@ -3,7 +3,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
 
   alias Store.Orders.InventoryReservation
   alias Store.Orders.Order
-  alias Store.Payments.PaymentIntent
+  alias Store.Payments.{PaymentAttempt, PaymentIntent}
   alias Store.Subscriptions.{RenewalAttempt, RenewalCollectionAttempt, Scheduler}
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
@@ -382,10 +382,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
       """
       INSERT INTO renewal_collection_attempts (
         id, renewal_attempt_id, collection_ordinal, dispatch_state,
-        financial_outcome, payment_intent_id, dispatch_epoch,
+        financial_outcome, payment_intent_id, payment_attempt_id, dispatch_epoch,
         fenced_through_epoch, inserted_at, updated_at
       ) VALUES (
-        $1::uuid, $2::uuid, $3, 'not_started', $4, $5::uuid,
+        $1::uuid, $2::uuid, $3, 'not_started', $4, $5::uuid, $6::uuid,
         1, 0, now(), now()
       )
       """,
@@ -394,9 +394,31 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptTest do
         uuid_param(renewal_attempt_id),
         ordinal,
         Atom.to_string(outcome),
-        if(payment_intent_id, do: uuid_param(payment_intent_id), else: nil)
+        if(payment_intent_id, do: uuid_param(payment_intent_id), else: nil),
+        raw_insert_payment_attempt_id(outcome, payment_intent_id)
       ]
     )
+  end
+
+  defp raw_insert_payment_attempt_id(:unresolved, _payment_intent_id), do: nil
+
+  # These raw rows isolate database trigger behavior; the placeholder satisfies
+  # the evidence-ID structural check and does not represent a Payments certification.
+  defp raw_insert_payment_attempt_id(_resolved_outcome, payment_intent_id) do
+    attrs = %{
+      payment_intent_id: payment_intent_id,
+      provider: :stripe,
+      attempt_key: "jc229-raw-constraint-test:#{Ecto.UUID.generate()}",
+      outcome: "failure_observation",
+      observation_source: "verification",
+      observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    }
+
+    PaymentAttempt
+    |> Ash.Changeset.for_create(:record, attrs, context: %{system?: true})
+    |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+    |> Map.fetch!(:id)
+    |> uuid_param()
   end
 
   defp assert_check_violation(sql, params) do

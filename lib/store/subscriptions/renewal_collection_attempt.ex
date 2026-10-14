@@ -287,9 +287,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
       )
 
       check_constraint(
-        :payment_intent_id,
-        "renewal_collection_attempts_financial_outcome_payment_intent_check",
-        check: "financial_outcome = 'unresolved' OR payment_intent_id IS NOT NULL"
+        :payment_attempt_id,
+        "renewal_collection_attempts_financial_outcome_evidence_check",
+        check:
+          "financial_outcome = 'unresolved' OR (payment_intent_id IS NOT NULL AND payment_attempt_id IS NOT NULL)"
       )
     end
 

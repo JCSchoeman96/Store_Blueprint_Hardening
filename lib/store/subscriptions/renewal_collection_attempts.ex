@@ -378,6 +378,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          :ok <- ensure_caller_transaction(),
          {:ok, collection, attempt} <- payment_application_settlement_identity(canonical_input),
          false <- attempt.failure_code == @renewal_authority_withdrawn_code,
+         :ok <-
+           validate_payment_outcome_evidence(
+             canonical_input.payment_attempt_id,
+             canonical_input.payment_intent_id,
+             :verified_success
+           ),
          {:ok, physical?} <- physical_renewal?(attempt.variant_id),
          {:ok, result} <-
            settle_collection_reservation(
@@ -414,6 +420,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          :ok <- ensure_caller_transaction(),
          {:ok, collection, attempt} <- payment_application_settlement_identity(canonical_input),
          true <- attempt.failure_code == @renewal_authority_withdrawn_code,
+         :ok <-
+           validate_payment_outcome_evidence(
+             canonical_input.payment_attempt_id,
+             canonical_input.payment_intent_id,
+             :verified_success
+           ),
          {:ok, physical?} <- physical_renewal?(attempt.variant_id),
          {:ok, result} <-
            settle_collection_reservation(
@@ -447,6 +459,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          {:ok, collection, attempt, _payment_intent} <-
            terminal_payment_application_identity(canonical_input),
          :ok <- ensure_collection_dispatch_reached(collection),
+         :ok <-
+           validate_payment_outcome_evidence(
+             canonical_input.payment_attempt_id,
+             canonical_input.payment_intent_id,
+             :verified_terminal_financial_non_success
+           ),
          true <-
            collection.financial_outcome in [
              :unresolved,

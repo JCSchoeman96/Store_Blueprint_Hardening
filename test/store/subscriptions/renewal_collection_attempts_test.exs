@@ -827,6 +827,30 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              RenewalCollectionAttempts.success_handoff_for_system(collection.id)
   end
 
+  test "database rejects a resolved collection outcome without PaymentAttempt evidence" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_outcome_db_evidence")
+    order = bind_attempt_to_fixture_order!(attempt)
+    collection = start_collection!(attempt, now)
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :check_violation}}} =
+             Repo.query(
+               "UPDATE renewal_collection_attempts SET financial_outcome = 'requires_action' WHERE id = $1::uuid",
+               [uuid_param(collection.id)]
+             )
+
+    assert fetch_collection!(collection.id).financial_outcome == :unresolved
+    assert fetch_collection!(collection.id).payment_attempt_id == nil
+  end
+
   test "first start creates ordinal one and active replay returns that exact collection" do
     {attempt, now} = create_bound_attempt!("jc229_collection_start_replay")
     input = start_input!(attempt.id, now)

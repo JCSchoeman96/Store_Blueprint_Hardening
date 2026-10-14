@@ -257,6 +257,8 @@ Do not infer terminal financial non-success from `not_submitted`, cancellation, 
 
 Payments owns provider outcome certification. A local PaymentIntent state is a projection and cannot prove a collection outcome. After `PaymentOutcomeResolver` accepts provider evidence, Payments records a `PaymentOutcomeCertification` linked to the exact PaymentIntent and PaymentAttempt. Subscriptions stores that `payment_attempt_id` with the collection outcome and asks Payments to validate the certification before changing the collection. Payments verifies the evidence-to-intent link, provider/reference identity, requested certified outcome, and provider finality. For authoritative success, it also checks the bound amount, currency, and environment. The success handoff and eligibility for a later ordinal both require the stored certification. A local `mark_succeeded` or `mark_failed` action cannot create collection financial truth.
 
+For an exact JC-229 collection, Payments validates the matching success certification inside the locked payment-application transaction before inserting `PaymentApplication`, marking the PaymentIntent or Order successful, or settling payment-dependent inventory. The exact reservation settlement input carries `payment_attempt_id` and validates the certification again before consuming or releasing the collection generation. Terminal non-success applies the same rule before marking the PaymentIntent failed or releasing the generation. Cancellation-only release remains a separate authority path. Non-renewal checkout and legacy renewals without a collection retain their accepted payment-application behavior.
+
 ## 8. Bound commercial contract
 
 Provider/payment construction must use immutable fields on the bound RenewalAttempt:

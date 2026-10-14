@@ -105,6 +105,14 @@ defmodule Store.Payments.Interlocks do
           | {:error, Error.t() | term()}
   def apply_payment_success_once(payment_intent_or_id, opts \\ [])
 
+  def apply_payment_success_once(%PaymentIntent{} = payment_intent, opts) when is_list(opts) do
+    apply_payment_success_once_internal(
+      payment_intent,
+      false,
+      Keyword.get(opts, :payment_attempt_id)
+    )
+  end
+
   def apply_payment_success_once(%PaymentIntent{} = payment_intent, _opts) do
     apply_payment_success_once_internal(payment_intent, false, nil)
   end
@@ -533,7 +541,12 @@ defmodule Store.Payments.Interlocks do
               inventory_variant_ids_to_invalidate: inventory_variant_ids_to_invalidate
             }, notifications} <-
              Repo.transaction(fn ->
-               run_apply_payment_success_once(payment_intent, order, verified_correction?)
+               run_apply_payment_success_once(
+                 payment_intent,
+                 order,
+                 verified_correction?,
+                 payment_attempt_id
+               )
              end)
              |> normalize_transaction_result(),
            :ok <-
@@ -1192,9 +1205,9 @@ defmodule Store.Payments.Interlocks do
          payment_intent,
          :verified_terminal_non_success,
          _provider_event_key,
-         _payment_attempt_id
+         payment_attempt_id
        ),
-       do: apply_terminal_non_success(payment_intent)
+       do: apply_terminal_non_success(payment_intent, payment_attempt_id)
 
   defp apply_resolved_outcome(
          payment_intent,
@@ -1580,7 +1593,10 @@ defmodule Store.Payments.Interlocks do
   defp date_time_identity(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
   defp date_time_identity(value), do: value
 
-  defp apply_terminal_non_success(%PaymentIntent{order_id: order_id} = payment_intent)
+  defp apply_terminal_non_success(
+         %PaymentIntent{order_id: order_id} = payment_intent,
+         payment_attempt_id
+       )
        when is_binary(order_id) do
     with {:ok, _order} <- fetch_order(order_id),
          {:ok,
@@ -1591,7 +1607,7 @@ defmodule Store.Payments.Interlocks do
            Repo.transaction(fn ->
              lock_order!(order_id)
              lock_payment_intent!(payment_intent.id)
-             apply_terminal_non_success_in_transaction(payment_intent)
+             apply_terminal_non_success_in_transaction(payment_intent, payment_attempt_id)
            end)
            |> normalize_transaction_result(),
          :ok <- Store.Orders.invalidate_inventory_availability_for_variants(inventory_variant_ids),
@@ -1607,32 +1623,54 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp apply_terminal_non_success(_payment_intent), do: {:ok, :verified_terminal_non_success}
+  defp apply_terminal_non_success(_payment_intent, _payment_attempt_id),
+    do: {:ok, :verified_terminal_non_success}
 
-  defp apply_terminal_non_success_in_transaction(payment_intent) do
-    case fetch_payment_application(payment_intent) do
-      {:ok, %{payment_intent_id: id}} when id == payment_intent.id ->
-        {:ok,
-         %{
-           outcome: :already_applied_success,
-           inventory_variant_ids_to_invalidate: []
-         }, []}
+  defp apply_terminal_non_success_in_transaction(payment_intent, payment_attempt_id) do
+    with {:ok, current_intent} <- fetch_payment_intent(payment_intent.id),
+         {:ok, current_order} <- fetch_order(payment_intent.order_id),
+         {:ok, renewal_attempt_lookup} <-
+           renewal_attempt_lookup_for_payment_application(current_order, current_intent),
+         {:ok, certified_payment_attempt_id} <-
+           ensure_renewal_collection_outcome_certification(
+             renewal_attempt_lookup,
+             current_intent,
+             payment_attempt_id,
+             :verified_terminal_financial_non_success
+           ) do
+      case fetch_payment_application(current_intent) do
+        {:ok, %{payment_intent_id: id}} when id == current_intent.id ->
+          {:ok,
+           %{
+             outcome: :already_applied_success,
+             inventory_variant_ids_to_invalidate: []
+           }, []}
 
-      {:ok, %{payment_intent_id: _other_id}} ->
-        Repo.rollback(Error.new("PAYMENT_EVENT_UNVERIFIED", "order payment identity conflicts"))
+        {:ok, %{payment_intent_id: _other_id}} ->
+          Repo.rollback(Error.new("PAYMENT_EVENT_UNVERIFIED", "order payment identity conflicts"))
 
-      {:ok, nil} ->
-        apply_terminal_failure_without_payment_application(payment_intent)
+        {:ok, nil} ->
+          apply_terminal_failure_without_payment_application(
+            current_intent,
+            certified_payment_attempt_id
+          )
 
-      {:error, reason} ->
-        Repo.rollback(reason)
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    else
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
-  defp apply_terminal_failure_without_payment_application(payment_intent) do
+  defp apply_terminal_failure_without_payment_application(
+         payment_intent,
+         payment_attempt_id
+       ) do
     with {:ok, current} <- fetch_payment_intent(payment_intent.id),
          {:ok, {_marked, notifications}} <- maybe_mark_payment_intent_failed(current),
-         {:ok, inventory_variant_ids} <- maybe_release_failed_renewal_reservations(current) do
+         {:ok, inventory_variant_ids} <-
+           maybe_release_failed_renewal_reservations(current, payment_attempt_id) do
       {:ok,
        %{
          outcome: :verified_terminal_non_success,
@@ -1659,7 +1697,12 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp run_apply_payment_success_once(payment_intent, order, verified_correction?) do
+  defp run_apply_payment_success_once(
+         payment_intent,
+         order,
+         verified_correction?,
+         payment_attempt_id
+       ) do
     lock_order!(order.id)
     lock_payment_intent!(payment_intent.id)
 
@@ -1669,6 +1712,13 @@ defmodule Store.Payments.Interlocks do
          :ok <- ensure_payment_application_identity(existing_application, current_intent),
          {:ok, renewal_attempt_lookup} <-
            renewal_attempt_lookup_for_payment_application(current_order, current_intent),
+         {:ok, certified_payment_attempt_id} <-
+           ensure_renewal_collection_outcome_certification(
+             renewal_attempt_lookup,
+             current_intent,
+             payment_attempt_id,
+             :verified_success
+           ),
          {:ok, status} <-
            insert_payment_application(
              current_order.id,
@@ -1682,7 +1732,8 @@ defmodule Store.Payments.Interlocks do
            settle_payment_order_reservations(
              current_order,
              current_intent,
-             renewal_attempt_lookup
+             renewal_attempt_lookup,
+             certified_payment_attempt_id
            ) do
       notifications = intent_notifications ++ order_notifications
 
@@ -1863,7 +1914,8 @@ defmodule Store.Payments.Interlocks do
   defp maybe_mark_payment_intent_requires_action(%PaymentIntent{}), do: {:ok, :noop}
 
   defp maybe_release_failed_renewal_reservations(
-         %PaymentIntent{order_id: order_id} = payment_intent
+         %PaymentIntent{order_id: order_id} = payment_intent,
+         payment_attempt_id
        )
        when is_binary(order_id) do
     if renewal_order?(order_id) do
@@ -1873,7 +1925,10 @@ defmodule Store.Payments.Interlocks do
                invalidate?: false
              ),
            {:ok, exact_collection_variants} <-
-             release_terminal_collection_reservation_for_payment_application(payment_intent) do
+             release_terminal_collection_reservation_for_payment_application(
+               payment_intent,
+               payment_attempt_id
+             ) do
         {:ok,
          Enum.map(reservations, & &1.variant_id)
          |> Kernel.++(exact_collection_variants)
@@ -1887,17 +1942,19 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp maybe_release_failed_renewal_reservations(%PaymentIntent{}), do: {:ok, []}
+  defp maybe_release_failed_renewal_reservations(%PaymentIntent{}, _payment_attempt_id),
+    do: {:ok, []}
 
   defp release_terminal_collection_reservation_for_payment_application(
-         %PaymentIntent{} = payment_intent
+         %PaymentIntent{} = payment_intent,
+         payment_attempt_id
        ) do
     with {:ok, order} <- fetch_order(payment_intent.order_id) do
-      release_collection_reservation_for_payment(order, payment_intent)
+      release_collection_reservation_for_payment(order, payment_intent, payment_attempt_id)
     end
   end
 
-  defp release_collection_reservation_for_payment(order, payment_intent) do
+  defp release_collection_reservation_for_payment(order, payment_intent, payment_attempt_id) do
     case renewal_attempt_for_payment_result(%{order: order, payment_intent: payment_intent}) do
       {:ok,
        %{
@@ -1906,7 +1963,13 @@ defmodule Store.Payments.Interlocks do
          payment_intent_id: payment_intent_id
        }}
       when is_binary(collection_attempt_id) ->
-        release_collection_reservation(order, attempt, collection_attempt_id, payment_intent_id)
+        release_collection_reservation(
+          order,
+          attempt,
+          collection_attempt_id,
+          payment_intent_id,
+          payment_attempt_id
+        )
 
       {:ok, %{collection_attempt_id: nil}} ->
         {:ok, []}
@@ -1919,12 +1982,19 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp release_collection_reservation(order, attempt, collection_attempt_id, payment_intent_id) do
+  defp release_collection_reservation(
+         order,
+         attempt,
+         collection_attempt_id,
+         payment_intent_id,
+         payment_attempt_id
+       ) do
     input = %PaymentApplicationSettlementInput{
       collection_attempt_id: collection_attempt_id,
       order_id: order.id,
       renewal_attempt_id: attempt.id,
-      payment_intent_id: payment_intent_id
+      payment_intent_id: payment_intent_id,
+      payment_attempt_id: payment_attempt_id
     }
 
     case RenewalCollectionAttempts.release_terminal_collection_reservation_for_payment_application(
@@ -2195,7 +2265,8 @@ defmodule Store.Payments.Interlocks do
      %{
        renewal_attempt: attempt,
        collection_attempt_id: collection.id,
-       payment_intent_id: payment_intent_id
+       payment_intent_id: payment_intent_id,
+       payment_attempt_id: collection.payment_attempt_id
      }}
   end
 
@@ -2246,6 +2317,103 @@ defmodule Store.Payments.Interlocks do
     {:ok, renewal_attempt_for_payment_result(%{order: order, payment_intent: payment_intent})}
   end
 
+  defp ensure_renewal_collection_outcome_certification(
+         :none,
+         _payment_intent,
+         _payment_attempt_id,
+         _financial_outcome
+       ),
+       do: {:ok, nil}
+
+  defp ensure_renewal_collection_outcome_certification(
+         {:ok, %{collection_attempt_id: nil}},
+         _payment_intent,
+         _payment_attempt_id,
+         _financial_outcome
+       ),
+       do: {:ok, nil}
+
+  defp ensure_renewal_collection_outcome_certification(
+         {:ok,
+          %{
+            collection_attempt_id: collection_attempt_id,
+            payment_intent_id: payment_intent_id
+          } = renewal_identity},
+         %PaymentIntent{id: payment_intent_id},
+         payment_attempt_id,
+         financial_outcome
+       )
+       when is_binary(collection_attempt_id) do
+    payment_attempt_id = payment_attempt_id || Map.get(renewal_identity, :payment_attempt_id)
+
+    with true <- is_binary(payment_attempt_id),
+         {:ok, _uuid} <- Ecto.UUID.cast(payment_attempt_id),
+         {:ok, input} <-
+           ValidateRenewalCollectionOutcomeInput.new(%{
+             payment_attempt_id: payment_attempt_id,
+             payment_intent_id: payment_intent_id,
+             financial_outcome: financial_outcome
+           }),
+         :ok <- Store.Payments.validate_collection_outcome_certification_for_system(input) do
+      {:ok, payment_attempt_id}
+    else
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "exact renewal collection has no certified provider evidence"
+         )}
+
+      :error ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "exact renewal collection provider evidence identity is invalid"
+         )}
+
+      {:error, %Error{code: "VALIDATION_ERROR"}} ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "exact renewal collection provider evidence identity is invalid"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp ensure_renewal_collection_outcome_certification(
+         {:ok, %{collection_attempt_id: collection_attempt_id}},
+         _payment_intent,
+         _payment_attempt_id,
+         _financial_outcome
+       )
+       when is_binary(collection_attempt_id) do
+    {:error,
+     Error.new(
+       "PAYMENT_EVENT_UNVERIFIED",
+       "exact renewal collection PaymentIntent identity conflicts"
+     )}
+  end
+
+  defp ensure_renewal_collection_outcome_certification(
+         {:error, reason},
+         _payment_intent,
+         _payment_attempt_id,
+         _financial_outcome
+       ),
+       do: {:error, reason}
+
+  defp ensure_renewal_collection_outcome_certification(
+         _renewal_attempt_lookup,
+         _payment_intent,
+         _payment_attempt_id,
+         _financial_outcome
+       ) do
+    {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
+  end
+
   defp settle_payment_order_reservations(
          %Order{id: order_id},
          %PaymentIntent{id: payment_intent_id},
@@ -2258,14 +2426,16 @@ defmodule Store.Payments.Interlocks do
             },
             collection_attempt_id: collection_attempt_id,
             payment_intent_id: payment_intent_id
-          }}
+          }},
+         payment_attempt_id
        )
        when is_binary(collection_attempt_id) do
     input = %PaymentApplicationSettlementInput{
       collection_attempt_id: collection_attempt_id,
       order_id: order_id,
       renewal_attempt_id: renewal_attempt_id,
-      payment_intent_id: payment_intent_id
+      payment_intent_id: payment_intent_id,
+      payment_attempt_id: payment_attempt_id
     }
 
     with {:ok, settlement} <-
@@ -2291,7 +2461,8 @@ defmodule Store.Payments.Interlocks do
             renewal_attempt: %RenewalAttempt{id: renewal_attempt_id, order_id: order_id},
             collection_attempt_id: collection_attempt_id,
             payment_intent_id: payment_intent_id
-          }}
+          }},
+         payment_attempt_id
        )
        when is_binary(collection_attempt_id) do
     RenewalCollectionAttempts.settle_successful_collection_reservation_for_payment_application(
@@ -2299,7 +2470,8 @@ defmodule Store.Payments.Interlocks do
         collection_attempt_id: collection_attempt_id,
         order_id: order_id,
         renewal_attempt_id: renewal_attempt_id,
-        payment_intent_id: payment_intent_id
+        payment_intent_id: payment_intent_id,
+        payment_attempt_id: payment_attempt_id
       }
     )
   end
@@ -2314,7 +2486,8 @@ defmodule Store.Payments.Interlocks do
               failure_code: "RENEWAL_AUTHORITY_WITHDRAWN"
             },
             payment_intent_id: payment_intent_id
-          }}
+          }},
+         _payment_attempt_id
        ) do
     Store.Orders.settle_withdrawn_renewal_reservations_for_payment(order_id)
   end
@@ -2326,24 +2499,36 @@ defmodule Store.Payments.Interlocks do
           %{
             renewal_attempt: %RenewalAttempt{order_id: order_id},
             payment_intent_id: payment_intent_id
-          }}
+          }},
+         _payment_attempt_id
        ) do
     Store.Orders.consume_reservations_for_order(order_id, context: %{system?: true})
   end
 
-  defp settle_payment_order_reservations(%Order{id: order_id}, %PaymentIntent{}, :none) do
+  defp settle_payment_order_reservations(
+         %Order{id: order_id},
+         %PaymentIntent{},
+         :none,
+         _payment_attempt_id
+       ) do
     Store.Orders.consume_reservations_for_order(order_id, context: %{system?: true})
   end
 
   defp settle_payment_order_reservations(
          _order,
          _payment_intent,
-         {:error, identity_error}
+         {:error, identity_error},
+         _payment_attempt_id
        ) do
     {:error, identity_error}
   end
 
-  defp settle_payment_order_reservations(_order, _payment_intent, _renewal_attempt_lookup) do
+  defp settle_payment_order_reservations(
+         _order,
+         _payment_intent,
+         _renewal_attempt_lookup,
+         _payment_attempt_id
+       ) do
     {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal payment identity conflicts")}
   end
 
