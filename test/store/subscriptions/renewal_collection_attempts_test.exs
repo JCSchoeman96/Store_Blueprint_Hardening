@@ -13,8 +13,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     PaymentApplication
   }
 
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
   alias Store.Payments.Providers
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Pricing.Contract
   alias Store.Pricing.Contract.{LineAllocation, LineEvaluation}
   alias Store.Repo
@@ -629,6 +631,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
                }
              )
 
+    assert {:ok, _claimed} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, now)
+             )
+
     stale_intent = create_legacy_payment_intent!(fetch_subscription!(attempt.subscription_id))
 
     assert {:ok, _stale_mirror} =
@@ -644,34 +651,54 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
                context: %{system?: true}
              )
 
+    enable_stripe_for_outcome_test!()
+    payment_intent = fetch_payment_intent!(payment_intent.id)
     payment_intent = submit_payment_intent!(payment_intent)
-    payment_intent = mark_payment_intent!(payment_intent, :mark_requires_action)
 
-    assert {:ok, active} =
-             RenewalCollectionAttempts.record_financial_outcome_for_system(
-               financial_outcome_input!(collection.id, payment_intent.id, :requires_action)
-             )
+    assert {:ok, %{outcome: :requires_action, evidence: action_evidence}} =
+             record_provider_outcome!(payment_intent, :requires_action)
+
+    active = fetch_collection!(collection.id)
 
     assert active.financial_outcome == :requires_action
+    assert active.payment_attempt_id == action_evidence.id
 
     assert {:ok, replay} =
              RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
 
     assert replay.id == collection.id
 
-    payment_intent = mark_payment_intent!(payment_intent, :mark_succeeded)
+    success_result = record_provider_outcome!(payment_intent, :succeeded)
 
-    {success_result, success_stats} =
+    assert {:ok, %{outcome: :authoritative_success, evidence: success_evidence}} = success_result
+
+    succeeded = fetch_collection!(collection.id)
+
+    assert succeeded.financial_outcome == :verified_success
+    assert succeeded.payment_attempt_id == success_evidence.id
+
+    assert :ok ==
+             Store.Payments.validate_collection_outcome_certification_for_system(
+               %ValidateRenewalCollectionOutcomeInput{
+                 payment_attempt_id: success_evidence.id,
+                 payment_intent_id: payment_intent.id,
+                 financial_outcome: :verified_success
+               }
+             )
+
+    {_replay_result, collection_stats} =
       RepoStats.capture(fn ->
         RenewalCollectionAttempts.record_financial_outcome_for_system(
-          financial_outcome_input!(collection.id, payment_intent.id, :verified_success)
+          financial_outcome_input!(
+            collection.id,
+            payment_intent.id,
+            :verified_success,
+            success_evidence.id
+          )
         )
       end)
 
-    assert success_stats.query_count <= 8
-    assert {:ok, succeeded} = success_result
-
-    assert succeeded.financial_outcome == :verified_success
+    assert collection_stats.query_count <= 8
 
     {handoff_result, handoff_stats} =
       RepoStats.capture(fn ->
@@ -722,6 +749,69 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
 
     assert replay.id == collection.id
+  end
+
+  test "local PaymentIntent failure cannot certify terminal collection failure without provider evidence" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_fake_terminal_certification")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    payment_intent = submit_payment_intent!(payment_intent)
+    _payment_intent = mark_payment_intent!(payment_intent, :mark_failed)
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             RenewalCollectionAttempts.record_financial_outcome_for_system(
+               financial_outcome_input!(
+                 collection.id,
+                 payment_intent.id,
+                 :verified_terminal_financial_non_success,
+                 Ecto.UUID.generate()
+               )
+             )
+
+    assert fetch_collection!(collection.id).financial_outcome == :unresolved
+  end
+
+  test "local PaymentIntent success cannot certify collection success or JC-230 handoff without provider evidence" do
+    {attempt, now} = create_bound_attempt!("jc229_collection_fake_success_certification")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
+             )
+
+    payment_intent = submit_payment_intent!(payment_intent)
+    _payment_intent = mark_payment_intent!(payment_intent, :mark_succeeded)
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             RenewalCollectionAttempts.record_financial_outcome_for_system(
+               financial_outcome_input!(
+                 collection.id,
+                 payment_intent.id,
+                 :verified_success,
+                 Ecto.UUID.generate()
+               )
+             )
+
+    assert fetch_collection!(collection.id).financial_outcome == :unresolved
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             RenewalCollectionAttempts.success_handoff_for_system(collection.id)
   end
 
   test "first start creates ordinal one and active replay returns that exact collection" do
@@ -942,7 +1032,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     {second_result, next_stats} =
       RepoStats.capture(fn -> RenewalCollectionAttempts.start_for_system(input) end)
 
-    assert next_stats.query_count <= 7
+    assert next_stats.query_count <= 8
     assert {:ok, second} = second_result
     assert second.collection_ordinal == 2
     assert second.id != first.id
@@ -1563,15 +1653,49 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     input
   end
 
-  defp financial_outcome_input!(collection_id, payment_intent_id, outcome) do
+  defp financial_outcome_input!(collection_id, payment_intent_id, outcome, payment_attempt_id) do
     assert {:ok, input} =
              RecordFinancialOutcomeInput.new(%{
                collection_attempt_id: collection_id,
                payment_intent_id: payment_intent_id,
+               payment_attempt_id: payment_attempt_id,
                financial_outcome: outcome
              })
 
     input
+  end
+
+  defp enable_stripe_for_outcome_test! do
+    Application.put_env(:store, :payments,
+      enabled_providers: [:stripe],
+      stripe: [secret_key: "sk_test_jc229_collection_outcomes"]
+    )
+  end
+
+  defp record_provider_outcome!(payment_intent, outcome) do
+    {normalized_outcome, raw_status} =
+      case outcome do
+        :requires_action -> {:requires_action, "requires_action"}
+        :succeeded -> {:authoritative_success, "succeeded"}
+        :canceled -> {:failure_observation, "canceled"}
+      end
+
+    observation = %ProviderObservation{
+      provider: payment_intent.provider,
+      provider_reference: payment_intent.provider_request_reference,
+      provider_reference_kind: :transaction_reference,
+      provider_transaction_id: "pi_jc229_#{payment_intent.id}",
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: normalized_outcome,
+      raw_provider_status: raw_status,
+      amount_minor: payment_intent.amount_received_minor,
+      currency: payment_intent.currency,
+      provider_environment: "test",
+      observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    }
+
+    Store.Payments.record_and_apply_payment_observation_for_system(payment_intent, observation)
   end
 
   defp submit_payment_intent!(payment_intent) do
@@ -1582,6 +1706,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     payment_intent
     |> Ash.Changeset.for_update(action, %{}, context: %{system?: true})
     |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_payment_intent!(id) do
+    PaymentIntent
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Payments, authorize?: false, context: %{system?: true})
   end
 
   defp resume_input!(collection_id, epoch, now) do
@@ -1789,26 +1919,47 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
   end
 
   defp set_financial_outcome!(collection, subscription_id, outcome) do
-    payment_intent =
-      PaymentIntent
-      |> Ash.Changeset.for_create(
-        :create_or_reuse,
-        %{
-          amount_received_minor: 0,
-          currency: "USD",
-          provider: :stripe,
-          subscription_id: subscription_id,
-          payment_intent_key: "jc229_collection_test:#{Ecto.UUID.generate()}"
-        },
-        context: %{system?: true}
-      )
-      |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+    attempt = fetch_renewal_attempt!(collection.renewal_attempt_id)
+    assert attempt.subscription_id == subscription_id
 
-    assert {:ok, %{num_rows: 1}} =
-             Repo.query(
-               "UPDATE renewal_collection_attempts SET payment_intent_id = $1::uuid, financial_outcome = $2 WHERE id = $3::uuid",
-               [uuid_param(payment_intent.id), Atom.to_string(outcome), uuid_param(collection.id)]
+    order = bind_attempt_to_fixture_order!(attempt)
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, _bound} =
+             RenewalCollectionAttempts.attach_payment_intent_for_system(
+               %PaymentIntentBindingInput{
+                 collection_attempt_id: collection.id,
+                 payment_intent_id: payment_intent.id
+               }
              )
+
+    enable_stripe_for_outcome_test!()
+
+    assert {:ok, _claimed} =
+             RenewalCollectionAttempts.claim_dispatch_for_system(
+               claim_dispatch_input!(collection.id, 1, DateTime.utc_now())
+             )
+
+    payment_intent = fetch_payment_intent!(payment_intent.id)
+    payment_intent = submit_payment_intent!(payment_intent)
+    payment_intent = fetch_payment_intent!(payment_intent.id)
+
+    provider_status =
+      case outcome do
+        :requires_action -> :requires_action
+        :verified_success -> :succeeded
+        :verified_terminal_financial_non_success -> :canceled
+      end
+
+    resolved_outcome =
+      case outcome do
+        :requires_action -> :requires_action
+        :verified_success -> :authoritative_success
+        :verified_terminal_financial_non_success -> :verified_terminal_non_success
+      end
+
+    assert {:ok, %{outcome: ^resolved_outcome}} =
+             record_provider_outcome!(payment_intent, provider_status)
   end
 
   defp create_legacy_payment_intent!(subscription) do

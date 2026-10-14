@@ -53,6 +53,7 @@ The PayStack contract suite models the 40-character `renewal-<compact-lowercase-
 3. **Mutable plan/subscription drift after binding:** provider payload/order/PI must still match the bound RenewalAttempt.
 4. **Physical reservation generation replacement race:** stale collection must never dispatch against or release the wrong generation.
 5. **Provider observation reordering / stale local failure:** success/finality must follow accepted PaymentOutcomeResolver/provider evidence, not arrival order or local PI status.
+6. **Outcome certification authority:** a collection success or terminal non-success must carry the exact PaymentAttempt certified by Payments after resolver/finality processing; local PaymentIntent state alone cannot certify it.
 
 ---
 

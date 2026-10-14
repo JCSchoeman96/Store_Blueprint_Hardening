@@ -163,6 +163,7 @@ Required fields:
 - `last_fence_event_id` — nullable UUID
 - `last_fenced_at` — nullable timestamp
 - `payment_intent_id` — nullable FK, delete restrict
+- `payment_attempt_id` — nullable FK to the exact Payments evidence used for the stored financial outcome
 - timestamps
 
 Use the historical PR #127 names unless current-main conventions make a compelling incompatibility visible. Do not gratuitously rename states or fields.
@@ -253,6 +254,8 @@ Illegal:
 - `verified_terminal_financial_non_success → verified_success` unless accepted current Payments finality semantics explicitly demonstrate that the former was not truly terminal (if that is possible, then the state must not have been recorded as terminal in the first place).
 
 Do not infer terminal financial non-success from `not_submitted`, cancellation, local timeout, local PI failure, worker exhaustion, or lack of callback.
+
+Payments owns provider outcome certification. A local PaymentIntent state is a projection and cannot prove a collection outcome. After `PaymentOutcomeResolver` accepts provider evidence, Payments records a `PaymentOutcomeCertification` linked to the exact PaymentIntent and PaymentAttempt. Subscriptions stores that `payment_attempt_id` with the collection outcome and asks Payments to validate the certification before changing the collection. Payments verifies the evidence-to-intent link, provider/reference identity, requested certified outcome, and provider finality. For authoritative success, it also checks the bound amount, currency, and environment. The success handoff and eligibility for a later ordinal both require the stored certification. A local `mark_succeeded` or `mark_failed` action cannot create collection financial truth.
 
 ## 8. Bound commercial contract
 

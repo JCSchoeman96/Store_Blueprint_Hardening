@@ -16,6 +16,7 @@ defmodule Store.Payments.Interlocks do
     ObservationEvidence,
     PaymentAttempt,
     PaymentIntent,
+    PaymentOutcomeCertification,
     PaymentOutcomeResolver,
     ProviderEvent,
     Providers,
@@ -24,6 +25,7 @@ defmodule Store.Payments.Interlocks do
 
   alias Store.Payments.Inputs.RenewalOrderPaymentApplicationInput
   alias Store.Payments.Inputs.RenewalPaymentApplicationInput
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.Types.CanonicalReceipt
   alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
@@ -79,13 +81,18 @@ defmodule Store.Payments.Interlocks do
          {:ok, canonical} <- normalize_canonical_receipt(receipt.provider, payload),
          {:ok, payment_intent} <- fetch_payment_intent_for_canonical(canonical),
          {:ok, provider_event_key} <- ingest_provider_event(receipt, canonical),
-         {:ok, _attempt, observation} <-
+         {:ok, %PaymentAttempt{} = evidence, observation} <-
            record_payment_attempt(payment_intent, receipt, canonical),
          :ok <- validate_canonical_receipt_target(payment_intent, canonical),
          {:ok, payment_intent} <-
            hydrate_payment_intent_provider_references(payment_intent, canonical),
          {:ok, _outcome} <-
-           apply_provider_observation(payment_intent, observation, provider_event_key) do
+           apply_provider_observation(
+             payment_intent,
+             observation,
+             provider_event_key,
+             evidence
+           ) do
       :ok
     else
       {:discard, reason} -> {:discard, reason}
@@ -99,7 +106,7 @@ defmodule Store.Payments.Interlocks do
   def apply_payment_success_once(payment_intent_or_id, opts \\ [])
 
   def apply_payment_success_once(%PaymentIntent{} = payment_intent, _opts) do
-    apply_payment_success_once_internal(payment_intent, false)
+    apply_payment_success_once_internal(payment_intent, false, nil)
   end
 
   def apply_payment_success_once(payment_intent_id, opts)
@@ -249,7 +256,8 @@ defmodule Store.Payments.Interlocks do
     with {:ok, current_intent} <- fetch_payment_intent(payment_intent.id),
          {:ok, persisted_evidence} <- fetch_payment_attempt(evidence.id),
          :ok <- validate_persisted_evidence(current_intent, observation, persisted_evidence),
-         {:ok, outcome} <- apply_provider_observation(current_intent, observation, nil) do
+         {:ok, outcome} <-
+           apply_provider_observation(current_intent, observation, nil, persisted_evidence) do
       {:ok, %{outcome: outcome, payment_intent: current_intent}}
     end
   end
@@ -257,9 +265,261 @@ defmodule Store.Payments.Interlocks do
   def apply_observed_payment_outcome(_result),
     do: {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "payment observation is invalid")}
 
+  def validate_collection_outcome_certification(%ValidateRenewalCollectionOutcomeInput{} = input) do
+    with {:ok, canonical_input} <-
+           ValidateRenewalCollectionOutcomeInput.new(Map.from_struct(input)),
+         {:ok, {certification, evidence, payment_intent}} <-
+           fetch_outcome_certification_context(canonical_input.payment_attempt_id),
+         true <- payment_intent.id == canonical_input.payment_intent_id,
+         :ok <- validate_outcome_certification_identity(certification, evidence, payment_intent),
+         :ok <-
+           validate_certified_provider_outcome(
+             certification,
+             evidence,
+             payment_intent,
+             canonical_input.financial_outcome
+           ) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "provider outcome identity conflicts")}
+    end
+  end
+
+  defp maybe_record_outcome_certification(
+         payment_intent,
+         observation,
+         %PaymentAttempt{} = evidence,
+         outcome
+       ) do
+    case {collection_financial_outcome(outcome),
+          observation_certifies_collection_outcome?(payment_intent, observation, outcome)} do
+      {financial_outcome, true} when is_atom(financial_outcome) ->
+        with :ok <- validate_persisted_evidence(payment_intent, observation, evidence),
+             {:ok, _certification} <-
+               PaymentOutcomeCertification
+               |> Ash.Changeset.for_create(
+                 :record,
+                 %{
+                   payment_intent_id: payment_intent.id,
+                   payment_attempt_id: evidence.id,
+                   financial_outcome: Atom.to_string(financial_outcome)
+                 },
+                 context: %{system?: true}
+               )
+               |> Ash.create(
+                 domain: Store.Payments,
+                 authorize?: false,
+                 context: %{system?: true}
+               ) do
+          {:ok, evidence.id}
+        end
+
+      _ ->
+        {:ok, nil}
+    end
+  end
+
+  defp observation_certifies_collection_outcome?(payment_intent, observation, outcome) do
+    finality = Providers.classify_payment_finality(observation.provider, observation)
+
+    case {collection_financial_outcome(outcome), observation.normalized_outcome, finality} do
+      {:verified_success, :authoritative_success, :authoritative_success} ->
+        case Providers.expected_environment(payment_intent.provider) do
+          {:ok, environment} ->
+            observation_eligibility(payment_intent, observation, environment) == :eligible
+
+          _ ->
+            false
+        end
+
+      {:verified_terminal_financial_non_success, :failure_observation, :terminal_non_success} ->
+        true
+
+      {:requires_action, :requires_action, :non_terminal} ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp fetch_outcome_certification_context(payment_attempt_id) do
+    query = """
+    SELECT
+      certification.id::text,
+      certification.payment_intent_id::text,
+      certification.payment_attempt_id::text,
+      certification.financial_outcome,
+      payment_intent.provider::text,
+      payment_intent.purpose::text,
+      payment_intent.provider_payment_id,
+      payment_intent.provider_request_reference,
+      payment_intent.provider_session_id,
+      payment_intent.amount_received_minor,
+      payment_intent.currency,
+      evidence.id::text,
+      evidence.payment_intent_id::text,
+      evidence.provider::text,
+      evidence.outcome,
+      evidence.provider_reference,
+      evidence.provider_reference_kind,
+      evidence.provider_transaction_id,
+      evidence.observation_source,
+      evidence.raw_provider_status,
+      evidence.amount_minor,
+      evidence.currency,
+      evidence.provider_environment,
+      evidence.provider_occurred_at,
+      evidence.observed_at,
+      evidence.provider_event_id,
+      evidence.payload_sha256
+    FROM payment_outcome_certifications AS certification
+    JOIN payment_intents AS payment_intent
+      ON payment_intent.id = certification.payment_intent_id
+    JOIN payment_attempts AS evidence
+      ON evidence.id = certification.payment_attempt_id
+     AND evidence.payment_intent_id = payment_intent.id
+    WHERE certification.payment_attempt_id = $1::text::uuid
+    LIMIT 2
+    """
+
+    case SQL.query(Repo, query, [payment_attempt_id]) do
+      {:ok, %{rows: [row]}} ->
+        {:ok, certification_context(row)}
+
+      {:ok, %{rows: []}} ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "provider outcome certification was not found")}
+
+      {:ok, %{rows: _multiple}} ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "provider outcome certification is ambiguous")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp certification_context([
+         certification_id,
+         certification_payment_intent_id,
+         certification_payment_attempt_id,
+         certification_outcome,
+         provider,
+         purpose,
+         provider_payment_id,
+         provider_request_reference,
+         provider_session_id,
+         amount_received_minor,
+         payment_intent_currency,
+         evidence_id,
+         evidence_payment_intent_id,
+         evidence_provider,
+         evidence_outcome,
+         provider_reference,
+         provider_reference_kind,
+         provider_transaction_id,
+         observation_source,
+         raw_provider_status,
+         evidence_amount_minor,
+         evidence_currency,
+         provider_environment,
+         provider_occurred_at,
+         observed_at,
+         provider_event_id,
+         payload_sha256
+       ]) do
+    certification = %PaymentOutcomeCertification{
+      id: certification_id,
+      payment_intent_id: certification_payment_intent_id,
+      payment_attempt_id: certification_payment_attempt_id,
+      financial_outcome: certified_outcome_atom(certification_outcome)
+    }
+
+    payment_intent = %PaymentIntent{
+      id: certification_payment_intent_id,
+      provider: Providers.normalize_provider(provider),
+      purpose: payment_intent_purpose(purpose),
+      provider_payment_id: provider_payment_id,
+      provider_request_reference: provider_request_reference,
+      provider_session_id: provider_session_id,
+      amount_received_minor: amount_received_minor,
+      currency: payment_intent_currency
+    }
+
+    evidence = %PaymentAttempt{
+      id: evidence_id,
+      payment_intent_id: evidence_payment_intent_id,
+      provider: Providers.normalize_provider(evidence_provider),
+      outcome: evidence_outcome,
+      provider_reference: provider_reference,
+      provider_reference_kind: provider_reference_kind,
+      provider_transaction_id: provider_transaction_id,
+      observation_source: observation_source,
+      raw_provider_status: raw_provider_status,
+      amount_minor: evidence_amount_minor,
+      currency: evidence_currency,
+      provider_environment: provider_environment,
+      provider_occurred_at: provider_occurred_at,
+      observed_at: observed_at,
+      provider_event_id: provider_event_id,
+      payload_sha256: payload_sha256
+    }
+
+    {certification, evidence, payment_intent}
+  end
+
+  defp certified_outcome_atom("requires_action"), do: :requires_action
+  defp certified_outcome_atom("verified_success"), do: :verified_success
+
+  defp certified_outcome_atom("verified_terminal_financial_non_success"),
+    do: :verified_terminal_financial_non_success
+
+  defp certified_outcome_atom(_outcome), do: :unknown
+
+  defp payment_intent_purpose("subscription_payment_method_update"),
+    do: :subscription_payment_method_update
+
+  defp payment_intent_purpose(_purpose), do: :order_checkout
+
+  defp validate_outcome_certification_identity(certification, evidence, payment_intent) do
+    if certification.payment_attempt_id == evidence.id and
+         certification.payment_intent_id == payment_intent.id and
+         evidence.payment_intent_id == payment_intent.id do
+      case observation_from_payment_attempt(evidence) do
+        %ProviderObservation{} = observation ->
+          validate_observation_identity(payment_intent, observation)
+
+        _ ->
+          {:error,
+           Error.new("PAYMENT_EVENT_UNVERIFIED", "provider outcome evidence is incomplete")}
+      end
+    else
+      {:error,
+       Error.new("PAYMENT_EVENT_UNVERIFIED", "provider outcome evidence identity conflicts")}
+    end
+  end
+
+  defp validate_certified_provider_outcome(certification, evidence, payment_intent, outcome) do
+    with true <- certification.financial_outcome == outcome,
+         %ProviderObservation{} = observation <- observation_from_payment_attempt(evidence),
+         true <- observation_certifies_collection_outcome?(payment_intent, observation, outcome) do
+      :ok
+    else
+      _ ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "provider evidence does not certify the requested collection outcome"
+         )}
+    end
+  end
+
   defp apply_payment_success_once_internal(
          %PaymentIntent{} = payment_intent,
-         verified_correction?
+         verified_correction?,
+         payment_attempt_id
        ) do
     started_at = System.monotonic_time()
 
@@ -301,6 +561,7 @@ defmodule Store.Payments.Interlocks do
              maybe_record_renewal_collection_outcome(
                payment_intent,
                :authoritative_success,
+               payment_attempt_id,
                renewal_attempt_lookup
              ),
            :ok <- maybe_enqueue_subscriptions(result, renewal_attempt_lookup),
@@ -782,7 +1043,12 @@ defmodule Store.Payments.Interlocks do
   defp webhook_observation_outcome(:requires_action), do: :requires_action
   defp webhook_observation_outcome(_), do: :unknown_or_contradictory
 
-  defp apply_provider_observation(payment_intent, observation, provider_event_key) do
+  defp apply_provider_observation(
+         payment_intent,
+         observation,
+         provider_event_key,
+         %PaymentAttempt{} = evidence
+       ) do
     with :ok <- validate_observation_identity(payment_intent, observation),
          {:ok, provider_environment} <- Providers.expected_environment(payment_intent.provider),
          eligibility <- observation_eligibility(payment_intent, observation, provider_environment),
@@ -799,9 +1065,26 @@ defmodule Store.Payments.Interlocks do
              authoritative_success_evidence?: evidence_history.authoritative_success?,
              evidence_history_overflow?: evidence_history.overflow?
            ),
+         {:ok, certified_payment_attempt_id} <-
+           maybe_record_outcome_certification(
+             payment_intent,
+             observation,
+             evidence,
+             outcome
+           ),
          {:ok, _result} <-
-           apply_resolved_outcome(payment_intent, outcome, provider_event_key),
-         :ok <- maybe_record_non_success_collection_outcome(payment_intent, outcome) do
+           apply_resolved_outcome(
+             payment_intent,
+             outcome,
+             provider_event_key,
+             certified_payment_attempt_id
+           ),
+         :ok <-
+           maybe_record_non_success_collection_outcome(
+             payment_intent,
+             outcome,
+             certified_payment_attempt_id
+           ) do
       {:ok, outcome}
     end
   end
@@ -846,7 +1129,12 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp apply_resolved_outcome(payment_intent, :authoritative_success, _provider_event_key) do
+  defp apply_resolved_outcome(
+         payment_intent,
+         :authoritative_success,
+         _provider_event_key,
+         payment_attempt_id
+       ) do
     if payment_intent.purpose == :subscription_payment_method_update do
       with {:ok, _updated_intent, _notifications} <-
              maybe_mark_payment_intent_succeeded(payment_intent, true),
@@ -857,14 +1145,15 @@ defmodule Store.Payments.Interlocks do
         {:ok, :applied}
       end
     else
-      apply_payment_success_once_internal(payment_intent, true)
+      apply_payment_success_once_internal(payment_intent, true, payment_attempt_id)
     end
   end
 
   defp apply_resolved_outcome(
          %PaymentIntent{order_id: order_id} = payment_intent,
          :already_applied_success,
-         _provider_event_key
+         _provider_event_key,
+         payment_attempt_id
        )
        when is_binary(order_id) do
     with {:ok, order} <- fetch_order(order_id),
@@ -874,6 +1163,7 @@ defmodule Store.Payments.Interlocks do
            maybe_record_renewal_collection_outcome(
              payment_intent,
              :already_applied_success,
+             payment_attempt_id,
              renewal_attempt_lookup
            ),
          :ok <- maybe_enqueue_subscriptions(result, renewal_attempt_lookup) do
@@ -881,32 +1171,59 @@ defmodule Store.Payments.Interlocks do
     end
   end
 
-  defp apply_resolved_outcome(_payment_intent, :already_applied_success, _provider_event_key) do
+  defp apply_resolved_outcome(
+         _payment_intent,
+         :already_applied_success,
+         _provider_event_key,
+         _payment_attempt_id
+       ) do
     {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "applied payment has no Order identity")}
   end
 
   defp apply_resolved_outcome(
          %PaymentIntent{purpose: :subscription_payment_method_update} = payment_intent,
          :verified_terminal_non_success,
-         _provider_event_key
+         _provider_event_key,
+         _payment_attempt_id
        ),
        do: maybe_cancel_payment_intent(payment_intent)
 
   defp apply_resolved_outcome(
          payment_intent,
          :verified_terminal_non_success,
-         _provider_event_key
+         _provider_event_key,
+         _payment_attempt_id
        ),
        do: apply_terminal_non_success(payment_intent)
 
-  defp apply_resolved_outcome(payment_intent, :requires_action, _provider_event_key),
-    do: maybe_mark_payment_intent_requires_action(payment_intent)
+  defp apply_resolved_outcome(
+         payment_intent,
+         :requires_action,
+         _provider_event_key,
+         _payment_attempt_id
+       ),
+       do: maybe_mark_payment_intent_requires_action(payment_intent)
 
-  defp apply_resolved_outcome(_payment_intent, outcome, _provider_event_key),
+  defp apply_resolved_outcome(_payment_intent, outcome, _provider_event_key, _payment_attempt_id),
     do: {:ok, outcome}
 
-  defp maybe_record_renewal_collection_outcome(payment_intent, outcome) do
+  defp maybe_record_renewal_collection_outcome(payment_intent, outcome, payment_attempt_id) do
+    maybe_record_renewal_collection_outcome(
+      payment_intent,
+      outcome,
+      payment_attempt_id,
+      :lookup_collection
+    )
+  end
+
+  defp maybe_record_renewal_collection_outcome(
+         payment_intent,
+         outcome,
+         payment_attempt_id,
+         :lookup_collection
+       ) do
     with outcome when not is_nil(outcome) <- collection_financial_outcome(outcome),
+         true <- is_binary(payment_attempt_id),
          {:ok, %RenewalCollectionAttempt{} = collection} <-
            fetch_collection_for_payment_intent(payment_intent.id),
          {:ok, _updated} <-
@@ -914,57 +1231,111 @@ defmodule Store.Payments.Interlocks do
              %RecordFinancialOutcomeInput{
                collection_attempt_id: collection.id,
                payment_intent_id: payment_intent.id,
+               payment_attempt_id: payment_attempt_id,
                financial_outcome: outcome
              }
            ) do
       :ok
     else
       nil -> :ok
+      false -> :ok
       {:ok, nil} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp maybe_record_renewal_collection_outcome(payment_intent, outcome, renewal_attempt_lookup) do
-    case {collection_financial_outcome(outcome), renewal_attempt_lookup} do
-      {nil, _lookup} ->
+  defp maybe_record_renewal_collection_outcome(
+         payment_intent,
+         outcome,
+         payment_attempt_id,
+         renewal_attempt_lookup
+       ) do
+    case collection_financial_outcome(outcome) do
+      nil ->
         :ok
 
-      {_financial_outcome, :none} ->
-        :ok
-
-      {financial_outcome,
-       {:ok,
-        %{
-          renewal_attempt: %RenewalAttempt{} = attempt,
-          collection_attempt_id: collection_attempt_id
-        }}}
-      when is_binary(collection_attempt_id) ->
-        RenewalCollectionAttempts.record_financial_outcome_for_system(
-          %RecordFinancialOutcomeInput{
-            collection_attempt_id: collection_attempt_id,
-            payment_intent_id: payment_intent.id,
-            financial_outcome: financial_outcome,
-            renewal_attempt_id: attempt.id,
-            subscription_id: attempt.subscription_id
-          }
+      financial_outcome ->
+        maybe_record_collection_outcome_for_attempt(
+          payment_intent,
+          financial_outcome,
+          payment_attempt_id,
+          renewal_attempt_lookup
         )
-        |> case do
-          {:ok, _updated} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      {_financial_outcome, {:ok, %{collection_attempt_id: nil}}} ->
-        :ok
-
-      {_financial_outcome, {:error, reason}} ->
-        {:error, reason}
     end
   end
 
+  defp maybe_record_collection_outcome_for_attempt(
+         _payment_intent,
+         _outcome,
+         _evidence_id,
+         :none
+       ),
+       do: :ok
+
+  defp maybe_record_collection_outcome_for_attempt(
+         _payment_intent,
+         _outcome,
+         _evidence_id,
+         {:ok, %{collection_attempt_id: nil}}
+       ),
+       do: :ok
+
+  defp maybe_record_collection_outcome_for_attempt(
+         %PaymentIntent{} = payment_intent,
+         financial_outcome,
+         payment_attempt_id,
+         {:ok,
+          %{
+            renewal_attempt: %RenewalAttempt{} = attempt,
+            collection_attempt_id: collection_attempt_id
+          }}
+       )
+       when is_binary(collection_attempt_id) and is_binary(payment_attempt_id) do
+    RenewalCollectionAttempts.record_financial_outcome_for_system(%RecordFinancialOutcomeInput{
+      collection_attempt_id: collection_attempt_id,
+      payment_intent_id: payment_intent.id,
+      payment_attempt_id: payment_attempt_id,
+      financial_outcome: financial_outcome,
+      renewal_attempt_id: attempt.id,
+      subscription_id: attempt.subscription_id
+    })
+    |> case do
+      {:ok, _updated} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_record_collection_outcome_for_attempt(
+         _payment_intent,
+         _financial_outcome,
+         _payment_attempt_id,
+         {:ok, %{collection_attempt_id: collection_attempt_id}}
+       )
+       when is_binary(collection_attempt_id) do
+    :ok
+  end
+
+  defp maybe_record_collection_outcome_for_attempt(
+         _payment_intent,
+         _financial_outcome,
+         _payment_attempt_id,
+         {:error, reason}
+       ),
+       do: {:error, reason}
+
+  defp maybe_record_collection_outcome_for_attempt(
+         _payment_intent,
+         _financial_outcome,
+         _payment_attempt_id,
+         _lookup
+       ),
+       do:
+         {:error, Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal collection identity is invalid")}
+
   defp collection_financial_outcome(outcome) do
     case outcome do
-      outcome when outcome in [:authoritative_success, :already_applied_success] ->
+      outcome
+      when outcome in [:authoritative_success, :already_applied_success, :verified_success] ->
         :verified_success
 
       :requires_action ->
@@ -973,20 +1344,20 @@ defmodule Store.Payments.Interlocks do
       :verified_terminal_non_success ->
         :verified_terminal_financial_non_success
 
+      :verified_terminal_financial_non_success ->
+        :verified_terminal_financial_non_success
+
       _ ->
         nil
     end
   end
 
-  defp maybe_record_non_success_collection_outcome(
-         _payment_intent,
-         outcome
-       )
+  defp maybe_record_non_success_collection_outcome(_payment_intent, outcome, _payment_attempt_id)
        when outcome in [:authoritative_success, :already_applied_success],
        do: :ok
 
-  defp maybe_record_non_success_collection_outcome(payment_intent, outcome),
-    do: maybe_record_renewal_collection_outcome(payment_intent, outcome)
+  defp maybe_record_non_success_collection_outcome(payment_intent, outcome, payment_attempt_id),
+    do: maybe_record_renewal_collection_outcome(payment_intent, outcome, payment_attempt_id)
 
   defp fetch_collection_for_payment_intent(payment_intent_id) do
     query =

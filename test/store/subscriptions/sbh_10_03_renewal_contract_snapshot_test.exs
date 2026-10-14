@@ -147,7 +147,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       end)
 
     assert {:ok, :processed} = renewal_result
-    assert renewal_stats.query_count <= 94
+    # Provider outcome certification adds fixed persistence and validation work.
+    assert renewal_stats.query_count <= 100
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     contract_change = fetch_contract_change!(contract_change_id)
@@ -267,7 +268,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       end)
 
     assert {:ok, :processed} = result
-    assert stats.query_count <= 87
+    # Provider outcome certification adds fixed persistence and validation work.
+    assert stats.query_count <= 93
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     after_binding = fetch_subscription!(subscription.id)

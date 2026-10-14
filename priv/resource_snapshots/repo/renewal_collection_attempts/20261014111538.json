@@ -1,0 +1,454 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"uuid_generate_v7()\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "collection_ordinal",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"not_started\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "dispatch_state",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"unresolved\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "financial_outcome",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_collection_attempts_reservation_generation_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "inventory_reservations"
+      },
+      "scale": null,
+      "size": null,
+      "source": "reservation_generation_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": false,
+      "default": "1",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "dispatch_epoch",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "0",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "fenced_through_epoch",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "last_fence_event_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "last_fenced_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "inserted_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "updated_at",
+      "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_collection_attempts_renewal_attempt_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "renewal_attempts"
+      },
+      "scale": null,
+      "size": null,
+      "source": "renewal_attempt_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_collection_attempts_payment_intent_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "payment_intents"
+      },
+      "scale": null,
+      "size": null,
+      "source": "payment_intent_id",
+      "type": "uuid"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "renewal_collection_attempts_payment_attempt_id_fkey",
+        "on_delete": "restrict",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "payment_attempts"
+      },
+      "scale": null,
+      "size": null,
+      "source": "payment_attempt_id",
+      "type": "uuid"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [
+    {
+      "attribute": [
+        "collection_ordinal"
+      ],
+      "base_filter": null,
+      "check": "collection_ordinal > 0",
+      "name": "renewal_collection_attempts_collection_ordinal_positive_check"
+    },
+    {
+      "attribute": [
+        "dispatch_state"
+      ],
+      "base_filter": null,
+      "check": "dispatch_state IN ('not_started', 'may_have_been_reached', 'not_submitted')",
+      "name": "renewal_collection_attempts_dispatch_state_value_check"
+    },
+    {
+      "attribute": [
+        "financial_outcome"
+      ],
+      "base_filter": null,
+      "check": "financial_outcome IN ('unresolved', 'requires_action', 'verified_success', 'verified_terminal_financial_non_success')",
+      "name": "renewal_collection_attempts_financial_outcome_value_check"
+    },
+    {
+      "attribute": [
+        "dispatch_epoch"
+      ],
+      "base_filter": null,
+      "check": "  dispatch_epoch > 0\n  AND fenced_through_epoch >= 0\n  AND fenced_through_epoch <= dispatch_epoch\n  AND (\n    (\n      fenced_through_epoch = 0\n      AND dispatch_epoch = 1\n      AND dispatch_state IN ('not_started', 'may_have_been_reached')\n      AND last_fence_event_id IS NULL\n      AND last_fenced_at IS NULL\n    )\n    OR (\n      fenced_through_epoch > 0\n      AND last_fence_event_id IS NOT NULL\n      AND last_fenced_at IS NOT NULL\n      AND (\n        (dispatch_state = 'not_submitted'\n          AND dispatch_epoch = fenced_through_epoch)\n        OR (dispatch_state IN ('not_started', 'may_have_been_reached')\n          AND dispatch_epoch = fenced_through_epoch + 1)\n      )\n    )\n  )\n",
+      "name": "renewal_collection_attempts_dispatch_epoch_fence_check"
+    },
+    {
+      "attribute": [
+        "last_fence_event_id"
+      ],
+      "base_filter": null,
+      "check": "(fenced_through_epoch = 0 AND last_fence_event_id IS NULL AND last_fenced_at IS NULL) OR (fenced_through_epoch > 0 AND last_fence_event_id IS NOT NULL AND last_fenced_at IS NOT NULL)",
+      "name": "renewal_collection_attempts_fence_evidence_pair_check"
+    },
+    {
+      "attribute": [
+        "payment_intent_id"
+      ],
+      "base_filter": null,
+      "check": "financial_outcome = 'unresolved' OR payment_intent_id IS NOT NULL",
+      "name": "renewal_collection_attempts_financial_outcome_payment_intent_check"
+    }
+  ],
+  "create_table_options": null,
+  "custom_indexes": [
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "renewal_attempt_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "renewal_attempt_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_one_active_per_attempt_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "financial_outcome IN ('unresolved', 'requires_action')"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "payment_intent_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "payment_intent_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_unique_payment_intent_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "payment_intent_id IS NOT NULL"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "renewal_attempt_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "renewal_attempt_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_one_success_per_attempt_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "financial_outcome = 'verified_success'"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "reservation_generation_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "reservation_generation_id"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "renewal_collection_attempts_reservation_generation_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    }
+  ],
+  "custom_statements": [
+    {
+      "after_tables": [
+        "renewal_collection_attempts"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS store_guard_renewal_collection_attempt();\n",
+      "global?": false,
+      "name": "collection_ordinal_and_success_guard_function",
+      "up": "CREATE FUNCTION store_guard_renewal_collection_attempt()\nRETURNS trigger\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  expected_ordinal bigint;\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    RAISE EXCEPTION USING\n      ERRCODE = '23514',\n      MESSAGE = 'renewal collection history cannot be deleted',\n      CONSTRAINT = 'renewal_collection_attempts_durable_history_check';\n  END IF;\n\n  IF TG_OP = 'UPDATE' THEN\n    IF NEW.renewal_attempt_id <> OLD.renewal_attempt_id\n      OR NEW.collection_ordinal <> OLD.collection_ordinal THEN\n      RAISE EXCEPTION USING\n        ERRCODE = '23514',\n        MESSAGE = 'renewal collection identity is immutable',\n        CONSTRAINT = 'renewal_collection_attempts_identity_immutable_check';\n    END IF;\n\n    IF OLD.payment_intent_id IS NOT NULL\n      AND NEW.payment_intent_id IS DISTINCT FROM OLD.payment_intent_id THEN\n      RAISE EXCEPTION USING\n        ERRCODE = '23514',\n        MESSAGE = 'bound renewal collection payment intent is immutable',\n        CONSTRAINT = 'renewal_collection_attempts_payment_intent_immutable_check';\n    END IF;\n\n    IF OLD.reservation_generation_id IS DISTINCT FROM NEW.reservation_generation_id\n      AND NOT (\n        NEW.reservation_generation_id IS NOT NULL\n        AND NEW.dispatch_state = 'not_started'\n        AND NEW.financial_outcome = 'unresolved'\n        AND NEW.fenced_through_epoch = OLD.fenced_through_epoch\n        AND NEW.last_fence_event_id IS NOT DISTINCT FROM OLD.last_fence_event_id\n        AND NEW.last_fenced_at IS NOT DISTINCT FROM OLD.last_fenced_at\n        AND (\n          (\n            OLD.reservation_generation_id IS NULL\n            AND OLD.dispatch_state = 'not_started'\n            AND NEW.dispatch_epoch = OLD.dispatch_epoch\n          )\n          OR (\n            OLD.dispatch_state = 'not_submitted'\n            AND OLD.dispatch_epoch = OLD.fenced_through_epoch\n            AND NEW.dispatch_epoch = OLD.dispatch_epoch + 1\n          )\n        )\n      ) THEN\n      RAISE EXCEPTION USING\n        ERRCODE = '23514',\n        MESSAGE = 'reservation generation may change only when binding or resuming a fenced epoch',\n        CONSTRAINT = 'renewal_collection_attempts_reservation_generation_transition_check';\n    END IF;\n\n    IF OLD.financial_outcome IN (\n      'verified_success',\n      'verified_terminal_financial_non_success'\n    ) AND NEW.financial_outcome <> OLD.financial_outcome THEN\n      RAISE EXCEPTION USING\n        ERRCODE = '23514',\n        MESSAGE = 'terminal renewal collection outcome cannot regress',\n        CONSTRAINT = 'renewal_collection_attempts_terminal_outcome_monotonic_check';\n    END IF;\n\n    IF NEW.financial_outcome = 'verified_success'\n      AND OLD.financial_outcome <> 'verified_success' THEN\n      PERFORM 1\n      FROM renewal_attempts\n      WHERE id = NEW.renewal_attempt_id\n      FOR UPDATE;\n\n      IF EXISTS (\n        SELECT 1\n        FROM renewal_collection_attempts later\n        WHERE later.renewal_attempt_id = NEW.renewal_attempt_id\n          AND later.collection_ordinal > NEW.collection_ordinal\n      ) THEN\n        RAISE EXCEPTION USING\n          ERRCODE = '23514',\n          MESSAGE = 'verified success cannot follow a later collection ordinal',\n          CONSTRAINT = 'renewal_collection_attempts_success_closes_renewal_check';\n      END IF;\n    END IF;\n\n    RETURN NEW;\n  END IF;\n\n  PERFORM 1\n  FROM renewal_attempts\n  WHERE id = NEW.renewal_attempt_id\n  FOR UPDATE;\n\n  IF EXISTS (\n    SELECT 1\n    FROM renewal_collection_attempts existing\n    WHERE existing.renewal_attempt_id = NEW.renewal_attempt_id\n      AND existing.financial_outcome = 'verified_success'\n  ) THEN\n    RAISE EXCEPTION USING\n      ERRCODE = '23514',\n      MESSAGE = 'verified success closes the renewal to new collections',\n      CONSTRAINT = 'renewal_collection_attempts_success_closes_renewal_check';\n  END IF;\n\n  SELECT COALESCE(MAX(collection_ordinal), 0) + 1\n  INTO expected_ordinal\n  FROM renewal_collection_attempts\n  WHERE renewal_attempt_id = NEW.renewal_attempt_id;\n\n  IF NEW.collection_ordinal <> expected_ordinal THEN\n    RAISE EXCEPTION USING\n      ERRCODE = '23514',\n      MESSAGE = 'renewal collection ordinals must be contiguous',\n      CONSTRAINT = 'renewal_collection_attempts_ordinal_contiguous_check';\n  END IF;\n\n  RETURN NEW;\nEND;\n$$;\n"
+    },
+    {
+      "after_tables": [
+        "renewal_collection_attempts"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS renewal_collection_attempts_guard ON renewal_collection_attempts;\n",
+      "global?": false,
+      "name": "collection_ordinal_and_success_guard_trigger",
+      "up": "CREATE TRIGGER renewal_collection_attempts_guard\nBEFORE INSERT OR UPDATE OR DELETE ON renewal_collection_attempts\nFOR EACH ROW EXECUTE FUNCTION store_guard_renewal_collection_attempt();\n"
+    }
+  ],
+  "has_create_action": true,
+  "hash": "1C8E7938E0BA6C42DD6ADF04CADA01E0218CE91CAC7803F9CAB7F275F6E2B165",
+  "identities": [
+    {
+      "all_tenants?": false,
+      "base_filter": null,
+      "index_name": "renewal_collection_attempts_attempt_ordinal_index",
+      "keys": [
+        {
+          "type": "atom",
+          "value": "renewal_attempt_id"
+        },
+        {
+          "type": "atom",
+          "value": "collection_ordinal"
+        }
+      ],
+      "name": "unique_renewal_attempt_collection_ordinal",
+      "nils_distinct?": true,
+      "where": null
+    }
+  ],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.Store.Repo",
+  "schema": null,
+  "table": "renewal_collection_attempts"
+}

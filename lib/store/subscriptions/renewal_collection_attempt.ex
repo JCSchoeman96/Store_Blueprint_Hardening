@@ -77,6 +77,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
       public?(false)
     end
 
+    belongs_to :payment_attempt, Store.Payments.PaymentAttempt do
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(false)
+    end
+
     belongs_to :reservation_generation, Store.Orders.InventoryReservation do
       allow_nil?(true)
       attribute_writable?(true)
@@ -178,7 +184,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
     update :record_financial_outcome do
       public?(false)
       require_atomic?(false)
-      accept([:financial_outcome])
+      accept([:financial_outcome, :payment_attempt_id])
     end
 
     update :fence_before_submission do
@@ -219,6 +225,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempt do
     references do
       reference(:renewal_attempt, on_delete: :restrict)
       reference(:payment_intent, on_delete: :restrict)
+      reference(:payment_attempt, on_delete: :restrict)
       reference(:reservation_generation, on_delete: :restrict)
     end
 

@@ -10,6 +10,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   alias Store.Catalog.Variant
   alias Store.Orders.InventoryAdmission.Request
   alias Store.Orders.{InventoryReservation, Order, OrderLineItem}
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
   alias Store.Payments.Providers
   alias Store.Repo
@@ -317,6 +318,10 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
       ON payment_intent.id = collection.payment_intent_id
      AND payment_intent.order_id = order_row.id
      AND payment_intent.state = 'succeeded'
+    JOIN payment_outcome_certifications AS certification
+      ON certification.payment_attempt_id = collection.payment_attempt_id
+     AND certification.payment_intent_id = payment_intent.id
+     AND certification.financial_outcome = 'verified_success'
     WHERE collection.id = $1::text::uuid
       AND collection.financial_outcome = 'verified_success'
     LIMIT 1
@@ -1186,12 +1191,22 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
 
   defp record_financial_outcome_locked(collection, input) do
     with :ok <- ensure_collection_payment_identity(collection, input.payment_intent_id),
-         {:ok, payment_intent} <- fetch_payment_intent(input.payment_intent_id),
-         :ok <- ensure_payment_outcome_matches_intent(payment_intent, input.financial_outcome),
+         :ok <-
+           validate_payment_outcome_evidence(
+             input.payment_attempt_id,
+             input.payment_intent_id,
+             input.financial_outcome
+           ),
          :ok <- ensure_financial_outcome_transition(collection, input.financial_outcome) do
-      update_collection(collection, :record_financial_outcome, %{
-        financial_outcome: input.financial_outcome
-      })
+      if collection.financial_outcome == input.financial_outcome and
+           is_binary(collection.payment_attempt_id) do
+        {:ok, collection, []}
+      else
+        update_collection(collection, :record_financial_outcome, %{
+          financial_outcome: input.financial_outcome,
+          payment_attempt_id: input.payment_attempt_id
+        })
+      end
     end
   end
 
@@ -1210,31 +1225,15 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
      )}
   end
 
-  defp ensure_payment_outcome_matches_intent(
-         %PaymentIntent{state: :requires_action},
-         :requires_action
-       ),
-       do: :ok
-
-  defp ensure_payment_outcome_matches_intent(
-         %PaymentIntent{state: :succeeded},
-         :verified_success
-       ),
-       do: :ok
-
-  defp ensure_payment_outcome_matches_intent(
-         %PaymentIntent{state: state},
-         :verified_terminal_financial_non_success
-       )
-       when state in [:failed, :cancelled],
-       do: :ok
-
-  defp ensure_payment_outcome_matches_intent(_payment_intent, _outcome) do
-    {:error,
-     Error.new(
-       "PAYMENT_EVENT_UNVERIFIED",
-       "Payments finality result does not match the exact PaymentIntent state"
-     )}
+  defp validate_payment_outcome_evidence(payment_attempt_id, payment_intent_id, outcome) do
+    with {:ok, input} <-
+           ValidateRenewalCollectionOutcomeInput.new(%{
+             payment_attempt_id: payment_attempt_id,
+             payment_intent_id: payment_intent_id,
+             financial_outcome: outcome
+           }) do
+      Store.Payments.validate_collection_outcome_certification_for_system(input)
+    end
   end
 
   defp ensure_financial_outcome_transition(
@@ -2366,19 +2365,35 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp ensure_retry_allowed(
          %Subscription{status: :past_due, dunning_attempt_count: count},
          %RenewalAttempt{charged_contract_snapshot: snapshot},
-         %RenewalCollectionAttempt{financial_outcome: :verified_terminal_financial_non_success}
-       ) do
+         %RenewalCollectionAttempt{
+           financial_outcome: :verified_terminal_financial_non_success,
+           payment_attempt_id: payment_attempt_id,
+           payment_intent_id: payment_intent_id
+         }
+       )
+       when is_binary(payment_attempt_id) and is_binary(payment_intent_id) do
     max_retry_attempts = Map.get(snapshot, "max_retry_attempts")
 
-    if is_integer(count) and count > 0 and is_integer(max_retry_attempts) and
-         count <= max_retry_attempts do
+    with :ok <-
+           validate_payment_outcome_evidence(
+             payment_attempt_id,
+             payment_intent_id,
+             :verified_terminal_financial_non_success
+           ),
+         true <-
+           is_integer(count) and count > 0 and is_integer(max_retry_attempts) and
+             count <= max_retry_attempts do
       :ok
     else
-      {:error,
-       Error.new(
-         "INVALID_STATE_TRANSITION",
-         "renewal retry policy does not permit another collection"
-       )}
+      false ->
+        {:error,
+         Error.new(
+           "INVALID_STATE_TRANSITION",
+           "renewal retry policy does not permit another collection"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

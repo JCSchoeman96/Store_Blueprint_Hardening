@@ -6,6 +6,7 @@ defmodule Store.Subscriptions.RenewalAttemptMonotonicityTest do
 
   alias Store.Orders.Order
   alias Store.Payments.PaymentIntent
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Subscriptions.{Facade, RenewalAttempt, RenewalCollectionAttempt, Subscription}
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
@@ -339,8 +340,24 @@ defmodule Store.Subscriptions.RenewalAttemptMonotonicityTest do
       |> Ash.Query.filter(expr(id == ^attempt.payment_intent_id))
       |> Ash.read_one!(domain: Store.Payments, authorize?: false, context: %{system?: true})
 
-    assert {:ok, %{applied?: true}} =
-             Store.Payments.apply_payment_success_once(payment_intent.id)
+    assert {:ok, %{outcome: :authoritative_success}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               %ProviderObservation{
+                 provider: payment_intent.provider,
+                 provider_reference: payment_intent.provider_request_reference,
+                 provider_reference_kind: :transaction_reference,
+                 provider_transaction_id: "pi_jc229_race_#{payment_intent.id}",
+                 local_payment_intent_id: payment_intent.id,
+                 observation_source: :verification,
+                 normalized_outcome: :authoritative_success,
+                 raw_provider_status: "succeeded",
+                 amount_minor: payment_intent.amount_received_minor,
+                 currency: payment_intent.currency,
+                 provider_environment: "test",
+                 observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+               }
+             )
 
     collection =
       RenewalCollectionAttempt

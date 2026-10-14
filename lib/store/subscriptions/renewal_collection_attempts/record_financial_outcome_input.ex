@@ -5,10 +5,16 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
 
   @outcomes [:requires_action, :verified_success, :verified_terminal_financial_non_success]
 
-  @enforce_keys [:collection_attempt_id, :payment_intent_id, :financial_outcome]
+  @enforce_keys [
+    :collection_attempt_id,
+    :payment_intent_id,
+    :payment_attempt_id,
+    :financial_outcome
+  ]
   defstruct [
     :collection_attempt_id,
     :payment_intent_id,
+    :payment_attempt_id,
     :financial_outcome,
     :renewal_attempt_id,
     :subscription_id
@@ -20,6 +26,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
   @type t :: %__MODULE__{
           collection_attempt_id: Ecto.UUID.t(),
           payment_intent_id: Ecto.UUID.t(),
+          payment_attempt_id: Ecto.UUID.t(),
           financial_outcome: financial_outcome(),
           renewal_attempt_id: Ecto.UUID.t() | nil,
           subscription_id: Ecto.UUID.t() | nil
@@ -29,6 +36,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
   def new(params) when is_map(params) do
     with {:ok, collection_attempt_id} <- required_uuid(params, :collection_attempt_id),
          {:ok, payment_intent_id} <- required_uuid(params, :payment_intent_id),
+         {:ok, payment_attempt_id} <- required_uuid(params, :payment_attempt_id),
          {:ok, financial_outcome} <- required_outcome(params),
          {:ok, renewal_attempt_id} <- optional_uuid(params, :renewal_attempt_id),
          {:ok, subscription_id} <- optional_uuid(params, :subscription_id),
@@ -37,6 +45,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeIn
        %__MODULE__{
          collection_attempt_id: collection_attempt_id,
          payment_intent_id: payment_intent_id,
+         payment_attempt_id: payment_attempt_id,
          financial_outcome: financial_outcome,
          renewal_attempt_id: renewal_attempt_id,
          subscription_id: subscription_id
