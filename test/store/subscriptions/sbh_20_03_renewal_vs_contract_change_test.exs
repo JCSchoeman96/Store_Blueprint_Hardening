@@ -41,30 +41,29 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
 
   test "a plan change after B composes from the contract bound to the renewal" do
     fixture = fixture!("bound_plan")
-    bound_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_900})
-    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, bound_plan.id)
-    bound_revision = SubscriptionsFixtures.create_plan_revision!(bound_plan)
+    %{variant: bound_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    SubscriptionsFixtures.attach_variant_plan!(bound_variant.id, fixture.plan.id)
 
-    assert {:ok, queued_bound} =
-             queue_plan_change(fixture.customer, fixture.subscription.id, bound_plan)
+    assert {:ok, queued_variant} =
+             queue_variant_change(fixture.customer, fixture.subscription.id, bound_variant)
 
-    attempt = bind_renewal!(%{fixture | subscription: queued_bound})
+    attempt = bind_renewal!(%{fixture | subscription: queued_variant})
     target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_300})
     SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(bound_variant.id, target_plan.id)
     target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
 
-    assert attempt.plan_revision_id == bound_revision.id
+    assert attempt.variant_id == bound_variant.id
+    assert attempt.quantity == 3
 
     assert {:ok, queued} =
              queue_plan_change(fixture.customer, attempt.subscription_id, target_plan)
 
     contract_change = fetch_contract_change!(queued.current_contract_change_id)
 
-    assert contract_change.predecessor_contract_change_id ==
-             queued_bound.current_contract_change_id
-
     assert contract_change.target_plan_revision_id == target_revision.id
-    assert contract_change.target_variant_id == fixture.variant.id
+    assert contract_change.target_variant_id == attempt.variant_id
+    assert contract_change.target_quantity == attempt.quantity
     assert contract_change.target_amount_minor == target_revision.amount_minor
     assert queued.change_effective_at == attempt.period_end_at
   end
@@ -80,6 +79,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
 
     attempt = bind_renewal!(%{fixture | subscription: queued_bound})
     %{variant: target_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    SubscriptionsFixtures.attach_variant_plan!(target_variant.id, fixture.plan.id)
     SubscriptionsFixtures.attach_variant_plan!(target_variant.id, bound_plan.id)
 
     assert attempt.plan_revision_id == bound_revision.id
@@ -92,23 +92,26 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
 
     assert contract_change.predecessor_contract_change_id == attempt.contract_change_id
     assert bound_contract_change.status == :bound_to_renewal
-    assert contract_change.target_plan_revision_id == bound_revision.id
+    assert contract_change.target_plan_revision_id == attempt.plan_revision_id
     assert contract_change.target_variant_id == target_variant.id
-    assert contract_change.target_amount_minor == bound_revision.amount_minor
-    assert contract_change.target_currency == bound_revision.currency
+    assert contract_change.target_amount_minor == attempt.amount_minor
+    assert contract_change.target_currency == attempt.currency
     assert queued.change_effective_at == attempt.period_end_at
   end
 
   defp fixture!(suffix) do
     customer = SubscriptionsFixtures.create_customer!("sbh_20_03_#{suffix}")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
-    plan = SubscriptionsFixtures.create_subscription_plan!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{interval_unit: :day})
     SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    due_boundary = DateTime.add(now, -10, :second)
+    started_at = DateTime.add(due_boundary, -86_400, :second)
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
-        next_renewal_at: DateTime.add(now, -10, :second),
+        started_at: started_at,
+        quantity: 3,
         provider_billing_ref: "pm_sbh_20_03_#{suffix}"
       })
 
