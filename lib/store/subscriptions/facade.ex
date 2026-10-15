@@ -663,40 +663,35 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp future_target_base(%Subscription{} = subscription) do
-    case current_contract_change(subscription) do
-      {:ok, %ContractChange{} = contract_change} ->
-        future_target_base_from_contract_change(contract_change)
+  defp future_target_base(%Subscription{}, %ContractChange{} = contract_change),
+    do: future_target_base_from_contract_change(contract_change)
+
+  defp future_target_base(%Subscription{} = subscription, nil) do
+    case current_bound_renewal_attempt(subscription) do
+      {:ok, %RenewalAttempt{} = attempt} ->
+        with :ok <- ensure_complete_bound_renewal_attempt(attempt),
+             {:ok, revision} <- fetch_plan_revision(attempt.plan_revision_id) do
+          {:ok,
+           %{
+             subscription_plan_id: revision.subscription_plan_id,
+             plan_revision_id: attempt.plan_revision_id,
+             plan_revision: revision,
+             target_variant_id: attempt.variant_id,
+             target_quantity: attempt.quantity,
+             target_amount_minor: attempt.amount_minor,
+             target_currency: attempt.currency,
+             effective_at: attempt.period_end_at
+           }}
+        end
 
       {:ok, nil} ->
-        case current_bound_renewal_attempt(subscription) do
-          {:ok, %RenewalAttempt{} = attempt} ->
-            with :ok <- ensure_complete_bound_renewal_attempt(attempt),
-                 {:ok, revision} <- fetch_plan_revision(attempt.plan_revision_id) do
-              {:ok,
-               %{
-                 subscription_plan_id: revision.subscription_plan_id,
-                 plan_revision_id: attempt.plan_revision_id,
-                 target_variant_id: attempt.variant_id,
-                 target_quantity: attempt.quantity,
-                 target_amount_minor: attempt.amount_minor,
-                 target_currency: attempt.currency,
-                 effective_at: attempt.period_end_at
-               }}
-            end
-
-          {:ok, nil} ->
-            {:ok,
-             %{
-               subscription_plan_id: subscription.subscription_plan_id,
-               target_variant_id: subscription.variant_id,
-               target_quantity: subscription.quantity,
-               effective_at: nil
-             }}
-
-          {:error, _reason} = error ->
-            error
-        end
+        {:ok,
+         %{
+           subscription_plan_id: subscription.subscription_plan_id,
+           target_variant_id: subscription.variant_id,
+           target_quantity: subscription.quantity,
+           effective_at: nil
+         }}
 
       {:error, _reason} = error ->
         error
@@ -708,8 +703,12 @@ defmodule Store.Subscriptions.Facade do
       {:ok,
        %{
          subscription_plan_id: revision.subscription_plan_id,
+         plan_revision_id: revision.id,
+         plan_revision: revision,
          target_variant_id: contract_change.target_variant_id,
          target_quantity: contract_change.target_quantity,
+         target_amount_minor: contract_change.target_amount_minor,
+         target_currency: contract_change.target_currency,
          effective_at: contract_change.effective_at
        }}
     end
@@ -860,14 +859,18 @@ defmodule Store.Subscriptions.Facade do
 
     transaction_result =
       Repo.transaction(fn ->
-        case lock_subscription_aggregate_version(subscription) do
-          :ok ->
-            with {:ok, locked_subscription} <-
-                   fetch_subscription_for_renewal_locked(subscription.id),
+        case lock_contract_change_subscription(subscription) do
+          {:ok, locked_subscription} ->
+            with {:ok, current_target} <- current_contract_change(locked_subscription),
                  {:ok, target, projection} <-
-                   materialize_contract_change_intent(locked_subscription, intent) do
+                   materialize_contract_change_intent(
+                     locked_subscription,
+                     intent,
+                     current_target
+                   ) do
               persist_locked_contract_change(
                 locked_subscription,
+                current_target,
                 target,
                 projection,
                 actor,
@@ -936,10 +939,14 @@ defmodule Store.Subscriptions.Facade do
   defp retryable_contract_change_intent?({:variant_change, _variant_id}), do: true
   defp retryable_contract_change_intent?(_intent), do: false
 
-  defp materialize_contract_change_intent(%Subscription{} = subscription, {:plan_change, plan_id}) do
+  defp materialize_contract_change_intent(
+         %Subscription{} = subscription,
+         {:plan_change, plan_id},
+         current_target
+       ) do
     with :ok <- ensure_queueable_subscription(subscription),
          :ok <- ensure_subscription_contract_resolved(subscription),
-         {:ok, base} <- future_target_base(subscription),
+         {:ok, base} <- future_target_base(subscription, current_target),
          {:ok, plan} <- fetch_plan(plan_id),
          :ok <- ensure_subscription_plan_active(plan),
          {:ok, %Variant{} = variant} <- fetch_variant_for_renewal(base.target_variant_id),
@@ -962,16 +969,21 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp materialize_contract_change_intent(%Subscription{}, {:materialized, target, projection}),
-    do: {:ok, target, projection}
+  defp materialize_contract_change_intent(
+         %Subscription{},
+         {:materialized, target, projection},
+         _current_target
+       ),
+       do: {:ok, target, projection}
 
   defp materialize_contract_change_intent(
          %Subscription{} = subscription,
-         {:variant_change, variant_id}
+         {:variant_change, variant_id},
+         current_target
        ) do
     with :ok <- ensure_queueable_subscription(subscription),
          :ok <- ensure_subscription_contract_resolved(subscription),
-         {:ok, base} <- future_target_base(subscription),
+         {:ok, base} <- future_target_base(subscription, current_target),
          {:ok, %Variant{} = variant} <- fetch_variant_for_renewal(variant_id),
          {:ok, plan} <- fetch_plan(base.subscription_plan_id),
          :ok <- ensure_subscription_plan_active(plan),
@@ -997,15 +1009,13 @@ defmodule Store.Subscriptions.Facade do
 
   defp future_target_revision_and_price(
          %{
-           plan_revision_id: revision_id,
+           plan_revision: %PlanRevision{} = revision,
            target_amount_minor: amount_minor,
            target_currency: currency
          },
          _plan_id
        ) do
-    with {:ok, %PlanRevision{} = revision} <- fetch_plan_revision(revision_id) do
-      {:ok, revision, amount_minor, currency}
-    end
+    {:ok, revision, amount_minor, currency}
   end
 
   defp future_target_revision_and_price(_base, plan_id) do
@@ -1016,13 +1026,13 @@ defmodule Store.Subscriptions.Facade do
 
   defp persist_locked_contract_change(
          subscription,
+         current_target,
          target,
          projection,
          actor,
          subscription_action
        ) do
-    with {:ok, current_target} <- current_contract_change(subscription),
-         {:ok, predecessor} <- latest_contract_change(subscription.id) do
+    with {:ok, predecessor} <- latest_contract_change(subscription.id) do
       if subscription_action == :queue_change and
            same_queued_contract_change?(current_target, target) do
         {:ok, %{subscription: subscription, notifications: []}}
@@ -1270,6 +1280,13 @@ defmodule Store.Subscriptions.Facade do
 
       :error ->
         {:error, Error.new("VALIDATION_ERROR", "subscription id must be a UUID")}
+    end
+  end
+
+  defp lock_contract_change_subscription(%Subscription{} = subscription) do
+    with {:ok, locked_subscription} <- fetch_subscription_for_renewal_locked(subscription.id),
+         :ok <- ensure_expected_subscription_version(subscription, locked_subscription) do
+      {:ok, locked_subscription}
     end
   end
 

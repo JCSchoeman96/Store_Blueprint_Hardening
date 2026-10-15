@@ -445,11 +445,17 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     before = fetch_subscription!(subscription.id)
     queued_before = fetch_contract_change!(queued.current_contract_change_id)
 
-    assert {:ok, :reconciled} =
-             Facade.reconcile_paid_subscription_renewal_for_system(
-               order.id,
-               handoff_opts(handoff)
-             )
+    {reconciliation_result, stats} =
+      RepoStats.capture(fn ->
+        Facade.reconcile_paid_subscription_renewal_for_system(
+          order.id,
+          handoff_opts(handoff)
+        )
+      end)
+
+    IO.puts("JC-233 paid reconciliation with N+1 target query_count=#{stats.query_count}")
+    assert stats.query_count > 0
+    assert {:ok, :reconciled} = reconciliation_result
 
     after_subscription = fetch_subscription!(subscription.id)
     queued_after = fetch_contract_change!(queued_before.id)

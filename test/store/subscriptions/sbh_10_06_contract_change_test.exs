@@ -230,15 +230,23 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert drifted_subscription.pending_renewal_currency == "EUR"
     assert drifted_subscription.change_effective_at == corrupted_effective_at
 
+    future_revision
+    |> Ash.Changeset.for_update(:retire, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    replacement_revision =
+      SubscriptionsFixtures.create_plan_revision!(future_plan, %{amount_minor: 4_100})
+
     assert {:ok, after_variant} =
              queue_variant_change(customer, drifted_subscription, future_variant)
 
     contract = fetch_contract_change!(Map.get(after_variant, :current_contract_change_id))
     assert Map.get(contract, :target_plan_revision_id) == future_revision.id
+    assert Map.get(contract, :target_plan_revision_id) != replacement_revision.id
     assert Map.get(contract, :target_variant_id) == future_variant.id
     assert Map.get(contract, :target_quantity) == 3
     assert Map.get(contract, :target_amount_minor) == future_revision.amount_minor
-    assert Map.get(contract, :target_amount_minor) == 3_700
+    assert Map.get(contract, :target_amount_minor) != replacement_revision.amount_minor
     assert Map.get(contract, :target_currency) == future_revision.currency
     assert Map.get(contract, :instruction_kind) == :variant_change
     assert Map.get(contract, :effective_at) == first_contract_change.effective_at

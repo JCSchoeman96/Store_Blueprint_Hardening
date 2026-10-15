@@ -19,6 +19,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   }
 
   alias Store.SubscriptionsFixtures
+  alias Store.Support.Telemetry.RepoStats
   alias Store.TestSupport.StripeAPIStub
 
   setup context do
@@ -260,6 +261,69 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
 
     assert Enum.map(list_contract_changes!(fixture.subscription.id), & &1.id) ==
              [bound_change.id, rebuilt_change.id]
+  end
+
+  test "records query counts for queue composition and supersession profiles" do
+    ordinary_plan = fixture!("perf_ordinary_plan")
+    ordinary_target_plan = create_target_plan!(ordinary_plan.variant)
+
+    record_query_count!("ordinary_plan_queue", fn ->
+      queue_plan_change(
+        ordinary_plan.customer,
+        ordinary_plan.subscription.id,
+        ordinary_target_plan
+      )
+    end)
+
+    ordinary_variant = fixture!("perf_ordinary_variant")
+    ordinary_target_variant = create_variant_for_plan!(ordinary_variant.plan)
+
+    record_query_count!("ordinary_variant_queue", fn ->
+      queue_variant_change(
+        ordinary_variant.customer,
+        ordinary_variant.subscription.id,
+        ordinary_target_variant
+      )
+    end)
+
+    post_b_plan = fixture!("perf_post_b_plan")
+    bind_renewal!(post_b_plan)
+    post_b_target_plan = create_target_plan!(post_b_plan.variant)
+
+    record_query_count!("post_b_plan_queue", fn ->
+      queue_plan_change(post_b_plan.customer, post_b_plan.subscription.id, post_b_target_plan)
+    end)
+
+    post_b_variant = fixture!("perf_post_b_variant")
+    bind_renewal!(post_b_variant)
+    post_b_target_variant = create_variant_for_plan!(post_b_variant.plan)
+
+    record_query_count!("post_b_variant_queue", fn ->
+      queue_variant_change(
+        post_b_variant.customer,
+        post_b_variant.subscription.id,
+        post_b_target_variant
+      )
+    end)
+
+    supersession = fixture!("perf_supersession")
+    first_target_plan = create_target_plan!(supersession.variant)
+    second_target_plan = create_target_plan!(supersession.variant)
+
+    assert {:ok, _first_queued} =
+             queue_plan_change(
+               supersession.customer,
+               supersession.subscription.id,
+               first_target_plan
+             )
+
+    record_query_count!("supersession", fn ->
+      queue_plan_change(
+        supersession.customer,
+        supersession.subscription.id,
+        second_target_plan
+      )
+    end)
   end
 
   test "a stale queue command retries its typed intent against renewal checkpoint B" do
@@ -669,6 +733,27 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
       })
 
     Facade.queue_subscription_variant_change_for_user(actor, subscription_id, input)
+  end
+
+  defp record_query_count!(label, operation) do
+    {result, stats} = RepoStats.capture(operation)
+    IO.puts("JC-233 #{label} query_count=#{stats.query_count}")
+    assert {:ok, %Subscription{}} = result
+    assert stats.query_count > 0
+    stats.query_count
+  end
+
+  defp create_target_plan!(variant) do
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_100})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    SubscriptionsFixtures.create_plan_revision!(plan)
+    plan
+  end
+
+  defp create_variant_for_plan!(plan) do
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    variant
   end
 
   defp fetch_latest_attempt!(subscription_id) do
