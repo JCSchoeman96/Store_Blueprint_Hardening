@@ -5753,7 +5753,7 @@ defmodule Store.Subscriptions.Facade do
 
   defp apply_first_reconciliation(subscription, contract_change, attempt, revision, target) do
     with :ok <- ensure_reconciliation_period_boundary(subscription, attempt),
-         :ok <- ensure_reconciliation_no_future_target(subscription),
+         :ok <- ensure_reconciliation_no_future_target(subscription, contract_change, attempt),
          {:ok, updated, subscription_notifications} <-
            update_reconciled_subscription(subscription, attempt, revision, target),
          {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change) do
@@ -5859,8 +5859,94 @@ defmodule Store.Subscriptions.Facade do
       else: {:error, Error.new("VALIDATION_ERROR", "renewal period is stale or out of order")}
   end
 
-  defp ensure_reconciliation_no_future_target(subscription) do
-    ensure_no_future_target_for_renewal(subscription)
+  defp ensure_reconciliation_no_future_target(subscription, bound_change, attempt) do
+    if is_nil(subscription.current_contract_change_id) do
+      ensure_no_future_target_for_renewal(subscription)
+    else
+      with {:ok, %ContractChange{} = queued_target} <- current_contract_change(subscription) do
+        ensure_reconciliation_future_target(queued_target, bound_change, attempt, subscription)
+      end
+    end
+  end
+
+  defp ensure_reconciliation_future_target(target, bound_change, attempt, subscription) do
+    with true <- DateTime.compare(target.effective_at, attempt.period_end_at) == :eq,
+         :ok <-
+           ensure_reconciliation_future_target_predecessor(
+             target,
+             bound_change,
+             subscription.id
+           ),
+         {:ok, revision} <- fetch_plan_revision(target.target_plan_revision_id),
+         true <- reconciliation_target_projection_matches?(subscription, target, revision) do
+      :ok
+    else
+      false -> {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_reconciliation_future_target_predecessor(
+         %ContractChange{predecessor_contract_change_id: predecessor_id},
+         %ContractChange{id: bound_change_id},
+         _subscription_id
+       ) do
+    if predecessor_id == bound_change_id,
+      do: :ok,
+      else: {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+  end
+
+  defp ensure_reconciliation_future_target_predecessor(
+         %ContractChange{} = target,
+         nil,
+         subscription_id
+       ) do
+    case latest_contract_change_before(subscription_id, target.ordering_version) do
+      {:ok, nil} when is_nil(target.predecessor_contract_change_id) ->
+        :ok
+
+      {:ok, %ContractChange{id: predecessor_id}}
+      when target.predecessor_contract_change_id == predecessor_id ->
+        :ok
+
+      {:ok, _mismatched_predecessor} ->
+        {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp latest_contract_change_before(subscription_id, ordering_version) do
+    query =
+      ContractChange
+      |> Ash.Query.filter(
+        expr(subscription_id == ^subscription_id and ordering_version < ^ordering_version)
+      )
+      |> Ash.Query.sort(ordering_version: :desc)
+      |> Ash.Query.limit(1)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, [change | _]} -> {:ok, change}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp reconciliation_target_projection_matches?(subscription, target, revision) do
+    subscription.pending_subscription_plan_id ==
+      if(revision.subscription_plan_id == subscription.subscription_plan_id,
+        do: nil,
+        else: revision.subscription_plan_id
+      ) and
+      subscription.pending_variant_id ==
+        if(target.target_variant_id == subscription.variant_id,
+          do: nil,
+          else: target.target_variant_id
+        ) and
+      subscription.pending_renewal_amount_minor == target.target_amount_minor and
+      subscription.pending_renewal_currency == target.target_currency and
+      subscription.change_effective_at == target.effective_at
   end
 
   defp renewal_entitlement_target(attempt) do

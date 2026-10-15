@@ -416,7 +416,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     refute applied.current_plan_revision_id == newer_revision.id
   end
 
-  test "a queued later target blocks first application without changing its projections" do
+  test "paid renewal reconciliation preserves an exact queued N+1 target" do
     %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
       fixture = charged_bound_renewal!("sbh_10_05_later_target")
 
@@ -445,7 +445,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     before = fetch_subscription!(subscription.id)
     queued_before = fetch_contract_change!(queued.current_contract_change_id)
 
-    assert {:error, %{code: "VALIDATION_ERROR"}} =
+    assert {:ok, :reconciled} =
              Facade.reconcile_paid_subscription_renewal_for_system(
                order.id,
                handoff_opts(handoff)
@@ -453,14 +453,85 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     after_subscription = fetch_subscription!(subscription.id)
     queued_after = fetch_contract_change!(queued_before.id)
-    assert after_subscription.current_contract_change_id == before.current_contract_change_id
+    assert after_subscription.current_plan_revision_id == attempt.plan_revision_id
+    assert after_subscription.subscription_plan_id == fixture.revision.subscription_plan_id
+    assert after_subscription.variant_id == attempt.variant_id
+    assert after_subscription.quantity == attempt.quantity
+    assert after_subscription.renewal_amount_minor == attempt.amount_minor
+    assert after_subscription.renewal_currency == attempt.currency
+    assert after_subscription.current_period_start_at == attempt.period_start_at
+    assert after_subscription.current_period_end_at == attempt.period_end_at
+    assert after_subscription.current_contract_change_id == queued_before.id
     assert after_subscription.pending_subscription_plan_id == before.pending_subscription_plan_id
     assert after_subscription.pending_variant_id == before.pending_variant_id
     assert after_subscription.pending_renewal_amount_minor == before.pending_renewal_amount_minor
     assert after_subscription.pending_renewal_currency == before.pending_renewal_currency
     assert after_subscription.change_effective_at == before.change_effective_at
     assert queued_after.status == :queued
+    assert queued_after.subscription_id == subscription.id
     assert queued_after.target_plan_revision_id == later_revision.id
+    assert queued_after.effective_at == after_subscription.current_period_end_at
+    assert queued_after.target_variant_id == attempt.variant_id
+    assert queued_after.target_quantity == attempt.quantity
+    assert fetch_contract_change!(attempt.contract_change_id).status == :applied
+    assert fetch_attempt!(attempt.id).status == :succeeded
+  end
+
+  test "paid renewal reconciliation rejects a queued target at the bound boundary" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      fixture = charged_bound_renewal!("sbh_10_05_bound_boundary_target")
+
+    {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    later_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 8_100})
+
+    SubscriptionsFixtures.attach_variant_plan!(
+      fixture.contract_change.target_variant_id,
+      later_plan.id
+    )
+
+    SubscriptionsFixtures.create_plan_revision!(later_plan)
+
+    {:ok, input} =
+      QueueSubscriptionPlanChangeInput.new(%{
+        "subscription_id" => subscription.id,
+        "subscription_plan_id" => later_plan.id
+      })
+
+    assert {:ok, queued} =
+             Facade.queue_subscription_plan_change_for_user(
+               fixture.customer,
+               subscription.id,
+               input
+             )
+
+    queued_before = fetch_contract_change!(queued.current_contract_change_id)
+    assert queued_before.effective_at == attempt.period_end_at
+
+    Store.Repo.query!(
+      "UPDATE contract_changes SET effective_at = $1 WHERE id = $2",
+      [attempt.period_start_at, Ecto.UUID.dump!(queued_before.id)]
+    )
+
+    Store.Repo.query!(
+      "UPDATE subscriptions SET change_effective_at = $1 WHERE id = $2",
+      [attempt.period_start_at, Ecto.UUID.dump!(subscription.id)]
+    )
+
+    queued_at_bound_boundary = fetch_contract_change!(queued_before.id)
+    before_subscription = fetch_subscription!(subscription.id)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    after_subscription = fetch_subscription!(subscription.id)
+    assert after_subscription.aggregate_version == before_subscription.aggregate_version
+    assert after_subscription == before_subscription
+    assert fetch_contract_change!(queued_before.id) == queued_at_bound_boundary
+    assert fetch_contract_change!(attempt.contract_change_id).status == :bound_to_renewal
     assert fetch_attempt!(attempt.id).status != :succeeded
   end
 
