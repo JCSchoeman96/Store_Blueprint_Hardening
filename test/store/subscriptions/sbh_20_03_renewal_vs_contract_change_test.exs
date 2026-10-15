@@ -39,6 +39,61 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert queued.change_effective_at == attempt.period_end_at
   end
 
+  test "a committed queue target is the exact contract bound by checkpoint B" do
+    fixture_suffix = "queue_before_b_#{Ecto.UUID.generate()}"
+
+    fixture =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
+
+    queued_variant =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+        SubscriptionsFixtures.attach_variant_plan!(variant.id, fixture.plan.id)
+        variant
+      end)
+
+    on_exit(fn -> cleanup_stale_retry_fixture!(fixture, queued_variant, fixture.plan) end)
+
+    barrier = make_ref()
+
+    queue_task =
+      Task.async(fn ->
+        receive do
+          {:queue_first, ^barrier} -> :ok
+        end
+
+        Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+          queue_variant_change(fixture.customer, fixture.subscription.id, queued_variant)
+        end)
+      end)
+
+    send(queue_task.pid, {:queue_first, barrier})
+    assert {:ok, queued} = Task.await(queue_task, 10_000)
+    queued_change = fetch_contract_change!(queued.current_contract_change_id)
+
+    assert {:ok, :processed} =
+             Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+               Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
+                 now: fixture.now
+               )
+             end)
+
+    {attempt, bound_change} =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        attempt = fetch_latest_attempt!(fixture.subscription.id)
+        {attempt, fetch_contract_change!(attempt.contract_change_id)}
+      end)
+
+    assert bound_change.id == queued_change.id
+    assert bound_change.status == :bound_to_renewal
+    assert attempt.contract_change_id == queued_change.id
+    assert attempt.variant_id == queued_change.target_variant_id
+    assert attempt.quantity == queued_change.target_quantity
+    assert attempt.plan_revision_id == queued_change.target_plan_revision_id
+    assert attempt.amount_minor == queued_change.target_amount_minor
+    assert attempt.currency == queued_change.target_currency
+  end
+
   test "a stale queue command retries its typed intent against renewal checkpoint B" do
     fixture_suffix = "stale_retry_#{Ecto.UUID.generate()}"
 
@@ -125,6 +180,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert queued_contract.target_quantity == attempt.quantity
     assert queued_contract.target_plan_revision_id == target_revision.id
     assert queued_contract.effective_at == attempt.period_end_at
+    assert queued_contract.ordering_version > bound_contract.ordering_version
   end
 
   test "a queue command returns STALE_RECORD after its bounded stale retries" do
