@@ -40,7 +40,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   end
 
   test "a stale queue command retries its typed intent against renewal checkpoint B" do
-    fixture_suffix = "stale_retry_#{System.unique_integer([:positive])}"
+    fixture_suffix = "stale_retry_#{Ecto.UUID.generate()}"
 
     fixture =
       Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
@@ -125,6 +125,115 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert queued_contract.target_quantity == attempt.quantity
     assert queued_contract.target_plan_revision_id == target_revision.id
     assert queued_contract.effective_at == attempt.period_end_at
+  end
+
+  test "a queue command returns STALE_RECORD after its bounded stale retries" do
+    fixture_suffix = "retry_limit_#{Ecto.UUID.generate()}"
+
+    fixture =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
+
+    target_plan =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_200})
+        SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, plan.id)
+        SubscriptionsFixtures.create_plan_revision!(plan)
+        plan
+      end)
+
+    on_exit(fn -> cleanup_stale_retry_fixture!(fixture, fixture.variant, target_plan) end)
+
+    parent = self()
+    barrier = make_ref()
+    attempts = :atomics.new(1, [])
+    handler_id = {__MODULE__, :stale_contract_retry_limit, System.unique_integer([:positive])}
+
+    queue_task =
+      Task.async(fn ->
+        receive do
+          {:start_queue, ^barrier} -> :ok
+        end
+
+        Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+          queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
+        end)
+      end)
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :contract_change, :before_persist],
+        fn _event, _measurements, metadata, config ->
+          if self() == config.task_pid and
+               metadata.subscription_id == config.subscription_id and
+               metadata.intent_kind == :plan_change do
+            attempt = :atomics.add_get(config.attempts, 1, 1)
+
+            if attempt <= 3 do
+              send(config.owner, {:queue_persist_attempt, config.barrier, attempt})
+
+              receive do
+                {:release_queue_attempt, ^barrier, ^attempt} -> :ok
+              end
+            end
+          end
+        end,
+        %{
+          owner: parent,
+          barrier: barrier,
+          attempts: attempts,
+          subscription_id: fixture.subscription.id,
+          task_pid: queue_task.pid
+        }
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    send(queue_task.pid, {:start_queue, barrier})
+
+    for attempt_number <- 1..3 do
+      assert_receive {:queue_persist_attempt, ^barrier, ^attempt_number}, 10_000
+
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        subscription =
+          Subscription
+          |> Ash.Query.filter(expr(id == ^fixture.subscription.id))
+          |> Ash.read_one!(
+            domain: Store.Subscriptions,
+            authorize?: false,
+            context: %{system?: true}
+          )
+
+        subscription
+        |> Ash.Changeset.for_update(
+          :set_provider_billing_reference,
+          %{
+            provider_customer_ref: "cus_retry_limit_#{attempt_number}",
+            provider_billing_ref: "pm_retry_limit_#{attempt_number}"
+          },
+          context: %{system?: true}
+        )
+        |> Ash.update!(
+          domain: Store.Subscriptions,
+          authorize?: false,
+          context: %{system?: true}
+        )
+      end)
+
+      send(queue_task.pid, {:release_queue_attempt, barrier, attempt_number})
+    end
+
+    assert {:error, %{code: "STALE_RECORD"}} = Task.await(queue_task, 10_000)
+    assert :atomics.get(attempts, 1) == 3
+
+    assert Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+             ContractChange
+             |> Ash.Query.filter(expr(subscription_id == ^fixture.subscription.id))
+             |> Ash.read!(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+           end) == []
   end
 
   test "a legacy subscription without period end queues at next renewal" do
