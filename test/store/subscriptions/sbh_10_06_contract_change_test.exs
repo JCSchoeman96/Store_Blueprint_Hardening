@@ -690,7 +690,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert fetch_attempt!(attempt.id).status == :processing
   end
 
-  test "a stale concurrent queue writer cannot replace writer A's target" do
+  test "a stale concurrent queue writer re-evaluates and replaces writer A's target" do
     fixture = create_committed_subscription_fixture!()
     on_exit(fn -> delete_committed_subscription_fixture!(fixture) end)
 
@@ -734,16 +734,17 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     send(lock_holder.pid, :release)
     assert {:ok, :released} = Task.await(lock_holder, 10_000)
     assert {:ok, winner} = Task.await(writer_a, 10_000)
-    assert {:error, %Error{code: "STALE_RECORD"}} = Task.await(writer_b, 10_000)
+    assert {:ok, winner_b} = Task.await(writer_b, 10_000)
 
-    winner_id = Map.get(winner, :current_contract_change_id)
+    winner_id = Map.get(winner_b, :current_contract_change_id)
     contract = fetch_contract_change!(winner_id)
     subscription = fetch_subscription!(fixture.subscription_id)
 
     assert Map.get(subscription, :current_contract_change_id) == winner_id
     assert Map.get(contract, :status) == :queued
-    assert Map.get(contract, :target_plan_revision_id) == fixture.revision_a_id
-    assert length(list_contract_changes(fixture.subscription_id)) == 1
+    assert Map.get(contract, :target_plan_revision_id) == fixture.revision_b_id
+    assert Map.get(winner, :current_contract_change_id) != winner_id
+    assert length(list_contract_changes(fixture.subscription_id)) == 2
   end
 
   test "PostgreSQL rejects competing current queued targets for one Subscription" do
@@ -1088,6 +1089,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
         product_id: variant.product_id,
         revision_ids: [revision.id, revision_a.id, revision_b.id],
         revision_a_id: revision_a.id,
+        revision_b_id: revision_b.id,
         subscription_id: subscription.id,
         variant_id: variant.id,
         plan_a_id: plan_a.id,

@@ -86,6 +86,7 @@ defmodule Store.Subscriptions.Facade do
                                    "SHIPPING_UNAVAILABLE",
                                    "SHIPPING_COST_SURGE"
                                  ])
+  @max_contract_change_stale_retries 2
 
   @spec establish_access_effect_for_system(EstablishAccessEffectInput.t()) ::
           {:ok, AccessEffect.t()} | {:error, Error.t() | term()}
@@ -841,6 +842,16 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp persist_contract_change(%Subscription{} = subscription, intent, actor, subscription_action) do
+    persist_contract_change_attempt(subscription, intent, actor, subscription_action, 0)
+  end
+
+  defp persist_contract_change_attempt(
+         %Subscription{} = subscription,
+         intent,
+         actor,
+         subscription_action,
+         stale_retries
+       ) do
     transaction_result =
       Repo.transaction(fn ->
         case lock_subscription_aggregate_version(subscription) do
@@ -887,9 +898,33 @@ defmodule Store.Subscriptions.Facade do
         end
 
       {:error, reason} ->
-        {:error, Normalize.normalize(reason)}
+        normalized = Normalize.normalize(reason)
+
+        if retryable_contract_change_intent?(intent) and
+             match?(%Error{code: "STALE_RECORD"}, normalized) and
+             stale_retries < @max_contract_change_stale_retries do
+          case reload_subscription_after_stale_update(subscription.id) do
+            %Subscription{} = fresh_subscription ->
+              persist_contract_change_attempt(
+                fresh_subscription,
+                intent,
+                actor,
+                subscription_action,
+                stale_retries + 1
+              )
+
+            nil ->
+              {:error, normalized}
+          end
+        else
+          {:error, normalized}
+        end
     end
   end
+
+  defp retryable_contract_change_intent?({:plan_change, _plan_id}), do: true
+  defp retryable_contract_change_intent?({:variant_change, _variant_id}), do: true
+  defp retryable_contract_change_intent?(_intent), do: false
 
   defp materialize_contract_change_intent(%Subscription{} = subscription, {:plan_change, plan_id}) do
     with :ok <- ensure_queueable_subscription(subscription),
