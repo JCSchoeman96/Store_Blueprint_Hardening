@@ -56,6 +56,8 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
         %{variant: queued_variant, target_plan: target_plan, target_revision: target_revision}
       end)
 
+    on_exit(fn -> cleanup_stale_retry_fixture!(fixture, queued_variant, target_plan) end)
+
     assert {:ok, pre_b_queue} =
              Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
                queue_variant_change(fixture.customer, fixture.subscription.id, queued_variant)
@@ -347,5 +349,133 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     ContractChange
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp cleanup_stale_retry_fixture!(fixture, queued_variant, target_plan) do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      subscription_id = Ecto.UUID.dump!(fixture.subscription.id)
+      user_id = Ecto.UUID.dump!(fixture.customer.id)
+      product_ids = [fixture.variant.product_id, queued_variant.product_id]
+      variant_ids = [fixture.variant.id, queued_variant.id]
+      plan_ids = [fixture.plan.id, target_plan.id]
+
+      Store.Repo.query!(
+        "UPDATE subscriptions SET current_contract_change_id = NULL WHERE id = $1",
+        [subscription_id]
+      )
+
+      Store.Repo.query!(
+        """
+        DELETE FROM oban_jobs
+        WHERE args->>'subscription_id' = $1
+          OR args->>'order_id' IN (SELECT id::text FROM orders WHERE user_id = $2)
+        """,
+        [fixture.subscription.id, user_id]
+      )
+
+      Store.Repo.query!(
+        "DELETE FROM email_outboxes WHERE subscription_id = $1 OR order_id IN (SELECT id FROM orders WHERE user_id = $2)",
+        [subscription_id, user_id]
+      )
+
+      Store.Repo.query!(
+        "DELETE FROM order_adjustments WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Store.Repo.query!(
+        "DELETE FROM refunds WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Store.Repo.query!(
+        "DELETE FROM payment_applications WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Store.Repo.query!(
+        "DELETE FROM payment_outcome_certifications WHERE payment_intent_id IN (SELECT id FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1))",
+        [user_id]
+      )
+
+      Store.Repo.transaction(fn ->
+        Store.Repo.query!(
+          "ALTER TABLE renewal_collection_attempts DISABLE TRIGGER renewal_collection_attempts_guard"
+        )
+
+        Store.Repo.query!(
+          "DELETE FROM renewal_collection_attempts WHERE renewal_attempt_id IN (SELECT id FROM renewal_attempts WHERE subscription_id = $1)",
+          [subscription_id]
+        )
+
+        Store.Repo.query!(
+          "ALTER TABLE renewal_collection_attempts ENABLE TRIGGER renewal_collection_attempts_guard"
+        )
+      end)
+
+      Store.Repo.query!(
+        "DELETE FROM payment_attempts WHERE payment_intent_id IN (SELECT id FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1))",
+        [user_id]
+      )
+
+      Store.Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [
+        subscription_id
+      ])
+
+      Store.Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [subscription_id])
+
+      Store.Repo.query!(
+        "DELETE FROM entitlement_grants WHERE source_kind = 'subscription' AND source_id = $1",
+        [subscription_id]
+      )
+
+      Store.Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [
+        subscription_id
+      ])
+
+      Store.Repo.query!("DELETE FROM contract_changes WHERE subscription_id = $1", [
+        subscription_id
+      ])
+
+      Store.Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])
+
+      Store.Repo.query!(
+        "DELETE FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Store.Repo.query!(
+        "DELETE FROM order_line_items WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Store.Repo.query!("DELETE FROM orders WHERE user_id = $1", [user_id])
+      Store.Repo.query!("DELETE FROM stored_payment_methods WHERE user_id = $1", [user_id])
+
+      Store.Repo.query!("DELETE FROM plan_revisions WHERE subscription_plan_id = ANY($1)", [
+        Enum.map(plan_ids, &Ecto.UUID.dump!/1)
+      ])
+
+      Store.Repo.query!(
+        "DELETE FROM variant_subscription_plans WHERE variant_id = ANY($1)",
+        [Enum.map(variant_ids, &Ecto.UUID.dump!/1)]
+      )
+
+      Store.Repo.query!("DELETE FROM subscription_plans WHERE id = ANY($1)", [
+        Enum.map(plan_ids, &Ecto.UUID.dump!/1)
+      ])
+
+      Store.Repo.transaction(fn ->
+        Store.Repo.query!("DELETE FROM products WHERE id = ANY($1)", [
+          Enum.map(product_ids, &Ecto.UUID.dump!/1)
+        ])
+
+        Store.Repo.query!("DELETE FROM variants WHERE id = ANY($1)", [
+          Enum.map(variant_ids, &Ecto.UUID.dump!/1)
+        ])
+      end)
+
+      Store.Repo.query!("DELETE FROM users WHERE id = $1", [user_id])
+    end)
   end
 end
