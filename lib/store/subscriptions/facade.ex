@@ -5928,13 +5928,33 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp ensure_reconciliation_future_target_predecessor(
-         %ContractChange{predecessor_contract_change_id: predecessor_id},
-         %ContractChange{id: bound_change_id},
-         _subscription_id
+         %ContractChange{} = target,
+         %ContractChange{} = bound_change,
+         subscription_id
        ) do
-    if predecessor_id == bound_change_id,
-      do: :ok,
-      else: {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+    query =
+      ContractChange
+      |> Ash.Query.filter(
+        expr(
+          subscription_id == ^subscription_id and
+            ordering_version >= ^bound_change.ordering_version and
+            ordering_version <= ^target.ordering_version
+        )
+      )
+      |> Ash.Query.sort(ordering_version: :asc)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, changes} ->
+        validate_reconciliation_contract_change_lineage(
+          changes,
+          bound_change,
+          target,
+          subscription_id
+        )
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
   end
 
   defp ensure_reconciliation_future_target_predecessor(
@@ -5956,6 +5976,62 @@ defmodule Store.Subscriptions.Facade do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp validate_reconciliation_contract_change_lineage(
+         [first | _] = changes,
+         %ContractChange{} = bound_change,
+         %ContractChange{} = target,
+         subscription_id
+       ) do
+    last = List.last(changes)
+
+    valid_lineage? =
+      reconciliation_lineage_endpoints_match?(first, last, bound_change, target, subscription_id) and
+        reconciliation_lineage_links_match?(changes, subscription_id) and
+        reconciliation_lineage_statuses_valid?(changes)
+
+    if valid_lineage?,
+      do: :ok,
+      else: {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+  end
+
+  defp validate_reconciliation_contract_change_lineage(
+         _changes,
+         %ContractChange{},
+         %ContractChange{},
+         _subscription_id
+       ),
+       do: {:error, Error.new("VALIDATION_ERROR", @unresolved_contract_message)}
+
+  defp reconciliation_lineage_endpoints_match?(first, last, bound_change, target, subscription_id) do
+    bound_change.subscription_id == subscription_id and
+      first.id == bound_change.id and
+      first.ordering_version == bound_change.ordering_version and
+      first.status in [:bound_to_renewal, :applied] and
+      target.subscription_id == subscription_id and
+      target.ordering_version > bound_change.ordering_version and
+      last.id == target.id and
+      last.ordering_version == target.ordering_version and
+      last.status == :queued
+  end
+
+  defp reconciliation_lineage_links_match?(changes, subscription_id) do
+    Enum.all?(changes, &(&1.subscription_id == subscription_id)) and
+      Enum.all?(Enum.chunk_every(changes, 2, 1, :discard), fn [previous, current] ->
+        current.ordering_version > previous.ordering_version and
+          current.predecessor_contract_change_id == previous.id
+      end)
+  end
+
+  defp reconciliation_lineage_statuses_valid?(changes) do
+    last_index = length(changes) - 1
+
+    Enum.all?(Enum.with_index(changes), fn
+      {_change, 0} -> true
+      {change, ^last_index} -> change.status == :queued
+      {change, _index} -> change.status == :superseded
+    end)
   end
 
   defp latest_contract_change_before(subscription_id, ordering_version) do
