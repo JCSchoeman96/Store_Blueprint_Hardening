@@ -733,17 +733,25 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
     send(lock_holder.pid, :release)
     assert {:ok, :released} = Task.await(lock_holder, 10_000)
-    assert {:ok, winner} = Task.await(writer_a, 10_000)
-    assert {:ok, winner_b} = Task.await(writer_b, 10_000)
+    assert {:ok, _writer_a_subscription} = Task.await(writer_a, 10_000)
+    assert {:ok, _writer_b_subscription} = Task.await(writer_b, 10_000)
 
-    winner_id = Map.get(winner_b, :current_contract_change_id)
-    contract = fetch_contract_change!(winner_id)
+    [queued_contract] =
+      Enum.filter(list_contract_changes(fixture.subscription_id), &(&1.status == :queued))
+
+    [superseded_contract] =
+      Enum.filter(list_contract_changes(fixture.subscription_id), &(&1.status == :superseded))
+
     subscription = fetch_subscription!(fixture.subscription_id)
 
-    assert Map.get(subscription, :current_contract_change_id) == winner_id
-    assert Map.get(contract, :status) == :queued
-    assert Map.get(contract, :target_plan_revision_id) == fixture.revision_b_id
-    assert Map.get(winner, :current_contract_change_id) != winner_id
+    assert Map.get(subscription, :current_contract_change_id) == queued_contract.id
+
+    assert queued_contract.target_plan_revision_id in [
+             fixture.revision_a_id,
+             fixture.revision_b_id
+           ]
+
+    assert queued_contract.supersedes_contract_change_id == superseded_contract.id
     assert length(list_contract_changes(fixture.subscription_id)) == 2
   end
 

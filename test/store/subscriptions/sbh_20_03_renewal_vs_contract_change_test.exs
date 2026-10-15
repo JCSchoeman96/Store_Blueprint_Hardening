@@ -4,7 +4,14 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   import Ash.Expr
   require Ash.Query
 
-  alias Store.Subscriptions.{ContractChange, Facade, RenewalAttempt, Scheduler, Subscription}
+  alias Store.Subscriptions.{
+    ContractChange,
+    Facade,
+    PlanRevision,
+    RenewalAttempt,
+    Scheduler,
+    Subscription
+  }
 
   alias Store.Subscriptions.Inputs.{
     QueueSubscriptionPlanChangeInput,
@@ -146,6 +153,113 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
       |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
 
     assert Enum.map(contract_changes, & &1.id) == [bound_change.id, future_change.id]
+  end
+
+  test "same queue command rebuilds the B-aware target after PostgreSQL rolls back its insert" do
+    fixture = fixture!("rollback_rebuild")
+
+    bound_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_900})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, bound_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(bound_plan)
+
+    assert {:ok, queued_bound} =
+             queue_plan_change(fixture.customer, fixture.subscription.id, bound_plan)
+
+    attempt = bind_renewal!(%{fixture | subscription: queued_bound})
+    bound_change = fetch_contract_change!(attempt.contract_change_id)
+    assert bound_change.status == :bound_to_renewal
+
+    target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_900})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+    target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    {:ok, input} =
+      QueueSubscriptionPlanChangeInput.new(%{
+        "subscription_id" => fixture.subscription.id,
+        "subscription_plan_id" => target_plan.id
+      })
+
+    subscription_before = fetch_subscription!(fixture.subscription.id)
+    trigger_suffix = System.unique_integer([:positive])
+    trigger_name = "jc233_reject_contract_change_#{trigger_suffix}"
+    function_name = "jc233_reject_contract_change_fn_#{trigger_suffix}"
+
+    Store.Repo.query!("""
+    CREATE FUNCTION #{function_name}() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF NEW.subscription_id::text = current_setting('store.jc233_fail_contract_change_subscription_id', true) THEN
+        RAISE EXCEPTION 'injected JC-233 contract change insert failure';
+      END IF;
+
+      RETURN NEW;
+    END;
+    $function$;
+    """)
+
+    Store.Repo.query!("""
+    CREATE TRIGGER #{trigger_name}
+    BEFORE INSERT ON contract_changes
+    FOR EACH ROW EXECUTE FUNCTION #{function_name}()
+    """)
+
+    assert {:ok, %{rows: [[configured_subscription_id]]}} =
+             Store.Repo.query(
+               "SELECT set_config('store.jc233_fail_contract_change_subscription_id', $1, true)",
+               [fixture.subscription.id]
+             )
+
+    assert configured_subscription_id == fixture.subscription.id
+
+    assert {:error, %{code: "INTERNAL_ERROR"}} =
+             Facade.queue_subscription_plan_change_for_user(
+               fixture.customer,
+               fixture.subscription.id,
+               input
+             )
+
+    after_rollback = fetch_subscription!(fixture.subscription.id)
+    assert after_rollback == subscription_before
+    assert fetch_contract_change!(bound_change.id) == bound_change
+
+    attempt_after_rollback = fetch_latest_attempt!(fixture.subscription.id)
+    assert attempt_after_rollback.id == attempt.id
+    assert attempt_after_rollback.contract_change_id == bound_change.id
+    assert attempt_after_rollback.variant_id == attempt.variant_id
+    assert attempt_after_rollback.quantity == attempt.quantity
+    assert attempt_after_rollback.period_end_at == attempt.period_end_at
+
+    target_revision_after_rollback = fetch_plan_revision!(target_revision.id)
+
+    contract_changes_after_rollback = list_contract_changes!(fixture.subscription.id)
+    assert Enum.map(contract_changes_after_rollback, & &1.id) == [bound_change.id]
+
+    Store.Repo.query!(
+      "SELECT set_config('store.jc233_fail_contract_change_subscription_id', '', true)"
+    )
+
+    assert {:ok, retried_subscription} =
+             Facade.queue_subscription_plan_change_for_user(
+               fixture.customer,
+               fixture.subscription.id,
+               input
+             )
+
+    rebuilt_change = fetch_contract_change!(retried_subscription.current_contract_change_id)
+
+    assert rebuilt_change.status == :queued
+    assert rebuilt_change.predecessor_contract_change_id == bound_change.id
+    assert rebuilt_change.target_plan_revision_id == target_revision_after_rollback.id
+    assert rebuilt_change.target_variant_id == attempt_after_rollback.variant_id
+    assert rebuilt_change.target_quantity == attempt_after_rollback.quantity
+    assert rebuilt_change.target_amount_minor == target_revision_after_rollback.amount_minor
+    assert rebuilt_change.target_currency == target_revision_after_rollback.currency
+    assert rebuilt_change.effective_at == attempt_after_rollback.period_end_at
+    assert fetch_contract_change!(bound_change.id).status == :bound_to_renewal
+
+    assert Enum.map(list_contract_changes!(fixture.subscription.id), & &1.id) ==
+             [bound_change.id, rebuilt_change.id]
   end
 
   test "a stale queue command retries its typed intent against renewal checkpoint B" do
@@ -568,6 +682,19 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     ContractChange
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_plan_revision!(id) do
+    PlanRevision
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp list_contract_changes!(subscription_id) do
+    ContractChange
+    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.Query.sort(ordering_version: :asc)
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp fetch_subscription!(id) do
