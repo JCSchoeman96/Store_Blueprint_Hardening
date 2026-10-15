@@ -859,30 +859,7 @@ defmodule Store.Subscriptions.Facade do
 
     transaction_result =
       Repo.transaction(fn ->
-        case lock_contract_change_subscription(subscription) do
-          {:ok, locked_subscription} ->
-            with {:ok, current_target} <- current_contract_change(locked_subscription),
-                 {:ok, target, projection} <-
-                   materialize_contract_change_intent(
-                     locked_subscription,
-                     intent,
-                     current_target
-                   ) do
-              persist_locked_contract_change(
-                locked_subscription,
-                current_target,
-                target,
-                projection,
-                actor,
-                subscription_action
-              )
-            else
-              {:error, reason} -> Repo.rollback(reason)
-            end
-
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
+        persist_locked_contract_change_intent(subscription, intent, actor, subscription_action)
       end)
       |> normalize_transaction_notifications()
 
@@ -909,27 +886,72 @@ defmodule Store.Subscriptions.Facade do
       {:error, reason} ->
         normalized = Normalize.normalize(reason)
 
-        if retryable_contract_change_intent?(intent) and
-             match?(%Error{code: "STALE_RECORD"}, normalized) and
-             stale_retries < @max_contract_change_stale_retries do
-          case reload_subscription_after_stale_update(subscription.id) do
-            %Subscription{} = fresh_subscription ->
-              persist_contract_change_attempt(
-                fresh_subscription,
-                intent,
-                actor,
-                subscription_action,
-                stale_retries + 1
-              )
-
-            nil ->
-              {:error, normalized}
-          end
-        else
-          {:error, normalized}
-        end
+        retry_stale_contract_change(
+          normalized,
+          subscription,
+          intent,
+          actor,
+          subscription_action,
+          stale_retries
+        )
     end
   end
+
+  defp persist_locked_contract_change_intent(subscription, intent, actor, subscription_action) do
+    with {:ok, locked_subscription} <- lock_contract_change_subscription(subscription),
+         {:ok, current_target} <- current_contract_change(locked_subscription),
+         {:ok, target, projection} <-
+           materialize_contract_change_intent(locked_subscription, intent, current_target) do
+      persist_locked_contract_change(
+        locked_subscription,
+        current_target,
+        target,
+        projection,
+        actor,
+        subscription_action
+      )
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp retry_stale_contract_change(
+         %Error{code: "STALE_RECORD"} = normalized,
+         %Subscription{} = subscription,
+         intent,
+         actor,
+         subscription_action,
+         stale_retries
+       )
+       when stale_retries < @max_contract_change_stale_retries do
+    if retryable_contract_change_intent?(intent) do
+      case reload_subscription_after_stale_update(subscription.id) do
+        %Subscription{} = fresh_subscription ->
+          persist_contract_change_attempt(
+            fresh_subscription,
+            intent,
+            actor,
+            subscription_action,
+            stale_retries + 1
+          )
+
+        nil ->
+          {:error, normalized}
+      end
+    else
+      {:error, normalized}
+    end
+  end
+
+  defp retry_stale_contract_change(
+         normalized,
+         %Subscription{},
+         _intent,
+         _actor,
+         _subscription_action,
+         _stale_retries
+       ),
+       do: {:error, normalized}
 
   defp contract_change_intent_kind({:plan_change, _plan_id}), do: :plan_change
   defp contract_change_intent_kind({:variant_change, _variant_id}), do: :variant_change
@@ -1032,23 +1054,25 @@ defmodule Store.Subscriptions.Facade do
          actor,
          subscription_action
        ) do
-    with {:ok, predecessor} <- latest_contract_change(subscription.id) do
-      if subscription_action == :queue_change and
-           same_queued_contract_change?(current_target, target) do
-        {:ok, %{subscription: subscription, notifications: []}}
-      else
-        persist_contract_change_tx(
-          subscription,
-          current_target,
-          predecessor,
-          target,
-          projection,
-          actor,
-          subscription_action
-        )
-      end
-    else
-      {:error, reason} -> Repo.rollback(reason)
+    case latest_contract_change(subscription.id) do
+      {:ok, predecessor} ->
+        if subscription_action == :queue_change and
+             same_queued_contract_change?(current_target, target) do
+          {:ok, %{subscription: subscription, notifications: []}}
+        else
+          persist_contract_change_tx(
+            subscription,
+            current_target,
+            predecessor,
+            target,
+            projection,
+            actor,
+            subscription_action
+          )
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
     end
   end
 

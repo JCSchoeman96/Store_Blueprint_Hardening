@@ -206,7 +206,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     assert payment_intent.amount_received_minor == 9_400
 
     later_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 8_900})
-    SubscriptionsFixtures.attach_variant_plan!(live_variant.id, later_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(target_variant.id, later_plan.id)
     later_revision = SubscriptionsFixtures.create_plan_revision!(later_plan)
     assert {:ok, later_target} = queue_plan_change(customer, after_consumption, later_plan)
 
@@ -242,18 +242,31 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
     |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
 
-    before_guard_subscription = fetch_subscription!(subscription.id)
-
-    assert {:error, %{code: "VALIDATION_ERROR"}} =
+    assert {:ok, :reconciled} =
              Facade.reconcile_paid_subscription_renewal_for_system(
                order.id,
                exact_reconciliation_opts!(attempt)
              )
 
-    assert fetch_attempt!(attempt.id).status == :processing
+    reconciled_subscription = fetch_subscription!(subscription.id)
 
-    assert fetch_subscription!(subscription.id).aggregate_version ==
-             before_guard_subscription.aggregate_version
+    queued_after_reconciliation =
+      fetch_contract_change!(Map.fetch!(later_target, :current_contract_change_id))
+
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    assert fetch_contract_change!(contract_change_id).status == :applied
+    assert reconciled_subscription.current_plan_revision_id == target_revision.id
+    assert reconciled_subscription.variant_id == target_variant.id
+    assert reconciled_subscription.quantity == attempt.quantity
+    assert reconciled_subscription.renewal_amount_minor == attempt.amount_minor
+    assert reconciled_subscription.renewal_currency == attempt.currency
+    assert reconciled_subscription.current_contract_change_id == queued_after_reconciliation.id
+    assert queued_after_reconciliation.status == :queued
+    assert queued_after_reconciliation.target_plan_revision_id == later_revision.id
+    assert queued_after_reconciliation.target_variant_id == attempt.variant_id
+
+    assert queued_after_reconciliation.effective_at ==
+             reconciled_subscription.current_period_end_at
   end
 
   test "unchanged live renewal binds its exact current revision without a subscription write" do

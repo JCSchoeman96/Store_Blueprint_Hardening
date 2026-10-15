@@ -4,6 +4,8 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Ecto.Adapters.SQL.Sandbox
+
   alias Store.Subscriptions.{
     ContractChange,
     Facade,
@@ -51,10 +53,10 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     fixture_suffix = "queue_before_b_#{Ecto.UUID.generate()}"
 
     fixture =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
+      Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
 
     queued_variant =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
         SubscriptionsFixtures.attach_variant_plan!(variant.id, fixture.plan.id)
         variant
@@ -70,7 +72,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
           {:queue_first, ^barrier} -> :ok
         end
 
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        Sandbox.unboxed_run(Store.Repo, fn ->
           queue_variant_change(fixture.customer, fixture.subscription.id, queued_variant)
         end)
       end)
@@ -80,14 +82,14 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     queued_change = fetch_contract_change!(queued.current_contract_change_id)
 
     assert {:ok, :processed} =
-             Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+             Sandbox.unboxed_run(Store.Repo, fn ->
                Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
                  now: fixture.now
                )
              end)
 
     {attempt, bound_change} =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         attempt = fetch_latest_attempt!(fixture.subscription.id)
         {attempt, fetch_contract_change!(attempt.contract_change_id)}
       end)
@@ -330,10 +332,10 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     fixture_suffix = "stale_retry_#{Ecto.UUID.generate()}"
 
     fixture =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
+      Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
 
     %{variant: queued_variant, target_plan: target_plan, target_revision: target_revision} =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         %{variant: queued_variant} = SubscriptionsFixtures.create_subscription_sellable!()
         SubscriptionsFixtures.attach_variant_plan!(queued_variant.id, fixture.plan.id)
         target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_100})
@@ -346,7 +348,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     on_exit(fn -> cleanup_stale_retry_fixture!(fixture, queued_variant, target_plan) end)
 
     assert {:ok, pre_b_queue} =
-             Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+             Sandbox.unboxed_run(Store.Repo, fn ->
                queue_variant_change(fixture.customer, fixture.subscription.id, queued_variant)
              end)
 
@@ -377,7 +379,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
 
     queue_task =
       Task.async(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        Sandbox.unboxed_run(Store.Repo, fn ->
           queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
         end)
       end)
@@ -385,14 +387,14 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert_receive {:queue_before_persist, ^barrier}, 10_000
 
     assert {:ok, :processed} =
-             Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+             Sandbox.unboxed_run(Store.Repo, fn ->
                Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
                  now: fixture.now
                )
              end)
 
     attempt =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         fetch_latest_attempt!(fixture.subscription.id)
       end)
 
@@ -400,7 +402,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert {:ok, queued} = Task.await(queue_task, 10_000)
 
     {bound_contract, queued_contract} =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         {fetch_contract_change!(pre_b_queue.current_contract_change_id),
          fetch_contract_change!(queued.current_contract_change_id)}
       end)
@@ -419,10 +421,10 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     fixture_suffix = "retry_limit_#{Ecto.UUID.generate()}"
 
     fixture =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
+      Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
 
     target_plan =
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_200})
         SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, plan.id)
         SubscriptionsFixtures.create_plan_revision!(plan)
@@ -442,7 +444,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
           {:start_queue, ^barrier} -> :ok
         end
 
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        Sandbox.unboxed_run(Store.Repo, fn ->
           queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
         end)
       end)
@@ -481,7 +483,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     for attempt_number <- 1..3 do
       assert_receive {:queue_persist_attempt, ^barrier, ^attempt_number}, 10_000
 
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+      Sandbox.unboxed_run(Store.Repo, fn ->
         subscription =
           Subscription
           |> Ash.Query.filter(expr(id == ^fixture.subscription.id))
@@ -513,7 +515,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert {:error, %{code: "STALE_RECORD"}} = Task.await(queue_task, 10_000)
     assert :atomics.get(attempts, 1) == 3
 
-    assert Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+    assert Sandbox.unboxed_run(Store.Repo, fn ->
              ContractChange
              |> Ash.Query.filter(expr(subscription_id == ^fixture.subscription.id))
              |> Ash.read!(
@@ -789,7 +791,7 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
   end
 
   defp cleanup_stale_retry_fixture!(fixture, queued_variant, target_plan) do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+    Sandbox.unboxed_run(Store.Repo, fn ->
       subscription_id = Ecto.UUID.dump!(fixture.subscription.id)
       user_id = Ecto.UUID.dump!(fixture.customer.id)
       product_ids = [fixture.variant.product_id, queued_variant.product_id]
