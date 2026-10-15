@@ -94,6 +94,60 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert attempt.currency == queued_change.target_currency
   end
 
+  test "retrying occurrence N cannot bind its queued N+1 target" do
+    fixture = fixture!("retry_occurrence_with_n_plus_one")
+
+    bound_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_900})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, bound_plan.id)
+    bound_revision = SubscriptionsFixtures.create_plan_revision!(bound_plan)
+
+    assert {:ok, queued_bound} =
+             queue_plan_change(fixture.customer, fixture.subscription.id, bound_plan)
+
+    attempt = bind_renewal!(%{fixture | subscription: queued_bound})
+    bound_change = fetch_contract_change!(attempt.contract_change_id)
+    assert attempt.plan_revision_id == bound_revision.id
+
+    future_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_900})
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, future_plan.id)
+    future_revision = SubscriptionsFixtures.create_plan_revision!(future_plan)
+
+    assert {:ok, queued_future} =
+             queue_plan_change(fixture.customer, fixture.subscription.id, future_plan)
+
+    future_change = fetch_contract_change!(queued_future.current_contract_change_id)
+    assert future_change.status == :queued
+    assert future_change.predecessor_contract_change_id == bound_change.id
+    assert future_change.target_plan_revision_id == future_revision.id
+    assert future_change.target_variant_id == attempt.variant_id
+    assert future_change.target_quantity == attempt.quantity
+    assert future_change.target_amount_minor == future_revision.amount_minor
+    assert future_change.target_currency == future_revision.currency
+    assert future_change.effective_at == attempt.period_end_at
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
+               now: fixture.now
+             )
+
+    retried_attempt = fetch_latest_attempt!(fixture.subscription.id)
+    subscription = fetch_subscription!(fixture.subscription.id)
+
+    assert retried_attempt.id == attempt.id
+    assert retried_attempt.contract_change_id == bound_change.id
+    assert fetch_contract_change!(bound_change.id).status == :bound_to_renewal
+    assert subscription.current_contract_change_id == future_change.id
+    assert fetch_contract_change!(future_change.id) == future_change
+
+    contract_changes =
+      ContractChange
+      |> Ash.Query.filter(expr(subscription_id == ^fixture.subscription.id))
+      |> Ash.Query.sort(ordering_version: :asc)
+      |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert Enum.map(contract_changes, & &1.id) == [bound_change.id, future_change.id]
+  end
+
   test "a stale queue command retries its typed intent against renewal checkpoint B" do
     fixture_suffix = "stale_retry_#{Ecto.UUID.generate()}"
 
@@ -512,6 +566,12 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
 
   defp fetch_contract_change!(id) do
     ContractChange
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_subscription!(id) do
+    Subscription
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
