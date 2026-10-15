@@ -358,11 +358,13 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
     |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
 
+    reconciliation_opts = exact_reconciliation_opts!(attempt)
+
     {reconciliation_result, reconciliation_stats} =
       RepoStats.capture(fn ->
         Facade.reconcile_paid_subscription_renewal_for_system(
           order.id,
-          exact_reconciliation_opts!(attempt)
+          reconciliation_opts
         )
       end)
 
@@ -401,7 +403,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       RepoStats.capture(fn ->
         Facade.reconcile_paid_subscription_renewal_for_system(
           order.id,
-          exact_reconciliation_opts!(attempt)
+          reconciliation_opts
         )
       end)
 

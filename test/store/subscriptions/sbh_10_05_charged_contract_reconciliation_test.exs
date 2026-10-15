@@ -559,6 +559,18 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert fetch_attempt!(attempt.id).status != :succeeded
   end
 
+  test "paid renewal reconciliation rejects a broken N+1 predecessor chain" do
+    assert_corrupted_n_plus_one_lineage_fails!(:broken_predecessor)
+  end
+
+  test "paid renewal reconciliation rejects an invalid N+1 intermediate lifecycle" do
+    assert_corrupted_n_plus_one_lineage_fails!(:intermediate_lifecycle)
+  end
+
+  test "paid renewal reconciliation rejects a wrong N+1 target boundary" do
+    assert_corrupted_n_plus_one_lineage_fails!(:wrong_boundary)
+  end
+
   test "ContractChange apply rejects queued, superseded, and canceled states" do
     for terminal_state <- [:queued, :superseded, :canceled] do
       %{contract_change: change} = charged_bound_renewal!("sbh_10_05_apply_#{terminal_state}")
@@ -770,6 +782,106 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       revision: revision,
       contract_change: fetch_contract_change!(contract_change.id)
     }
+  end
+
+  defp queue_post_b_lineage_targets!(fixture, _token) do
+    [first_y, z] =
+      for amount_minor <- [6_100, 7_300] do
+        plan =
+          SubscriptionsFixtures.create_subscription_plan!(%{
+            amount_minor: amount_minor,
+            currency: "GBP"
+          })
+
+        SubscriptionsFixtures.attach_variant_plan!(
+          fixture.contract_change.target_variant_id,
+          plan.id
+        )
+
+        SubscriptionsFixtures.create_plan_revision!(plan)
+
+        {:ok, input} =
+          QueueSubscriptionPlanChangeInput.new(%{
+            "subscription_id" => fixture.subscription.id,
+            "subscription_plan_id" => plan.id
+          })
+
+        assert {:ok, queued} =
+                 Facade.queue_subscription_plan_change_for_user(
+                   fixture.customer,
+                   fixture.subscription.id,
+                   input
+                 )
+
+        fetch_contract_change!(queued.current_contract_change_id)
+      end
+
+    y = fetch_contract_change!(first_y.id)
+
+    assert y.status == :superseded
+    assert z.status == :queued
+    assert y.predecessor_contract_change_id == fixture.contract_change.id
+    assert z.predecessor_contract_change_id == y.id
+    assert z.effective_at == fixture.attempt.period_end_at
+
+    {y, z}
+  end
+
+  defp corrupt_n_plus_one_lineage!(:broken_predecessor, fixture, _y, z) do
+    Store.Repo.query!(
+      "UPDATE contract_changes SET predecessor_contract_change_id = $1 WHERE id = $2",
+      [Ecto.UUID.dump!(fixture.contract_change.id), Ecto.UUID.dump!(z.id)]
+    )
+  end
+
+  defp corrupt_n_plus_one_lineage!(:intermediate_lifecycle, _fixture, y, _z) do
+    Store.Repo.query!("UPDATE contract_changes SET status = 'applied' WHERE id = $1", [
+      Ecto.UUID.dump!(y.id)
+    ])
+  end
+
+  defp corrupt_n_plus_one_lineage!(:wrong_boundary, fixture, _y, z) do
+    Store.Repo.query!("UPDATE contract_changes SET effective_at = $1 WHERE id = $2", [
+      fixture.attempt.period_start_at,
+      Ecto.UUID.dump!(z.id)
+    ])
+  end
+
+  defp assert_corrupted_n_plus_one_lineage_fails!(corruption) do
+    token = "sbh_10_05_lineage_#{corruption}_#{System.unique_integer([:positive])}"
+    fixture = charged_bound_renewal!(token)
+    %{subscription: subscription, attempt: attempt, collection: collection} = fixture
+    {y, z} = queue_post_b_lineage_targets!(fixture, token)
+
+    corrupt_n_plus_one_lineage!(corruption, fixture, y, z)
+
+    before_subscription = fetch_subscription!(subscription.id)
+    before_attempt = fetch_attempt!(attempt.id)
+    before_x = fetch_contract_change!(fixture.contract_change.id)
+    before_y = fetch_contract_change!(y.id)
+    before_z = fetch_contract_change!(z.id)
+
+    {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert before_subscription.current_contract_change_id == z.id
+    assert before_x.status == :bound_to_renewal
+
+    assert before_y.status ==
+             if(corruption == :intermediate_lifecycle, do: :applied, else: :superseded)
+
+    assert before_z.status == :queued
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               fixture.order.id,
+               handoff_opts(handoff)
+             )
+
+    assert fetch_subscription!(subscription.id) == before_subscription
+    assert fetch_attempt!(attempt.id) == before_attempt
+    assert fetch_contract_change!(fixture.contract_change.id) == before_x
+    assert fetch_contract_change!(y.id) == before_y
+    assert fetch_contract_change!(z.id) == before_z
   end
 
   defp create_other_payment_intent!(subscription, order) do
