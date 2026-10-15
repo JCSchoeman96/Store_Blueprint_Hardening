@@ -39,6 +39,92 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
     assert queued.change_effective_at == attempt.period_end_at
   end
 
+  test "a stale queue command retries its typed intent against renewal checkpoint B" do
+    fixture_suffix = "stale_retry_#{System.unique_integer([:positive])}"
+
+    fixture =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn -> fixture!(fixture_suffix) end)
+
+    %{variant: queued_variant, target_plan: target_plan, target_revision: target_revision} =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        %{variant: queued_variant} = SubscriptionsFixtures.create_subscription_sellable!()
+        SubscriptionsFixtures.attach_variant_plan!(queued_variant.id, fixture.plan.id)
+        target_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_100})
+        SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+        SubscriptionsFixtures.attach_variant_plan!(queued_variant.id, target_plan.id)
+        target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
+        %{variant: queued_variant, target_plan: target_plan, target_revision: target_revision}
+      end)
+
+    assert {:ok, pre_b_queue} =
+             Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+               queue_variant_change(fixture.customer, fixture.subscription.id, queued_variant)
+             end)
+
+    parent = self()
+    barrier = make_ref()
+    once = :atomics.new(1, [])
+    handler_id = {__MODULE__, :stale_contract_queue, System.unique_integer([:positive])}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :contract_change, :before_persist],
+        fn _event, _measurements, metadata, config ->
+          if metadata.subscription_id == config.subscription_id and
+               metadata.intent_kind == :plan_change and
+               :atomics.exchange(config.once, 1, 1) == 0 do
+            send(config.owner, {:queue_before_persist, config.barrier})
+
+            receive do
+              {:release_queue, ^barrier} -> :ok
+            end
+          end
+        end,
+        %{owner: parent, barrier: barrier, once: once, subscription_id: fixture.subscription.id}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    queue_task =
+      Task.async(fn ->
+        Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+          queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
+        end)
+      end)
+
+    assert_receive {:queue_before_persist, ^barrier}, 10_000
+
+    assert {:ok, :processed} =
+             Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+               Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
+                 now: fixture.now
+               )
+             end)
+
+    attempt =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        fetch_latest_attempt!(fixture.subscription.id)
+      end)
+
+    send(queue_task.pid, {:release_queue, barrier})
+    assert {:ok, queued} = Task.await(queue_task, 10_000)
+
+    {bound_contract, queued_contract} =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Store.Repo, fn ->
+        {fetch_contract_change!(pre_b_queue.current_contract_change_id),
+         fetch_contract_change!(queued.current_contract_change_id)}
+      end)
+
+    assert bound_contract.status == :bound_to_renewal
+    assert attempt.contract_change_id == bound_contract.id
+    assert queued_contract.predecessor_contract_change_id == bound_contract.id
+    assert queued_contract.target_variant_id == attempt.variant_id
+    assert queued_contract.target_quantity == attempt.quantity
+    assert queued_contract.target_plan_revision_id == target_revision.id
+    assert queued_contract.effective_at == attempt.period_end_at
+  end
+
   test "a legacy subscription without period end queues at next renewal" do
     fixture = fixture!("legacy_period_end")
     effective_at = DateTime.add(fixture.now, 86_400, :second)

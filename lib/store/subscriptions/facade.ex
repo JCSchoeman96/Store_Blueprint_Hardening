@@ -852,6 +852,12 @@ defmodule Store.Subscriptions.Facade do
          subscription_action,
          stale_retries
        ) do
+    :telemetry.execute(
+      [:store, :subscriptions, :contract_change, :before_persist],
+      %{},
+      %{subscription_id: subscription.id, intent_kind: contract_change_intent_kind(intent)}
+    )
+
     transaction_result =
       Repo.transaction(fn ->
         case lock_subscription_aggregate_version(subscription) do
@@ -921,6 +927,10 @@ defmodule Store.Subscriptions.Facade do
         end
     end
   end
+
+  defp contract_change_intent_kind({:plan_change, _plan_id}), do: :plan_change
+  defp contract_change_intent_kind({:variant_change, _variant_id}), do: :variant_change
+  defp contract_change_intent_kind({:materialized, _target, _projection}), do: :materialized
 
   defp retryable_contract_change_intent?({:plan_change, _plan_id}), do: true
   defp retryable_contract_change_intent?({:variant_change, _variant_id}), do: true
