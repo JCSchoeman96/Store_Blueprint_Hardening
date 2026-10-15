@@ -230,15 +230,23 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert drifted_subscription.pending_renewal_currency == "EUR"
     assert drifted_subscription.change_effective_at == corrupted_effective_at
 
+    future_revision
+    |> Ash.Changeset.for_update(:retire, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    replacement_revision =
+      SubscriptionsFixtures.create_plan_revision!(future_plan, %{amount_minor: 4_100})
+
     assert {:ok, after_variant} =
              queue_variant_change(customer, drifted_subscription, future_variant)
 
     contract = fetch_contract_change!(Map.get(after_variant, :current_contract_change_id))
     assert Map.get(contract, :target_plan_revision_id) == future_revision.id
+    assert Map.get(contract, :target_plan_revision_id) != replacement_revision.id
     assert Map.get(contract, :target_variant_id) == future_variant.id
     assert Map.get(contract, :target_quantity) == 3
     assert Map.get(contract, :target_amount_minor) == future_revision.amount_minor
-    assert Map.get(contract, :target_amount_minor) == 3_700
+    assert Map.get(contract, :target_amount_minor) != replacement_revision.amount_minor
     assert Map.get(contract, :target_currency) == future_revision.currency
     assert Map.get(contract, :instruction_kind) == :variant_change
     assert Map.get(contract, :effective_at) == first_contract_change.effective_at
@@ -690,7 +698,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert fetch_attempt!(attempt.id).status == :processing
   end
 
-  test "a stale concurrent queue writer cannot replace writer A's target" do
+  test "a stale concurrent queue writer re-evaluates and replaces writer A's target" do
     fixture = create_committed_subscription_fixture!()
     on_exit(fn -> delete_committed_subscription_fixture!(fixture) end)
 
@@ -733,17 +741,26 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
     send(lock_holder.pid, :release)
     assert {:ok, :released} = Task.await(lock_holder, 10_000)
-    assert {:ok, winner} = Task.await(writer_a, 10_000)
-    assert {:error, %Error{code: "STALE_RECORD"}} = Task.await(writer_b, 10_000)
+    assert {:ok, _writer_a_subscription} = Task.await(writer_a, 10_000)
+    assert {:ok, _writer_b_subscription} = Task.await(writer_b, 10_000)
 
-    winner_id = Map.get(winner, :current_contract_change_id)
-    contract = fetch_contract_change!(winner_id)
+    [queued_contract] =
+      Enum.filter(list_contract_changes(fixture.subscription_id), &(&1.status == :queued))
+
+    [superseded_contract] =
+      Enum.filter(list_contract_changes(fixture.subscription_id), &(&1.status == :superseded))
+
     subscription = fetch_subscription!(fixture.subscription_id)
 
-    assert Map.get(subscription, :current_contract_change_id) == winner_id
-    assert Map.get(contract, :status) == :queued
-    assert Map.get(contract, :target_plan_revision_id) == fixture.revision_a_id
-    assert length(list_contract_changes(fixture.subscription_id)) == 1
+    assert Map.get(subscription, :current_contract_change_id) == queued_contract.id
+
+    assert queued_contract.target_plan_revision_id in [
+             fixture.revision_a_id,
+             fixture.revision_b_id
+           ]
+
+    assert queued_contract.supersedes_contract_change_id == superseded_contract.id
+    assert length(list_contract_changes(fixture.subscription_id)) == 2
   end
 
   test "PostgreSQL rejects competing current queued targets for one Subscription" do
@@ -1088,6 +1105,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
         product_id: variant.product_id,
         revision_ids: [revision.id, revision_a.id, revision_b.id],
         revision_a_id: revision_a.id,
+        revision_b_id: revision_b.id,
         subscription_id: subscription.id,
         variant_id: variant.id,
         plan_a_id: plan_a.id,
