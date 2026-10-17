@@ -1982,7 +1982,7 @@ defmodule Store.Subscriptions.Facade do
          {:ok, updated} <-
            if(mode == :rescind_period_end,
              do: run_rescind_cancellation(subscription, actor),
-             else: run_cancel(subscription, mode, actor)
+             else: run_cancel_for_user(subscription, mode, actor)
            ) do
       {:ok, updated}
     else
@@ -2006,7 +2006,7 @@ defmodule Store.Subscriptions.Facade do
       when is_map(actor) and is_binary(subscription_id) and mode in [:now, :period_end] do
     with {:ok, %Subscription{} = subscription} <-
            get_subscription_for_admin(actor, subscription_id),
-         {:ok, canceled} <- run_cancel(subscription, mode, actor) do
+         {:ok, canceled} <- run_cancel_for_admin(subscription, mode, actor) do
       {:ok, canceled}
     else
       {:ok, nil} ->
@@ -3306,6 +3306,80 @@ defmodule Store.Subscriptions.Facade do
       end
     end)
   end
+
+  defp run_cancel_for_user(%Subscription{} = subscription, :now, actor) do
+    run_cancel_now_with_authorized_reload(subscription, actor, fn ->
+      get_subscription_for_user(actor, subscription.id)
+    end)
+  end
+
+  defp run_cancel_for_user(%Subscription{} = subscription, mode, actor) do
+    run_cancel(subscription, mode, actor)
+  end
+
+  defp run_cancel_for_admin(%Subscription{} = subscription, :now, actor) do
+    run_cancel_now_with_authorized_reload(subscription, actor, fn ->
+      get_subscription_for_admin(actor, subscription.id)
+    end)
+  end
+
+  defp run_cancel_for_admin(%Subscription{} = subscription, mode, actor) do
+    run_cancel(subscription, mode, actor)
+  end
+
+  defp run_cancel_now_with_authorized_reload(
+         %Subscription{status: :canceled, cancel_at_period_end: false} = subscription,
+         _actor,
+         _reload_authorized
+       ),
+       do: {:ok, subscription}
+
+  defp run_cancel_now_with_authorized_reload(subscription, actor, reload_authorized) do
+    case run_cancel(subscription, :now, actor) do
+      {:error, %Error{code: "STALE_RECORD"} = error} ->
+        re_evaluate_stale_cancel_now(error, actor, reload_authorized)
+
+      result ->
+        result
+    end
+  end
+
+  defp re_evaluate_stale_cancel_now(error, actor, reload_authorized) do
+    if subscription_aggregate_version_conflict?(error) do
+      reload_authorized
+      |> then(fn reload -> reload.() end)
+      |> reloaded_cancel_now_result(actor)
+    else
+      {:error, error}
+    end
+  end
+
+  defp reloaded_cancel_now_result({:ok, %Subscription{} = current}, actor),
+    do: run_reloaded_cancel_now(current, actor)
+
+  defp reloaded_cancel_now_result({:ok, nil}, _actor),
+    do: {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
+
+  defp reloaded_cancel_now_result({:error, reason}, _actor),
+    do: {:error, Normalize.normalize(reason)}
+
+  defp run_reloaded_cancel_now(
+         %Subscription{status: :canceled, cancel_at_period_end: false} = subscription,
+         _actor
+       ),
+       do: {:ok, subscription}
+
+  defp run_reloaded_cancel_now(%Subscription{} = subscription, actor),
+    do: run_cancel(subscription, :now, actor)
+
+  defp subscription_aggregate_version_conflict?(%Error{
+         code: "STALE_RECORD",
+         message:
+           "subscription changed while the command was in progress; reload and re-evaluate it"
+       }),
+       do: true
+
+  defp subscription_aggregate_version_conflict?(_error), do: false
 
   defp run_cancel(%Subscription{} = subscription, mode, actor)
        when mode in [:period_end, :now] do

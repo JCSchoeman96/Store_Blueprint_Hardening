@@ -35,4 +35,10 @@
 - Focused proof: `test/store/subscriptions/sbh_20_02_renewal_immediate_cancellation_test.exs`.
 - This plan: `docs/superpowers/plans/2026-10-17-jc-232-renewal-vs-immediate-cancellation.md`.
 
+## TDD record
+
+- Red proof: commit `934b43e5350507c384c3185cf62a9ea922f787ad` added the deterministic checkpoint-B race test before the Facade change.
+- The pre-fix focused run reached the assertion after B committed and returned `STALE_RECORD` instead of a successful `cancel now`, confirming the intent-loss defect.
+- The implementation and replay-bound tests now pass in the focused suite.
+
 Any need to change another production surface, schema, migration, snapshot, provider contract, or shared domain boundary stops this task for a new authority decision.
