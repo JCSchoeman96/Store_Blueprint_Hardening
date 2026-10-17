@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.34
-**Status:** SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN / CANONICAL, with the bounded v0.1.27 Stage B renewal identity/recovery amendment, v0.1.28 SBH-50-06 admission, v0.1.29 JC-289 NewYou-conformance contract clarification, v0.1.30 JC-289 / SBH-50-06 post-implementation closure, v0.1.31 SBH-50 access-convergence rollout-order correction, v0.1.32 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze, v0.1.33 consumption of the canonical Entitlements shared-authority grant, and the v0.1.34 JC-229 / SBH-10-04 re-admission
-**Verified:** 2026-10-02
+**Version:** v0.1.35
+**Status:** PROPOSED v0.1.35 JC-232 / SBH-20-02 re-admission / SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN; v0.1.34 remains canonical until human merge
+**Verified:** 2026-10-17
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
 **Persistent worktree:** `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions`  
@@ -11,7 +11,7 @@
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the v0.1.31 rollout-order correction; section 52 preserves the v0.1.32 post-JC-223 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze; section 53 records the v0.1.33 consumption of the canonical Entitlements shared-authority grant; section 54 records the current v0.1.34 JC-229 / SBH-10-04 re-admission. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the v0.1.31 rollout-order correction; section 52 preserves the v0.1.32 post-JC-223 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze; section 53 records the v0.1.33 consumption of the canonical Entitlements shared-authority grant; section 54 preserves the v0.1.34 JC-229 / SBH-10-04 re-admission as historical evidence; section 55 records the v0.1.35 JC-232 / SBH-20-02 re-admission. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
@@ -6831,3 +6831,249 @@ resource or change the renewal workers in this branch.
 - The only changed paths are this Master Register and the existing Phase 27
   evidence note. No runtime source, test, migration, snapshot, dependency, or
   configuration file changed.
+
+# 55. v0.1.35 JC-232 / SBH-20-02 renewal-vs-immediate-cancellation re-admission
+
+This proposed governance-only amendment records the completed dependencies,
+closes completed rows as provenance, and re-admits JC-232 / SBH-20-02 as the
+only READY implementation/proof row. It does not change runtime code, tests,
+migrations, resource snapshots, provider adapters, configuration, or the
+JC-223 dependency graph. This section becomes canonical only after human merge
+and independent post-merge verification. Older sections retain their
+point-in-time statements.
+
+### Authority and exact Git evidence
+
+The live refs were fetched before editing and matched these expected values:
+
+| Ref or evidence | Exact value |
+|---|---|
+| Canonical main | fdae94168e98d588fb2bba2e9fe4e93c6c016023 |
+| Accepted hardening/subscriptions base | 66edd1eb0f5cc90bd441e6c3eb8940b9345ffe31 |
+| PR #154 integration merge | 66edd1eb0f5cc90bd441e6c3eb8940b9345ffe31 |
+| Governance branch | governance/subs-sbh-20-02-readmission |
+| Governance base | 66edd1eb0f5cc90bd441e6c3eb8940b9345ffe31 |
+| PR target | hardening/subscriptions |
+| Implementation task_base_sha | none |
+| Production implementation branch | none |
+
+PR #154 reconciled the accepted main runtime into the persistent SUBS line. It
+did not implement or re-admit JC-232, assign its task base, promote SBH-20-02,
+or change JC-223 edges. The accepted PR #151, #152, and #153 merge commits are
+ancestors of canonical main.
+
+### Dependency closure evidence
+
+The JC-223 dependency edge for SBH-20-02 remains exactly:
+
+SBH-20-01 + SBH-10-03 + SBH-10-04 + SBH-10-05
+
+The completed prerequisite rows are:
+
+| Row | Accepted evidence | State after this amendment |
+|---|---|---|
+| SBH-20-01 / JC-231 | Already closed in SUBS governance; Linear Done | CLOSED / No |
+| SBH-10-03 / JC-228 | Already closed in SUBS governance; Linear Done | CLOSED / No |
+| SBH-10-04 / JC-229 | PR #151; reviewed head ebc2b514b58dbadfbbf8b2c885b8d16a6fbf7337; main merge e8616ab1cdbea866600265037e65d88bbf90b84c | CLOSED / No |
+| SBH-10-05 / JC-230 | PR #152; reviewed head b14f075571d92f8c1c097d6556d454f3a59b0392; main merge 92a5c5758d7bc92453191488d2924a593377548f | CLOSED / No |
+
+Accepted SBH-10-04 capabilities include durable RenewalCollectionAttempt
+identity, one RenewalAttempt and renewal Order per commercial occurrence,
+collection-specific PaymentIntent/provider identity, exact payment evidence
+and certification, evidence-before-effects, dispatch epoch/fencing, same-
+collection replay, ambiguity handling, exact physical reservation generations,
+provider reconciliation, and cancellation authority withdrawal.
+
+Accepted SBH-10-05 capabilities include exact charged RenewalAttempt
+application, immutable PlanRevision application, exact ContractChange
+bound-to-renewal application, rejection of mutable pending-field promotion,
+commercial replay detection, charged-snapshot entitlement targeting, and
+crash/replay-safe reconciliation.
+
+JC-233 / SBH-20-03 is completed provenance, not a dependency of JC-232. PR
+#153 was reviewed at 7d1b3379466884fadb97070ecfcb8acfda95827d and merged to
+main as fdae94168e98d588fb2bba2e9fe4e93c6c016023. Its accepted work resolves a
+future target after Subscription serialization, selects the authoritative
+queued ContractChange or B-bound RenewalAttempt or live Subscription,
+re-evaluates stale intent, orders queue-vs-B commits deterministically,
+preserves N+1 targets, and validates multi-generation ContractChange ancestry.
+SBH-20-03 = CLOSED / No. Do not promote another concurrency row.
+
+### Existing Payments remediation authority
+
+The accepted runtime already exposes the Payments-owned
+PaymentsFacade.request_renewal_cancellation_remediation_for_system/1 API.
+The withdrawn-renewal path verifies the canceled/withdrawn RenewalAttempt, its
+renewal Order, exact PaymentApplication, and exact PaymentIntent before it
+calls that API. Payments owns the full-refund remedy and uses the idempotency
+key:
+
+renewal-cancel-remediation:<renewal_attempt_id>:<payment_intent_id>
+
+Existing Refund machinery creates or reuses that refund. This path does not
+reactivate the Subscription. JC-232 may use these accepted Payments, Orders,
+collection, and dispatch-fence APIs. It has no authority to modify those
+owning domains. If implementation proves that an existing boundary is
+insufficient, stop and obtain a new shared-authority grant.
+
+SBH-20-02 shared modification authority = NONE.
+
+### Inherited runtime mechanics
+
+JC-232 must compose with the accepted runtime and preserve these behaviors:
+
+- Checkpoint B stores an immutable RenewalAttempt and charged-contract snapshot.
+- Each renewal collection has its own durable identity and exact PaymentIntent.
+- Dispatch claims use the existing epoch and fence.
+- Cancellation withdraws renewal authority before provider dispatch and releases
+  the exact physical reservation generation when the fence proves non-submission.
+- Stale physical preparation cannot submit after cancellation wins the fence.
+- Provider observation and reconciliation target the exact collection.
+- A verified success can correct an earlier local failure without changing the
+  exact PaymentApplication evidence.
+- A canceled Subscription stays canceled after late payment; reconciliation
+  does not extend its period or restore access.
+- A withdrawn late-success collection enters the existing idempotent full-refund
+  remedy.
+- Suspended/canceled precedence and exact charged-contract reconciliation are
+  already implemented.
+
+These are inherited foundations. Do not redesign them in JC-232.
+
+### Remaining bounded implementation defect
+
+The remaining confirmed defect is stale immediate-cancellation intent. The
+current run_cancel/3 command uses Subscription aggregate-version protection,
+but a stale conflict can return STALE_RECORD to the caller without reloading
+current Subscription authority and re-evaluating the original cancel-now
+intent.
+
+The required behavior is:
+
+original cancel-now intent → aggregate conflict → reload current Subscription
+→ re-evaluate the same cancel-now intent → commit if current law allows it, or
+return an explicit rejection based on current state.
+
+The bounded retry must never change cancel-now into period-end cancellation or
+another command. It must not retry forever.
+
+### Frozen implementation proof
+
+The future focused deterministic proof must establish all of these outcomes:
+
+1. Cancellation commits before B. Recurring authority is withdrawn; stale B
+   cannot bind or create a new occurrence; provider start count is zero.
+2. B wins the aggregate race. Stale cancel-now reloads current Subscription
+   authority and re-evaluates the same original intent. The command commits if
+   current law permits it.
+3. B exists and cancellation wins before C. The existing exact collection
+   fence proves not_submitted; provider mutation is zero; the stale worker cannot
+   submit later.
+4. Dispatch evidence wins before cancellation. Cancellation commits CANCELED
+   and ends recurring authority; the exact collection remains financial
+   evidence and is retrieved or reconciled.
+5. A crash after durable dispatch evidence uses the exact collection identity
+   after restart. A crash does not prove non-submission, and ambiguous outcome
+   does not permit a replacement collection.
+6. requires_action or unknown after cancellation leaves the same collection
+   unresolved, creates no new collection or provider identity, and uses exact
+   reconciliation.
+7. Verified terminal financial non-success closes that occurrence and does not
+   restart dunning from the canceled Subscription.
+8. Verified late success preserves payment truth and the exact
+   PaymentApplication. The Subscription remains CANCELED, its period does not
+   extend, and access does not reactivate. One exact idempotent remediation
+   Refund is created or reused; replay creates no second Refund.
+9. Duplicate cancel-now, stale renewal worker, provider observation replay,
+   webhook replay, reconciliation replay, and remediation replay are
+   idempotent.
+
+Do not use queue order, process memory, PubSub, or cache as race authority. Do
+not infer provider submission from a process crash.
+
+### Scope and expected implementation surface
+
+The expected primary production file is
+lib/store/subscriptions/facade.ex. The focused proof is
+test/store/subscriptions/sbh_20_02_renewal_vs_immediate_cancellation_test.exs.
+Likely regressions are cancellation_renewal_authority_test.exs,
+optimistic_aggregate_version_test.exs, and renewal_collection_attempts_test.exs
+under test/store/subscriptions.
+
+No resource or schema change is expected. Stop for authority review before
+changing Payments, Orders, Entitlements, migrations, or resource snapshots.
+JC-232 does not own scheduled/period-end cancellation, SBH-40-02, SBH-40-03,
+NewYou failed-renewal-grace Product policy or 72-hour rules, payment-method
+replacement/revocation or SBH-80-03, provider outcome-precedence redesign,
+Payments core, Refund policy, Orders core, InventoryAdmission, Entitlements
+infrastructure, AccessEffect durability, generic access convergence,
+ContractChange semantics, dunning suspension, PayStack adapter/certification,
+or migrations/schema additions.
+
+### Re-admission and serial execution
+
+SBH-20-02 = READY / No. It is the sole canonical READY implementation/proof
+row:
+
+- SUBS lifecycle = READY
+- SUBS execution policy = SERIAL / EXPLICIT HARDENING
+- SBH-20-02 shared authority = NONE
+- Canonical READY implementation/proof rows = 1
+- Canonical READY row = SBH-20-02
+
+Do not promote SBH-20-04, SBH-20-05, SBH-30-03, SBH-40-02, SBH-40-03, or any
+other row. Their admission remains separate even where dependencies are now
+satisfied.
+
+The human selected JC-232 before this re-admission. That selection does not
+assign an implementation task_base_sha or create an implementation branch.
+After this governance PR merges and its exact merge commit/tree are verified,
+the resulting hardening/subscriptions tip can become the implementation
+task_base_sha.
+
+Linear JC-232 remains Backlog. PR #154 is reconciliation evidence, not JC-232
+implementation evidence. This governance amendment does not close the issue.
+
+### Performance & Scaling Review
+
+- Hot: cancellation, renewal collection dispatch, reconciliation, and
+  remediation are existing hot paths. This governance change adds no runtime
+  query.
+- Warm: exact provider retrieval, reconciliation, and remediation replay remain
+  unchanged; this amendment adds no read or retry path.
+- Cold: governance review and operator handling of unresolved outcomes gain no
+  new runtime or migration path.
+- Query count and N+1 risk: unchanged by this amendment. The implementation
+  must report query counts, lock scope, and N+1 risk.
+- Indexes: no index or migration is authorized here. The implementation must
+  use the accepted exact Subscription, collection, payment, and refund
+  identities.
+- Caching: no cache, ETS, Redis, TTL, invalidation, or stampede-protection
+  change is authorized. PostgreSQL remains the source of truth for Subscription
+  and collection state.
+- Oban and idempotency: no worker uniqueness change is authorized. The exact
+  collection and remediation identities remain the replay keys.
+- Telemetry and logging: this amendment adds no instrumentation. The
+  implementation must report dispatch/fence state, exact collection outcome,
+  cancellation result, and remediation result without provider secrets.
+
+### Candidate validation
+
+- git diff --check: PASS.
+- mix format --check-formatted: PASS.
+- mix check.static: PASS, including the governance and documentation gates. Sobelow reported low-confidence findings in untouched source files.
+- mix check: static and documentation gates passed. The test database could not be created because PostgreSQL authentication raised key :password not found; exact-head CI must provide the isolated test database for this command.
+- mix check.types: PASS. Dialyzer reported 134 ignored findings and one unnecessary ignore.
+- mix ash_postgres.generate_migrations --check: PASS, no generated migration drift.
+- The candidate diff contains only this register and the Phase 27 evidence note.
+
+### Validation and merge gate
+
+Only this register and the Phase 27 evidence note may change. The candidate
+must pass the required formatting, static, full-check, type, and migration
+alignment commands. The pushed exact head must have these CI jobs green before
+independent review: check_static, test_pr_strict, dialyzer_required,
+performance_smoke_required, and performance_smoke_chaos_required. Keep the PR
+draft, require independent review, and retain the human merge requirement.
+After merge, independently verify the merge commit and tree before assigning
+any implementation task base.
