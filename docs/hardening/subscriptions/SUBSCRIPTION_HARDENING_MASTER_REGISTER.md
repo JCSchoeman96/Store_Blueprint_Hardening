@@ -1,7 +1,9 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
 **Version:** v0.1.35
-**Status:** PROPOSED v0.1.35 JC-232 / SBH-20-02 re-admission / SUBS READY / SERIAL EXPLICIT HARDENING / JC-219 + JC-220 + JC-221 + JC-222 + JC-223 CONTRACT_FROZEN; v0.1.34 remains canonical until human merge
+**Status:** v0.1.35 / SUBS lifecycle `READY` / execution policy
+`SERIAL / EXPLICIT HARDENING` / current admission JC-232 / SBH-20-02 /
+JC-219 + JC-220 + JC-221 + JC-222 + JC-223 `CONTRACT_FROZEN / CANONICAL`
 **Verified:** 2026-10-17
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
 **Workstream:** Subscription Backbone Hardening (`SUBS`)  
@@ -1588,11 +1590,12 @@ PENDING → CANCELED                    pre-activation termination only
 
 ACTIVE → ACTIVE                       successful renewal
 ACTIVE → PAST_DUE                     retryable renewal failure
+ACTIVE → SUSPENDED                    configured retry or grace boundary exhausted
 ACTIVE → CANCELED                     immediate or scheduled cancellation
 ACTIVE → EXPIRED                      governed term completion
 
 PAST_DUE → ACTIVE                     same authorized renewal succeeds
-PAST_DUE → SUSPENDED                  failed-payment boundary
+PAST_DUE → SUSPENDED                  configured retry or grace boundary exhausted
 PAST_DUE → CANCELED                   cancellation
 PAST_DUE → EXPIRED                    governed term completion
 
@@ -1610,8 +1613,11 @@ evidence has established `ACTIVE` truth. It ends recurring authority, forbids
 provider starts, begins no dunning lifecycle, and supersedes unbound future
 changes.
 
-`PAST_DUE` is an extant renewal-recovery episode. `SUSPENDED` is the nonterminal
-failed-payment boundary. Retry exhaustion alone does not end the relationship.
+`PAST_DUE` is an extant renewal-recovery episode. Exhausting the configured
+retry boundary or reaching the governed grace boundary moves an active or
+past-due Subscription to nonterminal `SUSPENDED`, clears retry scheduling, and
+makes current access non-effective while leaving the commercial relationship
+open. The exact same still-authorized renewal may recover it.
 
 `CANCELED` and `EXPIRED` are terminal. The following transitions are forbidden:
 
@@ -1630,10 +1636,11 @@ EXPIRED → PENDING
 | `PENDING → CANCELED` | no authoritative activation/payment evidence has established `ACTIVE` | end recurring authority; forbid provider starts; begin no dunning; supersede unbound changes | Yes |
 | `ACTIVE → ACTIVE` | successful evidence for the same eligible B-bound renewal | apply the exact bound contract once and advance the paid period | No |
 | `ACTIVE → PAST_DUE` | first retryable renewal failure wins | fix `past_due_since_at`, record evidence, and schedule governed retries | No |
+| `ACTIVE → SUSPENDED` | configured retry boundary exhausted or governed grace boundary reached before another terminal decision | clear retry scheduling, make current access non-effective, and keep the commercial relationship open | No |
 | `ACTIVE → CANCELED` | immediate cancellation or actual scheduled-cancellation boundary | end recurring authority and create the cancellation access-effect target | Yes |
-| `ACTIVE → EXPIRED` | governed term or paid-period completion; not retry exhaustion alone | end recurring authority and create the expiry access-effect target | Yes |
+| `ACTIVE → EXPIRED` | governed term or paid-period completion | end recurring authority and create the expiry access-effect target | Yes |
 | `PAST_DUE → ACTIVE` | same still-authorized renewal succeeds | recover that episode and apply its exact bound contract once | No |
-| `PAST_DUE → SUSPENDED` | failed-payment boundary before success or another terminal decision | stop automatic retries and make the affected recurring-source access effect non-effective | No |
+| `PAST_DUE → SUSPENDED` | configured retry boundary exhausted or governed grace boundary reached before success or another terminal decision | clear retry scheduling, make current access non-effective, and keep the commercial relationship open | No |
 | `PAST_DUE → CANCELED` | valid cancellation | end recurring authority without waiting for an artificial paid boundary | Yes |
 | `PAST_DUE → EXPIRED` | separately governed term or paid-period completion | end recurring authority and create the expiry access-effect target | Yes |
 | `SUSPENDED → ACTIVE` | same still-authorized renewal succeeds | recover that occurrence only; this is not generic reactivation | No |
@@ -1819,8 +1826,10 @@ ACTIVE
 PAST_DUE
   ├── same authorized renewal succeeds → ACTIVE
   ├── retry remains available → PAST_DUE
-  ├── retries exhausted before boundary → PAST_DUE, no more automatic retries
-  └── failed-payment boundary → SUSPENDED
+  └── configured retry or grace boundary exhausted → SUSPENDED
+
+SUSPENDED
+  └── exact same still-authorized renewal succeeds → ACTIVE
 ```
 
 Required law:
@@ -1830,17 +1839,19 @@ Required law:
 - retry offsets are measured from the first retryable failure and offset `0` is
   valid;
 - the first retryable failure fixes `past_due_since_at`; retries do not reset it;
-- retry exhaustion before the failed-payment boundary leaves the Subscription
-  `PAST_DUE` and stops automatic retries;
-- the governed failed-payment boundary performs `PAST_DUE → SUSPENDED` unless
-  success or another terminal event wins first;
-- `SUSPENDED` is nonterminal and extant;
+- configured retry-boundary exhaustion or governed grace-boundary exhaustion
+  moves an active or past-due Subscription to `SUSPENDED` unless success or
+  another terminal event wins first;
+- suspension clears automatic retry scheduling, makes current access
+  non-effective, and leaves the commercial relationship open;
+- `SUSPENDED` is nonterminal and extant; only the exact same still-authorized
+  renewal may recover it, using its original period boundaries;
 - access during recovery follows the frozen source-specific policy;
 - late success ordering is deterministic and cannot revive `CANCELED` or `EXPIRED`.
 
-Retry exhaustion is not relationship termination. Generic failed-payment handling
-must not use dunning cancellation as a substitute for `EXPIRED` term completion or
-an explicit `CANCELED` decision.
+Suspension after retry or grace exhaustion is not relationship termination.
+Generic failed-payment handling must not use dunning cancellation as a
+substitute for `EXPIRED` term completion or an explicit `CANCELED` decision.
 
 ---
 
@@ -2188,7 +2199,7 @@ records the same deterministic outcomes for programme navigation and review.
 | reconciliation vs suspension | A success for the same still-authorized renewal may recover `SUSPENDED → ACTIVE`. This is not generic reactivation. |
 | success vs late failure | A successful occurrence cannot regress because older failure evidence arrives. Refund, reversal, and chargeback are separate financial events. |
 | two Subscription writers | Only one incompatible mutation may commit against a version. The stale writer reloads and re-evaluates its original intent. |
-| dunning vs successful recovery | The same valid success beats a stale dunning write. Retry exhaustion means no more automatic retries, not terminal relationship end. |
+| dunning vs successful recovery | The same valid success beats a stale dunning write. Configured retry or grace exhaustion suspends the open commercial relationship, clears retries, and makes current access non-effective; the exact same authorized renewal may recover it. |
 | access effect vs commercial state | The effect converges from the latest source target. A stale access worker cannot restore obsolete rights. |
 | duplicate provider callbacks | One logical occurrence applies once. Equivalent duplicates are no-ops; materially conflicting reuse of one identity fails closed and reconciles. |
 | out-of-order provider callbacks | Use trustworthy provider identity, occurrence time, provider sequence/state authority, and reconciled payment state. Arrival time alone never regresses truth. |
@@ -2880,22 +2891,25 @@ the complete grant and exclusions.
 ## SBH-10-04 — Renewal Initiation Uses Bound Contract
 
 **Linear issue:** JC-229.
-**State:** `READY`.
-**Shared-authority status:** `AUTHORITY_ASSIGNED` (current bounded grant recorded in section 54).
+**State:** `CLOSED`.
+**Shared-authority status:** `AUTHORITY_ASSIGNED` (completed task-specific
+provenance only; the v0.1.34 grant is exhausted and non-reusable).
 **Loop eligible:** No.
-**Implementation selection:** Not selected. PR #78 remains open and draft as
-partial implementation evidence. This amendment assigns no implementation
-branch or `task_base_sha`.
+**Completion provenance:** PR #151 reviewed head
+`ebc2b514b58dbadfbbf8b2c885b8d16a6fbf7337`, merged to main as
+`e8616ab1cdbea866600265037e65d88bbf90b84c`. PR #78 is historical partial
+evidence only and is not an active implementation path.
 
 Invariant:
 
 > Once a RenewalAttempt contract is frozen, provider-payment construction must use that evidence rather than re-resolving mutable current or pending Subscription or Plan state.
 
-### Blocked collection-attempt contract
+### Historical pre-PR #151 blocked collection-attempt contract
 
-The v0.1.26 implementation grant is superseded. No further code work may
-proceed under its existing-boundary assumptions. A later admission must retain
-these rules:
+The following records the pre-PR #151 blocker and design direction. The accepted
+PR #151 implementation closed SBH-10-04 and consumed its task-specific grant;
+this material is provenance, not current admission authority or an active stop
+condition.
 
 1. One bound `RenewalAttempt` and its single `order_id` represent one immutable
    commercial occurrence. A dunning retry does not create a replacement Order
@@ -2978,7 +2992,7 @@ Order must retain its shipping and tax evidence for retries. If inspection
 shows a mutable Catalog field can redefine A's recurring base line and no
 existing A evidence can recover that value, stop and return to governance.
 
-### Shared authority required before re-admission
+### Historical shared authority required before re-admission
 
 - Subscription authority for a durable collection-attempt record, its state
   and monotonic identity, focused tests, a migration, and the corresponding
@@ -3014,15 +3028,15 @@ existing A evidence can recover that value, stop and return to governance.
   success. Order identity alone is not collection-attempt proof.
 
 No Subscription collection-record, Orders, InventoryAdmission, Payments,
-migration, Ash-snapshot, or provider authority is assigned by this amendment.
-The numbered collection behavior above is the blocked Subscription target for
-future contract review. It has no force against another domain's current
-authoritative contract until that owner explicitly approves the relevant
-change. These are blockers, not implied grants. No compatibility-unbound
-RenewalAttempt may reach provider work, and no historical collection record may
-be fabricated from mutable state.
+migration, Ash-snapshot, or provider authority was assigned by that earlier
+admission. The numbered collection behavior above was the blocked Subscription
+target for future contract review. It had no force against another domain's
+current authoritative contract until that owner explicitly approved the
+relevant change. These were blockers, not implied grants. No
+compatibility-unbound RenewalAttempt may reach provider work, and no historical
+collection record may be fabricated from mutable state.
 
-### Existing implementation seam from PR #76
+### Historical implementation seam from PR #76
 
 SBH-10-03 already introduced a minimum downstream handoff:
 
@@ -3040,10 +3054,11 @@ SBH-10-03 already introduced a minimum downstream handoff:
 - Retries reuse the same RenewalAttempt and Order. PR #78 attempted to harden
   reuse of the existing Order and PaymentIntent evidence.
 
-This seam remains useful but does not define a safe new dunning collection
-attempt after a definitive decline.
+At the time, this seam did not define a safe new dunning collection attempt
+after a definitive decline. PR #151 later completed the bounded collection-
+attempt implementation.
 
-### PR #78 partial implementation evidence
+### Historical PR #78 partial implementation evidence
 
 PR #78 head `08b28937c001b4f35350bcf5de6fdd052fc7a4c3` is one commit on the
 exact task base `0016237646f9fddfc2364680b8cc9ddeb7c10655`. It changes only
@@ -3052,16 +3067,16 @@ exact task base `0016237646f9fddfc2364680b8cc9ddeb7c10655`. It changes only
 `test/store/subscriptions/sbh_10_04_bound_renewal_initiation_test.exs`, and
 `docs/agent_notes/phase_27_docs.md`. Exact-head CI run `36144853740` passed all
 five required jobs. Its logs report 702 tests and zero failures, with
-migration-drift and static gates passing. PR #78 remains open and draft. This
-is partial proof for Order snapshot verification, PlanRevision evidence,
-PaymentIntent consistency, and physical payable-total tracing. It does not
-prove a real provider-decline PaymentIntent cycle, a later collection identity,
-or the physical reservation lifecycle described above.
+migration-drift and static gates passing. This is historical partial proof for
+Order snapshot verification, PlanRevision evidence, PaymentIntent consistency,
+and physical payable-total tracing. It does not prove the completed PR #151
+collection-attempt implementation and is not an active implementation path.
 
-### Required proof direction
+### Historical pre-PR #151 required proof direction
 
-After the missing authority is resolved, the implementation contract must prove
-all of the following:
+The numbered direction records the pre-PR #151 proof target. The accepted PR
+#151 subsequently completed the bounded collection-attempt work and its
+authority-specific proof.
 
 1. Checkpoint B binds occurrence A.
 2. Mutable Subscription commercial state changes after B.
@@ -3105,22 +3120,25 @@ all of the following:
     weight or descriptive fields were bound at B, and it does not let them
     redefine A's recurring base line.
 
-### Stop conditions
+### Historical pre-PR #151 stop conditions
 
-Do not proceed until the shared-authority blockers above are resolved and a
-later amendment re-admits the issue. Do not change Entitlements core, generic
-Support/error infrastructure, or SBH-10-05 paid-application semantics under
-this task. If those changes become necessary, stop for a separate authority
-decision.
+The pre-PR #151 implementation was stopped until its shared-authority blockers
+were resolved. The listed exclusions remain useful scope provenance; current
+SBH-10-04 is closed and its grant is non-reusable.
 
 ---
 
 ## SBH-10-05 — Reconciliation Applies Charged Contract Only
 
-**State:** `BLOCKED_DEPENDENCY`.
+**State:** `CLOSED`.
+**Shared-authority status:** `EXTERNALIZED` (Payments core remained under its
+owning domain; JC-230 acquired no generic Payments-core authority).
 **Loop eligible:** No.
+**Completion provenance:** PR #152 reviewed head
+`b14f075571d92f8c1c097d6556d454f3a59b0392`, merged to main as
+`92a5c5758d7bc92453191488d2924a593377548f`.
 
-Proposed branch:
+Historical proposed branch (not assigned):
 
 ```text
 subs-task/sbh-10-05-bound-renewal-reconciliation
@@ -3168,10 +3186,13 @@ Requirements:
 
 ## SBH-20-02 — Renewal vs Immediate Cancellation
 
-**State:** `BLOCKED_DEPENDENCY`.
+**State:** `READY`.
 **Loop eligible:** No.
+**Shared-authority status:** `NONE`.
+**Current bounded task contract:** Section 55. No implementation branch or
+`task_base_sha` is assigned before governance merge and post-merge verification.
 
-Proposed branch:
+Future branch name (not assigned):
 
 ```text
 subs-task/sbh-20-02-renewal-cancellation-race
@@ -3187,10 +3208,14 @@ Compensation/reconciliation must be explicit where necessary.
 
 ## SBH-20-03 — Renewal vs Contract / Variant Change
 
-**State:** `BLOCKED_DEPENDENCY`.
+**State:** `CLOSED`.
 **Loop eligible:** No.
+**Shared-authority status:** `NONE`.
+**Completion provenance:** JC-233 / PR #153 reviewed head
+`7d1b3379466884fadb97070ecfcb8acfda95827d`, merged to main as
+`fdae94168e98d588fb2bba2e9fe4e93c6c016023`.
 
-Proposed branch:
+Historical proposed branch (not assigned):
 
 ```text
 subs-task/sbh-20-03-renewal-contract-change-race
@@ -3323,9 +3348,15 @@ Proposed branch:
 subs-task/sbh-30-03-retry-grace-separation
 ```
 
-Invariant:
+Historical pre-JC-265 invariant (superseded):
 
 > Retry-budget exhaustion leaves the Subscription `PAST_DUE` and stops automatic retries. It does not terminate the relationship or substitute for the governed `PAST_DUE → SUSPENDED` boundary.
+
+JC-265 now establishes the current law: configured retry-boundary exhaustion
+or the governed grace boundary moves an active or past-due Subscription to
+`SUSPENDED`, clears retry scheduling, makes current access non-effective, and
+keeps the commercial relationship open. The row remains
+`BLOCKED_DEPENDENCY`; this amendment neither admits nor closes it.
 
 ---
 
@@ -3362,8 +3393,10 @@ Coverage:
 - retry at exact configured offset;
 - retry/recovery-window boundary at the same instant;
 - successful final retry;
-- success after retry exhaustion while still `PAST_DUE`, if permitted;
-- `PAST_DUE → SUSPENDED` at the governed failed-payment boundary;
+- success after retry exhaustion from `SUSPENDED` for the same still-authorized
+  RenewalAttempt, using its original period boundaries;
+- transition to `SUSPENDED` at configured retry-boundary exhaustion or the
+  governed grace boundary;
 - late success after terminal boundary;
 - duplicate failure;
 - success/failure ordering.
@@ -4290,9 +4323,11 @@ SBH-20-01 → SBH-30-03 → SBH-30-04 → SBH-30-05
              SBH-10-05 + SBH-50-06   SBH-30-02 + SBH-70-02
 ```
 
-Retry exhaustion != `SUSPENDED`/`CANCELED`/`EXPIRED`. `SBH-30-04` also needs the
-bound reconciliation and durable access-effect foundations. `SBH-30-05` also
-needs the independent retry-offset and RenewalAttempt monotonicity work.
+Configured retry or grace boundary exhaustion → `SUSPENDED`; suspension keeps
+the commercial relationship open and is recoverable only through the exact
+same still-authorized RenewalAttempt. `SBH-30-04` also needs the bound
+reconciliation and durable access-effect foundations. `SBH-30-05` also needs
+the independent retry-offset and RenewalAttempt monotonicity work.
 
 Cancellation:
 
@@ -4438,10 +4473,10 @@ Entitlements modification authority to `SBH-50-04` or `SBH-50-05`.
 | `SBH-20-01` | `Store.Subscriptions.Subscription` aggregate-version attribute; limited `Store.Subscriptions.Facade` stale-write handling; one task-specific `subscriptions` migration and Ash snapshot; focused deterministic and regression proof | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.23 grant is non-reusable. |
 | `SBH-10-06` | Subscription-owned ContractChange, Subscription, Facade, and focused fixtures/tests; one `contract_changes` migration and Ash snapshot; one conditional `subscriptions` migration and Ash snapshot only if the current ContractChange pointer requires it | `AUTHORITY_ASSIGNED` | `CLOSED`; completed provenance only. The v0.1.24 grant is non-reusable. |
 | `SBH-10-03` | Subscription-owned `RenewalAttempt`; minimum `Store.Subscriptions.Facade` orchestration for checkpoint-B bind; exact `ContractChange` `QUEUED → BOUND_TO_RENEWAL` transition; `Store.Subscriptions.Subscription` only for aggregate-version-protected checkpoint-B consumption of the current target; focused fixtures/tests; one `renewal_attempts` migration and corresponding Ash snapshot | `AUTHORITY_ASSIGNED` | `CLOSED`; completed v0.1.25 task-specific migration, Ash-snapshot, Subscription, and ContractChange authority is exhausted and non-reusable. |
-| `SBH-10-04` | Durable Subscription collection-attempt record; Orders reservation generations; S0 InventoryAdmission identity and recovery contract; provider collection-attempt idempotency; Payments boundary capability review | `BLOCKED_SHARED_AUTHORITY` | Stop implementation. The old grant does not cover collection attempts or retries after terminal PaymentIntent failure. Obtain each owning-domain decision and record a new bounded admission before code. PR #78 remains open and draft as partial proof only. |
-| `SBH-10-05` | Payments core | `EXTERNALIZED` | Use payment evidence authority; do not change Payments core. |
-| `SBH-20-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
-| `SBH-20-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-10-04` | Durable Subscription collection attempts; Orders reservation generations; S0 InventoryAdmission identity and recovery; provider collection-attempt idempotency; Payments boundary | `AUTHORITY_ASSIGNED` | `CLOSED`; PR #151 completed the bounded implementation. The task-specific grant is exhausted and non-reusable. PR #78 is historical partial evidence only; no current blocker remains. |
+| `SBH-10-05` | Payments core | `EXTERNALIZED` | `CLOSED` through PR #152. Payments core remained unchanged and external to JC-230; no active blocker or generic Payments authority remains. |
+| `SBH-20-02` | no shared modification identified in the current bounded contract | `NONE` | `READY`; Section 55 identifies no shared modification. Stop and seek a new bounded authority grant if implementation discovers one. |
+| `SBH-20-03` | no shared modification identified in the completed contract | `NONE` | `CLOSED`; JC-233 completed the lane-local concurrency work. No task-specific authority remains active. |
 | `SBH-20-04` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-20-05` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-30-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
@@ -4477,12 +4512,12 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
-`SBH-10-03`, `SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and
-`SBH-80-02`, and `SBH-50-06` are `CLOSED`. No implementation/proof row is
-`READY`. The recorded
-`loop_eligible` values remain register metadata; human selection is still
-required under the serial workflow before a `READY` row may enter
+v0.1.35 register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
+`SBH-10-03`, `SBH-10-04`, `SBH-10-05`, `SBH-20-03`, `SBH-30-02`,
+`SBH-60-01`, `SBH-70-02`, `SBH-80-01`, `SBH-80-02`, and `SBH-50-06` are
+`CLOSED`. `SBH-20-02` is the sole canonical `READY` implementation/proof row.
+The recorded `loop_eligible` values remain register metadata; human selection
+is still required under the serial workflow before a `READY` row may enter
 implementation.
 
 | ID | Class | Priority | State | Loop eligible |
@@ -4492,10 +4527,10 @@ implementation.
 | `SBH-20-01` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-06` | foundational spine | — | `CLOSED` | No |
 | `SBH-10-03` | foundational spine | — | `CLOSED` | No |
-| `SBH-10-04` | foundational spine | — | `READY` | No |
-| `SBH-10-05` | foundational spine | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-02` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-03` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-10-04` | foundational spine | — | `CLOSED` | No |
+| `SBH-10-05` | foundational spine | — | `CLOSED` | No |
+| `SBH-20-02` | foundational/concurrency | — | `READY` | No |
+| `SBH-20-03` | foundational/concurrency | — | `CLOSED` | No |
 | `SBH-20-04` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-20-05` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-30-02` | independent lane-local | P1 | `CLOSED` | No |
@@ -4553,14 +4588,19 @@ SBH-80-01 = P1
 ```
 
 `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`, `SBH-10-03`,
-`SBH-30-02`, `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are
-`CLOSED`. The v0.1.30 closure leaves zero canonical `READY`
-implementation/proof rows. JC-229 / SBH-10-04 remains
-`BLOCKED_SHARED_AUTHORITY`, SBH-10-05 remains `BLOCKED_DEPENDENCY`, and
+`SBH-10-04`, `SBH-10-05`, `SBH-20-03`, `SBH-30-02`, `SBH-60-01`,
+`SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are `CLOSED`. The v0.1.35
+current canonical admission state is:
+
+```text
+canonical READY implementation/proof rows = 1
+canonical READY row = SBH-20-02
+```
+
 SBH-50-02 through SBH-50-05 remain `BLOCKED_DEPENDENCY` pending separate
 admission review; satisfying the frozen `SBH-50-06` prerequisite does not by
-itself admit those rows. The JC-223 dependency edges are unchanged. The P1
-labels provide no severity ordering.
+itself admit those rows. No other row is promoted by this amendment. The JC-223
+dependency edges are unchanged. The P1 labels provide no severity ordering.
 
 ---
 
@@ -6834,13 +6874,13 @@ resource or change the renewal workers in this branch.
 
 # 55. v0.1.35 JC-232 / SBH-20-02 renewal-vs-immediate-cancellation re-admission
 
-This proposed governance-only amendment records the completed dependencies,
-closes completed rows as provenance, and re-admits JC-232 / SBH-20-02 as the
-only READY implementation/proof row. It does not change runtime code, tests,
+This governance-only amendment records the completed dependencies, closes
+completed rows as provenance, and re-admits JC-232 / SBH-20-02 as the only
+READY implementation/proof row. It does not change runtime code, tests,
 migrations, resource snapshots, provider adapters, configuration, or the
-JC-223 dependency graph. This section becomes canonical only after human merge
-and independent post-merge verification. Older sections retain their
-point-in-time statements.
+JC-223 dependency graph. Its candidate authority takes effect only after human
+merge and independent post-merge verification; before those events, v0.1.34
+remains canonical. Older sections retain their point-in-time statements.
 
 ### Authority and exact Git evidence
 

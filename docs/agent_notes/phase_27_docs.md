@@ -1714,3 +1714,34 @@ Entitlements core modification.
   local test database. PostgreSQL authentication raised key :password not
   found. Exact-head isolated CI remains required for test_pr_strict.
 - The change contains only this note and the Master Register.
+
+## JC-232 / v0.1.35 independent-review correction (2026-10-17)
+
+- Independent review of PR #155 head e09bc6431009be9d6fa5f4b2e13e05e6f77a49bc
+  found current-authority contradictions outside the new Section 55. This
+  correction synchronizes the ordinary SBH-10-04, SBH-10-05, SBH-20-02, and
+  SBH-20-03 row definitions, the current Shared-Authority Register, and the
+  current hardening matrix with the v0.1.35 closure and sole READY admission.
+- The header now states the durable v0.1.35 lifecycle, serial policy, frozen
+  JC-219..JC-223 authority, and current JC-232 / SBH-20-02 admission. Section
+  55 states that this candidate takes effect only after human merge and
+  independent post-merge verification.
+- The Master Register's current lifecycle, dunning law, and current transition
+  summaries now match accepted JC-265 authority: configured retry or grace
+  boundary exhaustion suspends the open commercial relationship, clears retry
+  scheduling, and makes current access non-effective; the exact same
+  authorized RenewalAttempt may recover suspension. Historical point-in-time
+  statements remain identified as such.
+- Accepted JC-265 sources inspected: `docs/governance/subscription_scheduling_terms.md`
+  and `docs/hardening/subscriptions/jc_265_prejit_conformance.md`. This is
+  reconciliation of existing law, not a new Product decision.
+- The consumed SBH-10-04 authority remains completed provenance only;
+  SBH-10-05 remains external to Payments core; SBH-20-02 shared authority is
+  NONE; SBH-20-03 remains closed provenance. No JC-223 edge changes.
+- `NEW_PRODUCT_DECISION=NO`
+- `RUNTIME_CHANGE=NO`
+- `JC223_EDGE_CHANGE=NO`
+- No runtime, test, migration, schema, snapshot, provider, or configuration
+  change is included. JC-232 receives no implementation task base or branch.
+- PR #155 remains draft and unmerged for fresh exact-head CI and independent
+  re-review.
