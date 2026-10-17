@@ -1,6 +1,8 @@
 defmodule Store.Subscriptions.Sbh2002RenewalImmediateCancellationTest do
   use Store.DataCase, async: false
 
+  @normal_cancel_now_query_count 14
+
   import Ash.Expr
   require Ash.Query
 
@@ -225,7 +227,7 @@ defmodule Store.Subscriptions.Sbh2002RenewalImmediateCancellationTest do
       end)
 
     assert {:ok, %Subscription{status: :canceled, cancel_at_period_end: false}} = result
-    assert stats.query_count > 0
+    assert stats.query_count == @normal_cancel_now_query_count
     IO.puts("JC-232 normal_cancel_now_queries=#{stats.query_count} query_delta=0")
   end
 
