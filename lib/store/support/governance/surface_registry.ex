@@ -21,6 +21,13 @@ defmodule Store.Support.Governance.SurfaceRegistry do
       exports: [
         {:list_payment_intents_for_admin, 2},
         {:get_payment_intent_for_admin, 2},
+        {:observe_payment_intent_for_system, 1},
+        {:apply_observed_payment_outcome_for_system, 1},
+        {:record_and_apply_payment_observation_for_system, 2},
+        {:renewal_payment_application_status_for_system, 1},
+        {:serialize_renewal_payment_application_for_system, 1},
+        {:serialize_renewal_order_payment_application_for_system, 1},
+        {:request_renewal_cancellation_remediation_for_system, 1},
         {:ingest_webhook_receipt_for_system, 1},
         {:get_webhook_receipt_for_system, 1},
         {:process_payment_webhook_receipt_for_system, 1},
@@ -173,6 +180,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_due_renewal_jobs_for_system, 1},
         {:process_due_subscription_renewal_for_system, 1},
         {:process_due_subscription_renewal_for_system, 2},
+        {:validate_complete_bound_renewal_attempt_for_system, 1},
         {:reconcile_paid_subscription_renewal_for_system, 1},
         {:reconcile_paid_subscription_renewal_for_system, 2},
         {:run_due_renewals_for_system, 0},
@@ -191,8 +199,11 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_entitlements_for_user, 2},
         {:entitlement_set_for_user, 1},
         {:issue_subscription_entitlement_for_system, 2},
+        {:issue_subscription_source_grant_strict_for_system, 2},
         {:revoke_subscription_entitlements_for_system, 1},
-        {:revoke_subscription_entitlements_for_system, 2}
+        {:revoke_subscription_entitlements_for_system, 2},
+        {:revoke_subscription_source_grants_strict_for_system, 2},
+        {:invalidate_subscription_source_users_after_commit_for_system, 2}
       ]
     }
   }

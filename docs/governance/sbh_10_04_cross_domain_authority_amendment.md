@@ -23,6 +23,10 @@ The frozen JC-223 edges remain exactly as recorded at `c66...:docs/hardening/sub
 No dependency row changes in this amendment. Queue order and the authority decisions below do not add or remove JC-223 edges.
 
 ## Existing-source proof
+The source proofs below are pinned to the original canonical-main and SUBS evidence
+listed above. They preserve the basis for the cross-domain decision and do not describe
+current S0 after PR #134. Current S0 guard status is recorded under IA-04 isolation
+and sequencing below.
 
 ### Payments can retain terminal intent history and create a later intent
 
@@ -221,3 +225,446 @@ Only the separate SUBS re-admission amendment may transition `SBH-10-04` from `B
 - **Idempotency:** One collection ID maps to one PaymentIntent key and provider key. One reservation generation key maps to one durable reservation row. A new key requires a new approved collection or generation identity.
 - **Telemetry and logs:** The later implementation must record collection ID, renewal key, local intent ID, order ID, reservation key, dispatch epoch, fenced-through epoch, dispatch state, financial outcome, provider retrieval/cancel result, recovery result, and application result. It must distinguish an attempted provider call from provider evidence and Order application.
 - **Capacity claim:** This amendment makes no latency, throughput, or 100,000-user certification claim.
+
+## JC-229 dispatch atomicity correction
+The source snapshot and guard gap recorded below describe the state before JC-327's
+S0 prerequisite implementation. The current S0 prerequisite closure appears under
+IA-04 isolation and sequencing. JC-229 remains blocked on its separate SUBS gates
+recorded below.
+
+This governance proposal addresses only the physical-generation read-to-dispatch
+race. JC-229 / SBH-10-04 remains `BLOCKED_AUTHORITY -> STOP`. PR #127 remains draft
+and stopped. This record supersedes prior READY/task-start evidence for JC-229
+without modifying the SUBS Master Register or granting JC-230 authority.
+
+### Verified evidence and race
+
+The 2026-10-04 live fetch and GitHub inspection confirmed:
+
+| Authority | Observed state |
+| --- | --- |
+| canonical main | `43b2927b3fd4689c68bf8ec4f631d8ab0c5c2d8c` |
+| accepted SUBS | `8a21739555de1dde8f448bfd7e1172b1caeb54c3` |
+| accepted S0 | `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9` |
+| PR #127 | open, draft, `c409a440dbb5f2ea2fb39e79e0f9b11787d38422` |
+| PR #128 | open, `91807522468a138047fd78408aedcf361ed7a3f0` |
+
+PR #117 accepted exact-generation operations into S0. PR #119 reconciled them into
+SUBS. PR #121 re-admitted JC-229 at the accepted SUBS tip, and PR #122 recorded its
+original task base. Those grants permit use of accepted APIs; they do not authorize
+JC-229 to add Orders locking behavior.
+
+At PR #127 head, `renewal_collection_attempts.ex` lines 389-405 locks the collection,
+checks its epoch, calls `ensure_current_generation_active`, validates its exact
+PaymentIntent, and updates `:claim_dispatch`. Lines 534-553 use
+`Orders.recover_exact_generation` to validate the key, Order, variant, quantity,
+and active state. The enclosing transaction at lines 964-975 does not add an Orders
+row lock. Accepted S0 `inventory_reservations.ex` lines 222-230 reads the key with
+`Repo.one` and no lock. That file is byte-identical at S0, SUBS, and PR #127 head.
+
+A concrete permitted database interleaving is:
+
+1. Dispatch transaction A locks the collection and reads active generation G.
+2. A pauses before its collection transition.
+3. Exact release transaction B locks InventoryItem, then G, cancels G, and commits.
+4. A changes `not_started` to `may_have_been_reached` and commits using its prior read.
+
+B never requests A's collection lock. A never locks G. The resulting dispatch claim
+therefore outlives its active physical hold. This is a source-level concurrency
+proof, not a claim that a production incident or a new executable race test occurred.
+The existing same-collection pre-submission fence locks the collection and therefore
+cannot itself perform step 3 concurrently with A. Release must independently satisfy
+its governing business evidence; this correction grants no arbitrary caller release.
+
+### Orders contract and cross-domain order
+
+Section 5.2 of [inventory governance](inventory_reservations.md#52-exact-renewal-generation-transaction-guard)
+freezes the capability semantics. No arbitrary function name is frozen. Prefer one
+additive guard implementation in `Store.Orders.InventoryReservations`. Cross-domain
+callers must retain the accepted `Store.Orders` facade boundary, supply trusted typed
+identity and explicit system/actor authority, and never access Orders tables through
+Subscription Repo code. Current `domain.ex` forwards the existing exact-generation
+APIs explicitly and has no guard entry yet. Cross-domain callers must never call
+`InventoryReservations` directly.
+
+The 2026-10-07 source-compatibility admission explicitly authorizes one additive
+`Store.Orders` facade forwarding entry for the exact-generation transaction guard.
+The frozen future implementation boundary is exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+test/store/orders/inventory_reservation_generation_test.exs
+```
+
+No arbitrary public function name is frozen. Freeze the behavioral contract:
+`Store.Orders` (public/internal facade) → additive exact-generation transaction
+guard → `InventoryReservations` implementation. Do not bypass that facade or alter an
+existing recovery API to expose the guard.
+
+For a physical dispatch, the exact collection epoch N in `not_started`, exact
+PaymentIntent evidence, and the exact active physical generation under the guard
+are all required before the transition to epoch N in `may_have_been_reached`.
+The guard survives the CAS commit or rollback. A virtual renewal without a physical
+generation does not use this guard. The guard alone never authorizes provider work. The fresh resume path also uses an
+unlocked generation read before its epoch CAS. Resume does not authorize dispatch;
+it remains stopped with PR #127 and must receive an independent fail-closed review
+at JC-229 re-admission. This amendment grants no new resume or recovery semantics.
+
+Accepted exact reserve at lines 293-320, release at 371-389, and consume at 404-427
+lock InventoryItem before the reservation. Generic bulk and expiry paths likewise
+lock inventory first and exclude renewal keys. None acquires a collection lock.
+A reservation-only dispatch guard introduces no wait back to InventoryItem.
+An exact mutation can wait for that guard while holding InventoryItem, but dispatch
+can finish without requesting that item. For fence operations, retain collection,
+InventoryItem, reservation order. Prohibit inventory mutation after a reservation-only
+guard and prohibit Orders-to-collection reverse acquisition. These restrictions
+prevent the new reservation-to-inventory edge that would otherwise form a cycle.
+A caller must not hold earlier Orders locks when it starts collection locking.
+A future authoritative writer that violates this graph blocks implementation.
+
+### Prerequisite admission (2026-10-07)
+This section preserves the admission contract and preimplementation status for the
+now-completed JC-327 S0 prerequisite. Its accepted closure and current IA-04 state are
+recorded under IA-04 isolation and sequencing below.
+
+Objective: protect one exact physical generation through a governed caller's outer
+transaction, without writing inventory, Subscription state, or new durable evidence.
+The owner is S0 / Orders inventory concurrency, in one dedicated temporary task
+branch/worktree. This is a separate prerequisite, not JC-229 or IA-04 Slice 2.
+
+**Governance parent:** canonical `origin/main` at
+`b0a6c07637258659eb561e9863ea88667d1f96ae` (governance branch
+`governance/s0-jc229-generation-guard-admission`).
+
+**Accepted S0 task base (implementation parent):**
+
+```text
+commit = da0a369b9f99ecca6db940a802257cea4e69b2b8
+tree   = 6227effe919509d71fe0450234792831d7d13240
+ref    = origin/hardening/s0-baseline
+```
+
+Provenance: PR #128 Slice 2 merged and post-merge verified; PR #132 DevCore
+reconciliation merged as `da0a369...` with zero IA implementation/test drift on the
+guard surfaces. Source-compatibility review at this base: `PASS`. Relevant main/S0
+runtime divergence on the three guard surfaces is S0-ahead exact-generation history;
+it does not require importing unrelated main application history before implementing
+on S0. `BLOCKED_BASE_RECONCILIATION` and `BLOCKED_FACADE_AUTHORITY` are resolved.
+
+**Prerequisite lifecycle at admission (before PR #134):**
+
+```text
+JC-229 EXACT-GENERATION GUARD PREREQUISITE = AUTHORIZED / NOT STARTED
+```
+
+```text
+implementation branch  = NOT CREATED YET
+implementation worktree = NOT CREATED YET
+integration target     = hardening/s0-baseline
+```
+
+Writable files for the future implementation task only:
+
+```text
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+test/store/orders/inventory_reservation_generation_test.exs
+```
+
+Every other file is forbidden in that implementation task. In particular, no
+`inventory_reservation.ex` resource change, migration, Ash snapshot, new resource or
+Domain, `inventory_admission.ex`, `InventoryAdmission.Redis`, generic checkout,
+workers, Subscription runtime, Payments, providers, dependency, configuration, stock
+authority, or IA-05 recovery change is admitted. Any need for additional files
+requires STOP and another authority decision. Existing APIs remain unchanged;
+recovery-after-ambiguous-mutation compliance in PR #127's fence path remains that
+stopped task's separate responsibility. The guard does not add recovery semantics.
+
+Do not branch the implementation from `main` alone (lacks accepted PR #117 runtime)
+or use PR #127 / `hardening/s0-ia04` as implementation authority. If the task base
+moves before implementation starts, STOP and re-evaluate.
+
+### IA-04 isolation and sequencing
+
+PR #128 Slice 2 is `PASS / ACCEPTED / FROZEN` (merge `f5131e39801c1633b79d04cacd30202b0823e48d`
+into `hardening/s0-baseline`). Its cumulative diff contained accepted Slice-1
+configuration/startup files plus the two Slice-2 Redis files only; neither guard
+surface appeared in that diff. Slice 2 makes no PostgreSQL calls or Orders routing
+changes. Redis lifecycle fences remain coordination; the new PostgreSQL guard neither
+replaces them nor changes their known/unknown outcome, capacity-retention, or timeout
+rules.
+
+The guard prerequisite must use its own branch/worktree and S0's explicit bounded
+ownership assignment. No guard implementation may be added to the historical
+`hardening/s0-ia04` line.
+
+Historical status before the JC-327 S0 prerequisite merged:
+
+```text
+IA-04 Slice 1 = PASS / ACCEPTED / FROZEN
+IA-04 Slice 3 = SERIAL-BLOCKED ON JC-229 GUARD PREREQUISITE (not authorized at that point)
+IA-05+ = NOT AUTHORIZED
+```
+
+At the time of the JC-229 prerequisite, its three-file guard boundary was reserved
+exclusively to that work. The prerequisite is now merged and verified on S0. Later
+IA-04 work touching `inventory_reservations.ex` must preserve and reconcile the
+accepted guard before coding. The guard is frozen and must not be silently refactored.
+No parallel competing implementation is permitted. If later-slice work already
+started, STOP for a new sequencing decision. This amendment leaves S0 architecture
+unchanged and does not amend the InventoryAdmission architecture file.
+
+### JC-327 closure and IA-04 IN-02 admission (2026-10-07)
+
+JC-229's exact-generation guard prerequisite is `COMPLETE / ACCEPTED / FROZEN ON S0`:
+
+```text
+reviewed head = 562eed9fd7fe7adf6da1a9298856e651ef302582
+merge = dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e
+tree = 3e6c79e823741b661ef96308aca320356580dfce
+```
+
+The JC-229 guard prerequisite no longer blocks IA-04 IN-02. This closes the S0-side
+guard prerequisite only. It does not re-admit JC-229, start its implementation, or
+begin SUBS integration.
+
+Current serial IA-04 state:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-02 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+The admitted frozen-plan task is `TOON IN-02`, "Add the internal outcome-preserving
+reservation seam before the legacy error mapper." Its implementation base is S0
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, tree
+`3e6c79e823741b661ef96308aca320356580dfce`. The future writable implementation
+boundary is exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+test/store/orders/inventory_admission_recovery_test.exs
+```
+
+IN-02 may add an internal outcome-preserving seam around the existing generic
+reservation transaction. It must preserve the semantic distinctions between known
+commit, known rollback or governed rejection, pre-database failure, and ambiguous
+database outcome before the legacy compatibility mapper runs. Existing public
+compatibility behavior remains available through that mapper. Do not invent final
+implementation names in this governance record.
+This authority covers generic `reserve_inventory/3` only. It does not authorize
+changes to `reserve_inventory_for_checkout/3` or its CTE path.
+
+The accepted JC-327 `guard_exact_generation/4` behavior is frozen. Later code touching
+`inventory_reservations.ex` must preserve and reconcile that guard. IN-02 must not
+silently refactor it.
+
+IN-02 must not rewrite the reservation transaction, move it into Oban, implement IA-05
+recovery, add a generic transaction framework, change checkout CTE or multi-variant
+behavior, change reservation durable states, alter InventoryItem locking or final
+PostgreSQL availability checks, or add schema or migrations. Ambiguous database
+outcome must not be treated as rollback and must not authorize an automatic second
+durable mutation. Full recovery execution remains IA-05 work and is unauthorized.
+
+**Performance & Scaling Review.** PostgreSQL durable transaction outcome is the data
+layer. IN-02 adds no hot cache, Redis structure, TTL, indexes, PubSub, or Oban work for
+synchronous reservation mutation. Use existing inventory and reservation indexes only.
+Do not add a read-before-write loop. Preserve the bounded synchronous PostgreSQL
+reservation path. This admission makes no 100,000-user certification claim.
+
+```text
+DATA_LAYER = PostgreSQL durable transaction outcome
+HOT_CACHE = none
+REDIS = no new structure in IN-02
+TTL = no new TTL introduced by IN-02
+INDEXES = existing inventory/reservation indexes only
+PUBSUB = none
+OBAN = none for synchronous reservation mutation
+```
+
+**NewYou downstream-consumer review.** Store Blueprint Hardening is the generic
+hardened commerce engine; NewYou is its first-class downstream conformance consumer.
+`GENERIC_STORE_CORRECTNESS = YES` and `NEWYOU_SPECIFIC_POLICY = NO`. NewYou benefits
+from truthful ambiguous-outcome handling in later renewal and payment orchestration.
+IN-02 must not encode Paystack rules, NewYou cancellation precedence, 72-hour grace
+behavior, Entitlements policy, or NewYou membership or product semantics. Future
+NewYou integration must consume stable Store contracts and facades, not internal
+`InventoryReservations` details.
+
+JC-229 / SBH-10-04 implementation remains `BLOCKED_AUTHORITY -> STOP` until the
+accepted S0 prerequisite is combined with SUBS through separate integration and
+verification, followed by separate SUBS governance re-admission. This amendment does
+neither SUBS step and grants no JC-229 implementation authority. PR #127 remains draft
+and stopped.
+
+### Acceptance and concurrency proof
+
+Use separate PostgreSQL backend sessions, explicit message/barrier synchronization,
+and database lock-wait evidence. Sleeps and task non-completion alone are not proof.
+The focused Orders tests must prove:
+
+1. An exact active generation under the guard allows the governed caller to proceed.
+2. A missing generation fails closed.
+3. Each terminal state fails closed.
+4. Wrong Order, variant, full key, and required quantity fail closed, including
+   contradictory stored identity.
+5. A release that wins first commits terminal evidence; a later guard rejects it.
+6. A guard that wins first prevents exact release from committing until the outer
+   guarded transaction finishes. Prove the backend wait dependency, then prove release
+   proceeds after commit. Include consume and every applicable terminal writer.
+7. Outer rollback releases the lock and leaves reservation facts and counters unchanged.
+8. Generic reserve/replay/release/consume/expiry behavior remains unchanged.
+9. An unrelated renewal generation remains independently mutable, including a different
+   Order on the same variant. The read-only guard must not lock the InventoryItem.
+10. No second stock ledger or inventory authority exists.
+11. Calls outside the required transaction, or on a different connection, fail closed;
+    database errors/timeouts cannot produce permission to dispatch.
+
+Tests must verify row/counter facts before and after, transaction connection identity,
+lock lifetime, and both race winners. Orders tests may model a governed caller's
+transaction without modifying Subscription production code or tests. Later JC-229
+must independently prove the real guard-through-dispatch-CAS composition.
+
+### Performance & Scaling Review
+
+This amendment adds zero production queries. The future guard is on the hot physical
+renewal dispatch path. Measure its query count separately from BEGIN/COMMIT and from
+the caller CAS, including success, missing, terminal, invalid input, and uncertainty.
+The target is one indexed full-key locking SELECT and zero inventory queries or
+association loads. Report the actual count rather than treating this target as measured.
+Verify the retained unique reservation-key index and an EXPLAIN plan using a realistic
+table population; no index migration is authorized. Recheck row identity after lock
+acquisition. A single generation creates no N+1 loop.
+
+Measure uncontended latency and contended lock-wait duration, pool occupancy, and
+bounded timeout behavior. Review the complete lock graph and deadlock evidence.
+Keep the caller transaction short; provider HTTP must occur after commit. No cache,
+Redis, ETS, or GenServer serialization is allowed. TTL and invalidation stay unchanged.
+No Oban job or uniqueness policy changes. Use existing Repo telemetry for query counts,
+lock waits, and errors; add no logging of complete keys or payment evidence.
+
+### Merge and re-admission gates
+The JC-327 S0 prerequisite governed by the first paragraph below has since merged and
+been post-merge verified. The separate JC-229 / SUBS gates in the following paragraph
+remain mandatory.
+
+The governance admission PR requires exact-head CI, independent review, human merge
+into `main`, and independent post-merge commit/tree verification. It implements no
+capability. After that admission merges, the prerequisite implementation requires
+focused deterministic tests and neighbouring regressions, measured performance proof,
+`mix check`, required exact-head CI, and fresh independent review. Its integration
+target is `hardening/s0-baseline`, using a normal bounded merge, followed by independent
+post-merge commit/tree and test verification. No force push is authorized.
+
+Before JC-229 can be re-admitted, the accepted prerequisite must be reconciled into
+SUBS in a separate bounded integration with explicit source SHAs, exact-head CI,
+independent integration review, merge, and post-merge verification. Then a separate
+SUBS governance re-admission must verify all canonical grants, current source
+compatibility, and real dispatch-CAS composition and assign a fresh accepted task base.
+Until all these gates complete, JC-229 remains `BLOCKED_AUTHORITY -> STOP` and PR #127
+remains draft. JC-230 stays dependency-blocked. This task never merges either runtime PR.
+
+### S0 IA-04 serial admission: JC-335 / IN-03 (2026-10-09)
+
+JC-331 is `PASS / ACCEPTED / POST-MERGE VERIFIED / DONE`. PR #136 merged exactly
+as reviewed: reviewed head `a15e6ea7bf651487397c1cddd6e5b920d1cfe0fb`, merge
+`7bc76bb89afc32f23bedaea06089504a54cdacbd`, and tree
+`03349c04d93de2a55183207e0704a2a12ff7274a`. The merge tree equals the reviewed
+head tree. The accepted S0 task base is:
+
+```text
+TASK_BASE_SHA = 7bc76bb89afc32f23bedaea06089504a54cdacbd
+TASK_BASE_TREE = 03349c04d93de2a55183207e0704a2a12ff7274a
+```
+
+The serial IA-04 state is:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = PASS / ACCEPTED / FROZEN / POST-MERGE VERIFIED
+Slice 3 / IN-03 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-03 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+IN-03 is only the read-only durable PostgreSQL recovery snapshot for
+operation-specific PRE/POST comparison. It exposes durable reservation and inventory
+facts. It does not execute recovery transitions or interpret a neither-match result.
+
+For an insert, the trusted PRE evidence includes absence of the operation's
+`reservation_key` and the `InventoryItem` values for `stock_on_hand`,
+`reserved_count`, and `version`. Expected POST must match the exact reservation
+identity (`id`, `reservation_key`, `order_id`, and `variant_id`), quantity, state,
+expiry, reservation version, expected reserved-count delta, and inventory version
+progression. Row presence or a matching key alone is not commit proof.
+
+For an active same-order/variant adjustment, PRE and expected POST include the exact
+reservation ID, key, quantity, state, expiry, and version, plus the inventory
+`stock_on_hand`, `reserved_count`, and version. A matching key with unexpected
+quantity, state, expiry, or version is not a POST match. If PostgreSQL facts match
+neither the trusted PRE nor expected POST descriptor, the result is unresolved
+evidence. It does not imply commit, rollback, release, or retry. Unresolved comparison
+retains the fence and capacity.
+
+Recovery truth is PostgreSQL only. IN-03 must not read Redis, ETS, Cachex,
+StockFastPath, AvailabilityCache, PubSub, browser storage, or localStorage as
+recovery evidence. The snapshot is read-only: it cannot insert, update, delete,
+reserve, release, consume, expire, retry the mutation, change Redis, release permits,
+enqueue recovery, transition admission lifecycle, or perform another durable
+mutation. IN-03 does not authorize recovery execution.
+
+Future implementation files are exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+test/store/orders/inventory_admission_recovery_test.exs
+```
+
+No third implementation file, resource, schema, migration, index, mutation marker,
+worker, Redis primitive, or recovery service is authorized. The accepted
+`reserve_inventory_outcome/3` known-commit, known-rollback, and ambiguous distinctions
+remain in place before legacy interpretation. The accepted JC-327
+`guard_exact_generation/4` behavior remains frozen. IN-03 does not refactor either
+seam.
+
+**Performance & Scaling Review.**
+
+```text
+DATA_LAYER = COLD / DURABLE PostgreSQL snapshot
+INDEXES = existing reservation_key, active order/variant, and inventory variant identities only; no new index or migration
+CACHE = none for recovery truth
+TTL = no new TTL introduced by IN-03
+REDIS_STRUCTURE = none added; the future recovery fence and descriptor remain coordination authority only
+INVALIDATION = none; read-only snapshot
+PUBSUB = none
+OBAN = none
+STORE_REPO = one bounded recovery read shape; no loop; no second durable mutation
+RAW_DB_RETRY = NONE
+100K_CERTIFICATION = NOT CLAIMED
+```
+
+The snapshot returns bounded internal reservation and inventory evidence only. It
+must not expose raw SQL errors, connection strings, credentials, stack traces,
+customer PII, full order payloads, or payment data.
+
+```text
+GENERIC_STORE_CORRECTNESS = YES
+NEWYOU_SPECIFIC_POLICY = NO
+```
+
+This admission adds no Paystack behavior, NewYou grace rules, membership semantics,
+subscription cancellation policy, Entitlements policy, or product-specific inventory
+rules.
+
+This S0 admission preserves every JC-229 / SBH-10-04 authority boundary above. It
+does not re-admit SBH-10-04, authorize JC-229, start SUBS integration, implement
+IA-05, authorize an Oban recovery worker, or add Redis recovery resolution. Later
+Slice-3 microtasks remain serially blocked until IN-03 is accepted. IA-05+ remains
+`NOT AUTHORIZED`.

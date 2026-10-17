@@ -51,6 +51,11 @@ defmodule Store.Payments.PaymentIntent do
       public?(true)
     end
 
+    attribute :provider_request_reference, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :provider_session_id, :string do
       allow_nil?(true)
       public?(true)
@@ -103,9 +108,11 @@ defmodule Store.Payments.PaymentIntent do
 
     transitions do
       transition(:submit, from: :created, to: :submitted)
+      transition(:prepare_renewal_dispatch, from: :created, to: :submitted)
       transition(:mark_requires_action, from: :submitted, to: :requires_action)
       transition(:mark_succeeded, from: :submitted, to: :succeeded)
       transition(:mark_succeeded, from: :requires_action, to: :succeeded)
+      transition(:correct_to_succeeded, from: :failed, to: :succeeded)
       transition(:mark_failed, from: :submitted, to: :failed)
       transition(:mark_failed, from: :requires_action, to: :failed)
       transition(:cancel, from: :created, to: :cancelled)
@@ -145,6 +152,7 @@ defmodule Store.Payments.PaymentIntent do
         :purpose,
         :subscription_id,
         :provider_payment_id,
+        :provider_request_reference,
         :provider_session_id,
         :provider_customer_ref,
         :provider_payment_method_ref,
@@ -163,6 +171,7 @@ defmodule Store.Payments.PaymentIntent do
         :purpose,
         :subscription_id,
         :provider_payment_id,
+        :provider_request_reference,
         :provider_session_id,
         :provider_customer_ref,
         :provider_payment_method_ref,
@@ -193,6 +202,12 @@ defmodule Store.Payments.PaymentIntent do
       ])
     end
 
+    update :prepare_renewal_dispatch do
+      require_atomic?(false)
+      accept([:provider_customer_ref, :provider_payment_method_ref])
+      change({Store.Support.Governance.TransitionState, target: :submitted})
+    end
+
     update :submit do
       require_atomic?(false)
       accept([])
@@ -206,6 +221,12 @@ defmodule Store.Payments.PaymentIntent do
     end
 
     update :mark_succeeded do
+      require_atomic?(false)
+      accept([])
+      change({Store.Support.Governance.TransitionState, target: :succeeded})
+    end
+
+    update :correct_to_succeeded do
       require_atomic?(false)
       accept([])
       change({Store.Support.Governance.TransitionState, target: :succeeded})
@@ -249,6 +270,11 @@ defmodule Store.Payments.PaymentIntent do
       index([:provider], name: "payment_intents_provider_index")
       index([:provider_payment_id], name: "payment_intents_provider_payment_id_index")
       index([:provider_session_id], name: "payment_intents_provider_session_id_index")
+
+      index([:provider_request_reference],
+        name: "payment_intents_provider_request_reference_index"
+      )
+
       index([:provider_customer_ref], name: "payment_intents_provider_customer_ref_index")
 
       index([:provider_payment_method_ref],
@@ -265,6 +291,12 @@ defmodule Store.Payments.PaymentIntent do
         unique: true,
         where: "provider_session_id IS NOT NULL",
         name: "payment_intents_unique_provider_session_id_index"
+      )
+
+      index([:provider, :provider_request_reference],
+        unique: true,
+        where: "provider_request_reference IS NOT NULL",
+        name: "payment_intents_unique_provider_request_reference_index"
       )
     end
   end
@@ -293,6 +325,11 @@ defmodule Store.Payments.PaymentIntent do
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
     end
 
+    policy action(:prepare_renewal_dispatch) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
+    end
+
     policy action(:mark_requires_action) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
@@ -303,6 +340,11 @@ defmodule Store.Payments.PaymentIntent do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin]})
+    end
+
+    policy action(:correct_to_succeeded) do
+      access_type(:runtime)
+      authorize_if(context_equals(:system?, true))
     end
 
     policy action(:mark_failed) do

@@ -1,5 +1,7 @@
 # Phase 27 — Variable Subscriptions
 
+> **Historical scope at reconciliation (2026-10-17):** The dated records below preserve the Phase 27 and SUBS governance and implementation history as recorded. Their pre-JC-265 and pre-JC-229 descriptions of runtime gaps are historical and are superseded by canonical `main` at `fdae94168e98d588fb2bba2e9fe4e93c6c016023`, including accepted PRs #147–#153 covering provider observation, payment precedence, cancellation remediation, recoverable suspension, collection lifecycle, charged-contract reconciliation, and renewal/ContractChange ordering. This note adds reconciliation provenance only; it changes no runtime behavior or Master Register state.
+
 ## GOAL
 
 Implement the Phase 27 variable-subscription spine without violating the existing Orders-as-truth boundary:

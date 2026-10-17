@@ -30,8 +30,7 @@ defmodule Store.DataCase do
   end
 
   setup tags do
-    Store.DataCase.setup_sandbox(tags)
-    :ok
+    {:ok, sandbox_owners: Store.DataCase.setup_sandbox(tags)}
   end
 
   @doc """
@@ -40,11 +39,17 @@ defmodule Store.DataCase do
   def setup_sandbox(tags) do
     shared? = not tags[:async]
 
-    [Store.Repo, Store.DirectRepo]
-    |> Enum.map(&Sandbox.start_owner!(&1, shared: shared?))
-    |> Enum.each(fn owner_pid ->
-      on_exit(fn -> Sandbox.stop_owner(owner_pid) end)
-    end)
+    owners =
+      [Store.Repo, Store.DirectRepo]
+      |> Enum.map(fn repo -> {repo, Sandbox.start_owner!(repo, shared: shared?)} end)
+      |> Map.new()
+
+    owners |> Map.values() |> Enum.each(&register_owner_cleanup/1)
+    owners
+  end
+
+  defp register_owner_cleanup(owner_pid) do
+    on_exit(fn -> Sandbox.stop_owner(owner_pid) end)
   end
 
   @doc """

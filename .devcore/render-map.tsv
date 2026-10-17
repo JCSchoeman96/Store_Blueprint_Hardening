@@ -1,0 +1,2 @@
+dev	.devcore/env.development.local.template	.env.development.local	DATABASE_URL,DB_HOST,DB_PORT,DB_PASSWORD,DB_NAME
+test	.devcore/env.test.local.template	.env.test.local	DATABASE_URL,DB_HOST,DB_PORT,DB_PASSWORD,DB_NAME

@@ -39,6 +39,8 @@ defmodule Store.Contracts.SubscriptionEntitlementQueryAtomSafetyTest do
       assert_status(UserSubscriptionIndexQuery, :active, :active)
       assert_status(UserSubscriptionIndexQuery, "active", :active)
       assert_status(UserSubscriptionIndexQuery, " Past_Due ", :past_due)
+      assert_status(UserSubscriptionIndexQuery, :suspended, :suspended)
+      assert_status(UserSubscriptionIndexQuery, " Suspended ", :suspended)
     end
 
     test "rejects invalid binary and existing atom statuses" do
@@ -63,6 +65,8 @@ defmodule Store.Contracts.SubscriptionEntitlementQueryAtomSafetyTest do
       assert_status(AdminSubscriptionIndexQuery, :active, :active)
       assert_status(AdminSubscriptionIndexQuery, "active", :active)
       assert_status(AdminSubscriptionIndexQuery, " Past_Due ", :past_due)
+      assert_status(AdminSubscriptionIndexQuery, :suspended, :suspended)
+      assert_status(AdminSubscriptionIndexQuery, " Suspended ", :suspended)
     end
 
     test "rejects invalid binary and existing atom statuses" do

@@ -67,11 +67,12 @@ defmodule Store.PerformanceSmoke.RedisPoolTransferOwnershipTest do
     assert {:ok, "PONG"} = RedisPool.command(["PING"])
   end
 
-  test "failed on_exit registration stops the unlinked pool" do
+  test "failed on_exit registration stops the still-linked pool" do
     parent = self()
 
     owner =
       spawn(fn ->
+        Process.flag(:trap_exit, true)
         {:ok, pool_pid} = RedisPool.start_link(pool_size: 1, redis_opts: redis_opts())
 
         result =
@@ -82,10 +83,20 @@ defmodule Store.PerformanceSmoke.RedisPoolTransferOwnershipTest do
             error -> {:raised, error}
           end
 
-        send(parent, {:transfer_result, self(), pool_pid, result})
+        cleanup_exit =
+          receive do
+            {:EXIT, ^pool_pid, :normal} -> :linked_cleanup
+          after
+            0 -> :unlinked_cleanup
+          end
+
+        send(parent, {:transfer_result, self(), pool_pid, result, cleanup_exit})
       end)
 
-    assert_receive {:transfer_result, ^owner, pool_pid, {:raised, %ArgumentError{}}}, 5_000
+    assert_receive {:transfer_result, ^owner, pool_pid, {:raised, %ArgumentError{}},
+                    :linked_cleanup},
+                   5_000
+
     refute Process.alive?(pool_pid)
     assert Process.whereis(RedisPool) == nil
   end

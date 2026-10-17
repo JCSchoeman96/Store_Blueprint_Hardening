@@ -7,10 +7,83 @@ defmodule Store.Payments.Facade do
   require Ash.Query
 
   alias Store.Admin.AuditLog
+  alias Store.Payments.Inputs.ObservePaymentIntentInput
+  alias Store.Payments.Inputs.RenewalCancellationRemediationInput
+  alias Store.Payments.Inputs.RenewalOrderPaymentApplicationInput
+  alias Store.Payments.Inputs.RenewalPaymentApplicationInput
   alias Store.Payments.Inputs.WebhookReceiptIngestInput
+  alias Store.Payments.Interlocks
+  alias Store.Payments.ObservationReconciliation
   alias Store.Payments.{PaymentIntent, Providers, WebhookReceipt}
   alias Store.Payments.Queries.{PaymentIntentIndexQuery, PaymentIntentShowQuery}
+  alias Store.Payments.Refunds
   alias Store.Support.Errors.Normalize
+
+  @spec observe_payment_intent_for_system(ObservePaymentIntentInput.t()) ::
+          {:ok, ObservationReconciliation.result()} | {:error, term()}
+  def observe_payment_intent_for_system(%ObservePaymentIntentInput{} = input) do
+    ObservationReconciliation.observe_payment_intent(input)
+  end
+
+  @spec apply_observed_payment_outcome_for_system(map()) ::
+          {:ok,
+           %{
+             outcome: Store.Payments.PaymentOutcomeResolver.outcome(),
+             payment_intent: map()
+           }}
+          | {:error, term()}
+  def apply_observed_payment_outcome_for_system(observation_result)
+      when is_map(observation_result) do
+    Store.Payments.apply_observed_payment_outcome_for_system(observation_result)
+  end
+
+  @spec renewal_payment_application_status_for_system(RenewalPaymentApplicationInput.t()) ::
+          {:ok, :applied | :unapplied} | {:error, Store.Support.Errors.Error.t()}
+  def renewal_payment_application_status_for_system(%RenewalPaymentApplicationInput{} = input) do
+    Interlocks.renewal_payment_application_status_for_system(input)
+  end
+
+  @spec serialize_renewal_order_payment_application_for_system(
+          RenewalOrderPaymentApplicationInput.t()
+        ) :: {:ok, :unapplied} | {:error, Store.Support.Errors.Error.t()}
+  def serialize_renewal_order_payment_application_for_system(
+        %RenewalOrderPaymentApplicationInput{} = input
+      ) do
+    Interlocks.serialize_renewal_order_payment_application_for_system(input)
+  end
+
+  @spec serialize_renewal_payment_application_for_system(RenewalPaymentApplicationInput.t()) ::
+          {:ok, :applied | :unapplied} | {:error, Store.Support.Errors.Error.t()}
+  def serialize_renewal_payment_application_for_system(%RenewalPaymentApplicationInput{} = input) do
+    Interlocks.serialize_renewal_payment_application_for_system(input)
+  end
+
+  @spec request_renewal_cancellation_remediation_for_system(
+          RenewalCancellationRemediationInput.t()
+        ) :: {:ok, Store.Payments.Refund.t()} | {:error, term()}
+  def request_renewal_cancellation_remediation_for_system(
+        %RenewalCancellationRemediationInput{} = input
+      ) do
+    Refunds.request_renewal_cancellation_remediation_for_system(input)
+  end
+
+  @spec record_and_apply_payment_observation_for_system(
+          PaymentIntent.t(),
+          Store.Payments.Types.ProviderObservation.t()
+        ) ::
+          {:ok,
+           %{
+             evidence: Store.Payments.PaymentAttempt.t(),
+             outcome: Store.Payments.PaymentOutcomeResolver.outcome(),
+             payment_intent: map()
+           }}
+          | {:error, term()}
+  def record_and_apply_payment_observation_for_system(
+        %PaymentIntent{} = payment_intent,
+        %Store.Payments.Types.ProviderObservation{} = observation
+      ) do
+    Store.Payments.record_and_apply_payment_observation_for_system(payment_intent, observation)
+  end
 
   @spec list_payment_intents_for_admin(map(), PaymentIntentIndexQuery.t()) ::
           {:ok, [PaymentIntent.t()]} | {:error, term()}

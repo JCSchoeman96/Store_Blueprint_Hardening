@@ -194,7 +194,7 @@ NO_EXECUTABLE_READY_WORK
 | ID | Path | Branch | Development base | Integration target | Lifecycle state | Writable by long-lived agent? |
 | --- | --- | --- | --- | --- | --- | --- |
 | `MAIN` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-main` | `main` | n/a (canonical) | n/a | `CANONICAL` | Normally no (observe / post-merge verify) |
-| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `f4127902c3f328b76674724faa6a473c629c01ef` (replacement base; PR #71 candidate accepted and PR #83 reconciliation completed) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
+| `S0` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening` | `hardening/s0-baseline` | `7bc76bb89afc32f23bedaea06089504a54cdacbd` (accepted tip after PR #136; tree `03349c04d93de2a55183207e0704a2a12ff7274a`) | `origin/main` | `READY` | Explicitly admitted S0 tasks may be implemented under the task-admission and integration laws below |
 | `PLATFORM` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-platform` | `hardening/platform-security` | `cc605040bfc8ddd6868a62de20f52c905f999835` (accepted) | `origin/main` | `READY` | Explicitly admitted PLATFORM tasks may be implemented under the task-admission and integration laws below |
 | `SUBS` | `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions` | `hardening/subscriptions` | `575ffa1848ac69abe855bd018c7ae8eaf05d61e4` (SUB-ACT-01 accepted) | `origin/main` | `READY` | Stage B governance frozen; READY issues may be implemented only through the serial policy below |
 
@@ -242,7 +242,7 @@ Explicit exclusion:
 
 S0 is **not** the mandatory development parent of PLATFORM or SUBS.
 
-**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. READY itself does not automatically start implementation or authorize IA-03 or IA-04+. Current implementation authority is recorded by the bounded task-admission records below.
+**Activation:** S0 is `READY` under the S0-specific activation record below. READY allows S0 to accept separately reviewed and explicitly authorized S0 tasks. READY itself does not automatically start implementation. Current implementation authority is recorded by the bounded task-admission records below (including IA-04 for GitHub #101 when accepted on `main`).
 
 ### S0 activation record
 
@@ -286,9 +286,10 @@ alignment task. PR #71 later advanced it to the replacement development base rec
 below. `READY` does not mean `ACTIVE_PARALLEL`, `VALIDATED`, or `READY_FOR_INTEGRATION`.
 Convergence with current `main` remains a later integration obligation.
 
-### Current S0 replacement development base
+### Accepted S0 development base after PR #117 (historical)
 
-Current S0 development base: `f4127902c3f328b76674724faa6a473c629c01ef`.
+S0 development base at PR #117 completion: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+The prior accepted S0 task base was `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`; the prior reconciled S0 base was `f4127902c3f328b76674724faa6a473c629c01ef`.
 
 Provenance:
 
@@ -301,6 +302,21 @@ Provenance:
 - The PR #83 integration commit's parents are the prior S0 SHA and canonical main SHA, in that order.
 - Exact-head CI run `36250010176`, attempt 1: `PASS`; all five required jobs passed.
 - Independent post-integration review: `PASS`.
+- PR #115 merged generic IA-03 into `hardening/s0-baseline` as
+  `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`.
+- PR #115 certified implementation head: `35e85a05083d3be144c07c97c4e8b9ad8c38a02e`.
+- PR #115 certified and merge tree: `b4e3bf388433d7f7b17931c777ad0e33fb318102`.
+- PR #115 exact-head CI run `36885741940`: `PASS`, with 3 properties, 598 tests,
+  and 0 failures; independent implementation verdict:
+  `PASS WITH NON-BLOCKING CORRECTIONS`.
+- PR #117 certified renewal-generation implementation head:
+  `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`.
+- PR #117 exact-head CI run `36968312583`: `PASS`; all five required jobs passed,
+  with 3 properties, 625 tests, and 0 failures.
+- PR #117 merged into `hardening/s0-baseline` as
+  `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+- GitHub comparison from the certified head to the merge commit is one commit ahead
+  with zero changed files; independent post-merge verification: `PASS`.
 
 ### S0 main-to-branch reconciliation record
 
@@ -317,8 +333,9 @@ review both passed.
 State at completion of the PR #83 reconciliation, before the fresh task-admission decision: S0 remained `READY`; IA-03 was `NOT AUTHORIZED`.
 
 Task-admission status: the reconciliation prerequisite is satisfied. S0 remains
-`READY`. The fresh bounded generic IA-03 task admission below authorizes only the
-recorded four-file implementation boundary. It does not authorize SBH-10-04
+`READY`. The fresh bounded generic IA-03 task admission below authorized only the
+recorded four-file implementation boundary. PR #115 completed that boundary and
+generic IA-03 is now `COMPLETE / FROZEN`. It did not authorize SBH-10-04
 implementation.
 
 The narrow governance PR that records this completed PR #83 reconciliation changes
@@ -334,9 +351,11 @@ waive reconciliation when a future change requires it.
 
 Task base: `f4127902c3f328b76674724faa6a473c629c01ef`.
 
-S0 lifecycle remains `READY`. Generic IA-03 is `AUTHORIZED / NOT STARTED`.
-IA-04 and later remain `NOT AUTHORIZED`; completing IA-03 does not authorize a
-later slice.
+At admission time, S0 lifecycle remained `READY` and generic IA-03 was
+`AUTHORIZED / NOT STARTED`. PR #115 later completed this bounded task, and generic
+IA-03 is now `COMPLETE / FROZEN`. At completion of generic IA-03, IA-04 and later
+remained `NOT AUTHORIZED`; completing IA-03 did not itself authorize a later slice.
+Current IA-04 authority is recorded in the fresh full-scope admission below.
 
 The exact coding boundary is:
 
@@ -355,10 +374,535 @@ No fifth implementation file is authorized. The frozen read-only contracts are
 them. The admitted behavior and exclusions are recorded in section 20 of
 `s0_inventory_reservation_admission_architecture.md`.
 
-PR #80's renewal-generation InventoryAdmission work remains separately
-`NOT AUTHORIZED`. It needs a future S0 governance/task-admission decision for
-its typed identity contract and exact-key recovery. Generic IA-03 uses only
+At that time PR #80's renewal-generation InventoryAdmission work remained separately
+`NOT AUTHORIZED`. This governance update makes a distinct admission decision for its
+typed identity contract and exact-key recovery below. Generic IA-03 uses only
 `order:<order_id>:sku:<variant_id>`.
+
+### Generic IA-03 closure and PR #80 renewal-generation admission (2026-10-01)
+
+Generic IA-03 is `COMPLETE / FROZEN`. PR #115 merged the certified implementation
+without a tree delta:
+
+- Task base: `f4127902c3f328b76674724faa6a473c629c01ef`.
+- Certified implementation head: `35e85a05083d3be144c07c97c4e8b9ad8c38a02e`.
+- Certified implementation tree: `b4e3bf388433d7f7b17931c777ad0e33fb318102`.
+- Merge commit: `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`.
+- Merge tree: `b4e3bf388433d7f7b17931c777ad0e33fb318102`.
+- Exact-head CI run `36885741940`: `PASS`, with 3 properties, 598 tests, and 0
+  failures.
+- Independent implementation verdict: `PASS WITH NON-BLOCKING CORRECTIONS`.
+
+The only correction was PR-description performance wording. No code changed after
+certification. The completed behavior is limited to the generic four-part identity,
+Redis-only reserve/status/queued-abandon orchestration, exact replay, governed
+mismatch/busy/unavailable outcomes, caller-independent queue state, metadata/fence/
+index coherence checks, fail-closed corruption handling, no raw lease or fencing
+exposure through the facade, no abandon promotion, no PostgreSQL reservation
+execution, no operational admitted-expiry or release, no recovery/reaper/workers,
+unchanged `K_v = 1`, and unchanged global `B_total`.
+
+Separately, at the 2026-10-01 admission point, the PR #80 renewal-generation
+InventoryAdmission / exact-key reservation prerequisite was `AUTHORIZED / NOT STARTED`
+against task base `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`. That admission was
+independent from the IA-03 closure. It was supported by the canonical PR #80
+cross-domain authority and a fresh review of the S0 source at that exact tip.
+
+The authorized implementation boundary is recorded in section 21 of
+`s0_inventory_reservation_admission_architecture.md`. It includes only the listed
+InventoryAdmission, Orders, one migration, one generated snapshot, and focused tests.
+It authorizes the server-derived UUIDv7 generation key, exact-key identity
+propagation and recovery, Orders' global `reservation_key` identity plus the active
+partial unique index, exact reserve/read/recover/release/consume operations, generic
+key disambiguation, and renewal cleanup exclusion. It does not authorize any
+Subscription, Payments, provider, PR #78, IA-04+, recovery-worker, reaper, or Redis
+authority work.
+
+### PR #117 renewal-generation prerequisite closure (2026-10-02)
+
+The admitted S0 prerequisite is now `COMPLETE / FROZEN`:
+
+- Implementation task base: `f122b24bcf78f48f2954d372cef38c06ebcc1e5e`.
+- Certified implementation head: `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`.
+- Exact-head CI run `36968312583`: `PASS`; all five required jobs passed, with
+  3 properties, 625 tests, and 0 failures.
+- PR #117 merge commit: `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+- Certified-head to merge comparison: one merge commit, zero changed files.
+- Independent post-merge verification: `PASS`.
+
+This closure exhausts only the bounded renewal-generation / exact-key prerequisite
+implementation authority. Generic IA-03 remains frozen. At completion of this PR #117
+prerequisite closure, IA-04+ remained unauthorized.
+`S0-CLOSE-02` and overall S0 merge readiness remain blocked under their separate
+programme gates.
+
+The current accepted SUBS tip `bd0555c41bb014326b0754329f2ca5fbf0f8911b`
+does not contain the exact-key runtime capability. Therefore this closure does not
+make JC-229 / SBH-10-04 executable by itself. A bounded S0-to-SUBS integration must
+first place the accepted runtime into the SUBS development base and pass its own
+validation, exact-head CI, independent review, merge, and post-merge verification.
+Only then may the separate SUBS re-admission required by the canonical cross-domain
+authority decide JC-229 readiness and assign a new implementation `task_base_sha`.
+PR #78 remains stale draft evidence and is not resumed by this closure.
+
+State at completion of the PR #117 prerequisite closure, before the fresh full-scope
+IA-04 task-admission decision:
+
+```text
+S0 lifecycle = READY
+generic IA-03 = COMPLETE / FROZEN
+PR #80 renewal-generation InventoryAdmission / exact-key reservation prerequisite = COMPLETE / FROZEN
+renewal implementation task base = f122b24bcf78f48f2954d372cef38c06ebcc1e5e (completed provenance)
+accepted S0 tip = f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+IA-04+ = NOT AUTHORIZED
+S0-CLOSE-02 = BLOCKED
+S0 merge readiness = BLOCKED
+JC-229 / SBH-10-04 implementation readiness = NOT GRANTED BY THIS CLOSURE
+```
+
+The S0-side runtime prerequisite is satisfied. SUBS is not thereby READY: its current
+accepted development tip does not yet contain the capability, and the canonical
+cross-domain authority requires a separate SUBS re-admission after accepted runtime
+integration. This governance closure assigns no SUBS implementation branch or
+`task_base_sha` and grants no Subscription, Payments, provider, or IA-04+ authority.
+That closure state remains historical provenance. Current IA-04 authority is recorded
+in the fresh full-scope task admission below and in section 22 of
+`s0_inventory_reservation_admission_architecture.md`.
+
+### Fresh full-scope IA-04 task admission (GitHub #101) (2026-10-02)
+
+Issue: `#101` — S0 IA-04: integrate single-variant admission with the durable
+reservation transaction.
+
+Readiness review (post-PR-117, task base `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`):
+the historical IA-04 phase is `PARTIALLY_STALE` because PR #117 completed the
+renewal-generation / exact-key prerequisites; the canonical IA-04 protection boundary
+(writer matrix, lifecycle-fence introduction, ENFORCED rollout configuration, and
+single-variant durable settlement) remains required. There is no IA-04A / IA-04B split.
+
+Task base (implementation parent): `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`.
+
+Issue existence alone grants no implementation authority. This admission record is the
+authority. Normative detail: section 22 of
+`docs/hardening/s0_inventory_reservation_admission_architecture.md` and frozen
+`S0-PLAN-01` PHASE IA-04 / capable-writer matrix (implementation plan is not modified
+by this governance PR).
+
+**PR #117 — COMPLETE / FROZEN (IA-04 must not reimplement):** renewal-generation
+Request identity; reservation-key parser/classifier; exact key through Operation and
+Lease validation paths; Redis exact-key metadata/fence compatibility; global
+`reservation_key` uniqueness; partial active `(order_id, variant_id)` uniqueness;
+historical terminal reservation generations; exact-generation reserve, recovery read,
+release, and consume; generic/renewal key disambiguation; renewal exclusion from
+generic order-wide release/consume/expiry; exact-generation
+`:ambiguous_database_outcome` classification.
+
+**Operation identity law (frozen):** one logical InventoryAdmission operation equals
+Redis `operation_id` / `operation_epoch` equals Operation descriptor
+`operation_id` / `operation_epoch`. Redis owns initial server generation; exact replay
+retains the same pair. The IA-04 settlement path must not use `Operation.new/2` to
+manufacture a second identity. Authorize a narrow trusted internal constructor in
+`lib/store/orders/inventory_admission/operation.ex` only.
+
+**Lifecycle authorized in IA-04:** `ADMITTED -> RESERVING`; `RESERVING -> COMPLETED |
+REJECTED | UNKNOWN_DB_OUTCOME`. Not authorized: `UNKNOWN_DB_OUTCOME -> RECOVERING` or
+recovery execution (IA-05 / GitHub #102).
+
+**Redis IA-04 primitives (minimum):** `claim_reserving`; `release_known_outcome`;
+`mark_unknown_and_fence` — per frozen plan §10 and section 22.
+
+**Capable-writer / ENFORCED boundary:** full frozen matrix (single-variant
+`reserve_inventory/3` through admission; checkout CTE blocked in ENFORCED; shared
+exact reservation fences on consume/release/expiry; fenced pending-provider release
+with rollback on failure; direct Ash/maintenance writers closed at governed call sites
+without changing `inventory_reservation.ex` or `inventory_item.ex` resource definitions).
+
+**Rollout configuration (Option B):** `config/config.exs`, `config/runtime.exs`,
+`config/test.exs`, and new `lib/store/orders/inventory_admission/config.ex` (typed
+loader/validator only). Production default `DISABLED` until reviewed ENFORCED settings.
+The typed contract also owns `database_safety_window_ms`,
+`recovery_retry_budget`, `recovery_deadline_ms`, and
+`redis_restart_quarantine_ms`. They are configuration only and must validate
+`database_safety_window_ms > 0`, `recovery_retry_budget > 0`,
+`recovery_deadline_ms > database_safety_window_ms`, and
+`redis_restart_quarantine_ms > 0`. These fields are not IA-05 recovery or IA-06
+reaper authority and are not passed to the current IA-03 Redis options.
+
+`Store.Application` is conditionally writable only for the IA-04 ENFORCED startup
+validation hook. After the supervised Redis child is available, that hook must load
+and validate the typed configuration and fail application startup when ENFORCED
+configuration or the existing admission Redis capability is unavailable. DISABLED
+startup must not require admission Redis validation. The hook must not perform queue
+operations, reservation mutation, recovery, retries, reaping, topology inference, or
+capacity derivation. `config/runtime.exs` must not perform Redis network side effects.
+
+**Required implementation files:**
+
+```text
+lib/store/orders/inventory_admission/config.ex
+lib/store/orders/inventory_admission/operation.ex
+lib/store/orders/inventory_admission/redis.ex
+lib/store/orders/inventory_admission.ex
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+config/config.exs
+config/runtime.exs
+config/test.exs
+```
+
+**Conditionally writable (only if focused tests prove propagation insufficient):**
+`lib/store/checkout/domain.ex`, `lib/store/payments/interlocks.ex`,
+`lib/store/subscriptions/facade.ex`,
+`lib/store/workers/expire_inventory_reservations_worker.ex`,
+`lib/store/workers/expire_pending_provider_setup_orders_worker.ex` — governed error
+propagation only; no Checkout/Payments/SUBS commercial redesign.
+
+**Frozen / read-only for IA-04 (STOP for independent review if implementation requires
+change):** `request.ex`, `lease.ex`, `inventory_reservation.ex`, `inventory_item.ex`,
+`product.ex`.
+
+**Conditionally writable for IA-04 only:** `lib/store/application.ex`, solely for the
+ENFORCED startup validation hook described above. No other application-supervision or
+domain behavior is authorized by this correction.
+
+**Shared authority:** Orders REQUIRED; Checkout/Payments/SUBS/workers conditional
+propagation only as above.
+
+**IA-04 exclusions:** multi-variant admission; IA-05 recovery service/worker;
+`RECOVERING` / `UNRESOLVED` execution; IA-06 reaper; IA-07/IA-08 certification;
+migrations/schema/dependency changes; Redis stock truth; SBH-10-04 subscription
+orchestration; Checkout/Payment/provider redesign.
+
+State recorded by PR #120 when IA-04 was admitted, before implementation started
+(historical provenance):
+
+```text
+S0 lifecycle = READY
+generic IA-03 = COMPLETE / FROZEN
+renewal-generation / exact-key prerequisite = COMPLETE / FROZEN
+accepted S0 tip = f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+IA-04 = AUTHORIZED / NOT STARTED
+IA-05+ = NOT AUTHORIZED
+```
+
+### IA-04 implementation-state transition and PR #123 provenance (2026-10-02)
+
+PR #120 merged and was post-merge verified. It admitted the full IA-04 task on
+the accepted S0 task base but left execution `AUTHORIZED / NOT STARTED`. This
+governance change records the execution transition:
+
+```text
+AUTHORIZED / NOT STARTED
+        ↓
+AUTHORIZED / IMPLEMENTING
+```
+
+Transition guards and provenance:
+
+- PR #120 admitted full-scope IA-04 and was merged and post-merge verified.
+- PR #120 merge commit: `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`; its candidate
+  and merge trees both equal `b7473e6b73eb1a3bb8bdbd7131ef6a1ac58ea070`.
+- The implementation branch was created from the exact accepted task base.
+- The first bounded coding task was issued, producing the initial Slice-1 candidate.
+- The independent Slice-1 review returned `CHANGES REQUIRED`.
+- PR #123 merged the post-admission configuration and startup-authority correction.
+- Implementation remains serial and paused until this governance transition is
+  merged and independently verified.
+
+```text
+Task base: f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+Implementation branch: hardening/s0-ia04
+Initial Slice-1 candidate HEAD: 0a03f1898dc3eec80f255db4e03cd6bb7cfc1fc7
+Slice 1: CHANGES REQUIRED / PAUSED FOR GOVERNANCE RECONCILIATION
+```
+
+PR #123 provenance:
+
+```text
+Reviewed head: d5f4052fcae4ccbb4e8345070ba63985a22cae3d
+Merge: c6aabd412fe66ce778a51ecba5361dfebdbc2052
+Reviewed/merge tree: 801a744a49100eb20e63f3be48a2566f8dd6b282
+Exact-head CI run: 36989453282 (PASS)
+```
+
+PR #123 added the typed configuration fields `database_safety_window_ms`,
+`recovery_retry_budget`, `recovery_deadline_ms`, and
+`redis_restart_quarantine_ms`, with validation requiring a positive safety window,
+retry budget, and restart quarantine, and `recovery_deadline_ms` greater than
+`database_safety_window_ms`. These fields remain configuration only.
+
+`lib/store/application.ex` is conditionally writable only for IA-04 ENFORCED
+startup validation after the supervised Redis child is available. No other
+`Store.Application` authority exists.
+
+The resumed Slice-1 correction may modify exactly these files:
+
+```text
+lib/store/orders/inventory_admission/config.ex
+lib/store/application.ex
+config/config.exs
+config/runtime.exs
+config/test.exs
+test/store/orders/inventory_admission_test.exs
+```
+
+After PR #123, the pre-acceptance state was `Slice 1 = ACTIVE NEXT STEP, NOT YET
+ACCEPTED` and `Slice 2 = NOT STARTED / BLOCKED ON SLICE-1 PASS`. This is historical
+provenance. The state below records the accepted current state and supersedes it.
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+accepted Slice-1 head = 75674e4104c61c198a09fcbb3026df27a71f62fd
+Slice 2 = ACTIVE NEXT STEP / NOT STARTED
+shared_fence_target_max = 500
+Slice 3+ = NOT STARTED / SERIAL-BLOCKED
+IA-05+ = NOT AUTHORIZED
+```
+
+### IA-04 Slice-1 acceptance and Slice-2 serial activation (2026-10-02)
+
+This is a bounded slice transition within IA-04. It does not record IA-04 phase
+completion or authorize IA-05+.
+
+Accepted Slice-1 evidence:
+
+```text
+Task base: f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9
+Implementation branch: hardening/s0-ia04
+Accepted Slice-1 HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
+Accepted Slice-1 tree: 96d6145fbdfb2650dc63726b75e757374251a26f
+Independent review verdict: PASS
+```
+
+The accepted branch diff contains exactly:
+
+```text
+config/config.exs
+config/runtime.exs
+config/test.exs
+lib/store/application.ex
+lib/store/orders/inventory_admission/config.ex
+test/store/orders/inventory_admission_test.exs
+```
+
+Accepted Slice-1 outcomes:
+
+```text
+typed InventoryAdmission configuration = ACCEPTED
+DISABLED / ENFORCED server-owned gate = ACCEPTED
+capacity/headroom validation = ACCEPTED
+queue/deadline configuration = ACCEPTED
+recovery/quarantine configuration fields = ACCEPTED
+ENFORCED startup Redis readiness gate = ACCEPTED
+terminal replay-retention invariant = ACCEPTED
+```
+
+The terminal replay-retention rule is frozen:
+
+```text
+evidence_handoff_window_ms =
+  max(
+    queue_window_ms,
+    lease_window_ms + safety_margin_ms
+  )
+
+metadata_retention_ms > evidence_handoff_window_ms
+```
+
+The comparison is strict. Retain these configuration invariants:
+
+```text
+database_safety_window_ms > 0
+recovery_retry_budget > 0
+recovery_deadline_ms > database_safety_window_ms
+redis_restart_quarantine_ms > 0
+
+lease_window_ms >= db_window_ms + safety_margin_ms
+
+B_total <= reviewed_repo_capacity - reviewed_headroom
+```
+
+Slice 2 may start only from the exact accepted Slice-1 HEAD
+`75674e4104c61c198a09fcbb3026df27a71f62fd`. Slice 2 is Redis coordination only.
+Its complete writable production/test scope is exactly:
+
+```text
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+Authorized Slice-2 primitives:
+
+```text
+claim_reserving
+renew_lease
+release_known_outcome
+mark_unknown_and_fence
+
+acquire_shared_mutation_fence
+release_shared_mutation_fence_known_outcome
+mark_shared_mutation_unknown
+```
+
+Slice 2 does not authorize `operation.ex`, `lease.ex`, InventoryAdmission service
+wiring, PostgreSQL reservation execution, Orders routing, Checkout/Payments/SUBS,
+workers, migrations, schema changes, or IA-05 recovery execution.
+
+Preserve these lifecycle transitions:
+
+```text
+ADMITTED -> RESERVING
+
+RESERVING -> COMPLETED
+RESERVING -> REJECTED
+RESERVING -> UNKNOWN_DB_OUTCOME
+```
+
+`UNKNOWN_DB_OUTCOME -> RECOVERING` and `RECOVERING -> ...` remain unauthorized.
+
+Shared lifecycle fences do not enqueue, acquire `K_v`, or acquire `B_total`; a fence
+operation acquires its complete target set atomically or acquires none. For an unknown
+database outcome, retain capacity, the exact reservation fence, and operation evidence.
+Do not promote a waiter or release on lease expiry. Redis remains coordination only;
+PostgreSQL remains durable truth.
+
+At the initial Slice-2 activation, implementation was authorized only on the existing
+sole IA-04 line:
+
+```text
+branch: hardening/s0-ia04
+worktree: the existing sole IA-04 implementation worktree
+starting HEAD: 75674e4104c61c198a09fcbb3026df27a71f62fd
+```
+
+No parallel Slice-2 agent or second IA-04 branch was authorized. The later stop record
+below temporarily blocks the initial permission to start Slice 2 until the stated
+governance gates pass; successful post-merge verification restores correction-only
+authority on the existing IA-04 line. Issue #101's attempted tracker reconciliation is
+not claimed by this record.
+
+### IA-04 shared lifecycle fence target maximum (2026-10-02)
+
+This amendment defines the finite target-set cardinality required by the frozen
+shared-writer policy. It does not redesign that policy or modify the frozen
+implementation plan.
+
+The bound is a fixed IA-04 constant, not a client, request, node, or deployment setting.
+`lib/store/orders/inventory_reservations.ex` has
+`@default_expiry_batch_size = 500`, which supports the chosen ceiling but did not
+previously authorize shared-fence cardinality. `cleanup_limit` continues to govern
+queue cleanup and does not define this target maximum. Changing the constant later
+requires an explicit governance and performance review.
+
+Each shared lifecycle operation uses one server-derived, valid, normalized, unique,
+deterministically ordered set of reservation identities. Count the set after identity
+validation and normalization. It must contain 1 to 500 targets and match the exact
+snapshot used by its durable mutation. Duplicate targets are invalid; implementations
+must not silently deduplicate them.
+
+For order-scoped consume or release, materialize the exact eligible target snapshot
+first. If it contains more than 500 targets, fail closed before Redis fence acquisition
+and before any PostgreSQL lifecycle mutation. Do not split one operation into chunks or
+partially fence it. Later service/domain mapping uses the existing governed
+`INVENTORY_ADMISSION_UNAVAILABLE` path; this amendment adds no public Store error code.
+
+Expiry remains a repeatable bounded pass. Its effective candidate batch must not exceed
+500. Under ENFORCED, a larger requested batch is capped at 500, and remaining candidates
+are deferred to a later pass.
+
+Slice-2 shared-fence primitives accept 1 to 500 targets and reject empty, oversized,
+duplicate, or invalid target sets before mutation. Acquisition and terminal release
+remain all-or-none. The Redis work is O(N), with N at most 500. This bound does not
+certify Redis or the application for 100,000 concurrent requests. At the time of this
+2026-10-02 amendment, Slice 2 remained active next. The temporary stop and conditional
+resumption are recorded below. Slice 3+ remains serial-blocked and IA-05+ remains
+unauthorized.
+
+### IA-04 promotion candidate limit and temporary Slice-2 stop (2026-10-04)
+
+This amendment supplies the finite candidate limit required by the frozen
+`promote_next` contract. It does not change that contract or approve the current
+Slice-2 implementation candidate before its acceptance gates pass.
+
+```text
+effective_promotion_candidate_limit = min(cleanup_limit, q_global_max)
+new configuration field = NO
+arbitrary numeric promotion constant = NO
+```
+
+Both values are existing positive, validated, server-owned IA configuration. The
+effective limit is at least 1 and no greater than `q_global_max`. `cleanup_limit`
+remains a queue-maintenance work bound and may also bound IA-04 promotion inspection.
+It must not define shared lifecycle-fence target cardinality or replace `q_global_max`,
+`q_variant_max`, `B_total`, inventory batch size, or PostgreSQL mutation cardinality.
+`shared_fence_target_max = 500` remains independent and unchanged.
+
+Historical independent review stop snapshot:
+
+```text
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 candidate = PR #128 at 91807522468a138047fd78408aedcf361ed7a3f0
+Slice 2 = STOPPED pending this governance amendment
+PR #128 = OPEN / UNMERGED
+```
+
+Frozen S0-PLAN-01 §10 already requires `claim_reserving` to receive and retain the
+complete server-owned operation PRE/POST descriptor. PR #128's Redis adapter drops
+`:pre` and `:post`; this is an implementation correction, not a governance question.
+
+At the authorization snapshot for this amendment, PR #128 was open and unmerged at
+`fe9133ec9bac4a5c0e955468fec23ac3f36479f4`. This governance amendment does not
+authorize edits to PR #128 until all four gates pass: independent review, exact-head CI,
+human merge, and successful post-merge verification.
+
+Until all four acceptance gates pass, including human merge and successful post-merge
+verification, the state is:
+
+```text
+Slice 2 = BLOCKED_AUTHORITY -> STOP
+PR #128 = OPEN / CHANGES REQUIRED / NO EDITS AUTHORIZED BY THIS AMENDMENT YET
+```
+
+After PR #130 passes the four gates above, correction-only Slice-2 authority resumes
+on the existing sole IA-04 line:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 2 = IMPLEMENTING / CHANGES REQUIRED
+PR #128 correction work = AUTHORIZED
+branch = hardening/s0-ia04
+worktree = the existing sole IA-04 implementation worktree
+```
+
+That authority covers exactly these files:
+
+```text
+lib/store/orders/inventory_admission/redis.ex
+test/store/orders/inventory_admission_redis_test.exs
+```
+
+It covers exactly these corrections:
+
+1. Retain the complete frozen server-owned PRE/POST operation evidence required by
+   `claim_reserving` and the unknown-outcome handoff.
+2. Replace unbounded promotion discovery with the governed
+   `effective_promotion_candidate_limit = min(cleanup_limit, q_global_max)`.
+
+No other Slice-2 expansion is authorized. After both corrections, PR #128 requires
+fresh exact-head CI and independent review and remains non-mergeable until both pass.
+Slice 3+ remains `SERIAL-BLOCKED`; IA-05+ remains `NOT AUTHORIZED`. This amendment does
+not approve or merge PR #128. No issue #101 tracker change is claimed by this record.
+
+The previous permission to start Slice 2 is temporarily blocked pending this amendment's
+acceptance gates. Successful post-merge verification restores only the correction
+authority above. The accepted Slice-1 authority and existing two-file Slice-2 scope do
+not otherwise change.
+
+```text
+Slice 3+ = SERIAL-BLOCKED
+IA-05+ = NOT AUTHORIZED
+```
 
 ### PLATFORM
 
@@ -393,6 +937,72 @@ PLATFORM may progress without S0 finishing, unless an exact task declares a vali
 An advance of `origin/main` does not by itself invalidate the PLATFORM development base or stop an active PLATFORM task.
 
 At task admission, inspect current canonical governance and evaluate only task-relevant changes.
+
+### Bounded Platform task admission: DevCore database profiles (2026-10-07)
+
+The existing task branch is authorized to configure workstation DEV and TEST
+Ecto profiles through the DevCore project contract.
+
+```text
+Workstream: PLATFORM / DevCore database profiles
+Task base: e7699dc00d518bc35a3e59851feeea2ee8ae4071
+Original parent: 435924ae2b9c819c8d4f820c5b316d154f3be2b0
+Integration base: 7eff026fb7cce7b29dc5d5916f9e3895039b858a
+Branch: platform/task-workstation-infra-contract
+Worktree: /home/jcschoeman96/projects/current/Store_Blueprint_Hardening-task-workstation-infra
+Lifecycle: VALIDATED locally; independent review passed, exact-head CI pending
+```
+
+Superseded broad integration candidate (local only; do not publish):
+
+```text
+Branch: integration/platform-devcore-main-sync
+Worktree: /home/jcschoeman96/.config/superpowers/worktrees/Store_Blueprint_Hardening/platform-devcore-main-sync-7eff026
+Task source: ccd4c04276ef027117c39b1a03dd8d70ffa5fe87
+Canonical source: 7eff026fb7cce7b29dc5d5916f9e3895039b858a
+Merge commit: 5795ad00c7e56690b9a1b64ea8150de445c02bd6
+Merge correction: bf46abdcbc6e1f2a5de549b8e03d73cef489fb81
+Lifecycle: SUPERSEDED for publication; retained read-only because the branch diff includes inherited Docker/Compose changes
+```
+
+Clean DevCore review integration:
+
+```text
+Branch: integration/platform-devcore-settings-review
+Worktree: /home/jcschoeman96/.config/superpowers/worktrees/Store_Blueprint_Hardening/platform-devcore-settings-review
+Integration base: origin/main at 7eff026fb7cce7b29dc5d5916f9e3895039b858a
+Task code source: ccd4c04276ef027117c39b1a03dd8d70ffa5fe87
+Integrated compatibility source: bf46abdcbc6e1f2a5de549b8e03d73cef489fb81
+Lifecycle: INTEGRATING; scope filtered to the owned DevCore settings and supporting docs, local validation and independent review passed, exact-head CI pending
+Owned scope: DevCore DEV/TEST profiles and their supporting project, environment, and task documentation only
+Excluded: inherited Docker/Compose changes, production configuration, schema/migrations, and PR #128
+```
+
+The integration kept Docker/Compose lifecycle files identical to the task
+source. It retained current-main performance-database safety and removed only
+duplicate clauses introduced by the automatic `test/support/stripe_api_stub.ex`
+merge.
+
+Owned files for this bounded task:
+
+```text
+config/dev.exs
+config/test.exs
+.devcore/**
+.env.example
+README.md
+docs/deployment/env-vars.md
+```
+
+By explicit user authority, PLATFORM owns the workstation DEV/TEST connection
+settings in `config/test.exs` for this task. Preserve the existing
+`Store.Config.PerformanceDatabaseSafety` validation, `STORE_PERF_*` routing,
+and CI service defaults. This decision does not change S0 InventoryAdmission
+authority.
+
+Excluded: Docker/Compose lifecycle changes, production database settings,
+schema or migration changes, and PR #128. Existing Docker/Compose files on the
+task branch are outside this task's writable boundary.
 
 A PLATFORM task stops for main movement only when the newer canonical state specifically changes or invalidates:
 
@@ -566,6 +1176,103 @@ The autonomous-loop retirement does not declare PR #33 successful and does not a
 Under the serial model, required CI must pass before merge. Unrelated CI or platform failures must not be repaired inside SBH-30-02 without authority. Controller-specific batch or resumption state no longer determines whether the task may be manually reviewed or revalidated. Any source change to PR #33 requires normal focused verification, fresh review, and exact-head CI again.
 
 Do not rerun CI or alter PR #33 in a governance task.
+
+### SUBS main-to-branch reconciliation record
+
+The bounded reconciliation of accepted canonical `main` runtime/governance into
+`hardening/subscriptions` is **complete**. PR #88 accepted the integration. This
+record preserves historical provenance; it does not reopen SUBS lifecycle law,
+serial execution policy, or SBH-10-04 shared-authority status.
+
+Historical integration inputs (frozen provenance):
+
+- Accepted runtime integration base on canonical `main`:
+  `59a166c8cfba73bc1c239775cc326936a1f7b1ad` (PR #86 merge into `main`).
+- SUBS source head at integration start:
+  `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef`.
+
+Governance prerequisite on `main` before final SUBS merge:
+
+- PR #89 merged into `main` as `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7`.
+- PR #89 exact-head CI run `36535488158`: `PASS`.
+- PR #89 exact-main CI run `36538649644`: `PASS`; all five required jobs passed.
+
+Reconciliation path on temporary branch `integration/subscriptions-main-59a166c`
+(preserved commit evidence only):
+
+- `12bb5631959bbe485012d532a75960b18958973f`
+- `d04587a40216ecc96c1f25f32a142f613ca42188` (reconciled accepted `main` /
+  PR #89 perf DB safety governance into the integration line)
+- Reviewed merge candidate `2849e9fe642c5ce76e132779128e3db9a4acc77c`
+
+Accepted integration merge:
+
+- PR #88 merged into `hardening/subscriptions` as
+  `f621d2db355d3ef2c1531f73b0c698a323cc768e`.
+- Merge parents: `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` and
+  `2849e9fe642c5ce76e132779128e3db9a4acc77c`.
+- Merge commit tree `99eb23e6561b7dafb504656acce0e115d9a4eed2` equals the
+  reviewed candidate tree; the merge introduced no content drift.
+- PR #88 candidate exact-head CI run `36542911205`: `PASS`; all five required
+  jobs passed.
+
+Resulting persistent SUBS tip after acceptance:
+`origin/hardening/subscriptions` =
+`f621d2db355d3ef2c1531f73b0c698a323cc768e`.
+
+SUBS lifecycle remains `READY` under SUB-ACT-03 and the serial execution policy
+above. `SBH-10-04` remains `BLOCKED_SHARED_AUTHORITY` until a separate governed
+re-admission path succeeds; this integration does not authorize SBH-10-04
+implementation.
+
+The accepted SUB-ACT-01 development base
+`575ffa1848ac69abe855bd018c7ae8eaf05d61e4` remains activation provenance; it
+is not replaced by this reconciliation record.
+
+The PLATFORM reconciliation is recorded separately below. This SUBS closure
+does not alter PLATFORM lifecycle or authorize PLATFORM work.
+
+The temporary integration workstream `integration/subscriptions-main-59a166c` is
+`COMPLETE` / `VERIFIED_ON_TARGET` through PR #88 and is no longer active.
+
+### PLATFORM main-to-branch reconciliation record
+
+The bounded reconciliation of accepted canonical `main` into
+`hardening/platform-security` is complete. PR #91 accepted the integration.
+This record preserves PLATFORM's independent lifecycle and development-base
+semantics above. It does not change either.
+
+Canonical `main` source:
+
+- PR #90 candidate `c9dae2080a6f05df18c277d66530883e813e66dd` merged into
+  `main` as `7f5545117f1cc965b0529787705ec2a1969af32a`.
+- PR #90 exact-main CI run `36555509169`: `PASS`; all five required jobs passed.
+
+Historical integration inputs:
+
+- Platform source before reconciliation:
+  `435924ae2b9c819c8d4f820c5b316d154f3be2b0`.
+- Accepted main reconciliation source:
+  `7f5545117f1cc965b0529787705ec2a1969af32a`.
+
+Reconciliation path on temporary branch `integration/platform-main-7f554511`:
+
+- Reviewed integration candidate `d1d7ac3e278f6f07aaa14c752ceb25f3bac8d060`.
+- Candidate parents: `435924ae2b9c819c8d4f820c5b316d154f3be2b0` and
+  `7f5545117f1cc965b0529787705ec2a1969af32a`.
+
+Accepted integration:
+
+- PR #91 merged into `hardening/platform-security` as
+  `8a113dac52d19bebf067018a1484055612e71ea6`.
+- Merge parents: `435924ae2b9c819c8d4f820c5b316d154f3be2b0` and
+  `d1d7ac3e278f6f07aaa14c752ceb25f3bac8d060`.
+- PR #91 exact-head CI run `36562911494`: `PASS`; all five required jobs passed.
+- Merge and candidate tree `9fa843480403ab15d0668c2ebe52a5e17c4824ad` are
+  equal, so the merge introduced no content drift.
+
+The temporary integration workstream `integration/platform-main-7f554511` is
+`COMPLETE` / `VERIFIED_ON_TARGET` through PR #91 and is no longer active.
 
 ### SUBS activation record: SUB-ACT-03
 
@@ -815,7 +1522,7 @@ No lane requires another lane to finish first unless its exact task declares a v
 
 Until a lane's own activation gate succeeds, that lane remains `BOOTSTRAPPED` and must not begin programme implementation. SUBS has completed the activation recorded by SUB-ACT-03 and remains `READY`; S0 is `READY` under its S0-specific activation record; PLATFORM is `READY` under the activation record above.
 
-S0 `READY` does not itself admit IA-03 or authorize other production implementation. S0 tasks require separate explicit task admission. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
+S0 `READY` does not itself authorize production implementation. S0 tasks require separate explicit task admission. PR #120 admitted GitHub #101 IA-04 on accepted S0 task base `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; the later implementation-state transition records IA-04 as `AUTHORIZED / IMPLEMENTING`. IA-05+ remains `NOT AUTHORIZED`. PLATFORM implementation is authorized only for explicitly admitted tasks under the READY law above. SUBS `SBH-00-01` through `SBH-00-04`, and `SBH-00-05 / JC-223`, are available only as governance/review work and are `CONTRACT_FROZEN / CANONICAL`.
 
 ---
 
@@ -824,6 +1531,7 @@ S0 `READY` does not itself admit IA-03 or authorize other production implementat
 | PR | Title / subject | Belongs to | Status | Bootstrap note |
 | --- | --- | --- | --- | --- |
 | #2 | Memory / GC / runtime methodology | Platform | OPEN against `main` from older `main` | Requires later Platform reconciliation against current `main`; do not review/rebase/retarget/merge from this registry task |
+| #128 | IA-04 Slice-2 Redis coordination | S0 | BLOCKED_AUTHORITY → STOP before PR #130 gates; IMPLEMENTING / CHANGES REQUIRED after all four gates | Head `fe9133ec9bac4a5c0e955468fec23ac3f36479f4`; after the gates, correction authority covers only PRE/POST retention and bounded promotion discovery in the existing two Slice-2 files; fresh CI and independent review remain required before merge |
 
 ### Recently resolved ownership gates and integrations
 
@@ -832,10 +1540,16 @@ S0 `READY` does not itself admit IA-03 or authorize other production implementat
 | #6 | S0-IA-AUTH-03R1 governance correction (IA-03 Redis status/abandon boundary) | S0 | **MERGED** / **RESOLVED** into `hardening/s0-baseline` | `origin/hardening/s0-baseline` tip observed below (candidate evidence only) |
 | #9 | PLAT-PERF-01 RedisPool teardown ownership | Platform | **CLOSED** / **SUPERSEDED BY PR #86** | PR #9 must not be merged independently; its accepted integration is recorded under PR #86 |
 | #86 | Workstation infrastructure and PR #9 lifecycle semantic integration | Platform | **MERGED** / **ACCEPTED** | Merge SHA `59a166c8cfba73bc1c239775cc326936a1f7b1ad`; exact-main CI run `36406423871` attempt 1 failed only `performance_smoke_required`, and attempt 2 passed all five required jobs |
+| #89 | Performance smoke destructive DB safety guard | Platform / `main` | **MERGED** / **ACCEPTED** into `main` | Merge SHA `a3a8e8b2c5b9a372fcff2a68a69e72f6418dd1b7`; exact-head CI run `36535488158` `PASS`; exact-main CI run `36538649644` `PASS` (all five required jobs) |
+| #88 | Reconcile accepted main runtime base into SUBS | SUBS | **MERGED** / **ACCEPTED** into `hardening/subscriptions` | Merge SHA `f621d2db355d3ef2c1531f73b0c698a323cc768e`; merge parents `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` and `2849e9fe642c5ce76e132779128e3db9a4acc77c`; candidate exact-head CI run `36542911205` `PASS` (all five required jobs); merge tree equals reviewed candidate tree `99eb23e6561b7dafb504656acce0e115d9a4eed2` |
+| #90 | docs(governance): post-PR-88 SUBS reconciliation closure | SUBS / `main` | **MERGED** / **ACCEPTED** into `main` | Merge SHA `7f5545117f1cc965b0529787705ec2a1969af32a`; candidate `c9dae2080a6f05df18c277d66530883e813e66dd`; exact-main CI run `36555509169` `PASS` (all five required jobs) |
+| #91 | Reconcile Platform hardening with canonical main | Platform | **MERGED** / **ACCEPTED** into `hardening/platform-security` | Merge SHA `8a113dac52d19bebf067018a1484055612e71ea6`; candidate `d1d7ac3e278f6f07aaa14c752ceb25f3bac8d060`; exact-head CI run `36562911494` `PASS` (all five required jobs); merge tree equals candidate tree `9fa843480403ab15d0668c2ebe52a5e17c4824ad` |
 
 PR #6 authorized a governance/docs correction only. It did **not** implement IA-03.
 
 The `workstation-infra-pr9-semantic-reconcile` temporary integration workstream is `COMPLETE` / `VERIFIED_ON_TARGET` through PR #86 and is no longer active.
+
+The `integration/subscriptions-main-59a166c` temporary integration workstream is `COMPLETE` / `VERIFIED_ON_TARGET` through PR #88 and is no longer active.
 
 ---
 
@@ -910,20 +1624,265 @@ When updating:
 - refresh lifecycle states, pending PRs, and ownership assignments here
 - record SHAs as status / candidate evidence only, never as frozen forever-law
 - do not claim a PR merged unless GitHub shows it merged
-- do not set S0 to `READY` through a registry-only change unless a reviewed S0-specific activation record evidences both ordered guards; keep IA-03 unauthorized absent a separate bounded task-admission decision; the current PLATFORM activation and accepted development base are recorded above; keep SUBS at `READY` as recorded by SUB-ACT-03 and require serial admission for new implementation
+- do not set S0 to `READY` through a registry-only change unless a reviewed S0-specific activation record evidences both ordered guards; keep later S0 slices unauthorized absent a separate bounded task-admission decision; the current PLATFORM activation and accepted development base are recorded above; keep SUBS at `READY` as recorded by SUB-ACT-03 and require serial admission for new implementation
 
 ### Current status / candidate development-base evidence (refresh when tips move)
 
-This section records dynamic status only. It does not override the accepted PLATFORM lifecycle or development base above. Refresh from origin before any S0 activation gate or new task admission.
+This section records dynamic status only. It does not override accepted lifecycle or historical provenance above. Refresh from origin before any new task admission.
 
-- `origin/main` = `59a166c8cfba73bc1c239775cc326936a1f7b1ad` at this refresh; resolve with `git fetch origin && git rev-parse origin/main` before work. PR #23 base authority was `f0d0994e6d4d6c4c3f5966c5d00c9fa6739c475f`.
-- `origin/hardening/s0-baseline` = `f4127902c3f328b76674724faa6a473c629c01ef` (current fetched persistent S0 tip after PR #83 reconciliation)
-- `origin/hardening/platform-security` = `435924ae2b9c819c8d4f820c5b316d154f3be2b0` (current fetched persistent PLATFORM tip)
-- `origin/hardening/subscriptions` = `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` (current fetched persistent SUBS tip)
+- `origin/main` = `5afa4acdce3ef6f5b26eac7f78a0047502e6665a` (governance base for JC-335; refresh with `git fetch origin && git rev-parse origin/main` before work).
+- `origin/hardening/s0-baseline` = `7bc76bb89afc32f23bedaea06089504a54cdacbd` (tree `03349c04d93de2a55183207e0704a2a12ff7274a`; PR #136 JC-331 / IN-02 merge)
+- `origin/hardening/platform-security` = `8a113dac52d19bebf067018a1484055612e71ea6` (current fetched persistent PLATFORM tip)
+- `origin/hardening/subscriptions` = `8a21739555de1dde8f448bfd7e1172b1caeb54c3` (current accepted SUBS tip after PR #121 SBH-10-04 re-admission)
+- PR #90 = MERGED / ACCEPTED into `main`
+- PR #91 = MERGED / ACCEPTED into `hardening/platform-security`
 - PR #6 = MERGED into `hardening/s0-baseline`
+- PR #115 = MERGED / ACCEPTED into `hardening/s0-baseline`; exact merge tree equals
+  the certified generic IA-03 tree `b4e3bf388433d7f7b17931c777ad0e33fb318102`
+- PR #117 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline` as
+  `f2d3ed27476d1d8bfdda2a28dcdbfe6a1d02e2d9`; certified head
+  `aaf33a1abf68d65c00b8cf10a43225350c5bbdc5`; exact-head CI `36968312583` PASS;
+  certified-head to merge comparison has zero changed files
+- PR #119 = MERGED / POST-MERGE VERIFIED into `hardening/subscriptions` as
+  `bf56afdd4d329a95c1739cce327b19fb1777815f`; corrected certified head
+  `b29d03596ee848677301d6478354d5d61b75180f`; exact-head CI `36977385707` PASS;
+  merge tree equals the corrected certified head tree
+- PR #120 = MERGED / ACCEPTED into `main` as
+  `aa90dd56a0325b0ada0df610067f9b9549bd4e5f`
+- PR #121 = MERGED / POST-MERGE VERIFIED into `hardening/subscriptions` as
+  `8a21739555de1dde8f448bfd7e1172b1caeb54c3`; certified governance head
+  `f9714a800907d41e3fb72f8a44fccafc1d276ed3`; exact-head CI `36982244253` PASS;
+  merge tree `e4728ccb132041e73d80e0247707af2544ca7c9b` equals the reviewed head tree
+- PR #123 = MERGED / ACCEPTED into `main` as
+  `c6aabd412fe66ce778a51ecba5361dfebdbc2052`; S0 IA-04 configuration/startup-authority correction preserved by this reconciliation
+- PR #124 = MERGED / ACCEPTED into `main` as
+  `ddc59e42941a859eeb6ae72e311c87fff10d7996`; IA-04 implementation-state transition to `AUTHORIZED / IMPLEMENTING` and its Slice-1/Slice-2 guards are preserved by this reconciliation
+- PR #128 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline` as
+  `f5131e39801c1633b79d04cacd30202b0823e48d` (IA-04 Slice 2 Redis coordination)
+- PR #132 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline` as
+  `da0a369b9f99ecca6db940a802257cea4e69b2b8` (DevCore reconciliation; tree
+  `6227effe919509d71fe0450234792831d7d13240`; zero drift on IA guard surfaces)
 - PR #2 = OPEN against `main` (Platform; later reconciliation)
+- PR #134 = MERGED / POST-MERGE VERIFIED into `hardening/s0-baseline`; JC-327 accepted
+  implementation head `562eed9fd7fe7adf6da1a9298856e651ef302582`; merge
+  `dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`; tree
+  `3e6c79e823741b661ef96308aca320356580dfce`
+- PR #88 = MERGED / ACCEPTED into `hardening/subscriptions` (historical SUBS main reconciliation; see record above)
+- PR #89 = MERGED / ACCEPTED into `main`
 
-The pending SUBS reconciliation is based on `hardening/subscriptions` at `fa26c01e4c4dbe312e5445915839f7f4a5eb8bef` with accepted runtime integration base `main` at `59a166c8cfba73bc1c239775cc326936a1f7b1ad`. This governance/status-only closure does not invalidate `59a166c8cfba73bc1c239775cc326936a1f7b1ad` as the accepted runtime integration base for the pending SUBS and PLATFORM reconciliations.
+Current JC-229 / SBH-10-04 serial-admission evidence:
+
+- Prior SUBS v0.1.34 READY and task-start evidence is historical admission.
+- JC-229 / SBH-10-04 is now `BLOCKED_AUTHORITY -> STOP` at draft PR #127 head
+  `c409a440dbb5f2ea2fb39e79e0f9b11787d38422`.
+- Original task base and accepted SUBS tip remain
+  `8a21739555de1dde8f448bfd7e1172b1caeb54c3`.
+- The implementation branch exists as
+  `subs-task/sbh-10-04-renewal-initiation-phase-b` in
+  `/home/jcschoeman96/projects/current/Store_Blueprint_Hardening-subscriptions/.worktrees/sbh-10-04-renewal-initiation-phase-b`.
+  It must remain stopped. PR #127 remains draft and must not be changed or merged.
+- JC-230 / SBH-10-05 remains dependency-blocked. The SUBS Master Register remains
+  unchanged; this correction grants no JC-229 execution authority.
+- PR #78 remains stale evidence and must not be resumed.
+
+### JC-229 exact-generation guard prerequisite
+
+The [owning correction](../governance/sbh_10_04_cross_domain_authority_amendment.md#jc-229-dispatch-atomicity-correction)
+records the race, guard semantics, lock ordering, proof requirements, and sequencing.
+
+**Historical IA-04 / S0 acceptance before PR #134 (frozen):**
+
+```text
+IA-04 Slice 1 = PASS / ACCEPTED / FROZEN
+IA-04 Slice 2 = PASS / ACCEPTED / FROZEN  (PR #128 merge f5131e39801c1633b79d04cacd30202b0823e48d)
+PR #132 DevCore reconciliation = PASS / ACCEPTED / FROZEN  (merge da0a369b9f99ecca6db940a802257cea4e69b2b8; tree 6227effe919509d71fe0450234792831d7d13240)
+IA-04 Slice 3 = SERIAL-BLOCKED ON JC-229 GUARD PREREQUISITE  (historical; not authorized at that point)
+IA-05+ = NOT AUTHORIZED
+```
+
+**Historical source-compatibility admission before PR #134 (2026-10-07):** `PASS` at S0 task base
+`da0a369b9f99ecca6db940a802257cea4e69b2b8`. Exact-generation read/recover APIs from
+PR #117 remain; `read_exact_generation` uses non-locking `Repo.one/1`; exact
+reserve/release/consume lock `InventoryItem` before `InventoryReservation`; generic
+expiry excludes renewal-generation keys; `Store.Orders` remains the cross-domain
+facade; one additive `domain.ex` forwarder is sufficient; no schema/migration,
+InventoryAdmission, or SUBS change is required for the prerequisite. Relevant main/S0
+divergence does not block implementing on current S0 (`RELEVANT_MAIN_RUNTIME_RECONCILIATION_REQUIRED = NO`).
+
+**Historical facade authority for the JC-229 guard prerequisite:** resolved at admission. Its implementation boundary was exactly:
+
+```text
+lib/store/orders/inventory_reservations.ex
+lib/store/orders/domain.ex
+test/store/orders/inventory_reservation_generation_test.exs
+```
+
+Cross-domain callers must never call `InventoryReservations` directly.
+
+**Historical prerequisite admission state before PR #134:**
+
+```text
+JC-229 EXACT-GENERATION GUARD PREREQUISITE = AUTHORIZED / NOT STARTED
+owner = S0 / Orders inventory concurrency
+task base = da0a369b9f99ecca6db940a802257cea4e69b2b8
+task tree = 6227effe919509d71fe0450234792831d7d13240
+integration target = hardening/s0-baseline
+implementation branch = NOT CREATED YET
+implementation worktree = NOT CREATED YET
+```
+
+**Performance contract (future implementation):** `DATA_LAYER = PostgreSQL durable row lock`;
+no hot/warm cache, Redis, TTL, invalidation, PubSub, or Oban in the guard. Target:
+one indexed `reservation_key` locking `SELECT`, zero `InventoryItem` queries, zero N+1;
+separate-backend-session concurrency proof with explicit barriers (not sleeps alone).
+
+**Dispatch lock ordering (frozen):**
+
+```text
+RenewalCollectionAttempt lock → exact reservation-generation guard lock → Subscription collection CAS → outer transaction commit/rollback
+```
+
+Inventory mutation/fence operations retain
+`RenewalCollectionAttempt → InventoryItem → exact InventoryReservation → collection transition`.
+Never `reservation guard → InventoryItem`; never Orders holding inventory/reservation locks
+then acquiring a Subscription collection lock.
+
+**Governance admission task:** branch `governance/s0-jc229-generation-guard-admission` from
+canonical `origin/main` at `b0a6c07637258659eb561e9863ea88667d1f96ae`. Writable:
+`docs/agent_rules/active_workstreams.md` and
+`docs/governance/sbh_10_04_cross_domain_authority_amendment.md` only. Excluded: runtime,
+`inventory_reservations.md`, S0 architecture/implementation-plan files, SUBS Master Register,
+PR #127, PR #128, issue #101. Prior `governance/jc229-generation-guard` evidence is
+historical; this admission supersedes its `BLOCKED_*` prerequisite state.
+
+JC-229 / SBH-10-04 implementation remains `BLOCKED_AUTHORITY -> STOP`. The S0
+prerequisite merge and post-merge verification are complete. Implementation remains
+blocked pending SUBS integration/verification and separate SUBS governance
+re-admission. PR #127 remains draft and stopped.
+Historical `hardening/s0-ia04` at `bd4ff2466e1b69c012c75dc317e461e46c9bff5a` is Slice-2
+historical state only; do not reset, rebase, or start Slice 3 on that line.
+
+### JC-327 prerequisite closure and current IA-04 admission (2026-10-07)
+
+JC-327 is `PASS / ACCEPTED / FROZEN / POST-MERGE VERIFIED`. PR #134 implementation
+head `562eed9fd7fe7adf6da1a9298856e651ef302582` merged to S0 as
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, with accepted tree
+`3e6c79e823741b661ef96308aca320356580dfce`.
+
+The JC-327 exact-generation guard is the completed S0 prerequisite. The accepted
+`guard_exact_generation/4` contract remains frozen. The JC-229 guard prerequisite no
+longer blocks IA-04 IN-02. This record does not admit JC-229 or begin SUBS integration.
+
+Historical serial IA-04 state at JC-327 admission:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-02 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+IN-02 source compatibility was `PASS` at task base
+`dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e`, tree
+`3e6c79e823741b661ef96308aca320356580dfce`. Generic
+`Store.Orders.InventoryReservations.reserve_inventory/3` still runs its existing
+`Repo.transaction/1` and then `unwrap_transaction_error/2`; the accepted JC-327 guard
+implementation is unchanged, and
+`test/store/orders/inventory_admission_recovery_test.exs` is absent.
+
+Freeze the future IN-02 implementation base and output boundary:
+
+```text
+TASK_BASE_SHA = dff5a37d12ccdfeb3db9ace4e7f2b8e19357461e
+TASK_BASE_TREE = 3e6c79e823741b661ef96308aca320356580dfce
+```
+
+```text
+lib/store/orders/inventory_reservations.ex
+test/store/orders/inventory_admission_recovery_test.exs
+```
+
+Historical `hardening/s0-ia04` is not the implementation base. A fresh temporary
+implementation worktree must later be created from exact S0 `dff5a37...`. IN-02 had
+to pass review, merge, and post-merge verification before any later Slice-3 microtask
+could be admitted. This JC-327 record did not authorize IN-03 or the rest of Slice 3.
+
+### JC-331 closure and JC-335 / IN-03 admission (2026-10-09)
+
+JC-331 is `PASS / ACCEPTED / POST-MERGE VERIFIED / DONE`. PR #136 merged exactly
+as reviewed. Its reviewed head is
+`a15e6ea7bf651487397c1cddd6e5b920d1cfe0fb`; the S0 merge is
+`7bc76bb89afc32f23bedaea06089504a54cdacbd` with tree
+`03349c04d93de2a55183207e0704a2a12ff7274a`. The merge tree equals the reviewed
+head tree. `hardening/s0-baseline` points to that merge.
+
+Current serial IA-04 state:
+
+```text
+IA-04 overall = AUTHORIZED / IMPLEMENTING
+Slice 1 = PASS / ACCEPTED / FROZEN
+Slice 2 = PASS / ACCEPTED / FROZEN
+Slice 3 / IN-02 = PASS / ACCEPTED / FROZEN / POST-MERGE VERIFIED
+Slice 3 / IN-03 = AUTHORIZED / NOT STARTED
+remaining Slice-3 microtasks = SERIAL-BLOCKED ON IN-03 ACCEPTANCE
+IA-05+ = NOT AUTHORIZED
+```
+
+JC-335 admits only the future IN-03 implementation after its governance PR is
+reviewed and merged. Its exact S0 task base is:
+
+```text
+TASK_BASE_SHA = 7bc76bb89afc32f23bedaea06089504a54cdacbd
+TASK_BASE_TREE = 03349c04d93de2a55183207e0704a2a12ff7274a
+```
+
+The future implementation is limited to
+`lib/store/orders/inventory_reservations.ex` and
+`test/store/orders/inventory_admission_recovery_test.exs`. IN-03 adds a read-only
+PostgreSQL recovery snapshot for operation-specific PRE/POST comparison. For an
+insert, PRE includes an absent `reservation_key` and trusted inventory facts; POST
+must match the exact reservation identity, quantity, state, expiry, reservation
+version, inventory reserved-count delta, and inventory version progression. For an
+active same-order/variant adjustment, PRE and POST include the exact reservation ID,
+key, quantity, state, expiry, version, and inventory counters/version. Row presence
+or a matching key alone never proves commit. A neither-match result is unresolved
+evidence and cannot imply commit, rollback, release, or retry.
+
+IN-03 reads `InventoryReservation` and `InventoryItem` from PostgreSQL only. It does
+not write either resource, retry the mutation, change Redis, release permits,
+enqueue recovery, transition admission lifecycle, or release capacity. Unresolved
+PRE/POST evidence retains the fence. No mutation marker, table, resource, worker,
+index, migration, cache truth, Redis recovery truth, PubSub, Oban job, or second
+mutation is authorized.
+
+**Performance & Scaling Review.** The recovery snapshot is cold durable PostgreSQL
+data. It uses existing reservation-key, active order/variant, and inventory-variant
+identities, with no index or migration. Recovery truth has no cache or new TTL. It
+adds no Redis structure, invalidation, PubSub, or Oban work. Keep the Store.Repo read
+bounded to one recovery shape with no loop, under the existing global budget. Raw DB
+retry is `NONE`. This admission makes no 100k certification claim.
+
+The snapshot returns only bounded internal reservation and inventory evidence. It
+must not expose raw SQL errors, connection strings, credentials, stack traces,
+customer PII, full order payloads, or payment data. This is generic Store correctness:
+`GENERIC_STORE_CORRECTNESS = YES` and `NEWYOU_SPECIFIC_POLICY = NO`. No Paystack,
+NewYou grace, membership, subscription cancellation, entitlement, or product-specific
+inventory policy is authorized.
+
+JC-335 does not admit JC-229, start SUBS integration, implement IA-05, add an Oban
+recovery worker, or add Redis recovery resolution. JC-229 / SBH-10-04 remains under
+its existing separate SUBS integration and re-admission gates. Later Slice-3 work
+remains serially blocked on IN-03 acceptance, and IA-05+ remains `NOT AUTHORIZED`.
+
+SUBS main-to-branch reconciliation is **complete** through PR #88. Historical integration provenance remains:
+`main` runtime integration base `59a166c8cfba73bc1c239775cc326936a1f7b1ad`, SUBS source
+`fa26c01e4c4dbe312e5445915839f7f4a5eb8bef`, and integration-branch commits
+`12bb5631959bbe485012d532a75960b18958973f`, `d04587a40216ecc96c1f25f32a142f613ca42188`,
+and `2849e9fe642c5ce76e132779128e3db9a4acc77c`. Ordinary independent PLATFORM
+hardening does not require continuous `main` synchronization. The bounded
+Platform reconciliation and its historical provenance are recorded above.
 
 Earlier topology-bootstrap commissioning evidence (historical only):
 
