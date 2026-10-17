@@ -279,7 +279,7 @@ The following governance tests MUST exist before declaring subscriptions “done
 
 4) **Dunning correctness**
 - bounded retries follow schedule
-- grace expiry cancels deterministically
+- retry or grace boundary exhaustion suspends the Subscription without closing the commercial contract
 - missing payment method transitions to past_due without charging
 
 5) **Idempotency**
