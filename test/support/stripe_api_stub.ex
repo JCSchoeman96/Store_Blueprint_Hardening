@@ -94,6 +94,10 @@ defmodule Store.TestSupport.StripeAPIStub do
     end)
   end
 
+  def stub_payment_intent_requests(fun) when is_function(fun, 1) do
+    Req.Test.stub(@stub_name, fun)
+  end
+
   def stub_unexpected!(message \\ "unexpected stripe provider request") do
     Req.Test.stub(@stub_name, fn conn ->
       flunk("#{message}: #{conn.method} #{conn.request_path}")
