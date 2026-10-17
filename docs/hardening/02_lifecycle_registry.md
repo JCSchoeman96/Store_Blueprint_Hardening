@@ -324,25 +324,11 @@ The resource starts in `created` and has `version` optimistic locking. Canonical
 
 | Transition | Provider trigger | Domain action | Idempotency behavior | Replay handling | Terminal status |
 |---|---|---|---|---|---|
-| `created -> submitted` | Local provider intent/reference creation or renewal off-session request reaches local submission. | `PaymentIntent.submit` through `Store.Payments`/subscription renewal facade. | `payment_intent_key` create-or-reuse identity; renewal uses `renewal:<renewal_key>`. | `maybe_submit_payment_intent` accepts already `submitted`, `requires_action`, or `succeeded`; other states fail closed. Transition helper same-target replay is a no-op. | No |
-| `submitted -> requires_action` | Stripe `payment_intent.requires_action` or `payment_intent.requires_confirmation`; renewal response may return `requires_action`. | `mark_requires_action`. | Provider event, PaymentAttempt, and ProviderEvent identities dedupe receipt processing. | Already `requires_action` is a no-op; renewal reservation is released and the Subscription is put past due for authentication-required responses. | No |
+| `created -> submitted` | Local provider intent/reference creation or renewal off-session request reaches local submission. | `PaymentIntent.submit` through `Store.Payments`/subscription renewal facade. | `payment_intent_key` create-or-reuse identity; renewal collections use `renewal-collection:<collection_attempt_id>`, while `renewal_key` remains occurrence metadata. | `maybe_submit_payment_intent` accepts already `submitted`, `requires_action`, or `succeeded`; other states fail closed. Transition helper same-target replay is a no-op. | No |
+| `submitted -> requires_action` | Stripe `payment_intent.requires_action` or `payment_intent.requires_confirmation`; renewal response may return `requires_action`. | `mark_requires_action`. | Provider event, PaymentAttempt, and ProviderEvent identities dedupe receipt processing. | Already `requires_action` is a no-op. A renewal collection keeps its exact collection and reservation unresolved; this outcome alone does not authorize a replacement collection. The Subscription may be marked past due for customer authentication. | No |
 | `submitted -> succeeded` or `requires_action -> succeeded` | Verified canonical `succeeded`: Stripe checkout/session completion, `payment_intent.succeeded`, `charge.succeeded`, or setup-intent success. | `mark_succeeded`; for order intents, `apply_payment_success_once`; for setup-purpose intents, stored-payment-method handler. | PaymentApplication `paid_apply:order:<id>` uses SQL `ON CONFLICT DO NOTHING`; provider event/attempt and receipt identities dedupe inputs. | Already succeeded is a no-op. A normal order success applies Order/reservation/subscription side effects only at the apply-once boundary. | Yes |
 | `submitted -> failed` or `requires_action -> failed` | Verified canonical failure such as Stripe payment failure, charge failure, setup failure, or a synchronous renewal decline. | `mark_failed`; renewal path also releases reservations and records RenewalAttempt/Subscription dunning state. | Receipt/provider-event/payment-attempt identities; local state action is replay-safe for already failed. | `maybe_mark_payment_intent_failed` returns no-op for `failed` and no-op for states outside failed-transitionable states. Normal initial-payment failure does not call Order `mark_payment_failed` in the observed path. | Yes |
 | `created|submitted|requires_action -> cancelled` | Stripe `setup_intent.canceled` is normalized as failure but special-cased to local cancellation; explicit system/admin cancel action is also present. | `cancel`. | Already cancelled is a no-op in canonical processing. | No transition from succeeded/failed; same-target replay is no-op. | Yes |
-
-The `renewal:<renewal_key>` PaymentIntent identity and renewal reservation
-release on `requires_action` above are observed current runtime behavior. The
-release on `requires_action` is a known safety gap because authentication may
-still succeed and payment application expects an active reservation. The
-current Stripe renewal adapter also uses the occurrence `renewal_key` as its
-outbound idempotency key. The blocked v0.1.27 target proposes distinct
-collection-attempt, PaymentIntent, and provider idempotency identities after
-verified terminal non-success; an ambiguous replay would keep the same
-identities and a `requires_action` hold would stay active. This proposal does
-not change current cross-domain law or runtime behavior. See the canonical
-blocked contract in the
-[Subscription Hardening Master Register](subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md).
-This registry remains descriptive.
 
 ### Provider and webhook handling
 

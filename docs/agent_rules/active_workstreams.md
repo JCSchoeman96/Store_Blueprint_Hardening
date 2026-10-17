@@ -1902,3 +1902,15 @@ latest main → converge into S0 → then activate PLATFORM/SUBS
 and treated S0 tip movement as a blanket `WAITING_FOR_BASELINE_SYNC` stopper for SUBS/PLATFORM.
 
 That global serial activation model is **superseded** by this document. Retain this note only as historical context.
+
+### Reconciliation provenance: accepted JC-229 runtime (2026-10-17)
+
+The JC-229 / SBH-10-04 STOP and missing-capability statements above record
+earlier task-admission and branch-base states, including the stopped PR #127.
+Keep PR #127 stopped; this note does not reopen it. Later accepted runtime on
+canonical `main` now includes the renewal-collection identity, evidence, and
+recovery capabilities described in this workstream. PR #154 proposes bringing
+that accepted runtime into the persistent SUBS branch. Until that reconciliation
+is accepted, the persistent SUBS base remains the recorded older tip. This note
+records runtime provenance only; it does not assign a task base, change Linear
+state, promote SBH-20-02, or alter JC-223 dependencies.

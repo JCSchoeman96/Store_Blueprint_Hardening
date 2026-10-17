@@ -682,19 +682,21 @@ failure/dunning counter without a later explicit authority decision. Every
 PaymentIntent must be durably attributable to its exact collection attempt and
 RenewalAttempt occurrence. Successful reconciliation must identify the exact
 successful collection evidence without ambiguity or destructive history
-rewriting. The meaning of the legacy single
-`RenewalAttempt.payment_intent_id` field remains for a later explicit
-Subscription, Payments, and SBH-10-05 authority decision.
+rewriting. The collection record and its exact PaymentIntent binding are the
+current identity authority. `RenewalAttempt.payment_intent_id` is a compatibility
+mirror; it cannot replace the collection's PaymentIntent identity.
 
-The inspected runtime still reuses the occurrence-level PaymentIntent and
-Stripe idempotency key, and its `requires_action` path releases the physical
-reservation. Those behaviors are recorded in the lifecycle registry. The
-v0.1.27 master-register amendment records a blocked target and changes the one
-Stage B identity rule described above. It does not authorize implementation or
-change the JC-223 dependency graph, unrelated Stage B law, or SBH-10-05
-reconciliation semantics. This is a Subscription-side target only; current
-Provider, Payments, Orders, and Inventory contracts remain in force until
-their owners approve changes.
+**Historical v0.1.27 runtime observation, superseded by accepted JC-229 runtime:**
+the inspected implementation then reused the occurrence-level PaymentIntent
+and Stripe idempotency key, and its `requires_action` path released the physical
+reservation. Those statements describe that earlier baseline only. Current
+accepted runtime uses a durable `RenewalCollectionAttempt` and
+`renewal-collection:<collection_attempt_id>` PaymentIntent/provider identity;
+`requires_action` remains on the same collection and does not by itself release
+its hold or authorize a replacement collection. The v0.1.27 master-register
+amendment remains historical evidence for the earlier blocked target. It does
+not override accepted current-main Provider, Payments, Orders, or Inventory
+behavior, change the JC-223 dependency graph, or alter unrelated Stage B law.
 
 ### Payment and callback apply-once
 

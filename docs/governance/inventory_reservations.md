@@ -273,25 +273,24 @@ existing reservation rules.
   `collection_attempt_id`. If the Orders boundary cannot represent that safely,
   stop for Orders owner review.
 
-The inspected current renewal failure path releases the reservation when a
-PaymentIntent enters `requires_action`. That behavior conflicts with this target
-and is a known runtime gap. This governance amendment does not change it or
-authorize an Orders/Payments/provider fix. No implementation may treat the
-current path as evidence that authentication-required payment cannot later
-succeed.
+**Historical pre-JC-229 runtime observation:** the earlier renewal failure path
+released the reservation when a PaymentIntent entered `requires_action`. That
+gap is superseded by the accepted collection runtime: the collection remains
+unresolved and its reservation stays active; `requires_action` alone does not
+authorize a replacement collection or release. This record preserves the earlier target
+and does not authorize changes to Orders, Payments, or provider behavior.
 
 ### InventoryAdmission reconciliation gate
 
-The frozen S0-ARCH-01 and `INV-ADM-004` contracts currently use
-`order_id + variant_id` for admission, queue identity, fencing, recovery, and
-the durable reservation lookup. They do not support multiple reservation
-generations for one Order and variant. Before implementation, the Inventory
-Admission owner must approve a bounded extension that carries the same stable
-`collection_attempt_id` through queue identity, lease and recovery fencing,
-PostgreSQL lookup, and reservation uniqueness. The extension must preserve
-PostgreSQL as inventory truth, serialize active generations for the occurrence
-and variant, and keep ambiguous database outcomes fenced until durable state is
-known.
+**Historical pre-IA04 design baseline:** the original S0-ARCH-01 and
+`INV-ADM-004` contracts used `order_id + variant_id` for admission, queue
+identity, fencing, recovery, and durable reservation lookup, without explicit
+reservation-generation identity. Accepted current-main Orders/Inventory
+capability now represents exact reservation generations and carries renewal
+collection identity through recovery and settlement. This section preserves the
+earlier extension gate as provenance; it does not describe a current capability
+gap or authorize new Orders changes. New work still requires the authority and
+scope assigned by its accepted issue.
 
 The current payment-success path consumes reservations through the Order
 boundary. The one-active-collection rule must make every active generation for

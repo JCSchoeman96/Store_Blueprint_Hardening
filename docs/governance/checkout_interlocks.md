@@ -52,38 +52,15 @@ Behavior (MUST):
 - Only one PaymentIntent may be in submitted state per order at a time:
   - additional attempts must either reuse the same intent (provider-dependent) or create a new intent after failing/cancelling the previous one.
 
-### 3.3 Renewal collection identity and success interlocks
+### 3.3 Renewal collection identity exception
 
-The accepted main contract defines this bounded Payments/Orders behavior for a
-later, separately admitted SBH-10-04 implementation. It does not admit the
-Subscription implementation: SBH-10-04 remains `BLOCKED_SHARED_AUTHORITY` in
-the current SUBS authority record. Generic checkout rules in §§3.1–3.2 remain
-unchanged.
-
-One RenewalAttempt and one renewal Order remain the commercial occurrence.
-Create a durable collection record with a UUIDv7 `collection_attempt_id`
-before PaymentIntent or provider work. Any collection ordinal has separate
-durable meaning and must not reuse or reinterpret
-`RenewalAttempt.attempt_no`. The occurrence `renewal_key` remains metadata; it
-does not identify sequential collections.
-
-For an admitted SBH-10-04 renewal collection, the typed Payments path may use:
+For an accepted JC-229 renewal collection, the typed Payments path uses:
 
 ```text
 payment_intent_key = "renewal-collection:<collection_attempt_id>"
 ```
 
-The PaymentIntent is durably linked to the exact collection and RenewalAttempt.
-Replays of that collection reuse the same PaymentIntent and key. A later
-collection may use a new key only after verified terminal financial
-non-success and current dunning policy permits another collection. An
-ambiguous result, `requires_action`, timeout, or local cancellation after
-possible submission remains unresolved and cannot authorize a new collection.
-A pre-submission dispatch fence may release the exact active reservation
-generation only after proving no worker can submit; recovery retains the same
-collection, PaymentIntent, and keys, with a new reservation generation if it
-resumes. The meaning of the legacy single
-`RenewalAttempt.payment_intent_id` remains for the separate SBH-10-05 decision.
+The durable collection record is created first. Replays of that collection reuse the same PaymentIntent and key. A later collection may use a new key only after the prior collection has verified terminal financial non-success and current dunning policy permits another collection. The occurrence `renewal_key` remains metadata and does not replace the collection key.
 
 The current PaymentIntent resource and indexes already permit distinct keys for terminal history on one Order. Existing preflight checks continue to reject a conflicting `submitted`, `requires_action`, or `succeeded` intent. This exception needs no PaymentIntent schema migration or new Payments resource. Generic checkout continues to use the deterministic Order/amount/currency/provider key above.
 
