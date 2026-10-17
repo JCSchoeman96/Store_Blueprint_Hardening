@@ -1789,3 +1789,46 @@ Entitlements core modification.
 - This amendment changes no runtime code, tests, schema, migrations, Ash
   snapshots, providers, Payments, Orders, Entitlements, configuration, or
   dependencies. It changes no JC-223 edge and assigns no Product decision.
+
+## JC-235 closure and JC-250 / v0.1.37 re-admission (2026-10-17)
+
+- Governance base: SUBS `3b30a7d74f313d1fc1e59bba04b55a991bf11fa5`, tree
+  `73aba016690de5a1415cc7c662626daa5ff2ae83`; observed `origin/main`:
+  `fdae94168e98d588fb2bba2e9fe4e93c6c016023`.
+- JC-235 / SBH-20-05 is Done and closes `CLOSED / NONE`. PR #158 used task
+  base `8369d184acdd81008a2f44250ba876ffba3fba17`; accepted head
+  `65cf1bef533a22142b5a94853bacc6800c8ec469`; exact-head CI run `39056673962`
+  passed all five required jobs. Merge `3b30a7d74f313d1fc1e59bba04b55a991bf11fa5`
+  has tree `73aba016690de5a1415cc7c662626daa5ff2ae83`, matching the reviewed
+  head tree. GitHub reports the merge signature verified and post-merge source
+  verification passed.
+- Preserve the accepted JC-235 crash-recovery limit: the durable collection,
+  payment, attempt, and dunning state can be reconstructed, but provider
+  authentication UI/action data is not persisted, so the authentication email
+  action URL cannot be recreated. This remains deferred; JC-235 is not reopened.
+- JC-250's frozen JC-223 edge remains `SBH-10-02 + SBH-60-01 + SBH-10-05`.
+  JC-227 / SBH-10-02, JC-249 / SBH-60-01, and JC-230 / SBH-10-05 are closed
+  with the provenance recorded in Master Register section 57.
+- Current accepted source preserves exact Subscription-bound renewal and exact
+  queued ContractChange target selection. The existing purchase-history guard
+  accepts EFFECTIVE and RETIRED and rejects never-effective revisions, but
+  checkpoint-B unchanged-renewal and queued-target branches do not call it.
+  This is the current JC-250 residual; do not substitute the current EFFECTIVE
+  revision or add another reconciliation path.
+- JC-250 / SBH-60-02 shared authority is NONE. It is the sole canonical READY
+  row. JC-235 is CLOSED. JC-250 remains Backlog. No implementation task base or
+  implementation branch is assigned; `subs-task/sbh-60-02-grandfathered-renewals`
+  is prospective only. No JC-223 edge changes.
+- v0.1.37 makes no runtime performance change. Future checkpoint-B validation
+  should reuse the loaded PlanRevision, add no query or N+1, index, cache, or
+  queue authority, and retain current Oban idempotency and occurrence evidence.
+- Governance verification on the candidate: `git diff --check` PASS;
+  `mix format --check-formatted` PASS; `mix check.static` PASS;
+  `mix check.types` PASS; `mix ash_postgres.generate_migrations --check` PASS.
+  `mix check` reached the static and documentation gates, then the isolated
+  test database failed to start with `KeyError: key :password not found` in
+  Postgrex SCRAM authentication; no repository workaround was made.
+- No production source, tests, migrations, Ash snapshots, dependency or
+  configuration files changed. The governance PR targets
+  `hardening/subscriptions`; exact-head CI must pass all five required jobs,
+  followed by independent review and human merge.
