@@ -32,7 +32,7 @@ defmodule StoreWeb.ConnCase do
   end
 
   setup tags do
-    Store.DataCase.setup_sandbox(tags)
-    {:ok, conn: Phoenix.ConnTest.build_conn()}
+    sandbox_owners = Store.DataCase.setup_sandbox(tags)
+    {:ok, conn: Phoenix.ConnTest.build_conn(), sandbox_owners: sandbox_owners}
   end
 end

@@ -252,9 +252,16 @@ defmodule Store.Subscriptions.Subscription do
     transitions do
       transition(:activate_now, from: [:pending, :past_due], to: :active)
       transition(:mark_past_due_transition, from: :active, to: :past_due)
-      transition(:cancel_now_transition, from: [:pending, :active, :past_due], to: :canceled)
+      transition(:mark_suspended_transition, from: [:active, :past_due], to: :suspended)
+
+      transition(:cancel_now_transition,
+        from: [:pending, :active, :past_due, :suspended],
+        to: :canceled
+      )
+
       transition(:mark_expired_transition, from: [:active, :past_due], to: :expired)
       transition(:extend_period, from: :past_due, to: :active)
+      transition(:extend_period, from: :suspended, to: :active)
       transition(:extend_period, from: :active, to: :active)
     end
   end
@@ -431,6 +438,23 @@ defmodule Store.Subscriptions.Subscription do
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
+    update :mark_suspended_transition do
+      public?(false)
+      require_atomic?(false)
+
+      accept([:billing_status_reason, :past_due_since_at, :dunning_attempt_count])
+
+      change(
+        {Store.Support.Governance.TransitionState,
+         target: :suspended, state_attribute: :status, lock_attribute: nil}
+      )
+
+      change(set_attribute(:cancel_at_period_end, false))
+      change(set_attribute(:next_retry_at, nil))
+      change(set_attribute(:retry_suppressed_at, nil))
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
+    end
+
     update :cancel_at_period_end_transition do
       public?(false)
       require_atomic?(false)
@@ -507,15 +531,12 @@ defmodule Store.Subscriptions.Subscription do
         :current_period_end_at,
         :next_renewal_at,
         :subscription_plan_id,
+        :current_plan_revision_id,
         :variant_id,
+        :quantity,
         :renewal_amount_minor,
         :renewal_currency,
         :membership_key,
-        :pending_variant_id,
-        :pending_subscription_plan_id,
-        :pending_renewal_amount_minor,
-        :pending_renewal_currency,
-        :change_effective_at,
         :dunning_attempt_count,
         :next_retry_at,
         :retry_suppressed_at
@@ -683,6 +704,7 @@ defmodule Store.Subscriptions.Subscription do
     policy action([
              :activate_now,
              :mark_past_due_transition,
+             :mark_suspended_transition,
              :extend_period,
              :mark_expired_transition,
              :set_provider_billing_reference,

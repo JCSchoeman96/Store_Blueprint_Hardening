@@ -181,6 +181,46 @@ defmodule Store.Governance.InventoryReservationsTest do
     assert inventory.reserved_count == 0
   end
 
+  test "withdrawn renewal settlement rejects an active reservation" do
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 2)
+    order = create_order!()
+
+    assert {:ok, _reserved} =
+             Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Orders.settle_withdrawn_renewal_reservations_for_payment(order.id)
+
+    reservation = get_reservation!(order.id, variant_id)
+    assert reservation.state == :active
+
+    inventory = get_inventory_item!(variant_id)
+    assert inventory.stock_on_hand == 2
+    assert inventory.reserved_count == 1
+  end
+
+  test "withdrawn renewal settlement rejects consumed reservation history" do
+    variant_id = UUIDv7.generate()
+    create_inventory_item!(variant_id, 2)
+    order = create_order!()
+
+    assert {:ok, _reserved} =
+             Store.Orders.reserve_inventory(order.id, [%{variant_id: variant_id, quantity: 1}])
+
+    assert {:ok, %{consumed_count: 1}} = Store.Orders.consume_reservations_for_order(order.id)
+
+    assert {:error, %Error{code: "RESERVATION_CONFLICT"}} =
+             Store.Orders.settle_withdrawn_renewal_reservations_for_payment(order.id)
+
+    reservation = get_reservation!(order.id, variant_id)
+    assert reservation.state == :consumed
+
+    inventory = get_inventory_item!(variant_id)
+    assert inventory.stock_on_hand == 1
+    assert inventory.reserved_count == 0
+  end
+
   defp create_order! do
     Order
     |> Ash.Changeset.for_create(:create, %{})

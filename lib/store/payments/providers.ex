@@ -7,6 +7,7 @@ defmodule Store.Payments.Providers do
   """
 
   alias Store.Payments.Providers.{PayFast, Paystack, PeachPayments, Stripe, Yoco}
+  alias Store.Payments.Types.{ProviderObservation, RenewalCollectionChargeRequest}
   alias Store.Support.Errors.Error
 
   @type known_provider :: :stripe | :payfast | :paystack | :yoco | :peach_payments
@@ -55,6 +56,79 @@ defmodule Store.Payments.Providers do
     end
   end
 
+  @spec renewal_collection_request_reference(provider(), String.t()) ::
+          {:ok, String.t()} | {:error, Error.t()}
+  def renewal_collection_request_reference(provider, collection_attempt_id)
+      when is_binary(collection_attempt_id) do
+    with {:ok, module} <- adapter(provider),
+         true <- function_exported?(module, :renewal_collection_request_reference, 1) do
+      module.renewal_collection_request_reference(collection_attempt_id)
+    else
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_PROVIDER_UNSUPPORTED",
+           "provider does not define a renewal collection request reference"
+         )}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  def renewal_collection_request_reference(_provider, _collection_attempt_id) do
+    {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
+  end
+
+  @spec expected_environment(provider()) :: {:ok, String.t() | nil} | {:error, Error.t()}
+  def expected_environment(provider) do
+    with {:ok, module} <- adapter(provider) do
+      if Code.ensure_loaded?(module) and function_exported?(module, :expected_environment, 0) do
+        module.expected_environment()
+      else
+        {:ok, nil}
+      end
+    end
+  end
+
+  @spec observe_payment(provider(), map(), keyword()) ::
+          {:ok, Store.Payments.Types.ProviderObservation.t()} | {:error, term()}
+  def observe_payment(provider, identity, opts \\ [])
+      when is_map(identity) and is_list(opts) do
+    with {:ok, module} <- adapter(provider),
+         capabilities <- module.capabilities(),
+         true <- Map.get(capabilities, :supports_transaction_observation?, false),
+         true <-
+           Map.get(identity, :provider_reference_kind) != :transaction_reference or
+             Map.get(capabilities, :supports_request_reference_observation?, false) do
+      module.observe_payment(identity, opts)
+    else
+      false ->
+        {:error,
+         Error.new(
+           "PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED",
+           "provider observation is unsupported",
+           %{
+             provider: normalize_provider(provider) |> Atom.to_string()
+           }
+         )}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  @spec classify_payment_finality(provider(), ProviderObservation.t()) ::
+          :authoritative_success | :terminal_non_success | :non_terminal | :unknown
+  def classify_payment_finality(provider, %ProviderObservation{} = observation) do
+    with {:ok, module} <- adapter(provider),
+         true <- function_exported?(module, :classify_payment_finality, 1) do
+      module.classify_payment_finality(observation)
+    else
+      _ -> :unknown
+    end
+  end
+
   @spec create_intent(provider(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def create_intent(provider, attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
     with {:ok, module} <- adapter(provider) do
@@ -62,7 +136,11 @@ defmodule Store.Payments.Providers do
     end
   end
 
-  @spec charge_off_session(provider(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec charge_off_session(
+          provider(),
+          RenewalCollectionChargeRequest.t() | map(),
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
   def charge_off_session(provider, attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
     with {:ok, module} <- adapter(provider) do
       module.charge_off_session(attrs, opts)

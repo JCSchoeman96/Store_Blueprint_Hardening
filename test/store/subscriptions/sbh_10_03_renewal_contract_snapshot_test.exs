@@ -11,6 +11,7 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     ContractChange,
     Facade,
     RenewalAttempt,
+    RenewalCollectionAttempt,
     Scheduler,
     Subscription
   }
@@ -140,8 +141,14 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       |> Plug.Conn.resp(200, Jason.encode!(StripeAPIStub.payment_intent_response(params)))
     end)
 
-    assert {:ok, :processed} =
-             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+    {renewal_result, renewal_stats} =
+      RepoStats.capture(fn ->
+        Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+      end)
+
+    assert {:ok, :processed} = renewal_result
+    # Provider outcome certification adds fixed persistence and validation work.
+    assert renewal_stats.query_count <= 100
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     contract_change = fetch_contract_change!(contract_change_id)
@@ -199,9 +206,19 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     assert payment_intent.amount_received_minor == 9_400
 
     later_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 8_900})
-    SubscriptionsFixtures.attach_variant_plan!(live_variant.id, later_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(target_variant.id, later_plan.id)
     later_revision = SubscriptionsFixtures.create_plan_revision!(later_plan)
     assert {:ok, later_target} = queue_plan_change(customer, after_consumption, later_plan)
+
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => payment_intent.amount_received_minor,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "succeeded"
+    })
 
     assert {:ok, :processed} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
@@ -209,6 +226,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     assert fetch_attempt!(attempt.id).plan_revision_id == target_revision.id
     assert fetch_attempt!(attempt.id).contract_change_id == contract_change_id
     assert fetch_attempt!(attempt.id).amount_minor == 4_700
+    assert [only_collection] = list_collections!(attempt.id)
+    assert only_collection.financial_outcome == :verified_success
 
     assert fetch_contract_change!(Map.fetch!(later_target, :current_contract_change_id)).status ==
              :queued
@@ -223,17 +242,179 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
     |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
 
-    before_guard_subscription = fetch_subscription!(subscription.id)
-
-    assert {:error, %{code: "VALIDATION_ERROR"}} =
-             Facade.reconcile_paid_subscription_renewal_for_system(order.id,
-               renewal_attempt_id: attempt.id
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
-    assert fetch_attempt!(attempt.id).status == :processing
+    reconciled_subscription = fetch_subscription!(subscription.id)
 
-    assert fetch_subscription!(subscription.id).aggregate_version ==
-             before_guard_subscription.aggregate_version
+    queued_after_reconciliation =
+      fetch_contract_change!(Map.fetch!(later_target, :current_contract_change_id))
+
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    assert fetch_contract_change!(contract_change_id).status == :applied
+    assert reconciled_subscription.current_plan_revision_id == target_revision.id
+    assert reconciled_subscription.variant_id == target_variant.id
+    assert reconciled_subscription.quantity == attempt.quantity
+    assert reconciled_subscription.renewal_amount_minor == attempt.amount_minor
+    assert reconciled_subscription.renewal_currency == attempt.currency
+    assert reconciled_subscription.current_contract_change_id == queued_after_reconciliation.id
+    assert queued_after_reconciliation.status == :queued
+    assert queued_after_reconciliation.target_plan_revision_id == later_revision.id
+    assert queued_after_reconciliation.target_variant_id == attempt.variant_id
+
+    assert queued_after_reconciliation.effective_at ==
+             reconciled_subscription.current_period_end_at
+  end
+
+  test "paid renewal reconciliation preserves the latest queued contract lineage" do
+    customer = SubscriptionsFixtures.create_customer!("sbh_10_03_lineage_reconcile")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    live_plan = SubscriptionsFixtures.create_subscription_plan!(%{interval_unit: :day})
+    x_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_900})
+    y_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 4_900})
+    z_plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 6_900})
+
+    for plan <- [live_plan, x_plan, y_plan, z_plan] do
+      SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    end
+
+    x_revision = SubscriptionsFixtures.create_plan_revision!(x_plan)
+    y_revision = SubscriptionsFixtures.create_plan_revision!(y_plan)
+    z_revision = SubscriptionsFixtures.create_plan_revision!(z_plan)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, live_plan, %{
+        started_at: DateTime.add(now, -86_410, :second),
+        next_renewal_at: DateTime.add(now, -10, :second),
+        provider_billing_ref: "pm_sbh_10_03_lineage_reconcile"
+      })
+
+    assert {:ok, queued_x} = queue_plan_change(customer, subscription, x_plan)
+    x = fetch_contract_change!(queued_x.current_contract_change_id)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    attempt = fetch_attempt_for_subscription!(subscription.id)
+    collection = hd(list_collections!(attempt.id))
+    assert attempt.contract_change_id == x.id
+    assert fetch_contract_change!(x.id).status == :bound_to_renewal
+
+    assert {:ok, queued_y} =
+             queue_plan_change(customer, fetch_subscription!(subscription.id), y_plan)
+
+    y = fetch_contract_change!(queued_y.current_contract_change_id)
+
+    assert {:ok, queued_z} =
+             queue_plan_change(customer, fetch_subscription!(subscription.id), z_plan)
+
+    z = fetch_contract_change!(queued_z.current_contract_change_id)
+    y = fetch_contract_change!(y.id)
+
+    assert y.status == :superseded
+    assert y.predecessor_contract_change_id == x.id
+    assert y.target_plan_revision_id == y_revision.id
+    assert z.status == :queued
+    assert z.predecessor_contract_change_id == y.id
+    assert z.supersedes_contract_change_id == y.id
+    assert z.target_plan_revision_id == z_revision.id
+    assert z.target_variant_id == attempt.variant_id
+    assert z.target_quantity == attempt.quantity
+    assert z.target_amount_minor == z_revision.amount_minor
+    assert z.target_currency == z_revision.currency
+    assert z.effective_at == attempt.period_end_at
+    assert fetch_subscription!(subscription.id).current_contract_change_id == z.id
+    before_z_reconciliation = z
+    before_reconciliation = fetch_subscription!(subscription.id)
+
+    payment_intent = fetch_payment_intent!(collection.payment_intent_id)
+    order = fetch_order!(attempt.order_id)
+
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => payment_intent.amount_received_minor,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "succeeded"
+    })
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    assert hd(list_collections!(attempt.id)).financial_outcome == :verified_success
+
+    payment_intent
+    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    order
+    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    reconciliation_opts = exact_reconciliation_opts!(attempt)
+
+    {reconciliation_result, reconciliation_stats} =
+      RepoStats.capture(fn ->
+        Facade.reconcile_paid_subscription_renewal_for_system(
+          order.id,
+          reconciliation_opts
+        )
+      end)
+
+    IO.puts(
+      "JC-233 multi-generation N+1 reconciliation query_count=#{reconciliation_stats.query_count}"
+    )
+
+    assert reconciliation_stats.query_count > 0
+    assert {:ok, :reconciled} = reconciliation_result
+
+    applied_x = fetch_contract_change!(x.id)
+    preserved_y = fetch_contract_change!(y.id)
+    preserved_z = fetch_contract_change!(z.id)
+    reconciled = fetch_subscription!(subscription.id)
+    assert applied_x.status == :applied
+    assert preserved_y == y
+    assert preserved_z == before_z_reconciliation
+    assert reconciled.current_plan_revision_id == attempt.plan_revision_id
+    assert reconciled.subscription_plan_id == x_revision.subscription_plan_id
+    assert reconciled.variant_id == attempt.variant_id
+    assert reconciled.quantity == attempt.quantity
+    assert reconciled.renewal_amount_minor == attempt.amount_minor
+    assert reconciled.renewal_currency == attempt.currency
+    assert reconciled.current_period_start_at == attempt.period_start_at
+    assert reconciled.current_period_end_at == attempt.period_end_at
+    assert reconciled.current_contract_change_id == z.id
+    assert reconciled.pending_subscription_plan_id == z_plan.id
+    assert reconciled.pending_variant_id == before_reconciliation.pending_variant_id
+    assert reconciled.pending_renewal_amount_minor == z_revision.amount_minor
+    assert reconciled.pending_renewal_currency == z_revision.currency
+    assert reconciled.change_effective_at == attempt.period_end_at
+
+    applied_version = reconciled.aggregate_version
+
+    {replay_result, replay_stats} =
+      RepoStats.capture(fn ->
+        Facade.reconcile_paid_subscription_renewal_for_system(
+          order.id,
+          reconciliation_opts
+        )
+      end)
+
+    IO.puts("JC-233 multi-generation exact replay query_count=#{replay_stats.query_count}")
+
+    assert replay_stats.query_count > 0
+    assert {:ok, :noop} = replay_result
+    assert fetch_subscription!(subscription.id).aggregate_version == applied_version
+    assert fetch_contract_change!(x.id) == applied_x
+    assert fetch_contract_change!(y.id) == preserved_y
+    assert fetch_contract_change!(z.id) == preserved_z
   end
 
   test "unchanged live renewal binds its exact current revision without a subscription write" do
@@ -248,7 +429,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
       end)
 
     assert {:ok, :processed} = result
-    assert stats.query_count <= 64
+    # Provider outcome certification adds fixed persistence and validation work.
+    assert stats.query_count <= 93
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
     after_binding = fetch_subscription!(subscription.id)
@@ -332,7 +514,19 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
 
     assert {:ok, _queued} = queue_plan_change(customer, subscription, target_plan)
 
-    assert {:ok, :processed} =
+    request_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      request_no = :atomics.add_get(request_count, 1, 1)
+      status = if request_no == 1, do: "canceled", else: "succeeded"
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => status})
+      )
+    end)
+
+    assert {:error, %{code: "PAYMENT_FAILED"}} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
 
     attempt = fetch_attempt_for_subscription!(subscription.id)
@@ -379,6 +573,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
 
     assert {:ok, :processed} =
              Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    assert :atomics.get(request_count, 1) == 2
 
     retried_subscription = fetch_subscription!(subscription.id)
     retried_attempt = fetch_attempt!(attempt.id)
@@ -860,10 +1056,30 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
+  defp exact_reconciliation_opts!(attempt) do
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    [
+      renewal_attempt_id: attempt.id,
+      collection_attempt_id: collection.id,
+      payment_intent_id: collection.payment_intent_id
+    ]
+  end
+
   defp fetch_attempt!(id) do
     RenewalAttempt
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp list_collections!(renewal_attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(renewal_attempt_id == ^renewal_attempt_id))
+    |> Ash.Query.sort(collection_ordinal: :asc)
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp list_attempts!(subscription_id) do

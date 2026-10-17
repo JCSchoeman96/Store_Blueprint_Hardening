@@ -23,6 +23,7 @@ defmodule StoreWeb.API.ErrorResponder do
   defp status_for_code("PAYMENT_PROVIDER_VERIFICATION_FAILED"), do: :unauthorized
   defp status_for_code("PAYMENT_PROVIDER_SELECTION_REQUIRED"), do: :bad_request
   defp status_for_code("PAYMENT_PROVIDER_UNSUPPORTED"), do: :bad_request
+  defp status_for_code("PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED"), do: :bad_request
   defp status_for_code("PAYMENT_PROVIDER_DISABLED"), do: :forbidden
   defp status_for_code("PAYMENT_PROVIDER_DOWN"), do: :bad_gateway
   defp status_for_code("PAYMENT_PROVIDER_TIMEOUT"), do: :gateway_timeout

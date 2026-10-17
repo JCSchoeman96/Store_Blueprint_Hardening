@@ -90,6 +90,45 @@ The generic lifecycle and TTL rules in Sections 6 and 7 continue to apply to gen
 
 Before payment-success consumption for a physical renewal, Subscription validation must prove that every expected active hold belongs to the exact successful collection. The Orders consume operation then targets only those exact generation keys. The renewal-specific request, release, recovery, and consume paths must use the exact generation key. PostgreSQL remains the inventory authority. Redis admission continues to bound entry by variant and by the existing global budget; it does not establish reservation truth. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md) and [S0-ARCH-01](../hardening/s0_inventory_reservation_admission_architecture.md).
 
+### 5.2 Exact renewal-generation transaction guard
+
+This capability belongs to Orders under S0 inventory-concurrency authority. Its
+implementation requires the separate admission gates in the
+[JC-229 guard correction](sbh_10_04_cross_domain_authority_amendment.md#jc-229-dispatch-atomicity-correction).
+An ordinary recovery read does not authorize a physical dispatch transition.
+
+A governed business caller already in a Store.Repo PostgreSQL transaction may ask
+Orders to lock and recheck one exact renewal generation. Orders must locate the
+row by its full `reservation_key`, acquire a row lock that blocks release,
+consume, expiry, and every terminal update, and validate the exact `order_id`,
+`variant_id`, `reservation_key`, required quantity, and `state == active` after
+acquiring the lock. The accepted renewal-generation key in section 5.1 is mandatory.
+
+The lock must remain held on the caller's transaction connection until the outer
+transaction commits or rolls back. Missing rows, contradictory identity or
+quantity, terminal state, database uncertainty, and inability to prove this shared
+transaction boundary fail closed. A separate transaction, separate connection,
+or unlocked check followed by an update does not meet this contract.
+
+The guard changes no inventory or Subscription data and creates no durable truth.
+It grants no release or provider-submission authority. Existing exact reserve,
+recover, release, and consume contracts remain in force. A renewal release still
+requires a governing durable pre-submission fence or separately authorized terminal
+financial evidence. Ambiguous mutation results still require exact recovery before
+another mutation.
+
+For dispatch, acquire the RenewalCollectionAttempt lock, then the exact reservation
+row guard, then perform the Subscription collection transition and commit. A
+reservation-only guard must never subsequently acquire an InventoryItem lock or
+invoke an inventory mutation in that transaction. For governed fence/mutation
+operations, acquire the collection lock, then InventoryItem, then the exact
+reservation row, then complete the collection transition and commit. Existing
+Orders mutations retain InventoryItem-before-reservation ordering. No Orders writer
+may acquire a Subscription collection lock after acquiring an inventory or
+reservation lock. Any newly discovered reverse dependency requires STOP and a new
+authority decision. This guard is for one exact generation; a multi-generation
+extension requires separate admission.
+
 ## 6) Reservation lifecycle (MUST)
 The transitions below describe generic checkout. Physical renewal generations follow Section 5.1: ordinary TTL cleanup cannot move an active renewal row to `expired`, and a renewal success consumes only validated exact generation keys.
 
@@ -234,25 +273,24 @@ existing reservation rules.
   `collection_attempt_id`. If the Orders boundary cannot represent that safely,
   stop for Orders owner review.
 
-The inspected current renewal failure path releases the reservation when a
-PaymentIntent enters `requires_action`. That behavior conflicts with this target
-and is a known runtime gap. This governance amendment does not change it or
-authorize an Orders/Payments/provider fix. No implementation may treat the
-current path as evidence that authentication-required payment cannot later
-succeed.
+**Historical pre-JC-229 runtime observation:** the earlier renewal failure path
+released the reservation when a PaymentIntent entered `requires_action`. That
+gap is superseded by the accepted collection runtime: the collection remains
+unresolved and its reservation stays active; `requires_action` alone does not
+authorize a replacement collection or release. This record preserves the earlier target
+and does not authorize changes to Orders, Payments, or provider behavior.
 
 ### InventoryAdmission reconciliation gate
 
-The frozen S0-ARCH-01 and `INV-ADM-004` contracts currently use
-`order_id + variant_id` for admission, queue identity, fencing, recovery, and
-the durable reservation lookup. They do not support multiple reservation
-generations for one Order and variant. Before implementation, the Inventory
-Admission owner must approve a bounded extension that carries the same stable
-`collection_attempt_id` through queue identity, lease and recovery fencing,
-PostgreSQL lookup, and reservation uniqueness. The extension must preserve
-PostgreSQL as inventory truth, serialize active generations for the occurrence
-and variant, and keep ambiguous database outcomes fenced until durable state is
-known.
+**Historical pre-IA04 design baseline:** the original S0-ARCH-01 and
+`INV-ADM-004` contracts used `order_id + variant_id` for admission, queue
+identity, fencing, recovery, and durable reservation lookup, without explicit
+reservation-generation identity. Accepted current-main Orders/Inventory
+capability now represents exact reservation generations and carries renewal
+collection identity through recovery and settlement. This section preserves the
+earlier extension gate as provenance; it does not describe a current capability
+gap or authorize new Orders changes. New work still requires the authority and
+scope assigned by its accepted issue.
 
 The current payment-success path consumes reservations through the Order
 boundary. The one-active-collection rule must make every active generation for

@@ -10,6 +10,7 @@ defmodule Store.Payments.Providers.Stripe do
 
   alias Store.Payments.ProviderConfig
   alias Store.Payments.Types.CanonicalReceipt
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Support.Errors.Error
   alias Store.Support.HTTP.ReqClient
 
@@ -26,10 +27,82 @@ defmodule Store.Payments.Providers.Stripe do
       supports_tokenization?: true,
       supports_merchant_initiated_charges?: true,
       supports_provider_managed_subscriptions?: true,
+      supports_transaction_observation?: true,
+      supports_same_request_replay?: false,
+      supports_request_reference_observation?: false,
       webhook_verification_mode: :offline_hmac,
       supports_webhooks?: true
     }
   end
+
+  @impl true
+  def renewal_collection_request_reference(collection_attempt_id)
+      when is_binary(collection_attempt_id) do
+    case Ecto.UUID.cast(collection_attempt_id) do
+      {:ok, uuid} ->
+        {:ok, "renewal-collection:" <> uuid}
+
+      :error ->
+        {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
+    end
+  end
+
+  def renewal_collection_request_reference(_collection_attempt_id) do
+    {:error, Error.new("VALIDATION_ERROR", "renewal collection identity must be a UUID")}
+  end
+
+  @impl true
+  def observe_payment(identity, opts) when is_map(identity) and is_list(opts) do
+    with {:ok, reference} <- fetch_required_binary(identity, :provider_reference),
+         {:ok, reference_kind} <- fetch_reference_kind(identity),
+         {:ok, config} <- stripe_config(opts) do
+      observe_reference(reference, reference_kind, config)
+    end
+  end
+
+  def observe_payment(_identity, _opts) do
+    {:error, Error.new("PAYMENT_PROVIDER_OBSERVATION_INVALID", "payment reference is required")}
+  end
+
+  def expected_environment do
+    with {:ok, config} <- stripe_config([]) do
+      {:ok, stripe_environment(config.secret_key)}
+    end
+  end
+
+  @impl true
+  def classify_payment_finality(%ProviderObservation{
+        raw_provider_status: status,
+        normalized_outcome: :authoritative_success
+      })
+      when status in [
+             "succeeded",
+             "payment_intent.succeeded",
+             "setup_intent.succeeded",
+             "checkout.session.completed"
+           ],
+      do: :authoritative_success
+
+  def classify_payment_finality(%ProviderObservation{raw_provider_status: status})
+      when status in ["canceled", "payment_intent.canceled", "setup_intent.canceled"],
+      do: :terminal_non_success
+
+  def classify_payment_finality(%ProviderObservation{raw_provider_status: status})
+      when status in [
+             "requires_payment_method",
+             "requires_action",
+             "requires_confirmation",
+             "requires_capture",
+             "processing"
+           ],
+      do: :non_terminal
+
+  def classify_payment_finality(%ProviderObservation{
+        raw_provider_status: "payment_intent.payment_failed"
+      }),
+      do: :non_terminal
+
+  def classify_payment_finality(%ProviderObservation{}), do: :unknown
 
   @impl true
   def create_intent(attrs, opts) when is_map(attrs) and is_list(opts) do
@@ -47,55 +120,79 @@ defmodule Store.Payments.Providers.Stripe do
     with {:ok, amount_minor} <- fetch_required_integer(attrs, :amount_minor),
          {:ok, currency} <- fetch_required_binary(attrs, :currency),
          {:ok, renewal_key} <- fetch_required_binary(attrs, :renewal_key),
-         {:ok, local_intent_id} <- fetch_required_binary(attrs, :local_intent_id),
+         {:ok, provider_request_reference} <-
+           fetch_required_binary(attrs, :provider_request_reference),
+         {:ok, collection_attempt_id} <- fetch_optional_binary(attrs, :collection_attempt_id),
+         {:ok, local_intent_id} <-
+           fetch_required_binary_from(attrs, :payment_intent_id, :local_intent_id),
          {:ok, order_id} <- fetch_required_binary(attrs, :order_id),
          {:ok, renewal_attempt_id} <- fetch_required_binary(attrs, :renewal_attempt_id),
          {:ok, subscription_id} <- fetch_required_binary(attrs, :subscription_id),
          {:ok, provider_customer_ref} <- fetch_required_binary(attrs, :provider_customer_ref),
          {:ok, provider_payment_method_ref} <-
-           fetch_required_binary(attrs, :provider_payment_method_ref),
+           fetch_required_binary_from(
+             attrs,
+             :provider_credential_ref,
+             :provider_payment_method_ref
+           ),
          {:ok, response} <-
            stripe_post(
              "/v1/payment_intents",
-             %{
-               "amount" => Integer.to_string(amount_minor),
-               "confirm" => "true",
-               "currency" => stripe_currency(currency),
-               "customer" => provider_customer_ref,
-               "description" => "Subscription renewal #{renewal_key}",
-               "metadata[local_intent_id]" => local_intent_id,
-               "metadata[order_id]" => order_id,
-               "metadata[renewal_attempt_id]" => renewal_attempt_id,
-               "metadata[renewal_key]" => renewal_key,
-               "metadata[subscription_id]" => subscription_id,
-               "off_session" => "true",
-               "payment_method" => provider_payment_method_ref
-             },
-             renewal_key,
+             Map.merge(
+               %{
+                 "amount" => Integer.to_string(amount_minor),
+                 "confirm" => "true",
+                 "currency" => stripe_currency(currency),
+                 "customer" => provider_customer_ref,
+                 "description" => "Subscription renewal #{renewal_key}",
+                 "metadata[local_intent_id]" => local_intent_id,
+                 "metadata[order_id]" => order_id,
+                 "metadata[renewal_attempt_id]" => renewal_attempt_id,
+                 "metadata[renewal_key]" => renewal_key,
+                 "metadata[subscription_id]" => subscription_id,
+                 "off_session" => "true",
+                 "payment_method" => provider_payment_method_ref
+               },
+               if(is_binary(collection_attempt_id),
+                 do: %{"metadata[collection_attempt_id]" => collection_attempt_id},
+                 else: %{}
+               )
+             ),
+             provider_request_reference,
              opts
            ),
          {:ok, payment_intent} <- extract_payment_intent_response(response) do
       {:ok,
        %{
          status: normalize_charge_status(payment_intent, response),
-         idempotency_key: renewal_key,
+         idempotency_key: provider_request_reference,
+         provider_request_reference: provider_request_reference,
          confirm: true,
          off_session: true,
-         amount_minor: amount_minor,
-         currency: String.upcase(currency),
+         amount_minor: payment_intent_amount(payment_intent),
+         currency: stripe_currency_from_response(payment_intent["currency"]),
          provider_payment_id: payment_intent["id"],
+         raw_provider_status: payment_intent["status"],
+         provider_environment: stripe_observed_environment(payment_intent, nil),
          provider_customer_ref: payment_intent["customer"] || provider_customer_ref,
          provider_payment_method_ref:
            payment_intent["payment_method"] || provider_payment_method_ref,
          provider_client_secret: payment_intent["client_secret"],
          action_url: extract_action_url(%{"data" => %{"object" => payment_intent}}),
-         metadata: %{
-           local_intent_id: local_intent_id,
-           order_id: order_id,
-           renewal_attempt_id: renewal_attempt_id,
-           subscription_id: subscription_id,
-           renewal_key: renewal_key
-         }
+         metadata:
+           Map.merge(
+             %{
+               local_intent_id: local_intent_id,
+               order_id: order_id,
+               renewal_attempt_id: renewal_attempt_id,
+               subscription_id: subscription_id,
+               renewal_key: renewal_key
+             },
+             if(is_binary(collection_attempt_id),
+               do: %{collection_attempt_id: collection_attempt_id},
+               else: %{}
+             )
+           )
        }}
     end
   end
@@ -126,12 +223,15 @@ defmodule Store.Payments.Providers.Stripe do
          provider_session_id: provider_session_id,
          provider_payment_id: provider_payment_id,
          provider_idempotency_key: extract_idempotency_key(payload),
+         provider_request_reference: extract_idempotency_key(payload),
          provider_customer_ref: extract_provider_customer_ref(payload),
          provider_payment_method_ref: extract_provider_payment_method_ref(payload),
          local_payment_intent_id: extract_local_payment_intent_id(payload),
          status: normalize_status(event_type),
+         raw_provider_status: extract_raw_provider_status(payload, event_type),
          amount_minor: amount_minor,
          currency: currency,
+         provider_environment: extract_provider_environment(payload),
          order_ref: extract_order_ref(payload),
          action_url: extract_action_url(payload),
          client_secret: extract_client_secret(payload),
@@ -476,9 +576,23 @@ defmodule Store.Payments.Providers.Stripe do
         DateTime.from_unix!(created)
 
       _ ->
-        DateTime.utc_now() |> DateTime.truncate(:second)
+        nil
     end
   end
+
+  defp extract_raw_provider_status(payload, event_type) do
+    payload
+    |> payload_object()
+    |> Map.get("status")
+    |> case do
+      status when is_binary(status) -> status
+      _ -> event_type
+    end
+  end
+
+  defp extract_provider_environment(%{"livemode" => true}), do: "live"
+  defp extract_provider_environment(%{"livemode" => false}), do: "test"
+  defp extract_provider_environment(_payload), do: nil
 
   defp normalize_status(event_type)
        when event_type in [
@@ -578,6 +692,296 @@ defmodule Store.Payments.Providers.Stripe do
       {:error, reason} -> {:error, transport_error(reason)}
     end
   end
+
+  defp stripe_get(path, config) do
+    options =
+      config.request_options
+      |> Keyword.merge(
+        url: stripe_url(config.api_base_url, path),
+        headers: stripe_read_headers(config),
+        retry: :safe_transient,
+        max_retries: 2
+      )
+
+    case ReqClient.get(options[:url], Keyword.delete(options, :url)) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        {:ok, %{status: status, body: body}}
+
+      {:ok, response} ->
+        stripe_error(response)
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, transport_error(reason)}
+    end
+  end
+
+  defp stripe_read_headers(config) do
+    [
+      {"authorization", "Bearer #{config.secret_key}"},
+      {"stripe-version", config.api_version}
+    ]
+  end
+
+  defp fetch_reference_kind(identity) do
+    case Map.get(identity, :provider_reference_kind) do
+      kind when kind in [:payment_intent, :checkout_session, :setup_intent] ->
+        {:ok, kind}
+
+      _ ->
+        {:error,
+         Error.new(
+           "PAYMENT_PROVIDER_OBSERVATION_INVALID",
+           "provider reference kind is required"
+         )}
+    end
+  end
+
+  defp observe_reference(_reference, :setup_intent, _config) do
+    {:error,
+     Error.new(
+       "PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED",
+       "Stripe SetupIntent observation is unsupported"
+     )}
+  end
+
+  defp observe_reference(reference, :payment_intent, config) do
+    with {:ok, response} <- stripe_get("/v1/payment_intents/#{URI.encode(reference)}", config),
+         {:ok, body} <- extract_payment_intent_response(response) do
+      normalize_payment_observation(reference, :payment_intent, body, config, reference)
+    end
+  end
+
+  defp observe_reference(reference, :checkout_session, config) do
+    with {:ok, response} <-
+           stripe_get("/v1/checkout/sessions/#{URI.encode(reference)}", config),
+         {:ok, session} <- extract_payment_intent_response(response) do
+      observe_checkout_session_response(reference, session, config)
+    end
+  end
+
+  defp observe_checkout_session_response(reference, %{"id" => reference} = session, config) do
+    observe_checkout_session(reference, session, config)
+  end
+
+  defp observe_checkout_session_response(reference, session, config) do
+    {:ok, observation} = normalize_checkout_session(reference, session, config)
+    {:ok, mark_unknown_identity(observation)}
+  end
+
+  defp observe_checkout_session(reference, session, config) do
+    case stripe_id(session["payment_intent"]) do
+      nil ->
+        normalize_checkout_session(reference, session, config)
+
+      payment_intent_id ->
+        observe_checkout_payment_intent(reference, payment_intent_id, session, config)
+    end
+  end
+
+  defp observe_checkout_payment_intent(reference, payment_intent_id, session, config) do
+    with {:ok, response} <-
+           stripe_get("/v1/payment_intents/#{URI.encode(payment_intent_id)}", config),
+         {:ok, payment_intent} <- extract_payment_intent_response(response),
+         {:ok, observation} <-
+           normalize_payment_observation(
+             reference,
+             :checkout_session,
+             payment_intent,
+             config,
+             payment_intent_id
+           ) do
+      {:ok, validate_session_evidence(observation, session, payment_intent)}
+    end
+  end
+
+  defp normalize_checkout_session(reference, session, config) do
+    status = session["payment_status"] || session["status"] || "unknown_session_status"
+    amount = session["amount_total"]
+    currency = session["currency"]
+
+    outcome =
+      if session["status"] in ["open", "complete"] and
+           session["payment_status"] in ["unpaid", "no_payment_required"],
+         do: :unresolved,
+         else: :unknown_or_contradictory
+
+    {:ok,
+     %ProviderObservation{
+       provider: :stripe,
+       provider_reference: reference,
+       provider_reference_kind: :checkout_session,
+       provider_transaction_id: nil,
+       local_payment_intent_id: get_in(session, ["metadata", "local_intent_id"]),
+       observation_source: :verification,
+       normalized_outcome: outcome,
+       raw_provider_status: status,
+       amount_minor: if(is_integer(amount), do: amount),
+       currency: if(is_binary(currency), do: String.upcase(currency)),
+       provider_environment: stripe_observed_environment(session, config),
+       provider_occurred_at: stripe_datetime(session["created"]),
+       observed_at: DateTime.utc_now(),
+       provider_customer_ref: stripe_id(session["customer"]),
+       provider_payment_method_ref: nil,
+       evidence_sha256: evidence_hash(session),
+       metadata: nil
+     }}
+  end
+
+  defp validate_session_evidence(observation, session, payment_intent) do
+    if session_evidence_consistent?(observation, session, payment_intent) do
+      %{
+        observation
+        | evidence_sha256:
+            evidence_hash(%{checkout_session: session, payment_intent: payment_intent})
+      }
+    else
+      %{
+        observation
+        | normalized_outcome: :unknown_or_contradictory,
+          raw_provider_status:
+            "checkout_session:#{session["payment_status"] || session["status"]};payment_intent:#{observation.raw_provider_status}",
+          evidence_sha256:
+            evidence_hash(%{checkout_session: session, payment_intent: payment_intent})
+      }
+    end
+  end
+
+  defp session_evidence_consistent?(observation, session, payment_intent) do
+    session["id"] == observation.provider_reference and
+      stripe_id(session["payment_intent"]) == payment_intent["id"] and
+      payment_intent["id"] == observation.provider_transaction_id and
+      consistent_session_money?(observation, session) and
+      consistent_session_status?(observation, session) and
+      consistent_session_environment?(observation, session)
+  end
+
+  defp consistent_session_money?(observation, session) do
+    is_integer(session["amount_total"]) and session["amount_total"] == observation.amount_minor and
+      is_binary(session["currency"]) and
+      String.upcase(session["currency"]) == observation.currency
+  end
+
+  defp consistent_session_status?(%{normalized_outcome: :authoritative_success}, session),
+    do: session["payment_status"] == "paid"
+
+  defp consistent_session_status?(_observation, _session), do: true
+
+  defp consistent_session_environment?(observation, session) do
+    session_environment = stripe_observed_environment(session, nil)
+    is_nil(session_environment) or session_environment == observation.provider_environment
+  end
+
+  defp normalize_payment_observation(reference, reference_kind, body, config, expected_id) do
+    status = Map.get(body, "status")
+    amount = Map.get(body, "amount_received") || Map.get(body, "amount")
+    currency = Map.get(body, "currency")
+    provider_transaction_id = Map.get(body, "id")
+
+    cond do
+      not is_binary(status) ->
+        {:ok, unknown_observation(reference, reference_kind, body, config, "missing_status")}
+
+      not is_integer(amount) or amount < 0 or not is_binary(currency) ->
+        {:ok, unknown_observation(reference, reference_kind, body, config, status)}
+
+      true ->
+        observation = %ProviderObservation{
+          provider: :stripe,
+          provider_reference: reference,
+          provider_reference_kind: reference_kind,
+          provider_transaction_id: provider_transaction_id,
+          local_payment_intent_id: get_in(body, ["metadata", "local_intent_id"]),
+          observation_source: :verification,
+          normalized_outcome: normalize_observation_status(status),
+          raw_provider_status: status,
+          amount_minor: amount,
+          currency: String.upcase(currency),
+          provider_environment: stripe_observed_environment(body, config),
+          provider_occurred_at: nil,
+          observed_at: DateTime.utc_now(),
+          provider_customer_ref: stripe_id(body["customer"]),
+          provider_payment_method_ref: stripe_id(body["payment_method"]),
+          evidence_sha256: evidence_hash(body),
+          metadata: nil
+        }
+
+        if provider_transaction_id == expected_id do
+          {:ok, observation}
+        else
+          {:ok, mark_unknown_identity(observation)}
+        end
+    end
+  end
+
+  defp mark_unknown_identity(%ProviderObservation{} = observation) do
+    %{observation | normalized_outcome: :unknown_or_contradictory}
+  end
+
+  defp unknown_observation(reference, reference_kind, body, config, status) do
+    %ProviderObservation{
+      provider: :stripe,
+      provider_reference: reference,
+      provider_reference_kind: reference_kind,
+      provider_transaction_id: stripe_id(body["id"]),
+      local_payment_intent_id: get_in(body, ["metadata", "local_intent_id"]),
+      observation_source: :verification,
+      normalized_outcome: :unknown_or_contradictory,
+      raw_provider_status: status,
+      amount_minor: if(is_integer(body["amount"]), do: body["amount"]),
+      currency: if(is_binary(body["currency"]), do: String.upcase(body["currency"])),
+      provider_environment: stripe_observed_environment(body, config),
+      provider_occurred_at: nil,
+      observed_at: DateTime.utc_now(),
+      provider_customer_ref: stripe_id(body["customer"]),
+      provider_payment_method_ref: stripe_id(body["payment_method"]),
+      evidence_sha256: evidence_hash(body),
+      metadata: nil
+    }
+  end
+
+  defp evidence_hash(value) do
+    :crypto.hash(:sha256, Jason.encode!(value)) |> Base.encode16(case: :lower)
+  end
+
+  defp stripe_datetime(value) when is_integer(value) do
+    DateTime.from_unix(value, :second)
+    |> case do
+      {:ok, datetime} -> datetime
+      _ -> nil
+    end
+  end
+
+  defp stripe_datetime(_value), do: nil
+
+  defp normalize_observation_status("succeeded"), do: :authoritative_success
+  defp normalize_observation_status("canceled"), do: :failure_observation
+  defp normalize_observation_status("requires_action"), do: :requires_action
+
+  defp normalize_observation_status(status)
+       when status in [
+              "processing",
+              "requires_capture",
+              "requires_confirmation",
+              "requires_payment_method"
+            ],
+       do: :unresolved
+
+  defp normalize_observation_status(_status), do: :unknown_or_contradictory
+
+  defp stripe_environment("sk_test_" <> _), do: "test"
+  defp stripe_environment("sk_live_" <> _), do: "live"
+  defp stripe_environment(_), do: nil
+
+  defp stripe_observed_environment(%{"livemode" => true}, _config), do: "live"
+  defp stripe_observed_environment(%{"livemode" => false}, _config), do: "test"
+
+  defp stripe_observed_environment(_body, %{secret_key: secret_key}),
+    do: stripe_environment(secret_key)
+
+  defp stripe_observed_environment(_body, _config), do: nil
 
   defp stripe_request_opts(config, path, form, idempotency_key) do
     config.request_options
@@ -679,6 +1083,17 @@ defmodule Store.Payments.Providers.Stripe do
   defp normalize_charge_status(_payment_intent, %{status: 402}), do: :failed
   defp normalize_charge_status(_payment_intent, _response), do: :failed
 
+  defp payment_intent_amount(%{"amount_received" => amount}) when is_integer(amount),
+    do: amount
+
+  defp payment_intent_amount(%{"amount" => amount}) when is_integer(amount), do: amount
+  defp payment_intent_amount(_payment_intent), do: nil
+
+  defp stripe_currency_from_response(currency) when is_binary(currency),
+    do: String.upcase(currency)
+
+  defp stripe_currency_from_response(_currency), do: nil
+
   defp stripe_id(%{"id" => id}) when is_binary(id), do: id
   defp stripe_id(id) when is_binary(id), do: id
   defp stripe_id(_value), do: nil
@@ -703,6 +1118,21 @@ defmodule Store.Payments.Providers.Stripe do
     case attr(attrs, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} is required")}
+    end
+  end
+
+  defp fetch_required_binary_from(attrs, primary_key, fallback_key) do
+    case attr(attrs, primary_key) || attr(attrs, fallback_key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, Error.new("VALIDATION_ERROR", "#{primary_key} is required")}
+    end
+  end
+
+  defp fetch_optional_binary(attrs, key) do
+    case attr(attrs, key) do
+      nil -> {:ok, nil}
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, Error.new("VALIDATION_ERROR", "#{key} must be a non-empty string")}
     end
   end
 

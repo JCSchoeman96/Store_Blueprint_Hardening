@@ -5,7 +5,9 @@ defmodule Store.Governance.SubscriptionsUniquenessTest do
   require Ash.Query
 
   alias Store.Entitlements.EntitlementGrant
-  alias Store.Subscriptions.{RenewalAttempt, Subscription}
+  alias Store.Subscriptions.Facade
+  alias Store.Subscriptions.RenewalAttempt
+  alias Store.Subscriptions.Subscription
   alias Store.SubscriptionsFixtures
 
   test "subscription create_from_order_line is idempotent by source_order_line_item_id" do
@@ -173,5 +175,48 @@ defmodule Store.Governance.SubscriptionsUniquenessTest do
                authorize?: false,
                context: %{system?: true}
              )
+  end
+
+  test "suspended memberships remain open in admission and database uniqueness fences" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_suspended_membership")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:jc265-open"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: existing} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{})
+
+    assert {:ok, suspended} =
+             existing
+             |> Ash.Changeset.for_update(:mark_suspended_transition, %{},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert suspended.status == :suspended
+
+    %{rows: [[index_definition]]} =
+      Store.Repo.query!(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'subscriptions_unique_open_membership_key_index'"
+      )
+
+    assert index_definition =~ "'suspended'"
+
+    assert {:error, %{code: "SUBSCRIPTION_DUPLICATE"}} =
+             Facade.ensure_membership_purchase_allowed_for_system(customer.id, plan.id)
+
+    assert_raise Ash.Error.Unknown, fn ->
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{})
+    end
   end
 end

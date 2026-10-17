@@ -4,5 +4,5 @@ defmodule Store.Subscriptions.Types.SubscriptionStatus do
   """
 
   use Ash.Type.Enum,
-    values: [:pending, :active, :past_due, :canceled, :expired]
+    values: [:pending, :active, :past_due, :suspended, :canceled, :expired]
 end

@@ -22,11 +22,19 @@ defmodule Store.TestSupport.StripeAPIStub do
   end
 
   def stub_default do
-    Req.Test.stub(@stub_name, fn conn ->
-      params = form_params(conn)
-      endpoint = endpoint_key(conn.request_path)
+    {:ok, response_cache} = Agent.start_link(fn -> %{} end)
 
-      respond_default(conn, params, endpoint)
+    Req.Test.stub(@stub_name, fn conn ->
+      case {conn.method, conn.request_path} do
+        {"GET", "/v1/payment_intents/" <> provider_payment_id} ->
+          respond_cached_payment_intent(conn, provider_payment_id, response_cache)
+
+        _ ->
+          params = form_params(conn)
+          endpoint = endpoint_key(conn.request_path)
+
+          respond_default(conn, params, endpoint, response_cache)
+      end
     end)
   end
 
@@ -92,6 +100,27 @@ defmodule Store.TestSupport.StripeAPIStub do
     end)
   end
 
+  def stub_observation(fun) when is_function(fun, 1) do
+    Req.Test.stub(@stub_name, fun)
+  end
+
+  def json_response(conn, body) when is_map(body) do
+    Req.Test.json(conn, body)
+  end
+
+  def stub_payment_observation(reference, response)
+      when is_binary(reference) and is_map(response) do
+    Req.Test.stub(@stub_name, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/v1/payment_intents/#{URI.encode(reference)}"
+      assert Plug.Conn.get_req_header(conn, "authorization") != []
+      assert Plug.Conn.get_req_header(conn, "stripe-version") != []
+      assert Plug.Conn.get_req_header(conn, "idempotency-key") == []
+
+      Req.Test.json(conn, response)
+    end)
+  end
+
   def form_params(conn) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     assert Plug.Conn.get_req_header(conn, "authorization") != []
@@ -148,10 +177,12 @@ defmodule Store.TestSupport.StripeAPIStub do
     Map.merge(
       %{
         "amount" => Map.get(params, "amount", "0") |> String.to_integer(),
+        "amount_received" => Map.get(params, "amount", "0") |> String.to_integer(),
         "client_secret" => "#{provider_payment_id}_secret_test",
         "currency" => Map.get(params, "currency", "usd"),
         "customer" => Map.get(params, "customer"),
         "id" => provider_payment_id,
+        "livemode" => false,
         "metadata" => %{
           "local_intent_id" => local_intent_id,
           "order_id" => Map.get(params, "metadata[order_id]"),
@@ -250,28 +281,30 @@ defmodule Store.TestSupport.StripeAPIStub do
     end
   end
 
-  defp respond_default(conn, params, endpoint) do
+  defp respond_default(conn, params, endpoint, response_cache) do
     case {conn.method, conn.request_path} do
       {"POST", "/v1/checkout/sessions"} ->
-        respond_for_action(conn, endpoint, params, &checkout_session_response/1)
+        respond_for_action(conn, endpoint, params, &checkout_session_response/1, response_cache)
 
       {"POST", "/v1/setup_intents"} ->
-        respond_for_action(conn, endpoint, params, &setup_intent_response/1)
+        respond_for_action(conn, endpoint, params, &setup_intent_response/1, response_cache)
 
       {"POST", "/v1/payment_intents"} ->
-        respond_for_action(conn, endpoint, params, &payment_intent_response/1)
+        respond_for_action(conn, endpoint, params, &payment_intent_response/1, response_cache)
 
       _ ->
         unexpected_path_response(conn)
     end
   end
 
-  defp respond_for_action(conn, endpoint, params, success_fun) do
+  defp respond_for_action(conn, endpoint, params, success_fun, response_cache) do
     case resolve_action(endpoint, params) do
       {:ok, delay_ms} ->
         provider_wait_barrier_enter()
         maybe_sleep(delay_ms)
-        Req.Test.json(conn, success_fun.(params))
+        response = success_fun.(params)
+        cache_provider_response(response, response_cache)
+        Req.Test.json(conn, response)
 
       {:timeout, delay_ms} ->
         provider_wait_barrier_enter()
@@ -284,6 +317,26 @@ defmodule Store.TestSupport.StripeAPIStub do
         provider_error_response(conn, endpoint)
     end
   end
+
+  defp respond_cached_payment_intent(conn, provider_payment_id, response_cache) do
+    case Agent.get(response_cache, &Map.get(&1, provider_payment_id)) do
+      response when is_map(response) ->
+        assert Plug.Conn.get_req_header(conn, "authorization") != []
+        assert Plug.Conn.get_req_header(conn, "stripe-version") != []
+        assert Plug.Conn.get_req_header(conn, "idempotency-key") == []
+        Req.Test.json(conn, response)
+
+      nil ->
+        unexpected_path_response(conn)
+    end
+  end
+
+  defp cache_provider_response(%{"id" => id} = response, response_cache)
+       when is_binary(id) do
+    Agent.update(response_cache, &Map.put(&1, id, response))
+  end
+
+  defp cache_provider_response(_response, _response_cache), do: :ok
 
   defp provider_wait_barrier_enter do
     if Code.ensure_loaded?(ProviderWaitOwnershipProbe) and

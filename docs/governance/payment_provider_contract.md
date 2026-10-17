@@ -106,6 +106,12 @@ All workers operate on a canonical receipt:
 
 This struct must be **the only input** to state transition orchestration.
 
+### 3.1 Provider observations and Commerce outcomes
+
+An immutable provider observation is evidence about one event or provider read. It is not itself a terminal Commerce result. The adapter classifies finality for the exact provider transaction as authoritative success, terminal non-success, non-terminal, or unknown. Payments resolves that classification with exact target eligibility and any existing `PaymentApplication` before applying a commercial consequence.
+
+Unknown provider finality fails closed. A failure observation from a retry-capable or uncertified state must not mark the PaymentIntent terminal or release irreversible renewal authority. An applied success remains monotonic against late failure or provider noise. Arrival time and webhook order do not establish precedence.
+
 ---
 
 ## 4) Idempotency contract (must be deterministic)
@@ -136,18 +142,7 @@ Key derivation examples:
 
 ### 4.1 Renewal collection identity
 
-The accepted main contract records this bounded provider extension for a
-later, separately admitted SBH-10-04 implementation. It does not admit the
-Subscription implementation: SBH-10-04 remains `BLOCKED_SHARED_AUTHORITY` in
-the current SUBS authority record. General provider behavior for unrelated
-flows remains unchanged.
-
-One RenewalAttempt and one renewal Order remain the commercial occurrence.
-Each collection attempt has a durable UUIDv7 `collection_attempt_id` created
-before PaymentIntent or provider work. Any collection ordinal has separate
-durable meaning and must not reuse or reinterpret `RenewalAttempt.attempt_no`.
-`renewal_key` remains occurrence metadata and Oban identity; it does not
-identify sequential collections. The provider request carries:
+The accepted JC-229 renewal collection runtime requires a provider request to carry:
 
 - `renewal_key` as occurrence metadata;
 - `collection_attempt_id`;
@@ -162,75 +157,19 @@ Its provider idempotency key is:
 renewal-collection:<collection_attempt_id>
 ```
 
-An ambiguous replay uses the same collection ID, PaymentIntent, and provider
-key. A later collection receives a new ID and key only after verified
-terminal financial non-success and approval under the existing dunning policy.
-Timeout, transport failure, provider 5xx, `requires_action`, local expiry, or
-local cancellation after possible submission remains unresolved and reuses the
-same collection and key. A pre-submission dispatch fence is dispatch evidence,
-not a financial outcome; if it proves no worker can submit, it may release
-only the exact active reservation generation. Recovery retains the same
-collection and PaymentIntent. Only verified canonical provider success
-attributed to that exact collection can close its collection eligibility.
+An ambiguous replay uses the same collection ID and key. A later collection receives a new ID and key only after verified terminal financial non-success and approval under the existing dunning policy. The provider must receive amount and currency from the durable local PaymentIntent for that collection. `renewal_key` remains occurrence metadata and is not reused as the key for sequential collections.
 
-The provider receives amount and currency from the validated durable local
-PaymentIntent. The Subscription Facade revalidates the current payment method
-and selected provider immediately before provider work; neither is frozen at
-checkpoint B. A local PaymentIntent `succeeded` state or synchronous provider
-response alone does not apply paid or inventory effects. Order payment
-application remains behind the PaymentApplication boundary, and physical
-reservation consumption uses only the generation linked to the successful
-collection; SBH-10-05 retains its existing authority. No legacy collection
-identity or key may be inferred from mutable state or fabricated for an
-existing PaymentIntent. The inspected Stripe renewal adapter currently uses
-`renewal_key` as its provider idempotency key; the admitted implementation
-must use the collection key for sequential collections.
-
-For create and webhook identity handling, provider modules remain limited to
-payload construction, signature verification, and canonical normalization.
-Status retrieval and cancellation are bounded to §4.2. See [the SBH-10-04
-cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
+This is a bounded renewal adapter/contract extension. For create and webhook identity handling, provider modules remain limited to payload construction, signature verification, and canonical normalization. Status retrieval and cancellation are authorized only by §4.2. This section does not change unrelated provider behavior. See [the SBH-10-04 cross-domain authority amendment](sbh_10_04_cross_domain_authority_amendment.md).
 
 ### 4.2 Renewal collection status recovery and cancellation
 
-The later SBH-10-04 implementation may extend
-`Store.Payments.Providers.Behaviour`, the `Store.Payments.Providers` wrapper,
-the typed Payments facade, and supported provider adapters with
-`retrieve_renewal_collection_intent` and
-`cancel_renewal_collection_intent`. These operations target only the exact
-PaymentIntent linked to one durable `collection_attempt_id`; they are not
-general PaymentIntent retrieve/cancel APIs.
+The accepted renewal-collection implementation extends `Store.Payments.Providers.Behaviour`, the `Store.Payments.Providers` wrapper, the typed Payments facade, and supported provider adapters with `retrieve_renewal_collection_intent` and `cancel_renewal_collection_intent` operations. These operations address only the exact PaymentIntent linked to one durable `collection_attempt_id`; they do not create general PaymentIntent retrieve/cancel APIs.
 
-Status retrieval accepts `collection_attempt_id`, `local_intent_id`, and the
-exact `provider_payment_id` when available. If the provider response was lost
-before the ID was stored, an adapter may use an exact provider-supported
-lookup bound to both collection and local intent IDs. Zero or multiple
-matches, mismatched identity, unknown status, unsupported lookup, timeout,
-transport failure, or provider 5xx return an ambiguous result. Replaying the
-provider create key is not proof of current status.
+Status retrieval accepts `collection_attempt_id`, `local_intent_id`, and the exact `provider_payment_id` when available. If the provider response was lost before the ID was stored, an adapter may use an exact provider-supported lookup bound to both collection and local intent IDs. Zero or multiple matches, mismatched identity, unknown status, unsupported lookup, timeout, transport failure, or provider 5xx return an ambiguous result. Replaying the provider create key is not proof of current status.
 
-Adapters normalize authenticated provider responses into canonical
-collection status bound to the exact provider object and its local correlation
-metadata. Payments/Subscriptions validate returned IDs, amount, and currency
-before updating collection or PaymentIntent evidence. Cancellation targets
-only that exact provider object; its request or acknowledgement is not
-terminal evidence. On retry, retrieve status before repeating cancellation.
-If the provider requires an idempotency key for cancellation, derive a stable
-operation key from the collection ID and keep it separate from the create key
-`renewal-collection:<collection_attempt_id>`. Retrieve status again or accept
-a verified canonical webhook before classifying terminal financial
-non-success.
+Adapters normalize authenticated provider responses into a canonical collection status bound to the exact provider object and its local correlation metadata. Payments/Subscriptions validate the returned IDs, amount, and currency before updating collection or PaymentIntent evidence. Cancellation targets only that exact provider object; its request or acknowledgement is not terminal evidence. On retry, retrieve status before repeating cancellation. If the provider requires an idempotency key for cancellation, derive a stable operation key from the collection ID; keep it separate from the create key `renewal-collection:<collection_attempt_id>`. Retrieve status again or accept a verified canonical webhook before classifying terminal financial non-success.
 
-The existing local authentication deadline may trigger bounded status
-retrieval and cancellation for a `requires_action` renewal collection. The
-deadline, local PaymentIntent state, timeout, or cancel acknowledgement cannot
-release inventory or permit a new collection. After bounded automatic
-reconciliation is exhausted, preserve the unresolved collection and active
-hold and escalate for operator review. Only adapters that can safely identify
-and verify these exact operations may support them; unsupported adapters fail
-closed. Provider modules retain no Repo/Ash access, Oban enqueue, or
-business-state transitions. These renewal-only operations do not change
-generic checkout or dunning policy.
+The existing local authentication deadline may trigger bounded status retrieval and a cancellation request for a `requires_action` renewal collection. The deadline, local PaymentIntent state, timeout, or cancel acknowledgement cannot release inventory or permit a new collection. After bounded automatic reconciliation is exhausted, preserve the unresolved collection and active hold and escalate for operator review. Only adapters that can safely identify and verify these exact operations may support them; unsupported adapters fail closed. Provider modules retain no Repo/Ash access, Oban enqueue, or business-state transitions. These renewal-only operations do not change generic checkout or dunning policy.
 
 ---
 
@@ -264,6 +203,7 @@ Implement a small internal error code set for payment boundaries:
 - `PAYMENT_EVENT_DUPLICATE`
 - `PAYMENT_PROVIDER_SELECTION_REQUIRED`
 - `PAYMENT_PROVIDER_UNSUPPORTED`
+- `PAYMENT_PROVIDER_OBSERVATION_UNSUPPORTED`
 - `PAYMENT_PROVIDER_DISABLED`
 - `PAYMENT_PROVIDER_DOWN`
 - `PAYMENT_PROVIDER_TIMEOUT`

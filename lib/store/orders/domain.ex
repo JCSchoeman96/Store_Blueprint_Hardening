@@ -178,6 +178,11 @@ defmodule Store.Orders do
     InventoryReservations.reserve_inventory_for_checkout(order_id, items, opts)
   end
 
+  @spec invalidate_inventory_availability_for_variants([String.t()]) :: :ok
+  def invalidate_inventory_availability_for_variants(variant_ids) when is_list(variant_ids) do
+    InventoryReservations.invalidate_variant_availability_for_variants(variant_ids)
+  end
+
   @spec reserve_exact_generation(String.t(), String.t(), String.t(), non_neg_integer(), keyword()) ::
           {:ok,
            %{
@@ -211,6 +216,30 @@ defmodule Store.Orders do
     InventoryReservations.recover_exact_generation(order_id, variant_id, reservation_key)
   end
 
+  @spec guard_exact_generation(String.t(), String.t(), String.t(), pos_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :transaction_required
+             | :invalid_identity
+             | :not_found
+             | :contradictory_evidence
+             | :quantity_mismatch
+             | :not_active
+             | :database_unavailable}
+  def guard_exact_generation(order_id, variant_id, reservation_key, required_quantity)
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             is_integer(required_quantity) and required_quantity > 0 do
+    InventoryReservations.guard_exact_generation(
+      order_id,
+      variant_id,
+      reservation_key,
+      required_quantity
+    )
+  end
+
+  def guard_exact_generation(_order_id, _variant_id, _reservation_key, _required_quantity),
+    do: {:error, :invalid_identity}
+
   @spec release_exact_generation(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
           | {:error, Error.t() | :ambiguous_database_outcome | :invalid_identity}
@@ -229,12 +258,46 @@ defmodule Store.Orders do
     InventoryReservations.consume_exact_generation(order_id, variant_id, reservation_key, opts)
   end
 
+  @spec settle_exact_generation_in_caller_transaction(
+          String.t(),
+          String.t(),
+          String.t(),
+          :consume | :release,
+          keyword()
+        ) ::
+          {:ok, %{reservation: InventoryReservation.t() | nil, changed?: boolean()}}
+          | {:error, term()}
+  def settle_exact_generation_in_caller_transaction(
+        order_id,
+        variant_id,
+        reservation_key,
+        action,
+        opts \\ []
+      )
+      when is_binary(order_id) and is_binary(variant_id) and is_binary(reservation_key) and
+             action in [:consume, :release] and is_list(opts) do
+    InventoryReservations.settle_exact_generation_in_caller_transaction(
+      order_id,
+      variant_id,
+      reservation_key,
+      action,
+      opts
+    )
+  end
+
   @spec consume_reservations_for_order(String.t(), keyword()) ::
           {:ok, %{consumed_count: non_neg_integer(), reservations: [InventoryReservation.t()]}}
           | {:error, term()}
   def consume_reservations_for_order(order_id, opts \\ [])
       when is_binary(order_id) and is_list(opts) do
     InventoryReservations.consume_reservations_for_order(order_id, opts)
+  end
+
+  @spec settle_withdrawn_renewal_reservations_for_payment(String.t()) ::
+          {:ok, %{consumed_count: 0, reservations: []}} | {:error, term()}
+  @doc false
+  def settle_withdrawn_renewal_reservations_for_payment(order_id) when is_binary(order_id) do
+    InventoryReservations.settle_withdrawn_renewal_reservations_for_payment(order_id)
   end
 
   @spec release_reservations_for_order(String.t(), keyword()) ::

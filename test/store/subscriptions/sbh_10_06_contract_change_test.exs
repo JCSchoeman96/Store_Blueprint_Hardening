@@ -6,11 +6,20 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Store.Orders.Order
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
   alias Store.Subscriptions.Inputs.QueueSubscriptionVariantChangeInput
-  alias Store.Subscriptions.{RenewalAttempt, Subscription, SubscriptionPlan}
+
+  alias Store.Subscriptions.{
+    RenewalAttempt,
+    RenewalCollectionAttempt,
+    Subscription,
+    SubscriptionPlan
+  }
+
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
   alias Store.TestSupport.StripeAPIStub
@@ -221,15 +230,23 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert drifted_subscription.pending_renewal_currency == "EUR"
     assert drifted_subscription.change_effective_at == corrupted_effective_at
 
+    future_revision
+    |> Ash.Changeset.for_update(:retire, %{}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    replacement_revision =
+      SubscriptionsFixtures.create_plan_revision!(future_plan, %{amount_minor: 4_100})
+
     assert {:ok, after_variant} =
              queue_variant_change(customer, drifted_subscription, future_variant)
 
     contract = fetch_contract_change!(Map.get(after_variant, :current_contract_change_id))
     assert Map.get(contract, :target_plan_revision_id) == future_revision.id
+    assert Map.get(contract, :target_plan_revision_id) != replacement_revision.id
     assert Map.get(contract, :target_variant_id) == future_variant.id
     assert Map.get(contract, :target_quantity) == 3
     assert Map.get(contract, :target_amount_minor) == future_revision.amount_minor
-    assert Map.get(contract, :target_amount_minor) == 3_700
+    assert Map.get(contract, :target_amount_minor) != replacement_revision.amount_minor
     assert Map.get(contract, :target_currency) == future_revision.currency
     assert Map.get(contract, :instruction_kind) == :variant_change
     assert Map.get(contract, :effective_at) == first_contract_change.effective_at
@@ -499,7 +516,6 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
     attempt = fetch_latest_attempt!(subscription.id)
     renewal_order = fetch_order!(attempt.order_id)
-    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
     period_end_before = fetch_subscription!(subscription.id).current_period_end_at
 
     SubscriptionsFixtures.create_plan_revision!(target_plan)
@@ -509,17 +525,12 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
     clear_legacy_projection!(subscription.id)
 
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    renewal_order
-    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    mark_collection_successful!(attempt)
 
     assert {:error, %Error{code: "VALIDATION_ERROR"}} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     after_subscription = fetch_subscription!(subscription.id)
@@ -551,17 +562,13 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     renewal_order = fetch_order!(attempt.order_id)
     payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
 
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    renewal_order
-    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    assert {:ok, %{applied?: false}} =
+             Store.Payments.apply_payment_success_once(payment_intent.id)
 
     assert {:ok, :reconciled} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     succeeded_attempt = fetch_attempt!(attempt.id)
@@ -580,8 +587,9 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert contract_before_replay.status == :queued
 
     assert {:ok, :noop} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     assert fetch_attempt!(attempt.id).status == :succeeded
@@ -666,7 +674,6 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
     attempt = fetch_latest_attempt!(subscription.id)
     renewal_order = fetch_order!(attempt.order_id)
-    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
     before = fetch_subscription!(subscription.id)
 
     Store.Repo.query!(
@@ -674,17 +681,12 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
       [Ecto.UUID.dump!(subscription.id), Ecto.UUID.dump!(target_plan.id), 8_800, "EUR"]
     )
 
-    payment_intent
-    |> Ash.Changeset.for_update(:mark_succeeded, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    renewal_order
-    |> Ash.Changeset.for_update(:mark_paid, %{}, context: %{system?: true})
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    mark_collection_successful!(attempt)
 
     assert {:error, %Error{code: "VALIDATION_ERROR"}} =
-             Facade.reconcile_paid_subscription_renewal_for_system(renewal_order.id,
-               renewal_attempt_id: attempt.id
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               renewal_order.id,
+               exact_reconciliation_opts!(attempt)
              )
 
     after_subscription = fetch_subscription!(subscription.id)
@@ -696,7 +698,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert fetch_attempt!(attempt.id).status == :processing
   end
 
-  test "a stale concurrent queue writer cannot replace writer A's target" do
+  test "a stale concurrent queue writer re-evaluates and replaces writer A's target" do
     fixture = create_committed_subscription_fixture!()
     on_exit(fn -> delete_committed_subscription_fixture!(fixture) end)
 
@@ -739,17 +741,26 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
 
     send(lock_holder.pid, :release)
     assert {:ok, :released} = Task.await(lock_holder, 10_000)
-    assert {:ok, winner} = Task.await(writer_a, 10_000)
-    assert {:error, %Error{code: "STALE_RECORD"}} = Task.await(writer_b, 10_000)
+    assert {:ok, _writer_a_subscription} = Task.await(writer_a, 10_000)
+    assert {:ok, _writer_b_subscription} = Task.await(writer_b, 10_000)
 
-    winner_id = Map.get(winner, :current_contract_change_id)
-    contract = fetch_contract_change!(winner_id)
+    [queued_contract] =
+      Enum.filter(list_contract_changes(fixture.subscription_id), &(&1.status == :queued))
+
+    [superseded_contract] =
+      Enum.filter(list_contract_changes(fixture.subscription_id), &(&1.status == :superseded))
+
     subscription = fetch_subscription!(fixture.subscription_id)
 
-    assert Map.get(subscription, :current_contract_change_id) == winner_id
-    assert Map.get(contract, :status) == :queued
-    assert Map.get(contract, :target_plan_revision_id) == fixture.revision_a_id
-    assert length(list_contract_changes(fixture.subscription_id)) == 1
+    assert Map.get(subscription, :current_contract_change_id) == queued_contract.id
+
+    assert queued_contract.target_plan_revision_id in [
+             fixture.revision_a_id,
+             fixture.revision_b_id
+           ]
+
+    assert queued_contract.supersedes_contract_change_id == superseded_contract.id
+    assert length(list_contract_changes(fixture.subscription_id)) == 2
   end
 
   test "PostgreSQL rejects competing current queued targets for one Subscription" do
@@ -903,6 +914,83 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     |> Ash.read_one!(domain: Store.Payments, authorize?: false, context: %{system?: true})
   end
 
+  defp fetch_collection!(id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp exact_reconciliation_opts!(attempt) do
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    [
+      renewal_attempt_id: attempt.id,
+      collection_attempt_id: collection.id,
+      payment_intent_id: collection.payment_intent_id
+    ]
+  end
+
+  defp mark_collection_successful!(attempt) do
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    payment_intent = fetch_payment_intent!(collection.payment_intent_id)
+
+    {provider_reference, provider_reference_kind} =
+      cond do
+        is_binary(payment_intent.provider_payment_id) ->
+          {payment_intent.provider_payment_id, :payment_intent}
+
+        is_binary(payment_intent.provider_session_id) ->
+          {payment_intent.provider_session_id, :checkout_session}
+
+        true ->
+          {payment_intent.provider_request_reference, :transaction_reference}
+      end
+
+    observation = %ProviderObservation{
+      provider: payment_intent.provider,
+      provider_reference: provider_reference,
+      provider_reference_kind: provider_reference_kind,
+      provider_transaction_id:
+        payment_intent.provider_payment_id || "pi_sbh_10_06_#{payment_intent.id}",
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: :authoritative_success,
+      raw_provider_status: "succeeded",
+      amount_minor: payment_intent.amount_received_minor,
+      currency: payment_intent.currency,
+      provider_environment: "test",
+      observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    }
+
+    assert {:ok, %{outcome: outcome, evidence: _evidence}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               observation
+             )
+
+    assert outcome in [:authoritative_success, :already_applied_success]
+
+    updated_collection = fetch_collection!(collection.id)
+    assert updated_collection.financial_outcome == :verified_success
+    assert is_binary(updated_collection.payment_attempt_id)
+
+    assert :ok ==
+             Store.Payments.validate_collection_outcome_certification_for_system(
+               %ValidateRenewalCollectionOutcomeInput{
+                 payment_attempt_id: updated_collection.payment_attempt_id,
+                 payment_intent_id: collection.payment_intent_id,
+                 financial_outcome: :verified_success
+               }
+             )
+  end
+
   defp count_rows(table, subscription_id)
        when table in ["renewal_attempts"] do
     {:ok, %{rows: [[count]]}} =
@@ -1017,6 +1105,7 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
         product_id: variant.product_id,
         revision_ids: [revision.id, revision_a.id, revision_b.id],
         revision_a_id: revision_a.id,
+        revision_b_id: revision_b.id,
         subscription_id: subscription.id,
         variant_id: variant.id,
         plan_a_id: plan_a.id,

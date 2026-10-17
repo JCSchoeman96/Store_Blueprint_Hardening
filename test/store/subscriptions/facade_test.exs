@@ -1,5 +1,6 @@
 defmodule Store.Subscriptions.FacadeTest do
   use Store.DataCase, async: false
+  use Oban.Testing, repo: Store.DirectRepo
 
   import Ash.Expr
   require Ash.Query
@@ -15,8 +16,8 @@ defmodule Store.Subscriptions.FacadeTest do
   alias Store.Comms.EmailOutbox
   alias Store.Entitlements.EntitlementGrant
   alias Store.Entitlements.Facade, as: EntitlementsFacade
-  alias Store.Orders.{InventoryReservation, Order}
-  alias Store.Payments.PaymentIntent
+  alias Store.Orders.{InventoryReservation, Order, PaymentApplication}
+  alias Store.Payments.{PaymentAttempt, PaymentIntent}
   alias Store.Pricing.TaxRate
   alias Store.Shipping.Facade, as: ShippingFacade
   alias Store.Shipping.Inputs.QuoteRequest
@@ -26,6 +27,8 @@ defmodule Store.Subscriptions.FacadeTest do
 
   alias Store.Subscriptions.{
     RenewalAttempt,
+    RenewalCollectionAttempt,
+    RenewalCollectionAttempts,
     Subscription,
     SubscriptionItem
   }
@@ -150,6 +153,72 @@ defmodule Store.Subscriptions.FacadeTest do
     assert attempt.failure_code == "PAYMENT_METHOD_REQUIRED"
   end
 
+  test "zero retry allowance suspends an exhausted renewal without ending the contract" do
+    customer = SubscriptionsFixtures.create_customer!("jc265_zero_retry")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        max_retry_attempts: 0,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:jc265-zero-retry"
+      })
+
+    _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    assert {:ok, _grant} =
+             EntitlementsFacade.issue_subscription_entitlement_for_system(subscription, plan)
+
+    parent = self()
+    handler_id = {__MODULE__, :jc265_dunning_exhaustion, System.unique_integer([:positive])}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :dunning],
+        fn event, measurements, metadata, pid ->
+          send(pid, {List.to_tuple(event), measurements, metadata})
+        end,
+        parent
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert {:ok, %{due_count: 1, failed_count: 1}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+
+    assert_receive {{:store, :subscriptions, :dunning}, %{count: 1}, dunning_metadata}
+    assert dunning_metadata.subscription_id == subscription.id
+    assert dunning_metadata.status == :suspended
+
+    suspended = fetch_subscription!(subscription.id)
+    assert suspended.status == :suspended
+    assert is_nil(suspended.ended_at)
+    assert is_nil(suspended.canceled_at)
+    assert is_nil(suspended.canceled_reason)
+    assert is_nil(suspended.next_retry_at)
+
+    assert {:ok, detail} =
+             SubscriptionsFacade.get_subscription_detail_for_user(customer, subscription.id)
+
+    assert detail.action_capabilities.can_cancel_now?
+    assert detail.action_capabilities.can_cancel_at_period_end?
+    refute detail.action_capabilities.can_queue_plan_change?
+    refute detail.action_capabilities.can_queue_variant_change?
+
+    entitlement = fetch_entitlement!(subscription.id)
+    assert entitlement.status == :revoked
+
+    assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+  end
+
   test "run_due_renewals_for_system requires stored payment method to be active" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_inactive_method")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -265,7 +334,7 @@ defmodule Store.Subscriptions.FacadeTest do
     end
   end
 
-  test "physical renewal reserves inventory, writes live shipping, and leaves reservation active before payment success" do
+  test "physical renewal applies certified direct success after reserving inventory and live shipping" do
     customer = SubscriptionsFixtures.create_customer!("phase27_physical_success")
 
     %{variant: base_variant} =
@@ -306,14 +375,731 @@ defmodule Store.Subscriptions.FacadeTest do
     assert renewal_order.shipping_quote_amount_minor == 450
     assert renewal_order.shipping_total_minor == 450
     assert renewal_order.grand_total_minor == 2_550
+    assert renewal_order.state == :paid
     assert renewal_payment_intent.amount_received_minor == 2_550
+    assert renewal_payment_intent.state == :succeeded
 
     reservation = fetch_reservation!(renewal_order.id, variant.id)
-    assert reservation.state == :active
+    assert reservation.state == :consumed
 
     inventory = Repo.get_by!(InventoryItem, variant_id: variant.id)
-    assert inventory.reserved_count == 1
-    assert inventory.stock_on_hand == 10
+    assert inventory.reserved_count == 0
+    assert inventory.stock_on_hand == 9
+  end
+
+  test "renewal provider call sees the committed exact collection claim and key" do
+    customer = SubscriptionsFixtures.create_customer!("jc229_dispatch_claim_before_provider")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_dispatch_claim_before_provider",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      collection_id = Map.fetch!(params, "metadata[collection_attempt_id]")
+      local_payment_intent_id = Map.fetch!(params, "metadata[local_intent_id]")
+      occurrence_key = Map.fetch!(params, "metadata[renewal_key]")
+      [provider_idempotency_key] = Plug.Conn.get_req_header(conn, "idempotency-key")
+
+      assert provider_idempotency_key == "renewal-collection:" <> collection_id
+
+      assert {:ok, %{rows: [["may_have_been_reached", ^local_payment_intent_id]]}} =
+               Store.Repo.query(
+                 "SELECT dispatch_state::text, payment_intent_id::text FROM renewal_collection_attempts WHERE id = $1::uuid",
+                 [Ecto.UUID.dump!(collection_id)]
+               )
+
+      assert {:ok, %{rows: [[^provider_idempotency_key, payment_intent_key]]}} =
+               Store.Repo.query(
+                 "SELECT provider_request_reference, payment_intent_key FROM payment_intents WHERE id = $1::uuid",
+                 [Ecto.UUID.dump!(local_payment_intent_id)]
+               )
+
+      assert payment_intent_key == "renewal-collection:" <> collection_id
+
+      assert occurrence_key =~ "sub:#{subscription.id}:end:"
+
+      StripeAPIStub.json_response(conn, StripeAPIStub.payment_intent_response(params))
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_latest_attempt!(subscription.id)
+
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    payment_intent = fetch_payment_intent!(collection.payment_intent_id)
+
+    assert collection.collection_ordinal == 1
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.financial_outcome == :verified_success
+    assert payment_intent.payment_intent_key == "renewal-collection:" <> collection.id
+    assert payment_intent.provider_request_reference == payment_intent.payment_intent_key
+    assert payment_intent.id == attempt.payment_intent_id
+  end
+
+  test "old ambiguous Stripe request is not posted again when its idempotency key is known" do
+    customer = SubscriptionsFixtures.create_customer!("jc229_unknown_provider_replay")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        amount_minor: 2_600,
+        max_retry_attempts: 2,
+        retry_schedule_hours: [0, 24]
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_unknown_provider_replay",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    parent = self()
+    request_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      request_no = :atomics.add_get(request_count, 1, 1)
+      [idempotency_key] = Plug.Conn.get_req_header(conn, "idempotency-key")
+
+      send(parent, {
+        :renewal_provider_request,
+        idempotency_key,
+        Map.fetch!(params, "metadata[collection_attempt_id]"),
+        Map.fetch!(params, "metadata[local_intent_id]")
+      })
+
+      if request_no == 1 do
+        conn
+        |> Plug.Conn.put_status(500)
+        |> StripeAPIStub.json_response(%{"error" => %{"message" => "provider unavailable"}})
+      else
+        StripeAPIStub.json_response(conn, StripeAPIStub.payment_intent_response(params))
+      end
+    end)
+
+    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert_receive {:renewal_provider_request, _first_key, first_collection_id,
+                    first_payment_intent_id},
+                   5_000
+
+    old_request_time = DateTime.add(now, -25 * 60 * 60, :second)
+
+    assert {:ok, _result} =
+             Store.Repo.query(
+               "UPDATE payment_intents SET inserted_at = $2 WHERE id = $1::uuid",
+               [Ecto.UUID.dump!(first_payment_intent_id), old_request_time]
+             )
+
+    StripeAPIStub.stub_unexpected!(
+      "stale ambiguous Stripe request must not be posted again from its idempotency key"
+    )
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    refute_receive {:renewal_provider_request, _key, _collection_id, _payment_intent_id}, 100
+
+    attempt = fetch_latest_attempt!(subscription.id)
+
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert collection.collection_ordinal == 1
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.financial_outcome == :unresolved
+    assert collection.payment_intent_id == first_payment_intent_id
+    assert collection.id == first_collection_id
+    assert :atomics.get(request_count, 1) == 1
+    assert fetch_payment_intent!(first_payment_intent_id).provider_payment_id == nil
+  end
+
+  test "unresolved reached collection with local requires action is not charged again" do
+    customer = SubscriptionsFixtures.create_customer!("jc229_requires_action_split_state")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_requires_action_split_state",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    StripeAPIStub.stub_payment_intent(fn conn, _params ->
+      conn
+      |> Plug.Conn.put_status(500)
+      |> StripeAPIStub.json_response(%{"error" => %{"message" => "provider unavailable"}})
+    end)
+
+    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    collection = fetch_collection_for_attempt!(attempt.id)
+
+    assert payment_intent.state == :submitted
+    assert payment_intent.provider_payment_id == nil
+    assert collection.financial_outcome == :unresolved
+    assert collection.dispatch_state == :may_have_been_reached
+
+    assert {:ok, %PaymentIntent{state: :requires_action}} =
+             payment_intent
+             |> Ash.Changeset.for_update(:mark_requires_action, %{}, context: %{system?: true})
+             |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    payment_intent_count = Store.Repo.aggregate(PaymentIntent, :count, :id)
+    StripeAPIStub.stub_unexpected!("requires-action PaymentIntent must not be charged again")
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert fetch_collection_for_attempt!(attempt.id) == collection
+    assert fetch_payment_intent!(payment_intent.id).state == :requires_action
+    assert Store.Repo.aggregate(PaymentIntent, :count, :id) == payment_intent_count
+  end
+
+  test "canceled reached collection with local requires action is not charged again" do
+    customer = SubscriptionsFixtures.create_customer!("jc229_canceled_requires_action")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_canceled_requires_action",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    StripeAPIStub.stub_payment_intent(fn conn, _params ->
+      conn
+      |> Plug.Conn.put_status(500)
+      |> StripeAPIStub.json_response(%{"error" => %{"message" => "provider unavailable"}})
+    end)
+
+    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    collection = fetch_collection_for_attempt!(attempt.id)
+
+    assert {:ok, %{status: :canceled}} =
+             SubscriptionsFacade.cancel_subscription_for_user(customer, subscription.id, :now)
+
+    assert {:ok, %PaymentIntent{state: :requires_action}} =
+             payment_intent
+             |> Ash.Changeset.for_update(:mark_requires_action, %{}, context: %{system?: true})
+             |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    payment_intent_count = Store.Repo.aggregate(PaymentIntent, :count, :id)
+
+    StripeAPIStub.stub_unexpected!(
+      "canceled requires-action collection must not be charged again"
+    )
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert fetch_subscription!(subscription.id).status == :canceled
+    assert fetch_collection_for_attempt!(attempt.id) == collection
+    assert fetch_payment_intent!(payment_intent.id).state == :requires_action
+    assert Store.Repo.aggregate(PaymentIntent, :count, :id) == payment_intent_count
+  end
+
+  test "reached collection recovery after cancellation does not submit another charge" do
+    customer = SubscriptionsFixtures.create_customer!("jc229_canceled_reached_replay")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_canceled_reached_replay",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    parent = self()
+    request_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(request_count, 1, 1)
+      [idempotency_key] = Plug.Conn.get_req_header(conn, "idempotency-key")
+
+      send(parent, {
+        :renewal_provider_request,
+        idempotency_key,
+        Map.fetch!(params, "metadata[collection_attempt_id]"),
+        Map.fetch!(params, "metadata[local_intent_id]")
+      })
+
+      conn
+      |> Plug.Conn.put_status(500)
+      |> StripeAPIStub.json_response(%{"error" => %{"message" => "provider unavailable"}})
+    end)
+
+    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert_receive {:renewal_provider_request, _first_key, first_collection_id,
+                    first_payment_intent_id},
+                   5_000
+
+    assert :atomics.get(request_count, 1) == 1
+
+    assert {:ok, %{status: :canceled}} =
+             SubscriptionsFacade.cancel_subscription_for_user(customer, subscription.id, :now)
+
+    StripeAPIStub.stub_unexpected!("canceled reached collection must not submit another charge")
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    refute_receive {:renewal_provider_request, _, _, _}, 100
+    assert :atomics.get(request_count, 1) == 1
+    assert fetch_subscription!(subscription.id).status == :canceled
+
+    attempt = fetch_latest_attempt!(subscription.id)
+
+    collections =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert [%RenewalCollectionAttempt{} = collection] = collections
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.financial_outcome == :unresolved
+    assert collection.id == first_collection_id
+    assert collection.payment_intent_id == first_payment_intent_id
+    assert collection.collection_ordinal == 1
+  end
+
+  test "reached collection recovery after suspension does not dispatch another charge" do
+    customer = SubscriptionsFixtures.create_customer!("jc229_suspended_reached_replay")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_suspended_reached_replay",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    parent = self()
+    request_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(request_count, 1, 1)
+      [idempotency_key] = Plug.Conn.get_req_header(conn, "idempotency-key")
+
+      send(parent, {
+        :renewal_provider_request,
+        idempotency_key,
+        Map.fetch!(params, "metadata[collection_attempt_id]"),
+        Map.fetch!(params, "metadata[local_intent_id]")
+      })
+
+      conn
+      |> Plug.Conn.put_status(500)
+      |> StripeAPIStub.json_response(%{"error" => %{"message" => "provider unavailable"}})
+    end)
+
+    assert {:error, %{code: "PAYMENT_PROVIDER_DOWN"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert_receive {:renewal_provider_request, _first_key, first_collection_id,
+                    first_payment_intent_id},
+                   5_000
+
+    suspended =
+      fetch_subscription!(subscription.id)
+      |> Ash.Changeset.for_update(
+        :mark_suspended_transition,
+        %{billing_status_reason: "PAYMENT_FAILED"},
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert suspended.status == :suspended
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    refute_receive {:renewal_provider_request, _, _, _}, 100
+
+    assert :atomics.get(request_count, 1) == 1
+    assert fetch_subscription!(subscription.id).status == :suspended
+
+    attempt = fetch_latest_attempt!(subscription.id)
+
+    collections =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert [%RenewalCollectionAttempt{} = collection] = collections
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.financial_outcome == :unresolved
+    assert collection.id == first_collection_id
+    assert collection.payment_intent_id == first_payment_intent_id
+    assert collection.collection_ordinal == 1
+  end
+
+  test "certified terminal collection failure retries with a new collection on the same renewal order" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [:stripe],
+      stripe: [
+        webhook_secret: "whsec_test_only_change_me",
+        secret_key: "sk_test_store_blueprint",
+        publishable_key: "pk_test_store_blueprint",
+        request_options: StripeAPIStub.req_options()
+      ]
+    )
+
+    customer = SubscriptionsFixtures.create_customer!("jc229_terminal_collection_retry")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        amount_minor: 2_600,
+        max_retry_attempts: 2,
+        retry_schedule_hours: [0, 24]
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider: :stripe,
+        provider_billing_ref: "pm_jc229_terminal_collection_retry",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    parent = self()
+    request_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      request_no = :atomics.add_get(request_count, 1, 1)
+      collection_id = Map.fetch!(params, "metadata[collection_attempt_id]")
+      local_intent_id = Map.fetch!(params, "metadata[local_intent_id]")
+      [idempotency_key] = Plug.Conn.get_req_header(conn, "idempotency-key")
+
+      send(
+        parent,
+        {:renewal_collection_request, request_no, collection_id, local_intent_id, idempotency_key}
+      )
+
+      response =
+        if request_no == 1 do
+          %{"status" => "canceled"}
+        else
+          %{"status" => "succeeded"}
+        end
+
+      StripeAPIStub.json_response(conn, StripeAPIStub.payment_intent_response(params, response))
+    end)
+
+    assert {:error, %{code: "PAYMENT_FAILED"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert_receive {:renewal_collection_request, 1, first_collection_id, first_intent_id,
+                    first_idempotency_key},
+                   5_000
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    first_collection = fetch_collection!(first_collection_id)
+    first_intent = fetch_payment_intent!(first_intent_id)
+    order = fetch_order!(attempt.order_id)
+
+    assert first_collection.collection_ordinal == 1
+    assert first_collection.financial_outcome == :verified_terminal_financial_non_success
+    assert first_collection.payment_intent_id == first_intent.id
+    assert first_intent.state == :failed
+    assert order.state == :pending_payment
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert_receive {:renewal_collection_request, 2, second_collection_id, second_intent_id,
+                    second_idempotency_key},
+                   5_000
+
+    second_collection = fetch_collection!(second_collection_id)
+    second_intent = fetch_payment_intent!(second_intent_id)
+    updated_order = fetch_order!(order.id)
+
+    assert second_collection.collection_ordinal == 2
+    assert second_collection.renewal_attempt_id == attempt.id
+    assert second_collection.id != first_collection.id
+    assert second_collection.payment_intent_id == second_intent.id
+    assert second_intent.id != first_intent.id
+    assert second_intent.payment_intent_key == "renewal-collection:" <> second_collection.id
+    assert first_idempotency_key == "renewal-collection:" <> first_collection.id
+    assert second_idempotency_key == "renewal-collection:" <> second_collection.id
+    assert second_idempotency_key != first_idempotency_key
+    assert updated_order.id == order.id
+    assert updated_order.state == :paid
+    assert second_intent.state == :succeeded
+
+    assert {:ok, [application]} =
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.read(domain: Store.Orders, authorize?: false)
+
+    assert application.payment_intent_id == second_intent.id
+
+    reconciliation_args = %{
+      "order_id" => order.id,
+      "renewal_attempt_id" => attempt.id,
+      "collection_attempt_id" => second_collection.id,
+      "payment_intent_id" => second_intent.id
+    }
+
+    assert {:ok, handoff} =
+             RenewalCollectionAttempts.success_handoff_for_system(second_collection.id)
+
+    assert handoff == %{
+             order_id: order.id,
+             renewal_attempt_id: attempt.id,
+             collection_attempt_id: second_collection.id,
+             payment_intent_id: second_intent.id
+           }
+
+    refute_enqueued(
+      worker: Store.Workers.ReconcilePaidSubscriptionRenewalWorker,
+      args: reconciliation_args
+    )
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(order.id,
+               renewal_attempt_id: attempt.id
+             )
+
+    assert fetch_subscription!(subscription.id).current_period_end_at ==
+             subscription.current_period_end_at
+  end
+
+  test "a stale legacy PaymentIntent cannot apply against an existing collection identity" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [:stripe],
+      stripe: [
+        webhook_secret: "whsec_test_only_change_me",
+        secret_key: "sk_test_store_blueprint",
+        publishable_key: "pk_test_store_blueprint",
+        request_options: StripeAPIStub.req_options()
+      ]
+    )
+
+    customer = SubscriptionsFixtures.create_customer!("jc229_stale_legacy_pi")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: 2_600})
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc229_stale_legacy_pi",
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    order = fetch_order!(attempt.order_id)
+
+    collection =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    collection_intent = fetch_payment_intent!(collection.payment_intent_id)
+
+    assert {:ok, _locally_failed} =
+             collection_intent
+             |> Ash.Changeset.for_update(:mark_failed, %{}, context: %{system?: true})
+             |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    assert {:ok, stale_result} =
+             Store.Payments.create_or_reuse_payment_intent(
+               %{
+                 order_id: order.id,
+                 amount_received_minor: collection_intent.amount_received_minor,
+                 currency: collection_intent.currency,
+                 provider: collection_intent.provider,
+                 payment_intent_key: "jc229_stale_legacy:#{Ecto.UUID.generate()}"
+               },
+               context: %{system?: true}
+             )
+
+    stale_intent =
+      stale_result.payment_intent
+      |> Ash.Changeset.for_update(:submit, %{}, context: %{system?: true})
+      |> Ash.update!(domain: Store.Payments, authorize?: false, context: %{system?: true})
+
+    assert {:ok, %{num_rows: 1}} =
+             Repo.query(
+               "UPDATE renewal_attempts SET payment_intent_id = $2::uuid WHERE id = $1::uuid",
+               [Ecto.UUID.dump!(attempt.id), Ecto.UUID.dump!(stale_intent.id)]
+             )
+
+    assert {:error, %{code: "PAYMENT_EVENT_UNVERIFIED"}} =
+             Store.Payments.apply_payment_success_once(stale_intent.id)
+
+    assert fetch_order!(order.id).state == :pending_payment
+
+    assert 0 ==
+             PaymentApplication
+             |> Ash.Query.filter(expr(order_id == ^order.id))
+             |> Ash.count!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    assert fetch_collection!(collection.id).payment_intent_id == collection_intent.id
+  end
+
+  test "direct Stripe success applies only when returned money and environment exactly match" do
+    Application.put_env(:store, :payments,
+      enabled_providers: [:stripe],
+      stripe: [
+        webhook_secret: "whsec_test_only_change_me",
+        secret_key: "sk_test_store_blueprint",
+        publishable_key: "pk_test_store_blueprint",
+        request_options: StripeAPIStub.req_options()
+      ]
+    )
+
+    cases = [
+      {"amount_mismatch", 2_500, %{"amount_received" => 2_499}, 2_499, "USD", "test"},
+      {"currency_mismatch", 2_600, %{"currency" => "zar"}, 2_600, "ZAR", "test"},
+      {"environment_mismatch", 2_700, %{"livemode" => true}, 2_700, "USD", "live"},
+      {"missing_id", 2_750, %{"id" => nil}, 2_750, "USD", "test"},
+      {"missing_evidence", 2_800,
+       %{"amount_received" => nil, "amount" => nil, "currency" => nil, "livemode" => nil}, nil,
+       nil, nil}
+    ]
+
+    for {suffix, amount_minor, overrides, evidence_amount, evidence_currency, evidence_env} <-
+          cases do
+      StripeAPIStub.stub_payment_intent(fn conn, params ->
+        response =
+          Map.merge(
+            %{"status" => "succeeded"},
+            overrides
+          )
+
+        StripeAPIStub.json_response(
+          conn,
+          StripeAPIStub.payment_intent_response(params, response)
+        )
+      end)
+
+      customer = SubscriptionsFixtures.create_customer!("phase28_#{suffix}")
+      %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+      plan = SubscriptionsFixtures.create_subscription_plan!(%{amount_minor: amount_minor})
+      _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      %{subscription: subscription} =
+        SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+          provider: :stripe,
+          provider_billing_ref: "pm_phase28_#{suffix}",
+          next_renewal_at: DateTime.add(now, -10, :second)
+        })
+
+      assert {:ok, :processed} =
+               SubscriptionsFacade.process_due_subscription_renewal_for_system(
+                 subscription.id,
+                 now: now
+               )
+
+      attempt = fetch_latest_attempt!(subscription.id)
+      order = fetch_order!(attempt.order_id)
+      payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+      assert order.state == :pending_payment
+      assert payment_intent.state == :submitted
+      assert attempt.status == :processing
+
+      assert 0 ==
+               PaymentApplication
+               |> Ash.Query.filter(expr(order_id == ^order.id))
+               |> Ash.count!(domain: Store.Orders, authorize?: false)
+
+      assert {:ok, [evidence]} =
+               PaymentAttempt
+               |> Ash.Query.filter(expr(payment_intent_id == ^payment_intent.id))
+               |> Ash.read(domain: Store.Payments, authorize?: false)
+
+      assert evidence.observation_source == "direct_response"
+      assert evidence.outcome == "authoritative_success"
+      assert evidence.amount_minor == evidence_amount
+      assert evidence.currency == evidence_currency
+      assert evidence.provider_environment == evidence_env
+
+      if suffix == "missing_id" do
+        assert evidence.provider_reference == payment_intent.provider_request_reference
+        assert evidence.provider_reference_kind == "transaction_reference"
+        assert attempt.status == :processing
+      end
+    end
   end
 
   test "physical renewal hard blocker suppresses retries when shipping cost surges" do
@@ -403,7 +1189,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert %DateTime{} = updated.next_retry_at
   end
 
-  test "physical renewal releases inventory immediately when Stripe declines synchronously" do
+  test "physical renewal retains inventory when Stripe returns a retryable payment failure" do
     Application.put_env(:store, :payments,
       enabled_providers: [:stripe],
       stripe: [
@@ -451,20 +1237,61 @@ defmodule Store.Subscriptions.FacadeTest do
         live_amount_minor: 400
       })
 
-    assert {:error, error} =
+    assert {:ok, :processed} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
 
-    assert error.code == "PAYMENT_FAILED"
-
     attempt = fetch_latest_attempt!(subscription.id)
+    assert attempt.status == :processing
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    assert payment_intent.provider_payment_id
     reservation = fetch_reservation!(attempt.order_id, variant.id)
-    assert reservation.state == :cancelled
+    assert reservation.state == :active
 
     inventory = Repo.get_by!(InventoryItem, variant_id: variant.id)
-    assert inventory.reserved_count == 0
+    assert inventory.reserved_count == 1
     assert inventory.stock_on_hand == 1
+
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => 0,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "processing"
+    })
+
+    assert {:error, %{code: "PAYMENT_OUTCOME_UNRESOLVED"}} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert :processing == fetch_latest_attempt!(subscription.id).status
+    assert :pending_payment == fetch_order!(attempt.order_id).state
+    assert :active == fetch_reservation!(attempt.order_id, variant.id).state
+    assert 0 == Repo.aggregate(PaymentApplication, :count, :id)
+
+    StripeAPIStub.stub_payment_observation(payment_intent.provider_payment_id, %{
+      "amount" => payment_intent.amount_received_minor,
+      "amount_received" => payment_intent.amount_received_minor,
+      "currency" => String.downcase(payment_intent.currency),
+      "id" => payment_intent.provider_payment_id,
+      "livemode" => false,
+      "metadata" => %{"local_intent_id" => payment_intent.id},
+      "status" => "succeeded"
+    })
+
+    assert {:ok, :processed} =
+             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
+               now: now
+             )
+
+    assert :paid == fetch_order!(attempt.order_id).state
+    assert :succeeded == fetch_payment_intent!(payment_intent.id).state
+    assert 1 == Repo.aggregate(PaymentApplication, :count, :id)
+    assert :consumed == fetch_reservation!(attempt.order_id, variant.id).state
   end
 
   test "legacy pending projections cannot select a renewal contract" do
@@ -514,7 +1341,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert unresolved.pending_renewal_currency == upgraded_plan.currency
   end
 
-  test "run_due_renewals_for_system expires subscriptions past grace and revokes entitlements" do
+  test "run_due_renewals_for_system suspends subscriptions past grace and revokes entitlements" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_grace")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
@@ -560,8 +1387,12 @@ defmodule Store.Subscriptions.FacadeTest do
     assert result.success_count == 1
     assert result.failed_count == 0
 
-    expired = fetch_subscription!(subscription.id)
-    assert expired.status == :expired
+    suspended = fetch_subscription!(subscription.id)
+    assert suspended.status == :suspended
+    assert is_nil(suspended.ended_at)
+    assert is_nil(suspended.canceled_at)
+    assert is_nil(suspended.canceled_reason)
+    assert is_nil(suspended.next_retry_at)
 
     entitlement = fetch_entitlement!(subscription.id)
     assert entitlement.status == :revoked
@@ -573,6 +1404,9 @@ defmodule Store.Subscriptions.FacadeTest do
                expr(subscription_id == ^subscription.id and template_kind == :access_ended)
              )
              |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
+
+    assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
   end
 
   test "create_subscriptions_from_paid_order_for_system fails closed when provider selection is missing" do
@@ -813,6 +1647,18 @@ defmodule Store.Subscriptions.FacadeTest do
     |> Ash.Query.sort(inserted_at: :desc, id: :desc)
     |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
     |> List.first()
+  end
+
+  defp fetch_collection!(collection_attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(id == ^collection_attempt_id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_collection_for_attempt!(renewal_attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(renewal_attempt_id == ^renewal_attempt_id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp fetch_entitlement!(subscription_id) do

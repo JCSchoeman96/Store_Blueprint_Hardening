@@ -14,7 +14,18 @@ defmodule Store.Payments do
   alias Store.Orders.Order
   alias Store.Orders.OrderLineItem
   alias Store.Payments.Inputs.CreateIntentForOrderInput
-  alias Store.Payments.{Interlocks, PaymentIntent, Providers, ProviderTask, Refunds}
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
+
+  alias Store.Payments.{
+    Interlocks,
+    ObservationEvidence,
+    PaymentIntent,
+    Providers,
+    ProviderTask,
+    Refunds
+  }
+
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
   alias Store.Support.Errors.{Error, Normalize}
   alias Store.Support.Telemetry.RepoStats
@@ -24,6 +35,7 @@ defmodule Store.Payments do
   resources do
     resource(Store.Payments.PaymentIntent)
     resource(Store.Payments.PaymentAttempt)
+    resource(Store.Payments.PaymentOutcomeCertification)
     resource(Store.Payments.ProviderEvent)
     resource(Store.Payments.Refund)
     resource(Store.Payments.RefundAttempt)
@@ -177,6 +189,45 @@ defmodule Store.Payments do
           | {:error, term()}
   def apply_payment_success_once(payment_intent_or_id, opts \\ []) when is_list(opts) do
     Interlocks.apply_payment_success_once(payment_intent_or_id, opts)
+  end
+
+  @spec apply_observed_payment_outcome_for_system(map()) :: {:ok, map()} | {:error, term()}
+  def apply_observed_payment_outcome_for_system(observation_result)
+      when is_map(observation_result) do
+    Interlocks.apply_observed_payment_outcome(observation_result)
+  end
+
+  @spec validate_collection_outcome_certification_for_system(
+          ValidateRenewalCollectionOutcomeInput.t()
+        ) :: :ok | {:error, term()}
+  def validate_collection_outcome_certification_for_system(
+        %ValidateRenewalCollectionOutcomeInput{} = input
+      ) do
+    Interlocks.validate_collection_outcome_certification(input)
+  end
+
+  def validate_collection_outcome_certification_for_system(_input) do
+    {:error, Error.new("VALIDATION_ERROR", "typed collection outcome evidence is required")}
+  end
+
+  @spec record_and_apply_payment_observation_for_system(
+          PaymentIntent.t(),
+          ProviderObservation.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def record_and_apply_payment_observation_for_system(
+        %PaymentIntent{} = payment_intent,
+        %ProviderObservation{} = observation
+      ) do
+    with {:ok, evidence} <-
+           ObservationEvidence.record(payment_intent, observation),
+         {:ok, result} <-
+           Interlocks.apply_observed_payment_outcome(%{
+             payment_intent: payment_intent,
+             observation: observation,
+             evidence: evidence
+           }) do
+      {:ok, Map.put(result, :evidence, evidence)}
+    end
   end
 
   defp create_or_reuse_intent_for_checkout(checkout, input) do
