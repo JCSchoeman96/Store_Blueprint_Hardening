@@ -1745,3 +1745,47 @@ Entitlements core modification.
   change is included. JC-232 receives no implementation task base or branch.
 - PR #155 remains draft and unmerged for fresh exact-head CI and independent
   re-review.
+
+## JC-232 closure and JC-235 / v0.1.36 re-admission (2026-10-17)
+
+- PR #156 merged as `a88fd39c94c4dddd022a9bb6e36dd8bb6634f802`. The merge tree
+  is `768149462a9686b6ef70395582de0302ec52a497`, matching the independently
+  accepted JC-232 head `e1faa1219d9d0f0a44c6f1746b16924592eb2da9`.
+- JC-232 / SBH-20-02 is closed. Its shared authority is `NONE`, recorded as
+  completed lane-local provenance only. The grant is exhausted and
+  non-reusable. Linear JC-232 remains Done.
+- The JC-223 JC-235 dependency edge is unchanged:
+  SBH-20-01 + SBH-10-05 + SBH-70-02. JC-231, JC-230, and JC-252 are all
+  closed.
+- On the accepted SUBS tip, exact successful collection, RenewalAttempt,
+  renewal Order, PaymentIntent, and PaymentApplication evidence is available
+  through the JC-229 / JC-230 path. Charged-contract application already
+  consumes exact payment evidence.
+- The remaining success ordering is commercial charged-contract application,
+  paid Subscription commit, access/entitlement convergence, then the
+  RenewalAttempt success marker. The first and last writes are not one atomic
+  transition.
+- `mark_attempt_failed` still treats non-terminal update errors as `:ok`.
+  Only a proven terminal-success conflict is a business no-op; storage,
+  validation, invariant, and other errors still need fail-closed or retry
+  behavior.
+- Failure settlement and Subscription dunning remain separate writes. A stale
+  dunning update can return `STALE_RECORD` after a successful paid update.
+- JC-252 local RenewalAttempt success monotonicity remains closed and
+  inherited. It protects `succeeded` from ordinary failure/processing updates
+  after that marker is written.
+- Durable AccessEffect infrastructure exists on the current SUBS tip. JC-235
+  may use existing access/convergence evidence but receives no AccessEffect or
+  Entitlements redesign authority.
+- JC-234 / SBH-20-04 remains `BLOCKED_DEPENDENCY`: despite its closed formal
+  dependencies, the executable Store lacks the separately governed legitimate
+  true terminal-expiry writer/guard. Failed-payment suspension or grace
+  exhaustion is not expiry.
+- v0.1.36 closes SBH-20-02 and makes JC-235 / SBH-20-05 the sole
+  `READY / No` row. JC-235 shared modification authority is `NONE`.
+- The human selected JC-235, but it remains Backlog during this governance PR.
+  No implementation `task_base_sha` or implementation branch is assigned
+  before governance merge and post-merge SUBS-tip verification.
+- This amendment changes no runtime code, tests, schema, migrations, Ash
+  snapshots, providers, Payments, Orders, Entitlements, configuration, or
+  dependencies. It changes no JC-223 edge and assigns no Product decision.
