@@ -1670,3 +1670,78 @@ Entitlements core modification.
 - Governance commit before PR creation: `00c2428020d1f6c8d1a0b02ae93917f946cdee6a`.
 - PR review, exact-head CI, human merge, and independent post-merge tree
   verification remain required. This note does not claim runtime completion.
+
+## JC-232 / SBH-20-02 re-admission (2026-10-17)
+
+- PR #154 merged the accepted main runtime and reconciled SUBS governance at
+  66edd1eb0f5cc90bd441e6c3eb8940b9345ffe31. Canonical main remains
+  fdae94168e98d588fb2bba2e9fe4e93c6c016023.
+- JC-229 / SBH-10-04 closed through PR #151, reviewed head
+  ebc2b514b58dbadfbbf8b2c885b8d16a6fbf7337, merged as
+  e8616ab1cdbea866600265037e65d88bbf90b84c. JC-230 / SBH-10-05 closed
+  through PR #152, reviewed head b14f075571d92f8c1c097d6556d454f3a59b0392,
+  merged as 92a5c5758d7bc92453191488d2924a593377548f.
+- JC-233 / SBH-20-03 is recorded as completed provenance from PR #153,
+  reviewed head 7d1b3379466884fadb97070ecfcb8acfda95827d, merged as
+  fdae94168e98d588fb2bba2e9fe4e93c6c016023. It is not a JC-232 dependency.
+- The accepted runtime contains the Payments-owned
+  request_renewal_cancellation_remediation_for_system/1 API. It validates the
+  exact canceled renewal payment and creates or reuses one full Refund under
+  the renewal-attempt/payment-intent idempotency key. No shared-authority
+  blocker remains for the bounded JC-232 task.
+- The remaining confirmed defect is stale cancel-now intent. run_cancel/3 can
+  return STALE_RECORD after an aggregate-version conflict without reloading
+  Subscription authority and re-evaluating the same command. The bounded task
+  must preserve cancel-now and must not retry forever.
+- v0.1.35 moves only SBH-20-02 to READY / No and makes it the sole canonical
+  READY implementation/proof row. It retains the JC-223 edge:
+  SBH-20-01 + SBH-10-03 + SBH-10-04 + SBH-10-05.
+- This amendment changes no runtime code, tests, schema, migrations, snapshots,
+  provider adapters, Payments, Orders, Entitlements, or configuration. It
+  changes no JC-223 edge.
+- The human selected JC-232, but this governance change assigns no
+  implementation task_base_sha and creates no implementation branch. The
+  merged and verified SUBS tip will supply the task base later.
+- Linear JC-232 remains Backlog. PR #154 is not implementation evidence, and
+  this governance PR does not close JC-232. Human merge and post-merge
+  verification remain required.
+
+### Candidate validation
+
+- git diff --check, mix format --check-formatted, mix check.static,
+  mix check.types, and mix ash_postgres.generate_migrations --check passed.
+- mix check passed its static and documentation gates but could not create the
+  local test database. PostgreSQL authentication raised key :password not
+  found. Exact-head isolated CI remains required for test_pr_strict.
+- The change contains only this note and the Master Register.
+
+## JC-232 / v0.1.35 independent-review correction (2026-10-17)
+
+- Independent review of PR #155 head e09bc6431009be9d6fa5f4b2e13e05e6f77a49bc
+  found current-authority contradictions outside the new Section 55. This
+  correction synchronizes the ordinary SBH-10-04, SBH-10-05, SBH-20-02, and
+  SBH-20-03 row definitions, the current Shared-Authority Register, and the
+  current hardening matrix with the v0.1.35 closure and sole READY admission.
+- The header now states the durable v0.1.35 lifecycle, serial policy, frozen
+  JC-219..JC-223 authority, and current JC-232 / SBH-20-02 admission. Section
+  55 states that this candidate takes effect only after human merge and
+  independent post-merge verification.
+- The Master Register's current lifecycle, dunning law, and current transition
+  summaries now match accepted JC-265 authority: configured retry or grace
+  boundary exhaustion suspends the open commercial relationship, clears retry
+  scheduling, and makes current access non-effective; the exact same
+  authorized RenewalAttempt may recover suspension. Historical point-in-time
+  statements remain identified as such.
+- Accepted JC-265 sources inspected: `docs/governance/subscription_scheduling_terms.md`
+  and `docs/hardening/subscriptions/jc_265_prejit_conformance.md`. This is
+  reconciliation of existing law, not a new Product decision.
+- The consumed SBH-10-04 authority remains completed provenance only;
+  SBH-10-05 remains external to Payments core; SBH-20-02 shared authority is
+  NONE; SBH-20-03 remains closed provenance. No JC-223 edge changes.
+- `NEW_PRODUCT_DECISION=NO`
+- `RUNTIME_CHANGE=NO`
+- `JC223_EDGE_CHANGE=NO`
+- No runtime, test, migration, schema, snapshot, provider, or configuration
+  change is included. JC-232 receives no implementation task base or branch.
+- PR #155 remains draft and unmerged for fresh exact-head CI and independent
+  re-review.
