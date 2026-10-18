@@ -669,26 +669,22 @@ defmodule Store.Workers.ProcessWebhookReceiptWorkerTest do
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!()
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
         provider: :stripe,
         provider_customer_ref: "cus_setup_retry_001",
         provider_billing_ref: nil,
-        next_retry_at: DateTime.add(DateTime.utc_now(), 86_400, :second)
+        next_renewal_at: DateTime.add(now, -10, :second)
       })
 
-    past_due_subscription =
-      subscription
-      |> Ash.Changeset.for_update(
-        :mark_past_due_transition,
-        %{
-          past_due_since_at: DateTime.add(DateTime.utc_now(), -3_600, :second),
-          billing_status_reason: "PAYMENT_METHOD_REQUIRED"
-        },
-        context: %{system?: true}
-      )
-      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    assert {:ok, %{due_count: 1, failed_count: 1}} =
+             Store.Subscriptions.Facade.run_due_renewals_for_system(now: now, limit: 20)
+
+    past_due_subscription = fetch_subscription!(subscription.id)
+    assert past_due_subscription.status == :past_due
+    assert past_due_subscription.dunning_attempt_count == 1
 
     payment_intent =
       PaymentIntent
