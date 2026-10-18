@@ -1429,10 +1429,17 @@ implementation.
 SUBS READY / SERIAL EXPLICIT HARDENING
 ```
 
-Current admission: JC-235 / SBH-20-05
+Current admission: JC-250 / SBH-60-02
 
 Canonical READY implementation/proof rows = 1
-Canonical READY row = SBH-20-05
+Canonical READY row = SBH-60-02
+SBH-20-05 = CLOSED / No
+SBH-20-05 shared authority = NONE / completed lane-local provenance only
+SBH-60-02 = READY / No
+SBH-60-02 shared authority = NONE
+JC-250 implementation task_base_sha = none until the v0.1.37 governance
+merge and independent post-merge SUBS-tip verification
+JC-250 implementation branch = none
 
 The JC-219, JC-220, JC-221, JC-222, and JC-223 governance contracts are frozen
 and canonical. The Subscription lifecycle remains `READY`; no new persistent
@@ -3252,13 +3259,17 @@ Preserve proven payment evidence while obeying the frozen terminal-state law.
 
 ## SBH-20-05 — Success vs Late Failure / Dunning
 
-**State:** `READY`.
+**State:** `CLOSED`.
 **Loop eligible:** No.
-**Shared-authority status:** `NONE`.
-**Current bounded task contract:** Section 56.
-**Implementation task_base_sha:** none until the governance amendment merges
-and the resulting SUBS tip is verified.
-**Implementation branch:** none.
+**Shared-authority status:** `NONE` / completed lane-local provenance.
+**Implementation PR:** `#158` (merged).
+**Implementation task_base_sha:** `8369d184acdd81008a2f44250ba876ffba3fba17`.
+**Independently accepted implementation head:**
+`65cf1bef533a22142b5a94853bacc6800c8ec469`.
+**Merge commit:** `3b30a7d74f313d1fc1e59bba04b55a991bf11fa5`.
+**Merge tree:** `73aba016690de5a1415cc7c662626daa5ff2ae83`.
+**Completed implementation branch:**
+`subs-task/sbh-20-05-success-late-failure-race` (merged through PR `#158`).
 
 Invariant:
 
@@ -3837,8 +3848,16 @@ this completed row.
 
 ## SBH-60-02 — Grandfathered Retired-Contract Renewal
 
-**State:** `BLOCKED_DEPENDENCY`.
+**State:** `READY`.
 **Loop eligible:** No.
+**Shared-authority status:** `NONE`.
+**Current bounded task contract:** Section 57.
+**Frozen dependencies:** `SBH-10-02`, `SBH-60-01`, and `SBH-10-05`.
+All three are `CLOSED`.
+**Implementation task_base_sha:** none until the v0.1.37 governance PR is
+human-merged and the resulting SUBS tip is independently verified.
+**Implementation branch:** none until separate post-merge implementation
+admission.
 
 Proposed branch:
 
@@ -3849,8 +3868,11 @@ subs-task/sbh-60-02-grandfathered-renewals
 Stage B permits grandfathered existing-renewal evaluation under the bound immutable
 contract and applicable policy. Do not terminate or prevent renewal for an extant
 subscriber solely because a commercial revision is no longer offered to new
-customers. This task remains implementation work and is not authorized by this
-governance PR.
+customers. Section 57 is the current bounded task contract. JC-250 remains
+Backlog during this governance PR, which assigns no implementation task base and
+does not start implementation. The proposed branch name is documentary only;
+create it after human merge and independent verification of the resulting SUBS
+tip.
 
 ---
 
