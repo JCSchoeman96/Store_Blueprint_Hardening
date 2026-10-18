@@ -1315,7 +1315,8 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp maybe_contract_correction_retry_attrs(%Subscription{} = subscription, attrs) do
-    if subscription.status == :past_due and is_struct(subscription.retry_suppressed_at, DateTime) do
+    if subscription.status == :past_due and is_struct(subscription.retry_suppressed_at, DateTime) and
+         retry_repair_authorized?(subscription, :contract_change) do
       attrs
       |> Map.put(:retry_suppressed_at, nil)
       |> Map.put(:next_retry_at, DateTime.utc_now() |> DateTime.truncate(:microsecond))
@@ -1323,6 +1324,64 @@ defmodule Store.Subscriptions.Facade do
       attrs
     end
   end
+
+  defp retry_repair_authorized?(%Subscription{status: :past_due} = subscription, repair_kind) do
+    with {:ok, %RenewalAttempt{} = attempt} <- current_bound_renewal_attempt(subscription),
+         :ok <- ensure_complete_bound_renewal_attempt(attempt),
+         true <- attempt.status == :failed,
+         true <- same_bound_renewal_occurrence?(subscription, attempt),
+         true <- repair_matches_bound_failure?(repair_kind, attempt),
+         true <- bound_retry_budget_remains?(subscription, attempt) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp retry_repair_authorized?(%Subscription{}, _repair_kind), do: false
+
+  defp same_bound_renewal_occurrence?(
+         %Subscription{
+           id: subscription_id,
+           current_period_end_at: %DateTime{} = period_start_at
+         },
+         %RenewalAttempt{
+           subscription_id: attempt_subscription_id,
+           period_start_at: %DateTime{} = attempt_period_start_at
+         }
+       ) do
+    subscription_id == attempt_subscription_id and
+      DateTime.compare(period_start_at, attempt_period_start_at) == :eq
+  end
+
+  defp same_bound_renewal_occurrence?(_subscription, _attempt), do: false
+
+  defp repair_matches_bound_failure?(:contract_change, %RenewalAttempt{failure_code: code}),
+    do: hard_retry_suppressed_reason?(code)
+
+  defp repair_matches_bound_failure?(:payment_method, %RenewalAttempt{failure_code: code}) do
+    MapSet.member?(@payment_retry_reasons, code) and code != "PAYMENT_AUTHENTICATION_REQUIRED"
+  end
+
+  defp repair_matches_bound_failure?(_repair_kind, _attempt), do: false
+
+  defp bound_retry_budget_remains?(
+         %Subscription{
+           dunning_attempt_count: attempt_count,
+           past_due_since_at: %DateTime{} = past_due_since_at
+         } = subscription,
+         %RenewalAttempt{} = attempt
+       )
+       when is_integer(attempt_count) and attempt_count > 0 do
+    policy = renewal_policy_from_attempt(attempt)
+    max_retry_attempts = Map.get(policy, :max_retry_attempts)
+
+    is_integer(max_retry_attempts) and max_retry_attempts >= attempt_count and
+      match?(%DateTime{}, Scheduler.next_retry_at(past_due_since_at, attempt_count - 1, policy)) and
+      same_bound_renewal_occurrence?(subscription, attempt)
+  end
+
+  defp bound_retry_budget_remains?(_subscription, _attempt), do: false
 
   defp retry_now?(%Subscription{status: :past_due, retry_suppressed_at: nil}), do: true
   defp retry_now?(%Subscription{}), do: false
@@ -1592,6 +1651,8 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp persist_updated_payment_method_tx(subscription, payment_intent) do
+    retry_repair_authorized? = retry_repair_authorized?(subscription, :payment_method)
+
     with {:ok, stored_payment_method, stored_payment_method_notifications} <-
            maybe_upsert_stored_payment_method(subscription.user_id, payment_intent),
          :ok <-
@@ -1600,12 +1661,13 @@ defmodule Store.Subscriptions.Facade do
            update_subscription_payment_method_reference(
              subscription,
              payment_intent,
-             stored_payment_method
+             stored_payment_method,
+             retry_repair_authorized?
            ) do
       {:ok,
        %{
          subscription: updated_subscription,
-         retry_now?: retry_now?(updated_subscription),
+         retry_now?: retry_repair_authorized?,
          notifications: stored_payment_method_notifications ++ subscription_notifications
        }}
     else
@@ -1630,12 +1692,18 @@ defmodule Store.Subscriptions.Facade do
   defp update_subscription_payment_method_reference(
          subscription,
          payment_intent,
-         stored_payment_method
+         stored_payment_method,
+         retry_repair_authorized?
        ) do
     subscription
     |> Ash.Changeset.for_update(
       :set_provider_billing_reference,
-      payment_method_reference_attrs(subscription, payment_intent, stored_payment_method),
+      payment_method_reference_attrs(
+        subscription,
+        payment_intent,
+        stored_payment_method,
+        retry_repair_authorized?
+      ),
       context: %{system?: true}
     )
     |> Ash.update(
@@ -1647,9 +1715,12 @@ defmodule Store.Subscriptions.Facade do
     |> normalize_subscription_update_with_notifications(subscription)
   end
 
-  defp payment_method_reference_attrs(subscription, payment_intent, stored_payment_method) do
-    clear_retry_suppressed? = payment_method_update_retry_reset?(subscription)
-
+  defp payment_method_reference_attrs(
+         subscription,
+         payment_intent,
+         stored_payment_method,
+         retry_repair_authorized?
+       ) do
     %{
       provider_customer_ref:
         payment_intent.provider_customer_ref ||
@@ -1659,9 +1730,9 @@ defmodule Store.Subscriptions.Facade do
           (stored_payment_method && stored_payment_method.provider_payment_method_ref),
       stored_payment_method_id: stored_payment_method && stored_payment_method.id,
       billing_status_reason: nil,
-      next_retry_at: payment_method_retry_at(subscription, clear_retry_suppressed?),
+      next_retry_at: payment_method_retry_at(subscription, retry_repair_authorized?),
       retry_suppressed_at:
-        if(clear_retry_suppressed?, do: nil, else: subscription.retry_suppressed_at)
+        if(retry_repair_authorized?, do: nil, else: subscription.retry_suppressed_at)
     }
   end
 
@@ -1671,10 +1742,6 @@ defmodule Store.Subscriptions.Facade do
 
   defp payment_method_retry_at(%Subscription{} = subscription, _clear_retry_suppressed?),
     do: subscription.next_retry_at
-
-  defp payment_method_update_retry_reset?(%Subscription{} = subscription) do
-    MapSet.member?(@payment_retry_reasons, subscription.billing_status_reason || "")
-  end
 
   defp normalize_subscription_update_with_notifications(
          {:ok, updated_subscription, notifications},
@@ -6281,60 +6348,117 @@ defmodule Store.Subscriptions.Facade do
     |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
   end
 
-  defp mark_subscription_past_due(subscription, plan, reason, now) do
+  defp mark_subscription_past_due(subscription, retry_policy, reason, now) do
     message =
       case reason do
         %Error{code: code} -> code
         other -> inspect(other)
       end
 
-    next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
-    max_retry_attempts = Map.get(plan, :max_retry_attempts) || 0
-    retry_suppressed? = hard_retry_suppressed_reason?(message)
-    past_due_since_at = dunning_anchor(subscription, now)
+    with {:ok, max_retry_attempts} <- retry_policy_max_attempts(retry_policy) do
+      next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
+      past_due_since_at = dunning_anchor(subscription, now)
 
-    status =
-      if next_attempt_count > max_retry_attempts do
-        :suspended
-      else
-        :past_due
-      end
+      attrs =
+        retry_failure_attrs(
+          retry_policy,
+          message,
+          now,
+          past_due_since_at,
+          next_attempt_count,
+          max_retry_attempts
+        )
 
-    next_retry_at =
-      if retry_suppressed? do
-        nil
-      else
-        next_retry_at_or_nil(past_due_since_at, next_attempt_count - 1, plan)
-      end
-
-    attrs = %{
-      billing_status_reason: message,
-      past_due_since_at: past_due_since_at,
-      dunning_attempt_count: next_attempt_count,
-      next_retry_at: next_retry_at,
-      retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
-    }
-
-    subscription
-    |> persist_subscription_dunning_update(status, attrs)
-    |> finish_subscription_dunning_update(subscription, status, next_attempt_count)
+      subscription
+      |> persist_subscription_dunning_update(:past_due, attrs)
+      |> finish_subscription_dunning_update(
+        subscription,
+        :past_due,
+        next_attempt_count
+      )
+    end
   end
 
-  defp finish_subscription_dunning_update(
-         {:suspension_failed, reason},
-         _subscription,
-         _status,
-         _attempt_count
+  defp retry_policy_max_attempts(%{max_retry_attempts: max_retry_attempts})
+       when is_integer(max_retry_attempts) and max_retry_attempts >= 0,
+       do: {:ok, max_retry_attempts}
+
+  defp retry_policy_max_attempts(_retry_policy) do
+    {:error, Error.new("VALIDATION_ERROR", "renewal attempt retry policy is incomplete")}
+  end
+
+  defp retry_failure_attrs(
+         retry_policy,
+         message,
+         now,
+         past_due_since_at,
+         attempt_count,
+         max_retry_attempts
+       ) do
+    hard_blocked? = hard_retry_suppressed_reason?(message)
+
+    scheduled_retry =
+      scheduled_retry_after_failure(
+        past_due_since_at,
+        attempt_count,
+        max_retry_attempts,
+        hard_blocked?,
+        retry_policy
+      )
+
+    retry_suppressed? =
+      retry_failure_suppressed?(attempt_count, max_retry_attempts, hard_blocked?, scheduled_retry)
+
+    %{
+      billing_status_reason: message,
+      past_due_since_at: past_due_since_at,
+      dunning_attempt_count: attempt_count,
+      next_retry_at: if(retry_suppressed?, do: nil, else: scheduled_retry),
+      retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
+    }
+  end
+
+  defp scheduled_retry_after_failure(
+         _past_due_since_at,
+         attempt_count,
+         max_retry_attempts,
+         _hard_blocked?,
+         _retry_policy
+       )
+       when attempt_count > max_retry_attempts,
+       do: :exhausted
+
+  defp scheduled_retry_after_failure(
+         _past_due_since_at,
+         _attempt_count,
+         _max_retry_attempts,
+         true,
+         _retry_policy
        ),
-       do: {:error, reason}
+       do: :exhausted
+
+  defp scheduled_retry_after_failure(
+         past_due_since_at,
+         attempt_count,
+         _max_retry_attempts,
+         false,
+         retry_policy
+       ) do
+    Scheduler.next_retry_at(past_due_since_at, attempt_count - 1, retry_policy)
+  end
+
+  defp retry_failure_suppressed?(
+         attempt_count,
+         max_retry_attempts,
+         hard_blocked?,
+         scheduled_retry
+       ) do
+    attempt_count > max_retry_attempts or hard_blocked? or scheduled_retry == :exhausted
+  end
 
   defp finish_subscription_dunning_update(result, subscription, status, attempt_count) do
     emit_subscription_dunning_telemetry(subscription, status, attempt_count)
     stale_result_or(result, :ok)
-  end
-
-  defp persist_subscription_dunning_update(subscription, :suspended, attrs) do
-    suspend_past_due_subscription(subscription, attrs)
   end
 
   defp persist_subscription_dunning_update(subscription, _status, attrs) do
@@ -6342,13 +6466,6 @@ defmodule Store.Subscriptions.Facade do
     |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
     |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
     |> normalize_subscription_update_result(subscription)
-  end
-
-  defp next_retry_at_or_nil(reference_at, attempt_index, plan) do
-    case Scheduler.next_retry_at(reference_at, attempt_index, plan) do
-      :exhausted -> nil
-      next_retry_at -> next_retry_at
-    end
   end
 
   defp dunning_anchor(%Subscription{past_due_since_at: nil}, now), do: now

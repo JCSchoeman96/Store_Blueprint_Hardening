@@ -41,6 +41,7 @@ defmodule Store.Subscriptions.FacadeTest do
 
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
+  alias Store.Workers.ProcessSubscriptionRenewalWorker
 
   setup context do
     previous = Application.get_env(:store, :payments, [])
@@ -153,7 +154,7 @@ defmodule Store.Subscriptions.FacadeTest do
     assert attempt.failure_code == "PAYMENT_METHOD_REQUIRED"
   end
 
-  test "zero retry allowance suspends an exhausted renewal without ending the contract" do
+  test "zero retry allowance leaves an exhausted renewal past_due without suspension effects" do
     customer = SubscriptionsFixtures.create_customer!("jc265_zero_retry")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
@@ -195,25 +196,27 @@ defmodule Store.Subscriptions.FacadeTest do
 
     assert_receive {{:store, :subscriptions, :dunning}, %{count: 1}, dunning_metadata}
     assert dunning_metadata.subscription_id == subscription.id
-    assert dunning_metadata.status == :suspended
+    assert dunning_metadata.status == :past_due
 
-    suspended = fetch_subscription!(subscription.id)
-    assert suspended.status == :suspended
-    assert is_nil(suspended.ended_at)
-    assert is_nil(suspended.canceled_at)
-    assert is_nil(suspended.canceled_reason)
-    assert is_nil(suspended.next_retry_at)
+    exhausted = fetch_subscription!(subscription.id)
+    assert exhausted.status == :past_due
+    assert exhausted.dunning_attempt_count == 1
+    assert %DateTime{} = exhausted.retry_suppressed_at
+    assert is_nil(exhausted.ended_at)
+    assert is_nil(exhausted.canceled_at)
+    assert is_nil(exhausted.canceled_reason)
+    assert is_nil(exhausted.next_retry_at)
 
     assert {:ok, detail} =
              SubscriptionsFacade.get_subscription_detail_for_user(customer, subscription.id)
 
     assert detail.action_capabilities.can_cancel_now?
     assert detail.action_capabilities.can_cancel_at_period_end?
-    refute detail.action_capabilities.can_queue_plan_change?
-    refute detail.action_capabilities.can_queue_variant_change?
+    assert detail.action_capabilities.can_queue_plan_change?
+    assert detail.action_capabilities.can_queue_variant_change?
 
     entitlement = fetch_entitlement!(subscription.id)
-    assert entitlement.status == :revoked
+    assert entitlement.status == :active
 
     assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
              SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
@@ -1123,7 +1126,7 @@ defmodule Store.Subscriptions.FacadeTest do
         next_renewal_at: DateTime.add(now, -10, :second)
       })
 
-    _shipping =
+    %{shipping_rule: shipping_rule} =
       configure_shipping_profile!(source_order, variant, %{
         baseline_amount_minor: 400,
         live_amount_minor: 1_000
@@ -1145,8 +1148,41 @@ defmodule Store.Subscriptions.FacadeTest do
     attempt = fetch_latest_attempt!(subscription.id)
     assert attempt.status == :failed
     assert attempt.failure_code == "SHIPPING_COST_SURGE"
+    assert updated.dunning_attempt_count == 1
+    assert attempt.charged_contract_snapshot["max_retry_attempts"] == 3
 
     assert {:ok, []} = SubscriptionsFacade.list_due_renewal_jobs_for_system(now: now, limit: 10)
+
+    shipping_rule
+    |> Ash.Changeset.for_update(:update, %{shipping_cost_minor: 400}, context: %{system?: true})
+    |> Ash.update!(domain: Store.Shipping, authorize?: false, context: %{system?: true})
+
+    target_plan = SubscriptionsFixtures.create_subscription_plan!()
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    {:ok, input} =
+      QueueSubscriptionPlanChangeInput.new(%{
+        "subscription_id" => subscription.id,
+        "subscription_plan_id" => target_plan.id
+      })
+
+    assert {:ok, repaired} =
+             SubscriptionsFacade.queue_subscription_plan_change_for_user(
+               customer,
+               subscription.id,
+               input
+             )
+
+    assert repaired.status == :past_due
+    assert repaired.dunning_attempt_count == 1
+    assert repaired.retry_suppressed_at == nil
+    assert %DateTime{} = repaired.next_retry_at
+
+    assert_enqueued(
+      worker: ProcessSubscriptionRenewalWorker,
+      args: %{"subscription_id" => subscription.id}
+    )
   end
 
   test "physical renewal out of stock stays retryable without suppression" do
@@ -1694,7 +1730,7 @@ defmodule Store.Subscriptions.FacadeTest do
     method = create_shipping_method!("GROUND")
     _tax_rate = create_tax_rate!("US", "CA")
 
-    _rule =
+    shipping_rule =
       create_shipping_rule!(
         zone.id,
         method.id,
@@ -1740,20 +1776,23 @@ defmodule Store.Subscriptions.FacadeTest do
 
     baseline_amount = Map.get(overrides, :baseline_amount_minor, option.amount_minor)
 
-    method_order
-    |> Ash.Changeset.for_update(
-      :set_shipping_quote_evidence,
-      %{
-        shipping_quote_hash: "baseline-#{System.unique_integer([:positive])}",
-        shipping_quote_currency_code: option.currency_code,
-        shipping_quote_amount_minor: baseline_amount,
-        shipping_weight_grams: option.shipping_weight_grams,
-        shipping_method_code: method.code,
-        shipping_zone_id: option.zone_id
-      },
-      context: %{system?: true}
-    )
-    |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+    quoted_order =
+      method_order
+      |> Ash.Changeset.for_update(
+        :set_shipping_quote_evidence,
+        %{
+          shipping_quote_hash: "baseline-#{System.unique_integer([:positive])}",
+          shipping_quote_currency_code: option.currency_code,
+          shipping_quote_amount_minor: baseline_amount,
+          shipping_weight_grams: option.shipping_weight_grams,
+          shipping_method_code: method.code,
+          shipping_zone_id: option.zone_id
+        },
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Orders, authorize?: false, context: %{system?: true})
+
+    %{order: quoted_order, shipping_rule: shipping_rule}
   end
 
   defp create_shipping_zone!(country_code, region_code) do

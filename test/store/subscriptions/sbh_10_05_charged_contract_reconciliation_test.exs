@@ -150,6 +150,61 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert fetch_attempt!(attempt.id).status == :succeeded
   end
 
+  test "an exact paid bound occurrence recovers an exhausted past_due subscription once" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("sbh_30_03_exhausted_paid_recovery")
+
+    {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    first_failure_at = DateTime.add(now, -3 * 86_400, :second)
+
+    exhausted =
+      fetch_subscription!(subscription.id)
+      |> Ash.Changeset.for_update(
+        :mark_past_due_transition,
+        %{
+          billing_status_reason: "PAYMENT_FAILED",
+          past_due_since_at: first_failure_at,
+          dunning_attempt_count: 4,
+          next_retry_at: nil,
+          retry_suppressed_at: now
+        },
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert exhausted.status == :past_due
+    assert exhausted.dunning_attempt_count == 4
+    assert %DateTime{} = exhausted.retry_suppressed_at
+    assert attempt.charged_contract_snapshot["max_retry_attempts"] == 3
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    recovered = fetch_subscription!(subscription.id)
+    assert recovered.status == :active
+    assert recovered.dunning_attempt_count == 0
+    assert recovered.past_due_since_at == nil
+    assert recovered.billing_status_reason == nil
+    assert recovered.next_retry_at == nil
+    assert recovered.retry_suppressed_at == nil
+    assert fetch_attempt!(attempt.id).status == :succeeded
+
+    version = recovered.aggregate_version
+
+    assert {:ok, :noop} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    assert fetch_subscription!(subscription.id).aggregate_version == version
+    assert fetch_attempt!(attempt.id).status == :succeeded
+  end
+
   test "paid renewal reconciliation rejects a wrong collection or supplied PaymentIntent ID" do
     %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
       charged_bound_renewal!("sbh_10_05_wrong_handoff_ids")

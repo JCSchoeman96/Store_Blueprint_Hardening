@@ -215,7 +215,7 @@ defmodule Store.Entitlements.FacadeTest do
     end
   end
 
-  test "worker-driven membership expiration invalidates the entitlement cache post-commit" do
+  test "grace-expired past_due renewal invalidates the entitlement cache post-commit" do
     customer = SubscriptionsFixtures.create_customer!("phase27a_worker_revoke")
     customer_id = customer.id
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -237,6 +237,20 @@ defmodule Store.Entitlements.FacadeTest do
         next_renewal_at: DateTime.add(now, -10, :second)
       })
 
+    subscription =
+      subscription
+      |> Ash.Changeset.for_update(
+        :mark_past_due_transition,
+        %{
+          billing_status_reason: "PAYMENT_FAILED",
+          past_due_since_at: DateTime.add(now, -8 * 86_400, :second),
+          dunning_attempt_count: 1,
+          next_retry_at: nil
+        },
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
     assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
     assert {:ok, cached_set} = Facade.entitlement_set_for_user(customer)
 
@@ -248,7 +262,7 @@ defmodule Store.Entitlements.FacadeTest do
 
     Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(customer.id))
 
-    assert {:error, _reason} =
+    assert {:ok, :processed} =
              SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
                now: now
              )
