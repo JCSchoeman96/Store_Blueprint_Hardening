@@ -46,7 +46,7 @@ defmodule Store.Accounts.User do
     create :register_with_google do
       description("Register or sign in with Google OAuth2")
       argument(:user_info, :map, allow_nil?: false)
-      argument(:oauth_tokens, :map, allow_nil?: false)
+      argument(:oauth_tokens, :map, allow_nil?: false, sensitive?: true)
 
       upsert?(true)
       upsert_identity(:unique_email)

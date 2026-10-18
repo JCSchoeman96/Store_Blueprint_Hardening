@@ -463,6 +463,12 @@ No dependency is updated by S0-08. These gates describe release evidence only.
 | DEP-002 | Supply chain | Lockfile and dependency resolution are reproducible | Clean resolution in a pinned toolchain, lockfile verification, and repeat install artifact | BLOCKED | Two clean resolutions use the committed lockfile and produce the same dependency graph/artifact hashes | Resolution is not locked/reproducible or a dependency is silently upgraded | Clean network/toolchain/artifact environment or retained repeat-install evidence is unavailable | HIGH | Yes | All capabilities | [`mix.lock`](../../mix.lock), [`.tool-versions`](../../.tool-versions), [`ci.yml`](../../.github/workflows/ci.yml) |
 | DEP-003 | Supply chain | Dependency and provider API changes have compatibility evidence | Upgrade compatibility tests, provider API contract fixtures, and release review | FAIL | Every dependency/provider contract change has passing compatibility evidence for the extracted slice | An upgrade or provider API change is accepted without compatibility evidence | Required upstream contract environment is unavailable | HIGH | Yes | Payments, adapters, Ash domains, workers | [`mix.exs`](../../mix.exs), [`payment_provider_contract.md`](../governance/payment_provider_contract.md), [`providers_resolver_test.exs`](../../test/store/payments/providers/providers_resolver_test.exs) |
 
+### DEP-001 status refresh for 2026-10-18
+
+The original S0-08 `DEP-001` row above remains unchanged and records its historical validation. A fresh audit of canonical `origin/main` at `fdae94168e98d588fb2bba2e9fe4e93c6c016023` found applicable High and Critical Hex advisories. DEP-001 is not satisfied on that baseline, so those unresolved advisories block extraction and NewYou reuse certification. `mix deps.audit` exited successfully without reporting them, while `mix hex.audit` reported them and exited nonzero. A green `mix deps.audit` alone is not evidence that DEP-001 is satisfied.
+
+The JC-339 candidate dependency graph passes `mix hex.audit` with no retired or advisory-affected packages. This is candidate evidence only. DEP-001 remains unsatisfied on `main` until the remediation is merged and its required checks pass.
+
 ## 18. Extraction Architecture Gates
 
 Before moving files, renaming modules, or copying a resource, the extraction record

@@ -71,7 +71,7 @@ defmodule Store.Accounts.UserIdentity do
       public?(false)
 
       argument(:user_info, :map, allow_nil?: false)
-      argument(:oauth_tokens, :map, allow_nil?: false)
+      argument(:oauth_tokens, :map, allow_nil?: false, sensitive?: true)
       argument(:user_id, Ash.Type.UUIDv7, allow_nil?: false)
 
       change(AshAuthentication.UserIdentity.UpsertIdentityChange)

@@ -4,7 +4,7 @@ defmodule Store.Accounts.UserIdentityTest do
   alias Ash.Resource.Info
   alias AshAuthentication.UserIdentity.Actions, as: UserIdentityActions
   alias AshAuthentication.UserIdentity.Info, as: UserIdentityInfo
-  alias Store.Accounts.UserIdentity
+  alias Store.Accounts.{User, UserIdentity}
   alias Store.Support.ID.UUIDv7
 
   import Store.TestFixtures, only: [unique_email: 1]
@@ -49,6 +49,17 @@ defmodule Store.Accounts.UserIdentityTest do
     end
 
     assert Info.public_actions(UserIdentity) == []
+  end
+
+  test "marks Google provider tokens sensitive on authentication action arguments" do
+    identity_upsert = Info.action(UserIdentity, :upsert)
+    google_registration = Info.action(User, :register_with_google)
+
+    assert %{sensitive?: true} =
+             Enum.find(identity_upsert.arguments, &(&1.name == :oauth_tokens))
+
+    assert %{sensitive?: true} =
+             Enum.find(google_registration.arguments, &(&1.name == :oauth_tokens))
   end
 
   test "allows only the trusted AshAuthentication policy path" do
