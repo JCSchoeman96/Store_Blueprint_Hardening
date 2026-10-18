@@ -1,8 +1,8 @@
 # Store Blueprint Hardening — Subscription Hardening Master Register
 
-**Version:** v0.1.36
-**Status:** v0.1.36 / SUBS lifecycle `READY` / execution policy
-`SERIAL / EXPLICIT HARDENING` / current admission JC-235 / SBH-20-05 /
+**Version:** v0.1.37
+**Status:** v0.1.37 / SUBS lifecycle `READY` / execution policy
+`SERIAL / EXPLICIT HARDENING` / current admission JC-250 / SBH-60-02 /
 JC-219 + JC-220 + JC-221 + JC-222 + JC-223 `CONTRACT_FROZEN / CANONICAL`
 **Verified:** 2026-10-17
 **Repository:** `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -13,7 +13,7 @@ JC-219 + JC-220 + JC-221 + JC-222 + JC-223 `CONTRACT_FROZEN / CANONICAL`
 > **Canonical SUBS governance artifact:**
 > `docs/hardening/subscriptions/SUBSCRIPTION_HARDENING_MASTER_REGISTER.md`
 >
-> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the v0.1.31 rollout-order correction; section 52 preserves the v0.1.32 post-JC-223 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze; section 53 records the v0.1.33 consumption of the canonical Entitlements shared-authority grant; section 54 preserves the v0.1.34 JC-229 / SBH-10-04 re-admission as historical evidence; section 55 preserves the v0.1.35 JC-232 / SBH-20-02 re-admission as historical evidence; section 56 records the v0.1.36 JC-232 closure and JC-235 / SBH-20-05 re-admission. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
+> This document records the owner-approved JC-219 architecture, the Stage B JC-220/JC-221/JC-222 governance freeze, the bounded v0.1.27 renewal identity/recovery amendment, the v0.1.28 SBH-50-06 task-specific admission, the v0.1.29 bounded JC-289 NewYou-conformance contract clarification, and the v0.1.30 JC-289 / SBH-50-06 post-implementation closure. Section 48 preserves the v0.1.28 admission record as historical evidence; section 49 records only the later bounded contract clarification; section 50 preserves the post-implementation closure as historical evidence; section 51 records the v0.1.31 rollout-order correction; section 52 preserves the v0.1.32 post-JC-223 JC-300 / SBH-50-07 source-coverage and executor-cutover contract freeze; section 53 records the v0.1.33 consumption of the canonical Entitlements shared-authority grant; section 54 preserves the v0.1.34 JC-229 / SBH-10-04 re-admission as historical evidence; section 55 preserves the v0.1.35 JC-232 / SBH-20-02 re-admission as historical evidence; section 56 preserves the v0.1.36 JC-232 closure and JC-235 / SBH-20-05 admission; section 57 records JC-235 closure and the current JC-250 / SBH-60-02 admission. The JC-223 dependency graph remains unchanged. The canonical Subscription domain/lifecycle/race map lives in `docs/hardening/01_domain_map.md`; scheduling terms are reconciled in `docs/governance/subscription_scheduling_terms.md`. This register does not override `docs/agent_rules/active_workstreams.md` or authorize work beyond an explicitly recorded task-specific grant.
 
 ## Historical authority observed at the v0.1.27 amendment base
 
@@ -1429,10 +1429,17 @@ implementation.
 SUBS READY / SERIAL EXPLICIT HARDENING
 ```
 
-Current admission: JC-235 / SBH-20-05
+Current admission: JC-250 / SBH-60-02
 
 Canonical READY implementation/proof rows = 1
-Canonical READY row = SBH-20-05
+Canonical READY row = SBH-60-02
+SBH-20-05 = CLOSED / No
+SBH-20-05 shared authority = NONE / completed lane-local provenance only
+SBH-60-02 = READY / No
+SBH-60-02 shared authority = NONE
+JC-250 implementation task_base_sha = none until the v0.1.37 governance
+merge and independent post-merge SUBS-tip verification
+JC-250 implementation branch = none
 
 The JC-219, JC-220, JC-221, JC-222, and JC-223 governance contracts are frozen
 and canonical. The Subscription lifecycle remains `READY`; no new persistent
@@ -3252,13 +3259,17 @@ Preserve proven payment evidence while obeying the frozen terminal-state law.
 
 ## SBH-20-05 — Success vs Late Failure / Dunning
 
-**State:** `READY`.
+**State:** `CLOSED`.
 **Loop eligible:** No.
-**Shared-authority status:** `NONE`.
-**Current bounded task contract:** Section 56.
-**Implementation task_base_sha:** none until the governance amendment merges
-and the resulting SUBS tip is verified.
-**Implementation branch:** none.
+**Shared-authority status:** `NONE` / completed lane-local provenance.
+**Implementation PR:** `#158` (merged).
+**Implementation task_base_sha:** `8369d184acdd81008a2f44250ba876ffba3fba17`.
+**Independently accepted implementation head:**
+`65cf1bef533a22142b5a94853bacc6800c8ec469`.
+**Merge commit:** `3b30a7d74f313d1fc1e59bba04b55a991bf11fa5`.
+**Merge tree:** `73aba016690de5a1415cc7c662626daa5ff2ae83`.
+**Completed implementation branch:**
+`subs-task/sbh-20-05-success-late-failure-race` (merged through PR `#158`).
 
 Invariant:
 
@@ -3837,8 +3848,16 @@ this completed row.
 
 ## SBH-60-02 — Grandfathered Retired-Contract Renewal
 
-**State:** `BLOCKED_DEPENDENCY`.
+**State:** `READY`.
 **Loop eligible:** No.
+**Shared-authority status:** `NONE`.
+**Current bounded task contract:** Section 57.
+**Frozen dependencies:** `SBH-10-02`, `SBH-60-01`, and `SBH-10-05`.
+All three are `CLOSED`.
+**Implementation task_base_sha:** none until the v0.1.37 governance PR is
+human-merged and the resulting SUBS tip is independently verified.
+**Implementation branch:** none until separate post-merge implementation
+admission.
 
 Proposed branch:
 
@@ -3849,8 +3868,11 @@ subs-task/sbh-60-02-grandfathered-renewals
 Stage B permits grandfathered existing-renewal evaluation under the bound immutable
 contract and applicable policy. Do not terminate or prevent renewal for an extant
 subscriber solely because a commercial revision is no longer offered to new
-customers. This task remains implementation work and is not authorized by this
-governance PR.
+customers. Section 57 is the current bounded task contract. JC-250 remains
+Backlog during this governance PR, which assigns no implementation task base and
+does not start implementation. The proposed branch name is documentary only;
+create it after human merge and independent verification of the resulting SUBS
+tip.
 
 ---
 
@@ -4485,7 +4507,7 @@ Entitlements modification authority to `SBH-50-04` or `SBH-50-05`.
 | `SBH-20-02` | no shared modification identified in the completed contract | `NONE` | `CLOSED`; completed lane-local provenance only. The JC-232 authority is exhausted and non-reusable. |
 | `SBH-20-03` | no shared modification identified in the completed contract | `NONE` | `CLOSED`; JC-233 completed the lane-local concurrency work. No task-specific authority remains active. |
 | `SBH-20-04` | no shared modification identified in this contract | `NONE` | Formal dependencies are closed. Admission remains blocked until a separately governed legitimate true terminal-expiry writer/guard exists in the executable Store. Failed-payment suspension/grace exhaustion does not count as expiry. |
-| `SBH-20-05` | no shared modification identified in this bounded task | `NONE` | `READY` under Section 56. Existing exact evidence may be read and used. Stop for a new bounded grant before modifying Payments, Orders, Entitlements, provider contracts/adapters, or generic Support. |
+| `SBH-20-05` | no shared modification identified in this bounded task | `NONE` | `CLOSED` under Section 57; completed lane-local provenance only. |
 | `SBH-30-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-30-03` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
 | `SBH-30-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
@@ -4499,7 +4521,7 @@ Entitlements modification authority to `SBH-50-04` or `SBH-50-05`.
 | `SBH-50-04` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-50-05` | Entitlements core only if the implementation requires it | `EXTERNALIZED` | Stop and reclassify as blocked if Entitlements core must change. |
 | `SBH-60-01` | PlanRevision migration: per-SubscriptionPlan `EFFECTIVE` uniqueness only; corresponding `plan_revisions` Ash snapshot only | `AUTHORITY_ASSIGNED` | Completed task-specific PlanRevision migration/snapshot authority. The authority was used only for `SBH-60-01` and grants no further execution authority after closure. |
-| `SBH-60-02` | no shared modification identified in this contract | `NONE` | Semantic dependencies still block admission. |
+| `SBH-60-02` | no shared modification identified in this contract | `NONE` | `READY` under Section 57. Stop for a new grant if implementation requires a migration, snapshot, or changes outside Subscription-owned renewal selection and focused tests. |
 | `SBH-70-02` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-80-01` | no shared modification identified in this contract | `NONE` | Completed lane-local task; no further admission. |
 | `SBH-80-02` | no shared modification identified in this contract | `NONE` | Completed lane-local adversarial proof; no further admission. |
@@ -4519,11 +4541,11 @@ Do not "helpfully" fix the neighbouring domain.
 ## 24.1 Current hardening matrix
 
 Every implementation row has a frozen scope. `State` below is its current
-v0.1.36 register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
+v0.1.37 register state. `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`,
 `SBH-10-03`, `SBH-10-04`, `SBH-10-05`, `SBH-20-03`, `SBH-30-02`,
 `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, `SBH-80-02`,
-`SBH-50-06`, and `SBH-20-02` are `CLOSED`.
-`SBH-20-05` is the sole canonical `READY` implementation/proof row.
+`SBH-50-06`, `SBH-20-02`, and `SBH-20-05` are `CLOSED`.
+`SBH-60-02` is the sole canonical `READY` implementation/proof row.
 The recorded `loop_eligible` values remain register metadata; human selection
 is still required under the serial workflow before a `READY` row may enter
 implementation.
@@ -4540,7 +4562,7 @@ implementation.
 | `SBH-20-02` | foundational/concurrency | — | `CLOSED` | No |
 | `SBH-20-03` | foundational/concurrency | — | `CLOSED` | No |
 | `SBH-20-04` | foundational/concurrency | — | `BLOCKED_DEPENDENCY` | No |
-| `SBH-20-05` | foundational/concurrency | — | `READY` | No |
+| `SBH-20-05` | foundational/concurrency | — | `CLOSED` | No |
 | `SBH-30-02` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-30-03` | dunning boundary | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-30-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
@@ -4554,7 +4576,7 @@ implementation.
 | `SBH-50-04` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-50-05` | shared-boundary hardening | — | `BLOCKED_DEPENDENCY` | No |
 | `SBH-60-01` | commercial availability | — | `CLOSED` | No |
-| `SBH-60-02` | commercial availability | — | `BLOCKED_DEPENDENCY` | No |
+| `SBH-60-02` | commercial availability | — | `READY` | No |
 | `SBH-70-02` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-80-01` | independent lane-local | P1 | `CLOSED` | No |
 | `SBH-80-02` | payment-method proof | — | `CLOSED` | No |
@@ -4596,14 +4618,13 @@ SBH-80-01 = P1
 ```
 
 `SBH-10-01`, `SBH-10-02`, `SBH-20-01`, `SBH-10-06`, `SBH-10-03`,
-`SBH-10-04`, `SBH-10-05`, `SBH-20-02`, `SBH-20-03`, `SBH-30-02`,
+`SBH-10-04`, `SBH-10-05`, `SBH-20-02`, `SBH-20-03`, `SBH-20-05`, `SBH-30-02`,
 `SBH-60-01`, `SBH-70-02`, `SBH-80-01`, and `SBH-80-02` are `CLOSED`.
-The v0.1.36
-current canonical admission state is:
+The v0.1.37 current canonical admission state is:
 
 ```text
 canonical READY implementation/proof rows = 1
-canonical READY row = SBH-20-05
+canonical READY row = SBH-60-02
 ```
 
 SBH-50-02 through SBH-50-05 remain `BLOCKED_DEPENDENCY` pending separate
@@ -7401,3 +7422,310 @@ change for v0.1.36. This amendment changes no runtime code, tests, migrations,
 Ash snapshots, providers, Payments, Orders, Entitlements, configuration, or
 dependencies. It assigns no new Product decision and does not change the
 JC-223 graph. Human merge remains required.
+
+# 57. v0.1.37 JC-235 closure and JC-250 / SBH-60-02 grandfathered-renewal re-admission
+
+This governance-only amendment records the accepted JC-235 closure and
+re-admits only JC-250 / SBH-60-02. It takes effect after human merge,
+independent review, exact-head CI, and independent verification of the merged
+SUBS tip. It assigns no implementation task base or implementation branch.
+JC-250 implementation is outside this PR.
+
+| Authority | Value |
+|---|---|
+| Governance version | `v0.1.37` |
+| Accepted SUBS base and governance branch point | `3b30a7d74f313d1fc1e59bba04b55a991bf11fa5` |
+| Accepted SUBS base tree | `73aba016690de5a1415cc7c662626daa5ff2ae83` |
+| Canonical `origin/main` observed | `fdae94168e98d588fb2bba2e9fe4e93c6c016023` |
+| Governance branch | `governance/subs-sbh-60-02-readmission` |
+| Governance PR target | `hardening/subscriptions` |
+| JC-250 implementation task base | `none` |
+| JC-250 implementation branch | `none` |
+| Prospective implementation branch | `subs-task/sbh-60-02-grandfathered-renewals` |
+
+The prospective branch is a name only. Create no JC-250 implementation branch
+until the governance PR is merged and the resulting SUBS tip is independently
+verified. That exact resulting tip becomes the later `task_base_sha`.
+
+## JC-235 / SBH-20-05 closure
+
+JC-235 is `Done` in Linear. SBH-20-05 transitions from `READY / NONE` to
+`CLOSED / NONE`; its shared-authority record is completed lane-local provenance
+only. Do not reopen JC-235 in this amendment.
+
+| Closure evidence | Accepted value |
+|---|---|
+| Implementation PR | #158 |
+| Implementation task base | `8369d184acdd81008a2f44250ba876ffba3fba17` |
+| Independently accepted implementation head | `65cf1bef533a22142b5a94853bacc6800c8ec469` |
+| Exact-head CI run | `39056673962`, all five required jobs successful |
+| Merge commit | `3b30a7d74f313d1fc1e59bba04b55a991bf11fa5` |
+| Merge tree and reviewed-head tree | `73aba016690de5a1415cc7c662626daa5ff2ae83` |
+| Merge signature | `VERIFIED` |
+| Post-merge verification | `PASS` |
+
+The five successful exact-head jobs were `check_static`, `test_pr_strict`,
+`dialyzer_required`, `performance_smoke_required`, and
+`performance_smoke_chaos_required`. Accepted PR #158 validation also recorded
+the focused matrix at 202 tests with zero failures, `mix check` at 1,132 tests
+with zero failures, `mix check.types` passing, migration generation check
+passing with no migration, normal performance smoke at 14 passing tests, and
+mobile-realistic performance smoke at 14 passing tests.
+
+Preserve the accepted JC-235 limitation: after crash recovery, the system can
+reconstruct the durable collection/payment and settle the local attempt and
+dunning state, but it cannot recreate the authentication email action URL
+because the provider UI/action data is not durably stored in the current
+allowed boundary. This limitation was deferred because resolving it would
+require wider Payments, schema, or shared authority. It does not reopen JC-235.
+
+## Frozen JC-250 dependency proof
+
+The JC-223 dependency graph is unchanged. The frozen edge remains:
+
+```text
+SBH-60-02 depends on SBH-10-02 + SBH-60-01 + SBH-10-05
+```
+
+| Dependency | Issue | Accepted closure evidence | Capability used by JC-250 |
+|---|---|---|---|
+| `SBH-10-02` | JC-227 | PR #64; certified head `f20051c1a52c7e4bbad84ac6d8d26cdaa4f209d7`; merge `09eb02b4a836a9db7156bdd5cc5e9fc722128d54` | Authoritative Subscription-to-exact-PlanRevision binding. |
+| `SBH-60-01` | JC-249 | PR #53; successful head `248f7e2d365e99a8072b4b7dec5ffb5f99bc3de8`; merge `3ee071cfd0daa927d0d3563771d2711bb0abb974` | Canonical `EFFECTIVE` selector for new-sale and new-change selection, with durable one-EFFECTIVE-per-Plan enforcement. It does not select an existing Subscription's renewal revision. |
+| `SBH-10-05` | JC-230 | PR #152; reviewed head `b14f075571d92f8c1c097d6556d454f3a59b0392`; merge `92a5c5758d7bc92453191488d2924a593377548f` | Exact paid reconciliation from immutable charged-contract evidence, including a legitimate historical `RETIRED` PlanRevision bound at checkpoint B. |
+
+All three dependencies are closed. Do not repeat their implementations, add or
+remove a dependency, or change the JC-223 graph.
+
+## Current runtime evidence and residual defect
+
+The accepted SUBS source preserves the correct existing-renewal selection:
+
+```text
+NEW SALE / NEW CHANGE
+→ current eligible EFFECTIVE revision
+
+EXISTING BOUND RENEWAL
+→ exact Subscription-bound historical revision
+```
+
+In `lib/store/subscriptions/facade.ex`, `renewal_binding_selection/3` handles
+the checkpoint-B choices. For an unchanged renewal, selection uses
+`Subscription.current_plan_revision_id`, reuses the already-loaded exact
+revision where available, or loads that exact revision by ID. It checks Plan
+ownership and the Subscription's stored quantity, amount, and currency. It
+does not call `PlanRevision.get_effective_for_plan/2` to replace the bound
+contract. `test/store/subscriptions/sbh_10_03_renewal_contract_snapshot_test.exs`
+shows that a current retired revision remains the exact renewal authority
+after a newer revision becomes EFFECTIVE.
+
+`Store.Subscriptions.Facade.ensure_revision_has_purchase_history/1` already
+accepts `EFFECTIVE` and `RETIRED`, and rejects other statuses as a revision
+that was never effective. The current caller uses this guard when establishing
+the authoritative purchased Subscription contract from paid order-line
+evidence.
+
+Two checkpoint-B branches still omit that guard:
+
+- The unchanged-current-contract path loads the exact Subscription-bound
+  revision and validates ownership and contract values, but it does not reject
+  a `DRAFT` or otherwise unproven revision.
+- The queued `ContractChange` path loads its exact durable target revision and
+  checks the target boundary, price, and contract values, but it does not reject
+  a `DRAFT` or otherwise unproven target. A target selected while valid may
+  later be `RETIRED` and must remain the exact queued instruction.
+
+New sale and newly queued changes already use the current `EFFECTIVE`
+selection. Checkpoint B must add no current-`EFFECTIVE` lookup. The smallest
+implementation is to reuse the purchase-history guard on both B-bound paths
+before binding the `RenewalAttempt` or starting provider work. Existing
+ContractChange ordering and supersession remain SBH-20-03 law.
+
+`test/store/subscriptions/sbh_20_03_renewal_vs_contract_change_test.exs`
+covers exact queued ContractChange binding.
+`test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`
+covers paid reconciliation applying a B-bound retired revision after a newer
+revision is published. These tests do not prove fail-closed behavior for a
+DRAFT/corrupted current binding or queued target at B. The residual defect
+remains bounded to Subscription-owned renewal selection and focused proof.
+
+## Frozen commercial law
+
+Public retirement or replacement of a commercial revision must not silently
+rewrite an existing Subscription's authoritative contract. Existing renewal
+uses the exact historically valid revision already bound to that Subscription
+or durable future instruction. A revision that was never effective commercial
+history must fail closed before checkpoint B or provider work.
+
+```text
+Subscription bound to R1 while EFFECTIVE
+R1 later RETIRED
+→ R1 remains valid historical existing-renewal contract
+→ retirement alone does not move the customer to R2
+
+R2 later EFFECTIVE
+→ new sale or new change may select R2
+→ unchanged existing renewal remains R1
+
+no public EFFECTIVE revision
+→ new-sale and new-change selection fails closed
+→ a properly bound retired R1 may still renew
+
+DRAFT / never-effective / unproven revision
+→ cannot become charged existing-renewal truth
+→ fail closed before B and provider work
+```
+
+This law means only that public offer replacement or retirement does not, by
+itself, authorize rewriting an extant bound contract. A separately governed
+ContractChange, cadence or price migration, cancellation, term completion, or
+other explicit commercial transition may change or end the contract at its
+authorized boundary. This is not lifetime-price Product Law.
+
+### ContractChange and checkpoint-B boundaries
+
+Preserve the current durable ContractChange design. If a valid queued target
+R1 becomes `RETIRED` before B, checkpoint B consumes that exact R1. Do not fall
+forward to R2, mutate the queued target, resurrect a superseded change, or add
+another future-target authority. Reject a DRAFT, never-effective, or unproven
+target before B and provider work.
+
+Before B, the selected revision must be legitimate purchased or historical
+commercial evidence. At B, the `RenewalAttempt` freezes that exact revision
+and complete charged contract. After B, revision retirement, public price or
+Plan changes, a new EFFECTIVE revision, or storefront changes must not rewrite
+the occurrence. Compose with SBH-10-03's charged-contract snapshot,
+SBH-10-04's collection/provider construction, and SBH-10-05's exact paid
+reconciliation. Do not add a second reconciliation algorithm.
+
+### Public availability and lifecycle limits
+
+New-sale eligibility, change eligibility, and existing-renewal eligibility
+remain separate. An existing properly bound contract does not become invalid
+solely because its revision is retired, another revision is EFFECTIVE, its
+Plan is hidden or inactive for new sale, its attachment is no longer eligible
+for new sale, or no current EFFECTIVE revision exists.
+
+Grandfathering does not bypass independent execution constraints. Missing or
+revoked payment authority, an unsupported or disabled provider, unresolved
+historical evidence, cancellation or terminal expiry, and current physical
+stock, shipping, tax, or fulfilment requirements may still fail closed. Use a
+virtual or membership-style contract when proving storefront or attachment
+visibility so physical fulfilment does not obscure the commercial-authority
+result.
+
+Grandfathering does not reactivate `CANCELED` or truly `EXPIRED` Subscriptions.
+An exact still-authorized occurrence may recover under existing PAST_DUE or
+SUSPENDED rules. A genuinely new post-termination Subscription uses then-
+current new-sale authority and does not inherit a retired contract.
+
+Do not add `grandfathered_forever`, lifetime pricing, a personal price lock,
+automatic legacy pricing entitlement, NewYou notice or consent policy,
+NewYou cadence migration, or NewYou legal pricing rules. Any NewYou-specific
+price migration or explicit grandfathering remains separately governed.
+
+## Required deterministic implementation proof
+
+The future implementation must prove each case:
+
+1. A Subscription bound to an EFFECTIVE R1 renews against R1.
+2. If R1 retires before B, renewal still binds exact R1.
+3. If R2 becomes EFFECTIVE after R1 retires, existing renewal stays on R1.
+4. With no current EFFECTIVE revision, new-sale/new-change selection fails
+   while an existing properly bound R1 can renew.
+5. A DRAFT, never-effective, or unproven current binding fails before B,
+   starts no provider work, and fabricates no history.
+6. A queued ContractChange target R1 that later retires remains exact at B,
+   with no fall-forward.
+7. A DRAFT, never-effective, or unproven queued target fails before B and
+   provider work.
+8. Retirement after B leaves the `RenewalAttempt`, payment construction, and
+   paid reconciliation on the exact R1 contract.
+9. Public Plan price, currency, status, or revision changes do not rewrite an
+   occurrence's variant, quantity, amount, currency, cadence, access policy,
+   entitlement provenance, period, or PlanRevision identity.
+10. Exact paid reconciliation applies a legitimate retired R1 once and never
+    resolves the current public revision.
+11. Authorized same-occurrence PAST_DUE recovery, and SUSPENDED recovery where
+    current accepted runtime permits it, retains the same B-bound contract.
+12. CANCELED and true EXPIRED states cannot revive through grandfathering.
+13. A new post-termination Subscription uses then-current EFFECTIVE new-sale
+    authority and does not inherit R1 automatically.
+14. Payment, provider, historical-evidence, and physical-fulfilment blockers
+    continue to fail closed.
+15. Duplicate or replayed processing preserves the same occurrence and
+    contract identity without selecting a new public revision.
+
+Expected primary production file is
+`lib/store/subscriptions/facade.ex`. Expected focused proof file is
+`test/store/subscriptions/sbh_60_02_grandfathered_retired_contract_renewal_test.exs`.
+Neighboring lifecycle, binding, checkpoint-B, ContractChange, reconciliation,
+and same-occurrence recovery regressions may be extended. No schema, migration,
+resource, or snapshot is expected. Do not change PlanRevision lifecycle. Stop
+for new shared-authority review if implementation requires Payments, Orders,
+Entitlements, provider, Catalog-core, generic Support, or infrastructure work.
+
+## Shared authority and current admission
+
+JC-250 / SBH-60-02 shared authority is `NONE`. Current evidence supports a
+Subscription-owned selection guard and focused tests only. If implementation
+requires any shared change, a migration, or a resource snapshot, stop for a new
+governance review.
+
+After this governance PR merges and the resulting SUBS tip is independently
+verified, current state is:
+
+```text
+SUBS lifecycle = READY
+SUBS execution policy = SERIAL / EXPLICIT HARDENING
+SBH-20-05 / JC-235 = CLOSED / No
+SBH-20-05 shared authority = NONE / completed lane-local provenance only
+SBH-60-02 / JC-250 = READY / No
+SBH-60-02 shared authority = NONE
+canonical READY implementation/proof rows = 1
+canonical READY row = SBH-60-02
+JC-250 implementation task_base_sha = none
+JC-250 implementation branch = none
+JC-250 Linear state = Backlog
+JC-235 Linear state = Done
+JC-223 dependency graph changed = NO
+```
+
+Do not promote SBH-20-04, SBH-30-03, SBH-30-04, SBH-30-05, SBH-40-02,
+SBH-40-03, SBH-50-02, SBH-50-03, SBH-50-04, SBH-50-05, SBH-50-07,
+SBH-80-03, SBH-90-01, or any other row. Satisfied formal dependencies do not
+automatically admit those tasks.
+
+JC-250 remains Backlog during this governance PR. Do not mark it In Progress
+or Done. After human merge and exact post-merge SUBS-tip verification, a
+separate action may set JC-250 In Progress, record that verified SHA as its
+`task_base_sha`, record the bounded implementation contract, and create the
+implementation branch.
+
+## Performance & Scaling Review
+
+This v0.1.37 amendment makes no runtime performance change. The later JC-250
+implementation has these expectations:
+
+- Hot path: renewal checkpoint-B commercial selection.
+- Database authority: PostgreSQL PlanRevision, Subscription, ContractChange,
+  and RenewalAttempt evidence.
+- Additional query cost: prefer zero new lookups when the already-loaded
+  PlanRevision can be validated in memory.
+- N+1 risk: none.
+- Indexes: no new index expected.
+- Cache: no ETS or Redis authority for contract selection; no cache required.
+- Oban: queue order is not commercial authority. Preserve existing
+  uniqueness and idempotency.
+- Telemetry and logs: no new instrumentation is required merely for
+  grandfathering; exact occurrence evidence remains authoritative.
+
+If implementation adds a database query to rediscover a status already loaded
+on the PlanRevision, the PR must justify that query.
+
+## Amendment limits
+
+Only this Master Register and `docs/agent_notes/phase_27_docs.md` are
+authorized to change for v0.1.37. This amendment changes no production source,
+tests, migrations, Ash snapshots, dependencies, configuration, provider code,
+Payments, Orders, Entitlements, workers, or JC-223 dependency edge. Linear
+JC-250 remains Backlog. Human merge remains required.
