@@ -56,24 +56,50 @@ defmodule Store.Entitlements.Cache do
     end
   end
 
-  @spec broadcast_invalidation(String.t(), String.t() | nil, DateTime.t()) :: :ok
+  @spec broadcast_invalidation(String.t(), String.t() | nil, DateTime.t()) ::
+          :ok | {:error, term()}
   def broadcast_invalidation(user_id, reason, %DateTime{} = occurred_at)
       when is_binary(user_id) do
-    Phoenix.PubSub.broadcast(
-      Store.PubSub,
-      topic(user_id),
-      {:entitlements_invalidated, user_id, reason, occurred_at}
-    )
+    broadcast_invalidation_to(Store.PubSub, user_id, reason, occurred_at)
   end
 
-  @spec invalidate_and_broadcast_post_commit(String.t(), String.t() | nil, keyword()) :: :ok
+  defp broadcast_invalidation_to(pubsub_server, user_id, reason, occurred_at) do
+    case Phoenix.PubSub.broadcast(
+           pubsub_server,
+           topic(user_id),
+           {:entitlements_invalidated, user_id, reason, occurred_at}
+         ) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+      other -> {:error, other}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  @spec invalidate_and_broadcast_post_commit(String.t(), String.t() | nil, keyword()) ::
+          :ok | {:error, %{user_id: String.t(), step: atom(), reason: term()}}
   def invalidate_and_broadcast_post_commit(user_id, reason, opts \\ [])
       when is_binary(user_id) and is_list(opts) do
     occurred_at =
       Keyword.get(opts, :occurred_at, DateTime.utc_now() |> DateTime.truncate(:microsecond))
 
-    _ = invalidate_local(user_id)
-    broadcast_invalidation(user_id, reason, occurred_at)
-    :ok
+    case invalidate_local(user_id) do
+      :ok ->
+        pubsub_server = Keyword.get(opts, :pubsub_server, Store.PubSub)
+
+        case broadcast_invalidation_to(pubsub_server, user_id, reason, occurred_at) do
+          :ok ->
+            :ok
+
+          {:error, failure_reason} ->
+            {:error, %{user_id: user_id, step: :pubsub_broadcast, reason: failure_reason}}
+        end
+
+      {:error, failure_reason} ->
+        {:error, %{user_id: user_id, step: :cache_invalidation, reason: failure_reason}}
+    end
   end
 end

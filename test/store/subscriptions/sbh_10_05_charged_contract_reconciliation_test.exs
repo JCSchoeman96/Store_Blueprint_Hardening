@@ -205,6 +205,136 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert fetch_attempt!(attempt.id).status == :succeeded
   end
 
+  test "authoritative exact success before the boundary sweep prevents suspension" do
+    %{subscription: subscription, attempt: attempt, order: order} =
+      charged_bound_renewal!("jc239_success_precedes_suspension")
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    set_past_due_boundary!(subscription.id, now)
+
+    assert {:ok, result} = Facade.run_due_failed_payment_suspensions_for_system(limit: 20)
+    assert result.due_count == 1
+    assert result.suspended_count == 0
+    assert result.failed_count == 0
+
+    recovered = fetch_subscription!(subscription.id)
+    assert recovered.status == :active
+    assert is_nil(recovered.failed_payment_boundary_at)
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    assert fetch_order!(order.id).state == :paid
+  end
+
+  test "a later exact same-occurrence success recovers suspension and clears its boundary once" do
+    stub_processing_provider_response!()
+
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc239_success_recovers_suspension", success?: false)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    set_past_due_boundary!(subscription.id, now)
+
+    assert {:ok, result} = Facade.run_due_failed_payment_suspensions_for_system(limit: 20)
+    assert result.suspended_count == 1
+    suspended = fetch_subscription!(subscription.id)
+    assert suspended.status == :suspended
+    assert %DateTime{} = suspended.failed_payment_boundary_at
+
+    mark_collection_successful!(collection)
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    recovered = fetch_subscription!(subscription.id)
+    assert recovered.status == :active
+    assert is_nil(recovered.failed_payment_boundary_at)
+    assert fetch_attempt!(attempt.id).status == :succeeded
+
+    version = recovered.aggregate_version
+
+    assert {:ok, :noop} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    assert fetch_subscription!(subscription.id).aggregate_version == version
+    assert is_nil(fetch_subscription!(subscription.id).failed_payment_boundary_at)
+  end
+
+  test "a different attempt id cannot recover a suspended occurrence" do
+    stub_processing_provider_response!()
+
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc239_different_occurrence", success?: false)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    set_past_due_boundary!(subscription.id, now)
+    assert {:ok, %{suspended_count: 1}} = Facade.run_due_failed_payment_suspensions_for_system()
+
+    mark_collection_successful!(collection)
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert {:error, _reason} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               Keyword.put(handoff_opts(handoff), :renewal_attempt_id, Ecto.UUID.generate())
+             )
+
+    assert fetch_subscription!(subscription.id).status == :suspended
+    assert fetch_attempt!(attempt.id).status != :succeeded
+  end
+
+  test "CANCELED and EXPIRED subscriptions cannot be recovered by later success" do
+    stub_processing_provider_response!()
+
+    Enum.each([:canceled, :expired], fn terminal_status ->
+      %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+        charged_bound_renewal!("jc239_terminal_#{terminal_status}", success?: false)
+
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      set_past_due_boundary!(subscription.id, now)
+      assert {:ok, %{suspended_count: 1}} = Facade.run_due_failed_payment_suspensions_for_system()
+
+      suspended = fetch_subscription!(subscription.id)
+
+      transition =
+        if terminal_status == :canceled,
+          do: :cancel_now_transition,
+          else: :mark_expired_transition
+
+      assert {:ok, _terminal} =
+               suspended
+               |> Ash.Changeset.for_update(transition, %{}, context: %{system?: true})
+               |> Ash.update(
+                 domain: Store.Subscriptions,
+                 authorize?: false,
+                 context: %{system?: true}
+               )
+
+      mark_collection_successful!(collection)
+      assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+      result =
+        Facade.reconcile_paid_subscription_renewal_for_system(
+          order.id,
+          handoff_opts(handoff)
+        )
+
+      assert fetch_subscription!(subscription.id).status == terminal_status
+      assert fetch_attempt!(attempt.id).status != :succeeded
+
+      if terminal_status == :canceled do
+        assert {:ok, :noop} = result
+      else
+        assert {:error, _reason} = result
+      end
+    end)
+  end
+
   test "paid renewal reconciliation rejects a wrong collection or supplied PaymentIntent ID" do
     %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
       charged_bound_renewal!("sbh_10_05_wrong_handoff_ids")
@@ -826,7 +956,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert attempt.contract_change_id == contract_change.id
     order = fetch_order!(attempt.order_id)
     collection = fetch_collection_for_attempt!(attempt.id)
-    mark_collection_successful!(collection)
+    if Keyword.get(opts, :success?, true), do: mark_collection_successful!(collection)
 
     %{
       subscription: subscription,
@@ -837,6 +967,34 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       revision: revision,
       contract_change: fetch_contract_change!(contract_change.id)
     }
+  end
+
+  defp set_past_due_boundary!(subscription_id, now) do
+    boundary_at = DateTime.add(now, -1, :second)
+
+    subscription = fetch_subscription!(subscription_id)
+
+    assert {:ok, past_due} =
+             subscription
+             |> Ash.Changeset.for_update(
+               :mark_past_due_transition,
+               %{
+                 past_due_since_at: DateTime.add(now, -86_400, :second),
+                 failed_payment_boundary_at: boundary_at,
+                 dunning_attempt_count: 1,
+                 next_retry_at: nil,
+                 retry_suppressed_at: now
+               },
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert past_due.status == :past_due
+    past_due
   end
 
   defp queue_post_b_lineage_targets!(fixture, _token) do
@@ -1059,6 +1217,15 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
                  financial_outcome: :verified_success
                }
              )
+  end
+
+  defp stub_processing_provider_response! do
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
   end
 
   defp handoff_opts(handoff) do

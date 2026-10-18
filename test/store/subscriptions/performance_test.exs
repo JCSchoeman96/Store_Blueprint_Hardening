@@ -38,6 +38,8 @@ defmodule Store.Subscriptions.PerformanceTest do
       SubscriptionsFixtures.create_subscription_fixture!(retryable_customer.id, variant, plan, %{
         status: :past_due,
         billing_status_reason: "PAYMENT_FAILED",
+        past_due_since_at: DateTime.add(now, -86_400, :second),
+        failed_payment_boundary_at: DateTime.add(now, 6 * 86_400, :second),
         provider_billing_ref: "pm_phase27_perf_retryable",
         next_retry_at: DateTime.add(now, -5, :second)
       })
@@ -48,6 +50,8 @@ defmodule Store.Subscriptions.PerformanceTest do
       SubscriptionsFixtures.create_subscription_fixture!(suppressed_customer.id, variant, plan, %{
         status: :past_due,
         billing_status_reason: "SHIPPING_UNAVAILABLE",
+        past_due_since_at: DateTime.add(now, -86_400, :second),
+        failed_payment_boundary_at: DateTime.add(now, 6 * 86_400, :second),
         provider_billing_ref: "pm_phase27_perf_suppressed",
         next_retry_at: DateTime.add(now, -5, :second),
         retry_suppressed_at: DateTime.add(now, -30, :second)

@@ -508,6 +508,133 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert fetch_collection!(collection.id).dispatch_state == :not_started
   end
 
+  test "PAST_DUE without a trusted boundary cannot claim a new provider dispatch" do
+    {attempt, now} = create_bound_attempt!("jc239_claim_missing_boundary")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    Repo.query!(
+      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, next_retry_at = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(attempt.subscription_id)]
+    )
+
+    input = %AttachAndClaimInput{
+      collection_attempt_id: collection.id,
+      renewal_attempt_id: attempt.id,
+      subscription_id: attempt.subscription_id,
+      payment_intent_id: payment_intent.id,
+      expected_epoch: 1,
+      now: now
+    }
+
+    assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+             RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
+
+    assert fetch_collection!(collection.id).dispatch_state == :not_started
+    assert fetch_payment_intent!(payment_intent.id).provider_payment_method_ref == nil
+  end
+
+  test "a claim at exact boundary equality is rejected" do
+    {attempt, now} = create_bound_attempt!("jc239_claim_boundary_equality")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+    boundary_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Repo.query!(
+      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = $2, next_retry_at = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(attempt.subscription_id), boundary_at]
+    )
+
+    input = %AttachAndClaimInput{
+      collection_attempt_id: collection.id,
+      renewal_attempt_id: attempt.id,
+      subscription_id: attempt.subscription_id,
+      payment_intent_id: payment_intent.id,
+      expected_epoch: 1,
+      now: boundary_at
+    }
+
+    assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+             RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
+
+    assert fetch_collection!(collection.id).dispatch_state == :not_started
+  end
+
+  test "claim-time database clock rejects a transaction that crosses the boundary" do
+    {attempt, now} = create_bound_attempt!("jc239_claim_cross_boundary")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+    boundary_at = DateTime.add(now, 1, :second)
+
+    Repo.query!(
+      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = $2, next_retry_at = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(attempt.subscription_id), boundary_at]
+    )
+
+    input = %AttachAndClaimInput{
+      collection_attempt_id: collection.id,
+      renewal_attempt_id: attempt.id,
+      subscription_id: attempt.subscription_id,
+      payment_intent_id: payment_intent.id,
+      expected_epoch: 1,
+      now: now
+    }
+
+    result =
+      Repo.transaction(fn ->
+        Process.sleep(1_100)
+        RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
+      end)
+
+    assert {:error, :rollback} = result
+
+    assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+             RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
+
+    assert fetch_collection!(collection.id).dispatch_state == :not_started
+    assert fetch_payment_intent!(payment_intent.id).provider_payment_method_ref == nil
+  end
+
+  test "a collection already across the checkpoint remains the same occurrence after the boundary" do
+    {attempt, now} = create_bound_attempt!("jc239_reached_collection_boundary")
+    order = bind_attempt_to_fixture_order!(attempt)
+    {:ok, collection} = RenewalCollectionAttempts.start_for_system(start_input!(attempt.id, now))
+    payment_intent = create_collection_payment_intent!(collection, order, attempt)
+
+    assert {:ok, %{dispatch_claimed?: true, collection_attempt: claimed}} =
+             RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(%AttachAndClaimInput{
+               collection_attempt_id: collection.id,
+               renewal_attempt_id: attempt.id,
+               subscription_id: attempt.subscription_id,
+               payment_intent_id: payment_intent.id,
+               expected_epoch: collection.dispatch_epoch,
+               now: now
+             })
+
+    assert claimed.dispatch_state == :may_have_been_reached
+
+    Repo.query!(
+      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = clock_timestamp() - interval '1 second', next_retry_at = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(attempt.subscription_id)]
+    )
+
+    recovery_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, recovered} =
+             RenewalCollectionAttempts.recover_reached_for_subscription_for_system(
+               attempt.subscription_id,
+               recovery_now
+             )
+
+    assert recovered.collection_attempt.id == collection.id
+    assert recovered.collection_attempt.dispatch_state == :may_have_been_reached
+    assert recovered.payment_intent.id == payment_intent.id
+    assert length(list_collections!(attempt.id)) == 1
+  end
+
   test "dispatch replay returns the same exact PaymentIntent and epoch without another claim" do
     {attempt, now} = create_bound_attempt!("jc229_collection_dispatch_replay")
     order = bind_attempt_to_fixture_order!(attempt)

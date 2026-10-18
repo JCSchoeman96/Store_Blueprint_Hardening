@@ -4,12 +4,13 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Store.Entitlements.Cache
   alias Store.Entitlements.EntitlementGrant
   alias Store.Orders.PaymentApplication
   alias Store.Payments.PaymentIntent
   alias Store.Repo
+  alias Store.Subscriptions.{AccessEffect, RenewalAttempt, Subscription}
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
-  alias Store.Subscriptions.{RenewalAttempt, Subscription}
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
 
@@ -24,46 +25,55 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     :ok
   end
 
-  test "a grant-write crash rolls back suspension and due processing converges after restart" do
+  test "a failed source revoke remains recoverable after suspension commits" do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     fixture = create_past_due_fixture!("jc265_access_crash", now)
     grant = create_subscription_grant!(fixture, "membership:jc265-crash-main", now)
     assert DateTime.compare(grant.valid_to_at, now) == :gt
     post_count = install_provider_post_counter()
+
+    assert {:ok, suspension_result} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    assert suspension_result.suspended_count == 1
+    assert fetch_subscription!(fixture.subscription.id).status == :suspended
+    effect = current_effect!(fixture.subscription.id)
+    assert effect.status == :required
+
     fail_grant_update!(grant.id)
 
-    assert {:ok, first_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
+    assert {:error, _reason} =
+             SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
 
-    assert {fetch_subscription!(fixture.subscription.id).status,
-            Enum.map(source_grants!(fixture.subscription.id), & &1.status)} ==
-             {:past_due, [:active]}
-
-    assert first_result == %{due_count: 1, success_count: 0, failed_count: 1}
-
-    assert renewal_attempt_count(fixture.subscription.id) == 0
+    assert fetch_subscription!(fixture.subscription.id).status == :suspended
+    assert Enum.map(source_grants!(fixture.subscription.id), & &1.status) == [:active]
+    assert fetch_effect!(effect.id).status == :failed_retryable
     assert payment_intent_count(fixture.subscription.id) == 0
     assert :atomics.get(post_count, 1) == 0
 
     clear_grant_update_failure!()
 
-    assert {:ok, retry_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
-    assert retry_result == %{due_count: 1, success_count: 1, failed_count: 0}
+    assert {:ok, retry_result} =
+             SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(limit: 100)
 
-    assert fetch_subscription!(fixture.subscription.id).status == :suspended
+    assert retry_result.execution_count == 1
+    assert retry_result.failed_count == 0
 
     assert [%EntitlementGrant{status: :revoked, revoked_reason: "grace_expired"}] =
              source_grants!(fixture.subscription.id)
 
     assert :atomics.get(post_count, 1) == 0
-    assert renewal_attempt_count(fixture.subscription.id) == 0
+    assert renewal_attempt_count(fixture.subscription.id) == 1
     assert payment_intent_count(fixture.subscription.id) == 0
 
-    assert {:ok, replay_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
-    assert replay_result == %{due_count: 0, success_count: 0, failed_count: 0}
+    assert {:ok, replay_result} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    assert replay_result.due_count == 0
     assert fetch_subscription!(fixture.subscription.id).status == :suspended
     assert [%EntitlementGrant{status: :revoked}] = source_grants!(fixture.subscription.id)
     assert :atomics.get(post_count, 1) == 0
-    assert renewal_attempt_count(fixture.subscription.id) == 0
+    assert renewal_attempt_count(fixture.subscription.id) == 1
     assert payment_intent_count(fixture.subscription.id) == 0
   end
 
@@ -71,16 +81,22 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     fixture = create_past_due_fixture!("jc265_access_single_failure", now)
     grant = create_subscription_grant!(fixture, "membership:jc265-single-failure", now)
+
+    assert {:ok, suspension_result} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    assert suspension_result.suspended_count == 1
+    effect = current_effect!(fixture.subscription.id)
     fail_grant_update!(grant.id)
 
-    assert {:ok, result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
+    assert {:error, _reason} =
+             SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
 
     assert {fetch_subscription!(fixture.subscription.id).status,
             Enum.map(source_grants!(fixture.subscription.id), & &1.status)} ==
-             {:past_due, [:active]}
+             {:suspended, [:active]}
 
-    assert result.success_count == 0
-    assert result.failed_count == 1
+    assert fetch_effect!(effect.id).status == :failed_retryable
   end
 
   test "one failed mutation rolls back every exact-source grant and leaves other sources alone" do
@@ -92,28 +108,40 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     second_grant =
       create_subscription_grant!(fixture, "membership:jc265-multi-second", now)
 
-    other_fixture = create_other_subscription_fixture!("jc265_other_source", now)
+    other_fixture =
+      create_other_subscription_fixture!(
+        "jc265_other_source",
+        now,
+        fixture.customer.id
+      )
 
     other_source_grant =
       create_subscription_grant!(other_fixture, "membership:jc265-other-source", now)
 
+    assert {:ok, suspension_result} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    assert suspension_result.suspended_count == 1
+    effect = current_effect!(fixture.subscription.id)
     fail_grant_update!(second_grant.id)
 
-    assert {:ok, failed_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
+    assert {:error, _reason} =
+             SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
 
     assert Enum.map(source_grants!(fixture.subscription.id), & &1.status) ==
              [:active, :active]
 
-    assert fetch_subscription!(fixture.subscription.id).status == :past_due
-    assert failed_result.success_count == 0
-    assert failed_result.failed_count == 1
+    assert fetch_subscription!(fixture.subscription.id).status == :suspended
+    assert fetch_effect!(effect.id).status == :failed_retryable
 
     assert fetch_grant!(other_source_grant.id).status == :active
 
     clear_grant_update_failure!()
 
-    assert {:ok, retry_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
-    assert retry_result.success_count == 1
+    assert {:ok, retry_result} =
+             SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(limit: 100)
+
+    assert retry_result.execution_count == 1
     assert retry_result.failed_count == 0
     assert fetch_subscription!(fixture.subscription.id).status == :suspended
 
@@ -131,8 +159,14 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     create_subscription_grant!(fixture, "membership:jc265-replay", now)
     post_count = install_provider_post_counter()
 
-    assert {:ok, first_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
-    assert first_result == %{due_count: 1, success_count: 1, failed_count: 0}
+    assert {:ok, suspension_result} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    assert suspension_result.suspended_count == 1
+    effect = current_effect!(fixture.subscription.id)
+
+    assert {:ok, :applied} =
+             SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
 
     first_suspension = fetch_subscription!(fixture.subscription.id)
     first_grants = source_grants!(fixture.subscription.id)
@@ -142,8 +176,10 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     assert first_suspension.status == :suspended
     assert Enum.map(first_grants, & &1.status) == [:revoked]
 
-    assert {:ok, replay_result} = SubscriptionsFacade.run_due_renewals_for_system(now: now)
-    assert replay_result == %{due_count: 0, success_count: 0, failed_count: 0}
+    assert {:ok, replay_result} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    assert replay_result.due_count == 0
 
     assert fetch_subscription!(fixture.subscription.id).status == :suspended
     assert Enum.map(source_grants!(fixture.subscription.id), & &1.status) == [:revoked]
@@ -151,6 +187,45 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     assert payment_intent_count(fixture.subscription.id) == first_payment_intent_count
     assert PaymentApplication |> payment_application_count(fixture.subscription.id) == 0
     assert :atomics.get(post_count, 1) == 0
+  end
+
+  test "projection repair retries after APPLIED without changing grant truth" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    fixture = create_past_due_fixture!("jc239_projection_crash", now)
+    create_subscription_grant!(fixture, "membership:jc239-projection", now)
+
+    assert {:ok, %{suspended_count: 1}} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system()
+
+    effect = current_effect!(fixture.subscription.id)
+
+    assert :ok = Supervisor.terminate_child(Store.Supervisor, Cache)
+
+    try do
+      assert {:error, %{step: :cache_invalidation, user_id: user_id}} =
+               SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
+
+      assert user_id == fixture.customer.id
+    after
+      assert {:ok, _pid} = Supervisor.restart_child(Store.Supervisor, Cache)
+    end
+
+    applied = fetch_effect!(effect.id)
+    assert applied.status == :applied
+    assert applied.projection_user_ids == [fixture.customer.id]
+    assert is_nil(applied.projection_delivered_at)
+    [revoked_before] = source_grants!(fixture.subscription.id)
+    assert revoked_before.status == :revoked
+
+    assert :ok =
+             SubscriptionsFacade.repair_suspension_access_effect_projection_for_system(effect.id)
+
+    repaired = fetch_effect!(effect.id)
+    assert repaired.status == :applied
+    assert %DateTime{} = repaired.projection_delivered_at
+    assert [revoked_after] = source_grants!(fixture.subscription.id)
+    assert revoked_after.status == :revoked
+    assert revoked_after.updated_at == revoked_before.updated_at
   end
 
   defp create_past_due_fixture!(prefix, now) do
@@ -170,33 +245,33 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
-        provider_billing_ref: "pm_#{prefix}",
         started_at: DateTime.add(now, -10 * 86_400, :second),
         next_renewal_at: DateTime.add(now, -10, :second)
       })
 
-    past_due_since_at = DateTime.add(now, -2 * 86_400, :second)
+    assert {:ok, %{due_count: 1, failed_count: 1}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now)
 
-    past_due =
-      subscription
-      |> Ash.Changeset.for_update(
-        :mark_past_due_transition,
-        %{
-          billing_status_reason: "PAYMENT_FAILED",
-          past_due_since_at: past_due_since_at,
-          next_retry_at: nil,
-          retry_suppressed_at: nil,
-          dunning_attempt_count: 1
-        },
-        context: %{system?: true}
-      )
-      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    past_due = fetch_subscription!(subscription.id)
+    assert past_due.status == :past_due
+    assert %DateTime{} = past_due.failed_payment_boundary_at
+
+    Repo.query!(
+      "UPDATE subscriptions SET failed_payment_boundary_at = $2 WHERE id = $1",
+      [Ecto.UUID.dump!(subscription.id), DateTime.add(now, -1, :second)]
+    )
 
     %{customer: customer, plan: plan, subscription: past_due, now: now}
   end
 
-  defp create_other_subscription_fixture!(prefix, now) do
-    customer = SubscriptionsFixtures.create_customer!(prefix)
+  defp create_other_subscription_fixture!(prefix, now, existing_customer_id) do
+    customer =
+      if is_binary(existing_customer_id) do
+        %{id: existing_customer_id}
+      else
+        SubscriptionsFixtures.create_customer!(prefix)
+      end
+
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
     plan =
@@ -285,6 +360,19 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
   defp fetch_subscription!(subscription_id) do
     Subscription
     |> Ash.Query.filter(expr(id == ^subscription_id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp current_effect!(subscription_id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.Query.sort(source_version: :desc)
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_effect!(effect_id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(id == ^effect_id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 

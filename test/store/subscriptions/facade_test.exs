@@ -26,6 +26,7 @@ defmodule Store.Subscriptions.FacadeTest do
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
 
   alias Store.Subscriptions.{
+    AccessEffect,
     RenewalAttempt,
     RenewalCollectionAttempt,
     RenewalCollectionAttempts,
@@ -756,8 +757,24 @@ defmodule Store.Subscriptions.FacadeTest do
                     first_payment_intent_id},
                    5_000
 
-    suspended =
+    past_due =
       fetch_subscription!(subscription.id)
+      |> Ash.Changeset.for_update(
+        :mark_past_due_transition,
+        %{
+          billing_status_reason: "PAYMENT_FAILED",
+          past_due_since_at: DateTime.add(now, -86_400, :second),
+          failed_payment_boundary_at: DateTime.add(now, -1, :second),
+          dunning_attempt_count: 1,
+          next_retry_at: nil,
+          retry_suppressed_at: now
+        },
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    suspended =
+      past_due
       |> Ash.Changeset.for_update(
         :mark_suspended_transition,
         %{billing_status_reason: "PAYMENT_FAILED"},
@@ -1377,13 +1394,14 @@ defmodule Store.Subscriptions.FacadeTest do
     assert unresolved.pending_renewal_currency == upgraded_plan.currency
   end
 
-  test "run_due_renewals_for_system suspends subscriptions past grace and revokes entitlements" do
+  test "failed-payment suspension runs independently from retry discovery" do
     customer = SubscriptionsFixtures.create_customer!("phase26_sub_grace")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
     plan =
       SubscriptionsFixtures.create_subscription_plan!(%{
         grace_period_days: 1,
+        retry_schedule_hours: [24, 72, 120],
         entitlement_kind: :membership_access,
         entitlement_scope_key: "membership:silver"
       })
@@ -1391,7 +1409,6 @@ defmodule Store.Subscriptions.FacadeTest do
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
 
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
-    old_past_due = DateTime.add(now, -172_800, :second)
 
     %{subscription: subscription} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
@@ -1399,18 +1416,12 @@ defmodule Store.Subscriptions.FacadeTest do
         next_renewal_at: DateTime.add(now, -10, :second)
       })
 
-    assert {:ok, past_due_subscription} =
-             subscription
-             |> Ash.Changeset.for_update(
-               :mark_past_due_transition,
-               %{past_due_since_at: old_past_due, billing_status_reason: "test"},
-               context: %{system?: true}
-             )
-             |> Ash.update(
-               domain: Store.Subscriptions,
-               authorize?: false,
-               context: %{system?: true}
-             )
+    assert {:ok, %{due_count: 1, failed_count: 1}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+
+    past_due_subscription = fetch_subscription!(subscription.id)
+    assert past_due_subscription.status == :past_due
+    assert %DateTime{} = past_due_subscription.failed_payment_boundary_at
 
     assert {:ok, _grant} =
              EntitlementsFacade.issue_subscription_entitlement_for_system(
@@ -1418,10 +1429,18 @@ defmodule Store.Subscriptions.FacadeTest do
                plan
              )
 
-    assert {:ok, result} = SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
-    assert result.due_count == 1
-    assert result.success_count == 1
-    assert result.failed_count == 0
+    assert {:ok, retry_result} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+
+    assert retry_result.due_count == 0
+
+    Repo.query!(
+      "UPDATE subscriptions SET failed_payment_boundary_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    assert {:ok, %{suspended_count: 1}} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system(limit: 20)
 
     suspended = fetch_subscription!(subscription.id)
     assert suspended.status == :suspended
@@ -1430,19 +1449,25 @@ defmodule Store.Subscriptions.FacadeTest do
     assert is_nil(suspended.canceled_reason)
     assert is_nil(suspended.next_retry_at)
 
+    assert {:ok, [effect]} = current_access_effects(subscription.id)
+    assert effect.status == :required
+
+    assert {:ok, :applied} =
+             SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
+
     entitlement = fetch_entitlement!(subscription.id)
     assert entitlement.status == :revoked
     assert entitlement.revoked_reason == "grace_expired"
 
-    assert 1 ==
+    assert 0 ==
              EmailOutbox
              |> Ash.Query.filter(
                expr(subscription_id == ^subscription.id and template_kind == :access_ended)
              )
              |> Ash.count!(domain: Store.Comms, authorize?: false, context: %{system?: true})
 
-    assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =
-             SubscriptionsFacade.run_due_renewals_for_system(now: now, limit: 20)
+    assert {:ok, %{due_count: 0, suspended_count: 0, failed_count: 0}} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system(limit: 20)
   end
 
   test "create_subscriptions_from_paid_order_for_system fails closed when provider selection is missing" do
@@ -1695,6 +1720,13 @@ defmodule Store.Subscriptions.FacadeTest do
     RenewalCollectionAttempt
     |> Ash.Query.filter(expr(renewal_attempt_id == ^renewal_attempt_id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp current_access_effects(subscription_id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.Query.sort(source_version: :desc)
+    |> Ash.read(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp fetch_entitlement!(subscription_id) do

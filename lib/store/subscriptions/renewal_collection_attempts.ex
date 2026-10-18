@@ -1009,7 +1009,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
              input.now
            ),
          {:ok, updated, notifications} <-
-           claim_collection_dispatch(collection, input.expected_epoch) do
+           claim_collection_dispatch(
+             collection,
+             input.expected_epoch,
+             subscription,
+             collection.payment_intent_id
+           ) do
       {:ok, updated, method_notifications ++ notifications,
        %{
          subscription: subscription,
@@ -1436,33 +1441,78 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp claim_collection_dispatch(collection, expected_epoch) do
-    changeset =
-      collection
-      |> Ash.Changeset.new()
-      |> Ash.Changeset.set_argument(:expected_epoch, expected_epoch)
-      |> Ash.Changeset.for_update(
-        :claim_dispatch,
-        %{},
-        context: %{system?: true}
+  defp claim_collection_dispatch(collection, expected_epoch, subscription, payment_intent_id) do
+    query = """
+    UPDATE renewal_collection_attempts
+    SET payment_intent_id = COALESCE($3::uuid, payment_intent_id),
+        dispatch_state = 'may_have_been_reached',
+        updated_at = clock_timestamp()
+    WHERE id = $1::uuid
+      AND dispatch_state = 'not_started'
+      AND financial_outcome = 'unresolved'
+      AND dispatch_epoch = $2
+      AND ($3::uuid IS NULL OR payment_intent_id IS NULL OR payment_intent_id = $3::uuid)
+      AND (
+        ($4 = 'active' AND $5::timestamptz IS NULL)
+        OR
+        ($4 = 'past_due' AND $5::timestamptz IS NOT NULL
+          AND clock_timestamp() < $5::timestamptz)
       )
+    RETURNING id, updated_at AT TIME ZONE 'UTC'
+    """
 
-    case Ash.update(changeset,
-           domain: Store.Subscriptions,
-           authorize?: false,
-           context: %{system?: true},
-           return_notifications?: true
-         ) do
-      {:ok, %RenewalCollectionAttempt{} = updated, notifications} ->
-        {:ok, updated, notifications}
+    params = [
+      Ecto.UUID.dump!(collection.id),
+      expected_epoch,
+      if(is_binary(payment_intent_id), do: Ecto.UUID.dump!(payment_intent_id), else: nil),
+      Atom.to_string(subscription.status),
+      subscription.failed_payment_boundary_at
+    ]
 
-      {:ok, %RenewalCollectionAttempt{} = updated} ->
-        {:ok, updated, []}
+    case Repo.query(query, params) do
+      {:ok, %{rows: [[_id, updated_at]]}} ->
+        {:ok,
+         %{
+           collection
+           | payment_intent_id: payment_intent_id || collection.payment_intent_id,
+             dispatch_state: :may_have_been_reached,
+             updated_at: updated_at
+         }, []}
+
+      {:ok, %{rows: []}} ->
+        if collection_boundary_claim_allowed?(subscription) do
+          {:error,
+           Error.new("STALE_RECORD", "collection dispatch claim lost its compare-and-set")}
+        else
+          {:error,
+           Error.new(
+             "RENEWAL_AUTHORITY_WITHDRAWN",
+             "Subscription authority was withdrawn at the provider submission checkpoint"
+           )}
+        end
 
       {:error, reason} ->
         {:error, Normalize.normalize(reason)}
     end
   end
+
+  defp collection_boundary_claim_allowed?(%Subscription{
+         status: :active,
+         failed_payment_boundary_at: nil
+       }),
+       do: true
+
+  defp collection_boundary_claim_allowed?(%Subscription{
+         status: :past_due,
+         failed_payment_boundary_at: %DateTime{} = boundary_at
+       }) do
+    case Repo.query("SELECT clock_timestamp() < $1", [boundary_at]) do
+      {:ok, %{rows: [[allowed?]]}} when is_boolean(allowed?) -> allowed?
+      _ -> false
+    end
+  end
+
+  defp collection_boundary_claim_allowed?(_subscription), do: false
 
   defp ensure_collection_can_bind_payment_intent(
          %RenewalCollectionAttempt{payment_intent_id: payment_intent_id},
@@ -1841,9 +1891,39 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     with :ok <- ensure_collection_attempt_dispatchable(attempt),
          :ok <- ensure_renewal_authority(subscription, attempt),
          :ok <- ensure_bound_period_is_current(subscription, attempt),
+         :ok <- ensure_collection_boundary_before_dispatch(subscription, now),
          :ok <- ensure_due_for_collection(subscription, now) do
       ensure_collection_retry_authority(subscription, attempt)
     end
+  end
+
+  defp ensure_collection_boundary_before_dispatch(
+         %Subscription{status: :active, failed_payment_boundary_at: nil},
+         _now
+       ),
+       do: :ok
+
+  defp ensure_collection_boundary_before_dispatch(
+         %Subscription{status: :past_due, failed_payment_boundary_at: %DateTime{} = boundary_at},
+         %DateTime{} = now
+       ) do
+    if DateTime.compare(now, boundary_at) == :lt do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "RENEWAL_AUTHORITY_WITHDRAWN",
+         "failed-payment boundary has been reached"
+       )}
+    end
+  end
+
+  defp ensure_collection_boundary_before_dispatch(%Subscription{}, _now) do
+    {:error,
+     Error.new(
+       "RENEWAL_AUTHORITY_WITHDRAWN",
+       "Subscription failed-payment boundary authority is unresolved"
+     )}
   end
 
   defp ensure_collection_attempt_dispatchable(%RenewalAttempt{status: :succeeded}) do
@@ -2079,7 +2159,8 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
            claim_or_replay_collection_dispatch(
              bound_collection,
              payment_intent.id,
-             input.expected_epoch
+             input.expected_epoch,
+             subscription
            ) do
       dispatch_claimed? = bound_collection.dispatch_state == :not_started
 
@@ -2172,14 +2253,22 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   defp claim_or_replay_collection_dispatch(
          %RenewalCollectionAttempt{dispatch_state: :not_started} = collection,
          payment_intent_id,
-         expected_epoch
+         expected_epoch,
+         subscription
        ),
-       do: attach_and_claim_collection_dispatch(collection, payment_intent_id, expected_epoch)
+       do:
+         attach_and_claim_collection_dispatch(
+           collection,
+           payment_intent_id,
+           expected_epoch,
+           subscription
+         )
 
   defp claim_or_replay_collection_dispatch(
          %RenewalCollectionAttempt{dispatch_state: :may_have_been_reached} = collection,
          payment_intent_id,
-         _expected_epoch
+         _expected_epoch,
+         _subscription
        ) do
     case collection.payment_intent_id do
       ^payment_intent_id ->
@@ -2190,24 +2279,13 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
     end
   end
 
-  defp attach_and_claim_collection_dispatch(collection, payment_intent_id, expected_epoch) do
-    changeset =
-      collection
-      |> Ash.Changeset.new()
-      |> Ash.Changeset.set_argument(:payment_intent_id, payment_intent_id)
-      |> Ash.Changeset.set_argument(:expected_epoch, expected_epoch)
-      |> Ash.Changeset.for_update(:attach_and_claim_dispatch, %{}, context: %{system?: true})
-
-    case Ash.update(changeset,
-           domain: Store.Subscriptions,
-           authorize?: false,
-           context: %{system?: true},
-           return_notifications?: true
-         ) do
-      {:ok, %RenewalCollectionAttempt{} = updated, notifications} -> {:ok, updated, notifications}
-      {:ok, %RenewalCollectionAttempt{} = updated} -> {:ok, updated, []}
-      {:error, reason} -> {:error, Normalize.normalize(reason)}
-    end
+  defp attach_and_claim_collection_dispatch(
+         collection,
+         payment_intent_id,
+         expected_epoch,
+         subscription
+       ) do
+    claim_collection_dispatch(collection, expected_epoch, subscription, payment_intent_id)
   end
 
   defp start_or_replay(attempt, subscription, collections, input) do

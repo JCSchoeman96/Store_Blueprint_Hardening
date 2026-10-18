@@ -187,6 +187,8 @@ config :store, Oban,
        {"* * * * *", Store.Workers.FlushRedisAggregateBucketsWorker},
        {"*/5 * * * *", Store.Workers.ReclaimStaleEmailOutboxWorker},
        {"*/5 * * * *", Store.Workers.RunDueSubscriptionRenewalsWorker},
+       {"*/5 * * * *", Store.Workers.RunDueFailedPaymentSuspensionsWorker},
+       {"*/5 * * * *", Store.Workers.RunSubscriptionAccessEffectRecoveryWorker},
        {"0 * * * *", Store.Workers.EnqueueMembershipRenewalRemindersWorker},
        {"15 2 * * *", Store.Workers.PurgeWebhookReceiptEvidenceWorker}
      ]}

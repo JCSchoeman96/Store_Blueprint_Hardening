@@ -192,8 +192,30 @@ defmodule Store.Governance.SubscriptionsUniquenessTest do
     %{subscription: existing} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{})
 
-    assert {:ok, suspended} =
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, past_due} =
              existing
+             |> Ash.Changeset.for_update(
+               :mark_past_due_transition,
+               %{
+                 billing_status_reason: "PAYMENT_FAILED",
+                 past_due_since_at: DateTime.add(now, -86_400, :second),
+                 failed_payment_boundary_at: DateTime.add(now, -1, :second),
+                 dunning_attempt_count: 1,
+                 next_retry_at: nil,
+                 retry_suppressed_at: now
+               },
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert {:ok, suspended} =
+             past_due
              |> Ash.Changeset.for_update(:mark_suspended_transition, %{},
                context: %{system?: true}
              )

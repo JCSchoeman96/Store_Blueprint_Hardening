@@ -1,0 +1,136 @@
+defmodule Store.Workers.RunSubscriptionAccessEffectRecoveryWorker do
+  @moduledoc false
+
+  use Oban.Worker,
+    queue: :subscriptions,
+    max_attempts: 5,
+    unique: [period: 55, fields: [:worker, :queue, :args]]
+
+  alias Store.Subscriptions.Facade, as: SubscriptionsFacade
+
+  @impl Oban.Worker
+  def perform(%Oban.Job{args: args}) when is_map(args) do
+    with {:ok, opts} <- parse_opts(args),
+         {:ok, result} <-
+           SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(opts),
+         :ok <- enqueue_next_page(result, Keyword.get(opts, :limit, 100), args) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+      {:discard, _reason} = discard -> discard
+    end
+  end
+
+  def perform(_job), do: {:discard, "invalid AccessEffect recovery job"}
+
+  defp parse_opts(args) do
+    with {:ok, as_of} <- parse_datetime(Map.get(args, "as_of")),
+         {:ok, execution_after_updated_at} <-
+           parse_datetime(Map.get(args, "execution_after_updated_at")),
+         {:ok, projection_after_inserted_at} <-
+           parse_datetime(Map.get(args, "projection_after_inserted_at")),
+         {:ok, limit} <- parse_limit(Map.get(args, "limit", 100)),
+         :ok <- validate_optional_id(Map.get(args, "execution_after_id")),
+         :ok <- validate_optional_id(Map.get(args, "projection_after_id")) do
+      opts = [
+        limit: limit,
+        skip_execution: Map.get(args, "skip_execution", false),
+        skip_projection: Map.get(args, "skip_projection", false)
+      ]
+
+      opts = if as_of, do: Keyword.put(opts, :as_of, as_of), else: opts
+
+      opts =
+        if execution_after_updated_at,
+          do: Keyword.put(opts, :execution_after_updated_at, execution_after_updated_at),
+          else: opts
+
+      opts =
+        if Map.get(args, "execution_after_id"),
+          do: Keyword.put(opts, :execution_after_id, Map.get(args, "execution_after_id")),
+          else: opts
+
+      opts =
+        if projection_after_inserted_at,
+          do: Keyword.put(opts, :projection_after_inserted_at, projection_after_inserted_at),
+          else: opts
+
+      opts =
+        if Map.get(args, "projection_after_id"),
+          do: Keyword.put(opts, :projection_after_id, Map.get(args, "projection_after_id")),
+          else: opts
+
+      {:ok, opts}
+    else
+      _ -> {:discard, "invalid AccessEffect recovery cursor"}
+    end
+  end
+
+  defp enqueue_next_page(%{execution_cursor: nil, projection_cursor: nil}, _limit, _args),
+    do: :ok
+
+  defp enqueue_next_page(result, limit, args) do
+    continuation = %{
+      "as_of" => DateTime.to_iso8601(result.as_of),
+      "limit" => limit,
+      "skip_execution" => is_nil(result.execution_cursor),
+      "skip_projection" => is_nil(result.projection_cursor)
+    }
+
+    continuation = add_cursor(continuation, result.execution_cursor, :execution)
+    continuation = add_cursor(continuation, result.projection_cursor, :projection)
+
+    continuation =
+      if Map.has_key?(args, "sweep_id"),
+        do: Map.put(continuation, "sweep_id", args["sweep_id"]),
+        else: continuation
+
+    continuation
+    |> new()
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp add_cursor(args, nil, _stream), do: args
+
+  defp add_cursor(args, %{timestamp: timestamp, id: id}, :execution) do
+    args
+    |> Map.put("execution_after_updated_at", DateTime.to_iso8601(timestamp))
+    |> Map.put("execution_after_id", id)
+  end
+
+  defp add_cursor(args, %{timestamp: timestamp, id: id}, :projection) do
+    args
+    |> Map.put("projection_after_inserted_at", DateTime.to_iso8601(timestamp))
+    |> Map.put("projection_after_id", id)
+  end
+
+  defp validate_optional_id(nil), do: :ok
+  defp validate_optional_id(value) when is_binary(value), do: :ok
+  defp validate_optional_id(_value), do: :error
+
+  defp parse_datetime(nil), do: {:ok, nil}
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, 0} -> {:ok, datetime}
+      _ -> :error
+    end
+  end
+
+  defp parse_datetime(_value), do: :error
+
+  defp parse_limit(value) when is_integer(value) and value in 1..500, do: {:ok, value}
+
+  defp parse_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} when parsed in 1..500 -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
+  defp parse_limit(_value), do: :error
+end

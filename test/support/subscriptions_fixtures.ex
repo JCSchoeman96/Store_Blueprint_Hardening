@@ -228,6 +228,47 @@ defmodule Store.SubscriptionsFixtures do
          stored_payment_method: stored_payment_method,
          overrides: overrides
        }) do
+    mark_past_due? =
+      Map.get(overrides, :status) == :past_due and
+        (Map.has_key?(overrides, :past_due_since_at) or
+           Map.has_key?(overrides, :failed_payment_boundary_at))
+
+    attrs =
+      fixture_subscription_attrs(%{
+        user_id: user_id,
+        variant: variant,
+        plan: plan,
+        revision: revision,
+        order: order,
+        line_item: line_item,
+        period: period,
+        provider: provider,
+        stored_payment_method: stored_payment_method,
+        overrides: overrides,
+        mark_past_due?: mark_past_due?
+      })
+
+    subscription =
+      Subscription
+      |> Ash.Changeset.for_create(:create_from_order_line, attrs, context: %{system?: true})
+      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    mark_fixture_subscription_past_due(subscription, overrides, mark_past_due?)
+  end
+
+  defp fixture_subscription_attrs(%{
+         user_id: user_id,
+         variant: variant,
+         plan: plan,
+         revision: revision,
+         order: order,
+         line_item: line_item,
+         period: period,
+         provider: provider,
+         stored_payment_method: stored_payment_method,
+         overrides: overrides,
+         mark_past_due?: mark_past_due?
+       }) do
     attrs = %{
       user_id: user_id,
       subscription_plan_id: plan.id,
@@ -254,20 +295,59 @@ defmodule Store.SubscriptionsFixtures do
       source_order_id: order.id,
       source_order_line_item_id: line_item.id,
       current_plan_revision_id: revision.id,
-      provider_customer_ref:
-        Map.get(overrides, :provider_customer_ref) ||
-          (stored_payment_method && stored_payment_method.provider_customer_ref),
-      provider_billing_ref:
-        Map.get(overrides, :provider_billing_ref) ||
-          (stored_payment_method && stored_payment_method.provider_payment_method_ref),
+      provider_customer_ref: Map.get(overrides, :provider_customer_ref),
+      provider_billing_ref: Map.get(overrides, :provider_billing_ref),
       stored_payment_method_id:
         Map.get(overrides, :stored_payment_method_id) ||
           (stored_payment_method && stored_payment_method.id)
     }
 
-    Subscription
-    |> Ash.Changeset.for_create(:create_from_order_line, attrs, context: %{system?: true})
-    |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    attrs
+    |> with_initial_fixture_status(mark_past_due?)
+    |> with_fixture_provider_refs(overrides, stored_payment_method)
+  end
+
+  defp with_initial_fixture_status(attrs, false), do: attrs
+
+  defp with_initial_fixture_status(attrs, true) do
+    attrs
+    |> Map.put(:status, :active)
+    |> Map.put(:dunning_attempt_count, 0)
+    |> Map.put(:next_retry_at, nil)
+    |> Map.put(:retry_suppressed_at, nil)
+  end
+
+  defp with_fixture_provider_refs(attrs, overrides, stored_payment_method) do
+    attrs
+    |> Map.put(
+      :provider_customer_ref,
+      Map.get(overrides, :provider_customer_ref) ||
+        (stored_payment_method && stored_payment_method.provider_customer_ref)
+    )
+    |> Map.put(
+      :provider_billing_ref,
+      Map.get(overrides, :provider_billing_ref) ||
+        (stored_payment_method && stored_payment_method.provider_payment_method_ref)
+    )
+  end
+
+  defp mark_fixture_subscription_past_due(subscription, _overrides, false), do: subscription
+
+  defp mark_fixture_subscription_past_due(subscription, overrides, true) do
+    transition_attrs = %{
+      billing_status_reason: Map.get(overrides, :billing_status_reason),
+      past_due_since_at: Map.get(overrides, :past_due_since_at),
+      failed_payment_boundary_at: Map.get(overrides, :failed_payment_boundary_at),
+      dunning_attempt_count: Map.get(overrides, :dunning_attempt_count, 0),
+      next_retry_at: Map.get(overrides, :next_retry_at),
+      retry_suppressed_at: Map.get(overrides, :retry_suppressed_at)
+    }
+
+    subscription
+    |> Ash.Changeset.for_update(:mark_past_due_transition, transition_attrs,
+      context: %{system?: true}
+    )
+    |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp create_fixture_subscription_item!(subscription, variant, plan, revision, line_item) do

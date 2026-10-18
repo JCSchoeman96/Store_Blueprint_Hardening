@@ -6,6 +6,7 @@ defmodule Store.Entitlements.FacadeTest do
 
   alias Store.Entitlements.{Cache, EntitlementGrant, Facade}
   alias Store.Entitlements.Types.EntitlementSet
+  alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
@@ -215,7 +216,7 @@ defmodule Store.Entitlements.FacadeTest do
     end
   end
 
-  test "grace-expired past_due renewal invalidates the entitlement cache post-commit" do
+  test "suspension AccessEffect invalidates the entitlement cache post-commit" do
     customer = SubscriptionsFixtures.create_customer!("phase27a_worker_revoke")
     customer_id = customer.id
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -224,7 +225,8 @@ defmodule Store.Entitlements.FacadeTest do
       SubscriptionsFixtures.create_subscription_plan!(%{
         entitlement_kind: :membership_access,
         entitlement_scope_key: "membership:worker-revoke",
-        max_retry_attempts: 0
+        max_retry_attempts: 0,
+        grace_period_days: 0
       })
 
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
@@ -237,19 +239,8 @@ defmodule Store.Entitlements.FacadeTest do
         next_renewal_at: DateTime.add(now, -10, :second)
       })
 
-    subscription =
-      subscription
-      |> Ash.Changeset.for_update(
-        :mark_past_due_transition,
-        %{
-          billing_status_reason: "PAYMENT_FAILED",
-          past_due_since_at: DateTime.add(now, -8 * 86_400, :second),
-          dunning_attempt_count: 1,
-          next_retry_at: nil
-        },
-        context: %{system?: true}
-      )
-      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    assert {:ok, %{due_count: 1, failed_count: 1}} =
+             SubscriptionsFacade.run_due_renewals_for_system(now: now)
 
     assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
     assert {:ok, cached_set} = Facade.entitlement_set_for_user(customer)
@@ -262,10 +253,20 @@ defmodule Store.Entitlements.FacadeTest do
 
     Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(customer.id))
 
-    assert {:ok, :processed} =
-             SubscriptionsFacade.process_due_subscription_renewal_for_system(subscription.id,
-               now: now
-             )
+    assert {:ok, %{suspended_count: 1}} =
+             SubscriptionsFacade.run_due_failed_payment_suspensions_for_system(limit: 20)
+
+    effect =
+      AccessEffect
+      |> Ash.Query.filter(expr(subscription_id == ^subscription.id))
+      |> Ash.read_one!(
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    assert {:ok, :applied} =
+             SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
 
     assert_receive {:entitlements_invalidated, ^customer_id, "grace_expired", _occurred_at}
 

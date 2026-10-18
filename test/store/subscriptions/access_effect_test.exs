@@ -5,7 +5,11 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
   require Ash.Query
 
+  alias Ash.Resource.Info
   alias Ecto.Adapters.SQL.Sandbox
+  alias Store.Entitlements.EntitlementGrant
+  alias Store.Entitlements.Facade, as: EntitlementsFacade
+  alias Store.Repo
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
@@ -13,6 +17,201 @@ defmodule Store.Subscriptions.AccessEffectTest do
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
   alias Store.TestSupport.StripeAPIStub
+
+  test "AccessEffect carries nullable projection repair evidence" do
+    user_ids = Info.attribute(AccessEffect, :projection_user_ids)
+    delivered_at = Info.attribute(AccessEffect, :projection_delivered_at)
+
+    assert user_ids.type == {:array, Ash.Type.UUID}
+    assert user_ids.allow_nil?
+    refute user_ids.public?
+    assert delivered_at.type == Ash.Type.UtcDatetimeUsec
+    assert delivered_at.allow_nil?
+    refute delivered_at.public?
+  end
+
+  test "bounded recovery selector finds unresolved non-effective effects" do
+    fixture = create_subscription_fixture!()
+
+    effect =
+      establish!(
+        access_effect_input(fixture, %{
+          disposition: :non_effective,
+          entitlement_kind: nil,
+          entitlement_scope_key: nil
+        })
+      )
+
+    assert {:ok, effects} =
+             AccessEffect
+             |> Ash.Query.for_read(:read_recoverable_non_effective_for_system, %{
+               limit: 100,
+               through_updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+             })
+             |> Ash.read(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert effect.id in Enum.map(effects, & &1.id)
+  end
+
+  test "bounded AccessEffect recovery advances by its indexed timestamp and id keyset" do
+    fixtures = Enum.map(1..3, fn _ -> create_subscription_fixture!() end)
+
+    effects =
+      Enum.map(fixtures, fn fixture ->
+        establish!(
+          access_effect_input(fixture, %{
+            disposition: :non_effective,
+            entitlement_kind: nil,
+            entitlement_scope_key: nil
+          })
+        )
+      end)
+
+    as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, first_page} =
+             AccessEffect
+             |> Ash.Query.for_read(:read_recoverable_non_effective_for_system, %{
+               limit: 2,
+               through_updated_at: as_of
+             })
+             |> Ash.read(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert length(first_page) == 2
+    last = List.last(first_page)
+
+    assert {:ok, second_page} =
+             AccessEffect
+             |> Ash.Query.for_read(:read_recoverable_non_effective_for_system, %{
+               limit: 2,
+               through_updated_at: as_of,
+               after_updated_at: last.updated_at,
+               after_id: last.id
+             })
+             |> Ash.read(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert length(second_page) == 1
+    assert hd(second_page).id not in Enum.map(first_page, & &1.id)
+
+    assert Enum.all?(
+             effects,
+             &(&1.id in Enum.map(first_page ++ second_page, fn effect -> effect.id end))
+           )
+  end
+
+  test "bounded projection selector finds only tracked applied effects awaiting delivery" do
+    fixture = create_subscription_fixture!()
+
+    effect =
+      establish!(
+        access_effect_input(fixture, %{
+          disposition: :non_effective,
+          entitlement_kind: nil,
+          entitlement_scope_key: nil
+        })
+      )
+
+    assert {:ok, pending} = Facade.mark_access_effect_pending_for_system(effect)
+    assert {:ok, _applied} = Facade.mark_access_effect_applied_for_system(pending)
+
+    user_id = fixture.subscription.user_id
+
+    Repo.query!(
+      "UPDATE access_effects SET projection_user_ids = ARRAY[$2::uuid] WHERE id = $1",
+      [Ecto.UUID.dump!(effect.id), Ecto.UUID.dump!(user_id)]
+    )
+
+    assert {:ok, effects} =
+             AccessEffect
+             |> Ash.Query.for_read(:read_pending_projection_repair_for_system, %{
+               limit: 100,
+               through_inserted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+             })
+             |> Ash.read(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert effect.id in Enum.map(effects, & &1.id)
+  end
+
+  test "projection repair advances by stable inserted timestamp and id keyset" do
+    fixtures = Enum.map(1..3, fn _ -> create_subscription_fixture!() end)
+
+    effects =
+      Enum.map(fixtures, fn fixture ->
+        effect =
+          establish!(
+            access_effect_input(fixture, %{
+              disposition: :non_effective,
+              entitlement_kind: nil,
+              entitlement_scope_key: nil
+            })
+          )
+
+        {:ok, pending} = Facade.mark_access_effect_pending_for_system(effect)
+        {:ok, applied} = Facade.mark_access_effect_applied_for_system(pending)
+        user_id = fixture.subscription.user_id
+
+        Repo.query!(
+          "UPDATE access_effects SET projection_user_ids = ARRAY[$2::uuid] WHERE id = $1",
+          [Ecto.UUID.dump!(effect.id), Ecto.UUID.dump!(user_id)]
+        )
+
+        applied
+      end)
+
+    as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, first_page} =
+             AccessEffect
+             |> Ash.Query.for_read(:read_pending_projection_repair_for_system, %{
+               limit: 2,
+               through_inserted_at: as_of
+             })
+             |> Ash.read(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert length(first_page) == 2
+    last = List.last(first_page)
+
+    assert {:ok, second_page} =
+             AccessEffect
+             |> Ash.Query.for_read(:read_pending_projection_repair_for_system, %{
+               limit: 2,
+               through_inserted_at: as_of,
+               after_inserted_at: last.inserted_at,
+               after_id: last.id
+             })
+             |> Ash.read(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert length(second_page) == 1
+
+    assert Enum.all?(
+             effects,
+             &(&1.id in Enum.map(first_page ++ second_page, fn effect -> effect.id end))
+           )
+  end
 
   setup context do
     StripeAPIStub.setup_default(context)
@@ -382,6 +581,46 @@ defmodule Store.Subscriptions.AccessEffectTest do
     persisted = fetch_access_effect!(required.id)
     assert persisted.status == :required
     assert persisted.disposition == :effective
+  end
+
+  test "stale required and failed effects retire without touching grants" do
+    Enum.each([:required, :failed_retryable], fn initial_status ->
+      fixture = create_subscription_fixture!()
+
+      assert {:ok, grant} =
+               EntitlementsFacade.issue_subscription_entitlement_for_system(
+                 fixture.subscription,
+                 fixture.plan
+               )
+
+      stale =
+        establish!(
+          access_effect_input(fixture, %{
+            disposition: :non_effective,
+            entitlement_kind: nil,
+            entitlement_scope_key: nil
+          })
+        )
+
+      stale =
+        if initial_status == :failed_retryable do
+          stale
+          |> then(&transition!(:mark_access_effect_pending_for_system, &1))
+          |> then(&transition!(:mark_access_effect_failed_retryable_for_system, &1))
+        else
+          stale
+        end
+
+      grant_updated_at = grant.updated_at
+      _newer_subscription = advance_subscription_aggregate!(fixture)
+
+      assert {:ok, :superseded} = Facade.execute_suspension_access_effect_for_system(stale.id)
+      assert fetch_access_effect!(stale.id).status == :superseded
+
+      assert {:ok, [unchanged_grant]} = read_grant(grant.id)
+      assert unchanged_grant.status == :active
+      assert unchanged_grant.updated_at == grant_updated_at
+    end)
   end
 
   test "AccessEffect creation has bounded create, replay, and current-target query counts" do
@@ -784,5 +1023,11 @@ defmodule Store.Subscriptions.AccessEffectTest do
       ])
 
     count
+  end
+
+  defp read_grant(grant_id) do
+    EntitlementGrant
+    |> Ash.Query.filter(expr(id == ^grant_id))
+    |> Ash.read(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
   end
 end
