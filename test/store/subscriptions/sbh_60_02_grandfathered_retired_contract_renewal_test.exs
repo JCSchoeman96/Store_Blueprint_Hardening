@@ -98,6 +98,57 @@ defmodule Store.Subscriptions.Sbh6002GrandfatheredRetiredContractRenewalTest do
     assert persisted_change.target_plan_revision_id == draft_revision.id
   end
 
+  test "a queued target retired before checkpoint B remains the exact renewal authority" do
+    fixture = due_fixture!("retired_queued_target")
+
+    target_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 2,
+        amount_minor: 3_700,
+        currency: "USD"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(fixture.variant.id, target_plan.id)
+    target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
+
+    assert {:ok, queued_subscription} =
+             queue_plan_change(fixture.customer, fixture.subscription.id, target_plan)
+
+    queued_change = fetch_contract_change!(queued_subscription.current_contract_change_id)
+    assert queued_change.target_plan_revision_id == target_revision.id
+
+    assert {:ok, retired_revision} =
+             target_revision
+             |> Ash.Changeset.for_update(:retire, %{}, context: %{system?: true})
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    replacement_revision =
+      SubscriptionsFixtures.create_plan_revision!(target_plan, %{amount_minor: 4_900})
+
+    assert retired_revision.status == :retired
+    assert replacement_revision.status == :effective
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
+               now: fixture.now
+             )
+
+    [attempt] = list_attempts!(fixture.subscription.id)
+    persisted_change = fetch_contract_change!(queued_change.id)
+
+    assert persisted_change.status == :bound_to_renewal
+    assert persisted_change.target_plan_revision_id == target_revision.id
+    assert attempt.plan_revision_id == target_revision.id
+    assert attempt.contract_change_id == queued_change.id
+    assert attempt.amount_minor == queued_change.target_amount_minor
+    refute attempt.plan_revision_id == replacement_revision.id
+  end
+
   defp due_fixture!(suffix) do
     customer = SubscriptionsFixtures.create_customer!("sbh_60_02_#{suffix}")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
