@@ -7,6 +7,8 @@
 # General application configuration
 import Config
 
+config :ash, default_string_length_count: :codepoints
+
 config :store,
   ecto_repos: [Store.Repo, Store.DirectRepo],
   ash_domains: [

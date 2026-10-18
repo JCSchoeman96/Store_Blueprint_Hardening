@@ -82,6 +82,9 @@ jobs:
       - name: Fetch deps
         run: mix deps.get
 
+      - name: Audit Hex advisories
+        run: mix hex.audit
+
       - name: Wait for Postgres (pg_isready)
         run: |
           for i in {1..60}; do
@@ -107,9 +110,6 @@ jobs:
 
       - name: Verify Migration Alignment
         run: mix ash_postgres.generate_migrations --check
-
-      - name: Run dependency audit
-        run: mix deps.audit
 
       - name: Run required check gate
         run: mix check

@@ -4,6 +4,7 @@ defmodule Store.Accounts.AuthenticationTest do
   import Swoosh.TestAssertions
 
   alias AshAuthentication.{Info, Strategy}
+  alias AshAuthentication.Plug.Helpers, as: AuthenticationPlugHelpers
   alias Store.Accounts.User
 
   setup :set_swoosh_global
@@ -58,6 +59,43 @@ defmodule Store.Accounts.AuthenticationTest do
     assert_email_sent(subject: "Confirm your account", to: email)
     assert :ok = Strategy.action(strategy, :reset_request, %{"email" => email}, [])
     assert_email_sent(subject: "Reset your password", to: email)
+  end
+
+  test "stored session tokens authenticate the user and revocation rejects them" do
+    strategy = Info.strategy!(User, :password)
+    email = unique_email()
+
+    assert {:ok, user} =
+             Strategy.action(
+               strategy,
+               :register,
+               %{
+                 "email" => email,
+                 "password" => "Password123!",
+                 "password_confirmation" => "Password123!"
+               },
+               []
+             )
+
+    conn =
+      Phoenix.ConnTest.build_conn()
+      |> Phoenix.ConnTest.init_test_session(%{})
+      |> AuthenticationPlugHelpers.store_in_session(user)
+
+    assert conn.private[:plug_session_info] == :renew
+
+    conn =
+      conn
+      |> AuthenticationPlugHelpers.retrieve_from_session(:store)
+
+    assert conn.assigns.current_user.id == user.id
+
+    conn =
+      conn
+      |> AuthenticationPlugHelpers.revoke_session_tokens(:store)
+      |> AuthenticationPlugHelpers.retrieve_from_session(:store)
+
+    assert is_nil(conn.assigns.current_user)
   end
 
   test "google strategy is pinned to register_with_google action" do
