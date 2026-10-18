@@ -1017,6 +1017,71 @@ Ordinary unrelated main movement is not a stop condition.
 
 Convergence with current canonical `main` is required before final integration. Do not fast-forward the platform branch merely to acquire unrelated registry updates.
 
+### Bounded Platform task admission: JC-339 (2026-10-18)
+
+Issue: `JC-339` — `[SECURITY] Upgrade vulnerable runtime dependencies and make advisory CI authoritative`.
+
+Classification: shared security / dependency / CI hardening.
+
+```text
+Canonical governance SHA: fdae94168e98d588fb2bba2e9fe4e93c6c016023
+PLATFORM ref: origin/hardening/platform-security
+PLATFORM tip / exact task base: 8a113dac52d19bebf067018a1484055612e71ea6
+PLATFORM lifecycle: READY
+Linear lifecycle: Backlog
+Implementation state: NOT STARTED
+```
+
+This record admits JC-339 to PLATFORM. The admission becomes canonical when this
+governance PR is human-merged and post-merge verified. Keep JC-339 in Backlog
+until that verification succeeds. No implementation is authorized before then.
+
+**Why the task base remains valid.** At this review, `origin/main` is 123 commits
+ahead of common ancestor `7f5545117f1cc965b0529787705ec2a1969af32a`. The
+task-relevant comparison found no changes between `origin/main` and the PLATFORM
+tip in `mix.exs`, `mix.lock`, CI workflows, account/authentication runtime
+modules, or auth-focused tests. The locked Ash versions, relevant dependency
+constraints, `mix deps.audit` wiring, and configured authentication flows
+therefore remain the same on both refs. The intervening main changes do not
+invalidate this dependency/auth/CI task base. Do not reconcile unrelated main
+history before implementation solely because main is ahead. Re-evaluate if
+either ref moves materially before implementation starts.
+
+**Current DEP-001 disposition.** `FAIL / NOT SATISFIED`, as recorded in the
+[dated DEP-001 status refresh](../hardening/08_extraction_gates.md#dep-001-status-refresh-2026-10-18).
+Unresolved applicable High/Critical advisories block extraction and NewYou
+reuse certification. A successful `mix deps.audit` alone is not authoritative
+evidence. JC-339 owns the applicability review and remediation.
+
+**Allowed implementation scope after admission:**
+
+1. Determine applicability of every current High/Critical advisory to the exact
+   locked dependency graph and configured application surfaces.
+2. Select a compatible, non-vulnerable stable dependency set using current
+   HexDocs, Hex, and official Ash repository evidence.
+3. Repair the dependency-security CI gate so Hex-known applicable advisories
+   cannot produce a false green.
+4. Preserve password authentication, password reset, Google OAuth, token
+   persistence/authentication, new-user confirmation, and authorization
+   interaction semantics with focused regression proof.
+5. Run the normal static, test, type, and performance gates.
+6. Use a waiver only when it is advisory-specific, justified, scoped, and
+   time-bounded.
+
+**Excluded unless new evidence requires escalation:** unrelated dependency
+modernization; Ash 4 or AshAuthentication 5 prerelease migration; application
+feature changes; auth redesign; new Ash Domains or Resources; schema or
+migration changes solely for dependency modernization; payment, provider, or
+subscription behavior changes; Redis/cache changes; unrelated refactors.
+
+**Stop conditions:** stop and seek a fresh authority decision if either ref
+moves materially on task-relevant dependency, CI, authentication, or ownership
+surfaces; if advisory applicability or compatibility cannot be established from
+current authoritative evidence; if remediation requires an excluded change or
+another workstream's authority; if focused proof cannot preserve the listed
+authentication semantics; or if a proposed waiver lacks any required field.
+Do not broaden this admission implicitly.
+
 ### SUBS (Subscription Backbone)
 
 Role: independent Subscription hardening programme.

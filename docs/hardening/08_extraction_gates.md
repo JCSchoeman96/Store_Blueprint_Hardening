@@ -459,9 +459,32 @@ No dependency is updated by S0-08. These gates describe release evidence only.
 
 | Gate ID | Category | Requirement | Evidence required | Current Status | PASS condition | FAIL condition | BLOCKED condition | Severity | Blocks extraction | Applies to | Source/evidence links |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| DEP-001 | Supply chain | Dependency audit has no unresolved applicable critical/high advisory | Fresh `mix deps.audit`, lockfile review, and release advisory record | PASS | The extraction lockfile has no unresolved applicable critical/high advisory and the audit exits zero | An applicable critical/high advisory remains unresolved or the audit fails | Advisory database/network is unavailable | HIGH | Yes if violated | All capabilities | [`mix.exs`](../../mix.exs), [`mix.lock`](../../mix.lock) |
+| DEP-001 | Supply chain | Dependency audit has no unresolved applicable critical/high advisory | Fresh exact-lockfile review against current advisory authorities, audit coverage reconciliation, and release advisory record | FAIL | The extraction lockfile has no unresolved applicable critical/high advisory, and CI fails for each applicable unwaived critical/high advisory. Advisory-source coverage is demonstrated; a green `mix deps.audit` alone is insufficient. | An applicable critical/high advisory remains unresolved or unwaived, the configured gate passes despite one, or coverage of the applicable advisory source is unproven | Authoritative advisory sources or network are unavailable, preventing an applicability decision | HIGH | Yes if violated | All capabilities | [`mix.exs`](../../mix.exs), [`mix.lock`](../../mix.lock) |
 | DEP-002 | Supply chain | Lockfile and dependency resolution are reproducible | Clean resolution in a pinned toolchain, lockfile verification, and repeat install artifact | BLOCKED | Two clean resolutions use the committed lockfile and produce the same dependency graph/artifact hashes | Resolution is not locked/reproducible or a dependency is silently upgraded | Clean network/toolchain/artifact environment or retained repeat-install evidence is unavailable | HIGH | Yes | All capabilities | [`mix.lock`](../../mix.lock), [`.tool-versions`](../../.tool-versions), [`ci.yml`](../../.github/workflows/ci.yml) |
 | DEP-003 | Supply chain | Dependency and provider API changes have compatibility evidence | Upgrade compatibility tests, provider API contract fixtures, and release review | FAIL | Every dependency/provider contract change has passing compatibility evidence for the extracted slice | An upgrade or provider API change is accepted without compatibility evidence | Required upstream contract environment is unavailable | HIGH | Yes | Payments, adapters, Ash domains, workers | [`mix.exs`](../../mix.exs), [`payment_provider_contract.md`](../governance/payment_provider_contract.md), [`providers_resolver_test.exs`](../../test/store/payments/providers/providers_resolver_test.exs) |
+
+### DEP-001 status refresh (2026-10-18)
+
+The `PASS` recorded in the original S0-08 validation remains historical evidence
+of what `mix deps.audit` reported at that time. This dated refresh changes the
+current DEP-001 disposition without rewriting that validation record.
+
+The exact lockfile contains `ash 3.32.3`, `ash_authentication 4.14.2`, and
+`ash_authentication_phoenix 2.17.3`. Current Hex advisory pages report five
+Critical AshAuthentication advisories whose affected ranges include `4.14.2`,
+and one High Ash advisory affecting `3.32.3`. At the same revision,
+`mix deps.audit` exits successfully with `No vulnerabilities found`.
+
+DEP-001 is currently `FAIL / NOT SATISFIED` until JC-339 establishes advisory
+applicability against the locked graph and configured authentication flows, then
+resolves or explicitly dispositions every applicable advisory. Unresolved
+applicable High/Critical advisories block extraction and NewYou reuse
+certification. A green `mix deps.audit` alone is not authoritative evidence for
+DEP-001. JC-339 owns the bounded dependency and CI remediation.
+
+Any waiver must identify the advisory, justify non-remediation, define its
+affected scope, and set a time limit. The historical S0-08 validation below is
+not changed by this refresh.
 
 ## 18. Extraction Architecture Gates
 
