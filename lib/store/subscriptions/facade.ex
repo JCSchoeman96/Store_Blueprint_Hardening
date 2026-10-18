@@ -4071,6 +4071,7 @@ defmodule Store.Subscriptions.Facade do
     with false <- legacy_future_projection?(subscription),
          revision = reusable_revision,
          :ok <- ensure_revision_belongs_to_plan(revision, subscription.subscription_plan_id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          :ok <-
            validate_renewal_contract_values(
              subscription.quantity,
@@ -4099,6 +4100,7 @@ defmodule Store.Subscriptions.Facade do
          {:ok, %PlanRevision{} = revision} <-
            fetch_plan_revision(subscription.current_plan_revision_id),
          :ok <- ensure_revision_belongs_to_plan(revision, subscription.subscription_plan_id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          :ok <-
            validate_renewal_contract_values(
              subscription.quantity,
@@ -4129,6 +4131,7 @@ defmodule Store.Subscriptions.Facade do
        ) do
     with :ok <- ensure_current_target_boundary(subscription, target),
          {:ok, %PlanRevision{} = revision} <- fetch_plan_revision(target.target_plan_revision_id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          :ok <- ensure_contract_change_price_matches(target, revision),
          :ok <-
            validate_renewal_contract_values(
