@@ -33,8 +33,8 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
   end
 
   test "a scheduled cancellation commits after renewal selection and before B" do
-    # INVARIANT=DO_NOT_RENEW commits before B, and replay of the same worker intent converges to a no-op.
-    # PRODUCTION_MUTATION_THAT_WOULD_BREAK_THIS_TEST=bind before reloading locked authority or fail the existing retry to re-evaluate.
+    # INVARIANT=DO_NOT_RENEW commits before B; the same worker intent replays to a no-op.
+    # PRODUCTION_MUTATION_THAT_WOULD_BREAK_THIS_TEST=bind before locked reload or break worker re-evaluation.
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     fixture =
