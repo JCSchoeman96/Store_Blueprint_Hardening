@@ -837,7 +837,6 @@ defmodule Store.Subscriptions.Subscription do
     end
 
     references do
-      reference(:cancel_after_renewal_attempt, on_delete: :restrict)
       reference(:current_plan_revision, on_delete: :restrict)
       reference(:current_contract_change, on_delete: :restrict)
     end

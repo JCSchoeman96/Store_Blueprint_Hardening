@@ -543,8 +543,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     boundary_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     Repo.query!(
-      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = $2, next_retry_at = NULL WHERE id = $1",
-      [Ecto.UUID.dump!(attempt.subscription_id), boundary_at]
+      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = $2, next_retry_at = NULL, cancel_at_period_end = true, cancel_after_renewal_attempt_id = $3 WHERE id = $1",
+      [
+        Ecto.UUID.dump!(attempt.subscription_id),
+        boundary_at,
+        Ecto.UUID.dump!(attempt.id)
+      ]
     )
 
     input = %AttachAndClaimInput{
@@ -556,7 +560,11 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
       now: boundary_at
     }
 
-    assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+    assert {:error,
+            %{
+              code: "RENEWAL_AUTHORITY_WITHDRAWN",
+              message: "failed-payment boundary has been reached"
+            }} =
              RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
 
     assert fetch_collection!(collection.id).dispatch_state == :not_started
@@ -570,8 +578,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     boundary_at = DateTime.add(now, 1, :second)
 
     Repo.query!(
-      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = $2, next_retry_at = NULL WHERE id = $1",
-      [Ecto.UUID.dump!(attempt.subscription_id), boundary_at]
+      "UPDATE subscriptions SET status = 'past_due', dunning_attempt_count = 1, failed_payment_boundary_at = $2, next_retry_at = NULL, cancel_at_period_end = true, cancel_after_renewal_attempt_id = $3 WHERE id = $1",
+      [
+        Ecto.UUID.dump!(attempt.subscription_id),
+        boundary_at,
+        Ecto.UUID.dump!(attempt.id)
+      ]
     )
 
     input = %AttachAndClaimInput{
@@ -591,7 +603,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
     assert {:error, :rollback} = result
 
-    assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+    assert {:error,
+            %{
+              code: "RENEWAL_AUTHORITY_WITHDRAWN",
+              message:
+                "Subscription authority was withdrawn at the provider submission checkpoint"
+            }} =
              RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input)
 
     assert fetch_collection!(collection.id).dispatch_state == :not_started
@@ -1202,6 +1219,79 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert second.id != first.id
   end
 
+  test "awaiting cancellation preserves a permitted retry for the exact bound occurrence" do
+    {attempt, now} = create_bound_attempt!("jc242_awaiting_retry")
+    input = start_input!(attempt.id, now)
+    assert {:ok, first} = RenewalCollectionAttempts.start_for_system(input)
+
+    set_financial_outcome!(
+      first,
+      attempt.subscription_id,
+      :verified_terminal_financial_non_success
+    )
+
+    mark_past_due!(attempt.subscription_id, now, DateTime.add(now, -1, :second))
+
+    Repo.query!(
+      "UPDATE subscriptions SET failed_payment_boundary_at = $2 WHERE id = $1",
+      [
+        Ecto.UUID.dump!(attempt.subscription_id),
+        DateTime.add(now, 3_600, :second)
+      ]
+    )
+
+    subscription = fetch_subscription!(attempt.subscription_id)
+
+    assert {:ok, scheduled} =
+             subscription
+             |> Ash.Changeset.for_update(
+               :cancel_at_period_end_transition,
+               %{cancel_after_renewal_attempt_id: attempt.id},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(scheduled.cancel_at_period_end_at)
+
+    assert {:ok, second} = RenewalCollectionAttempts.start_for_system(input)
+    assert second.renewal_attempt_id == attempt.id
+    assert second.collection_ordinal == 2
+    assert second.id != first.id
+
+    charged_attempt = fetch_renewal_attempt!(attempt.id)
+
+    payment_intent =
+      create_collection_payment_intent!(
+        second,
+        fetch_order!(charged_attempt.order_id),
+        charged_attempt
+      )
+
+    assert {:ok,
+            %{
+              dispatch_claimed?: true,
+              renewal_attempt: claimed_attempt,
+              collection_attempt: claimed_collection
+            }} =
+             RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(%AttachAndClaimInput{
+               collection_attempt_id: second.id,
+               renewal_attempt_id: attempt.id,
+               subscription_id: attempt.subscription_id,
+               payment_intent_id: payment_intent.id,
+               expected_epoch: second.dispatch_epoch,
+               now: now
+             })
+
+    assert claimed_attempt.id == attempt.id
+    assert claimed_collection.id == second.id
+    assert claimed_collection.dispatch_state == :may_have_been_reached
+  end
+
   test "certified terminal non-success does not permit a collection before retry time" do
     {attempt, now} = create_bound_attempt!("jc229_collection_retry_not_due")
     input = start_input!(attempt.id, now)
@@ -1242,7 +1332,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
     assert only_collection.id == first.id
   end
 
-  test "scheduled cancellation blocks collection creation" do
+  test "funded scheduled cancellation blocks collection creation" do
     {attempt, now} = create_bound_attempt!("jc229_collection_cancel_scheduled")
     subscription = fetch_subscription!(attempt.subscription_id)
 
@@ -1250,7 +1340,7 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
              subscription
              |> Ash.Changeset.for_update(
                :cancel_at_period_end_transition,
-               %{cancel_after_renewal_attempt_id: attempt.id},
+               %{cancel_at_period_end_at: subscription.current_period_end_at},
                context: %{system?: true}
              )
              |> Ash.update(

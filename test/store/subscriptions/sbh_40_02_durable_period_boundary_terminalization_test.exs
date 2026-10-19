@@ -78,6 +78,41 @@ defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
              )
   end
 
+  test "scheduled cancellation rejects an attempt owned by another Subscription" do
+    {_customer, subscription} = create_subscription("jc242_cross_owner_target")
+    {_other_customer, other_subscription} = create_subscription("jc242_other_owner_target")
+    other_attempt = create_renewal_attempt(other_subscription)
+
+    assert {:error, _reason} =
+             subscription
+             |> Ash.Changeset.for_update(
+               :cancel_at_period_end_transition,
+               %{cancel_after_renewal_attempt_id: other_attempt.id},
+               context: %{system?: true}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert {:error,
+            %Postgrex.Error{
+              postgres: %{
+                code: :foreign_key_violation,
+                constraint: "subscriptions_cancel_after_renewal_attempt_owner_fkey"
+              }
+            }} =
+             Repo.query(
+               "UPDATE subscriptions SET cancel_at_period_end = true, cancel_after_renewal_attempt_id = $2 WHERE id = $1",
+               [Ecto.UUID.dump!(subscription.id), Ecto.UUID.dump!(other_attempt.id)]
+             )
+
+    unchanged = fetch_subscription!(subscription.id)
+    refute unchanged.cancel_at_period_end
+    assert is_nil(unchanged.cancel_after_renewal_attempt_id)
+  end
+
   test "migration refuses a legacy cancellation with multiple boundary attempts" do
     boundary_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     subscription_id = Ecto.UUID.generate()
@@ -151,6 +186,142 @@ defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
 
     assert {:error, %Postgrex.Error{postgres: %{code: :raise_exception}}} =
              Repo.query(preflight_sql)
+  end
+
+  test "legacy migration keeps a financial-only application awaiting commercial reconciliation" do
+    Repo.query!("""
+    CREATE TEMP TABLE subscriptions (
+      id uuid PRIMARY KEY,
+      cancel_at_period_end boolean NOT NULL,
+      current_period_start_at timestamptz NOT NULL,
+      current_period_end_at timestamptz NOT NULL,
+      next_renewal_at timestamptz NOT NULL,
+      current_plan_revision_id uuid NOT NULL,
+      subscription_plan_id uuid NOT NULL,
+      variant_id uuid NOT NULL,
+      quantity integer NOT NULL,
+      renewal_amount_minor bigint NOT NULL,
+      renewal_currency text NOT NULL,
+      membership_key text,
+      cancel_at_period_end_at timestamptz,
+      cancel_after_renewal_attempt_id uuid
+    )
+    """)
+
+    Repo.query!("""
+    CREATE TEMP TABLE renewal_attempts (
+      id uuid PRIMARY KEY,
+      subscription_id uuid NOT NULL,
+      period_start_at timestamptz NOT NULL,
+      period_end_at timestamptz NOT NULL,
+      order_id uuid NOT NULL,
+      payment_intent_id uuid NOT NULL,
+      plan_revision_id uuid NOT NULL,
+      variant_id uuid NOT NULL,
+      quantity integer NOT NULL,
+      amount_minor bigint NOT NULL,
+      currency text NOT NULL,
+      charged_contract_snapshot jsonb NOT NULL
+    )
+    """)
+
+    Repo.query!(
+      "CREATE TEMP TABLE plan_revisions (id uuid PRIMARY KEY, subscription_plan_id uuid NOT NULL)"
+    )
+
+    Repo.query!("CREATE TEMP TABLE orders (id uuid PRIMARY KEY, state text NOT NULL)")
+    Repo.query!("CREATE TEMP TABLE payment_intents (id uuid PRIMARY KEY, order_id uuid NOT NULL)")
+
+    Repo.query!(
+      "CREATE TEMP TABLE payment_applications (order_id uuid NOT NULL, payment_intent_id uuid NOT NULL)"
+    )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    subscription_id = Ecto.UUID.generate()
+    attempt_id = Ecto.UUID.generate()
+    plan_id = Ecto.UUID.generate()
+    revision_id = Ecto.UUID.generate()
+    variant_id = Ecto.UUID.generate()
+    order_id = Ecto.UUID.generate()
+    payment_intent_id = Ecto.UUID.generate()
+    period_start_at = DateTime.add(now, -90 * 86_400, :second)
+    boundary_at = DateTime.add(now, -60 * 86_400, :second)
+    period_end_at = DateTime.add(now, -30 * 86_400, :second)
+
+    Repo.query!(
+      "INSERT INTO subscriptions (id, cancel_at_period_end, current_period_start_at, current_period_end_at, next_renewal_at, current_plan_revision_id, subscription_plan_id, variant_id, quantity, renewal_amount_minor, renewal_currency, membership_key) VALUES ($1, true, $2, $3, $3, $4, $5, $6, 1, 1999, 'USD', 'membership:jc242_migration')",
+      [
+        Ecto.UUID.dump!(subscription_id),
+        period_start_at,
+        boundary_at,
+        Ecto.UUID.dump!(revision_id),
+        Ecto.UUID.dump!(plan_id),
+        Ecto.UUID.dump!(variant_id)
+      ]
+    )
+
+    Repo.query!(
+      "INSERT INTO plan_revisions (id, subscription_plan_id) VALUES ($1, $2)",
+      [Ecto.UUID.dump!(revision_id), Ecto.UUID.dump!(plan_id)]
+    )
+
+    Repo.query!(
+      "INSERT INTO renewal_attempts (id, subscription_id, period_start_at, period_end_at, order_id, payment_intent_id, plan_revision_id, variant_id, quantity, amount_minor, currency, charged_contract_snapshot) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, 1999, 'USD', $9::jsonb)",
+      [
+        Ecto.UUID.dump!(attempt_id),
+        Ecto.UUID.dump!(subscription_id),
+        boundary_at,
+        period_end_at,
+        Ecto.UUID.dump!(order_id),
+        Ecto.UUID.dump!(payment_intent_id),
+        Ecto.UUID.dump!(revision_id),
+        Ecto.UUID.dump!(variant_id),
+        Jason.encode!(%{
+          "entitlement_kind" => "membership_access",
+          "entitlement_scope_key" => "membership:jc242_migration"
+        })
+      ]
+    )
+
+    Repo.query!("INSERT INTO orders (id, state) VALUES ($1, 'paid')", [Ecto.UUID.dump!(order_id)])
+
+    Repo.query!("INSERT INTO payment_intents (id, order_id) VALUES ($1, $2)", [
+      Ecto.UUID.dump!(payment_intent_id),
+      Ecto.UUID.dump!(order_id)
+    ])
+
+    Repo.query!(
+      "INSERT INTO payment_applications (order_id, payment_intent_id) VALUES ($1, $2)",
+      [
+        Ecto.UUID.dump!(order_id),
+        Ecto.UUID.dump!(payment_intent_id)
+      ]
+    )
+
+    migration = Module.concat(Store.Repo.Migrations, "Jc242DurablePeriodBoundaryTargets")
+
+    assert [migration_path] =
+             Path.wildcard(
+               Path.expand(
+                 "../../../priv/repo/migrations/*_jc242_durable_period_boundary_targets.exs",
+                 __DIR__
+               )
+             )
+
+    unless Code.ensure_loaded?(migration) do
+      Code.require_file(migration_path)
+    end
+
+    assert Code.ensure_loaded?(migration)
+    assert {:ok, %{num_rows: 1}} = Repo.query(migration.legacy_target_backfill_sql())
+
+    assert [[nil, stored_attempt_id]] =
+             Repo.query!(
+               "SELECT cancel_at_period_end_at, cancel_after_renewal_attempt_id FROM subscriptions WHERE id = $1",
+               [Ecto.UUID.dump!(subscription_id)]
+             ).rows
+
+    assert Ecto.UUID.load!(stored_attempt_id) == attempt_id
   end
 
   test "scheduling before B stores the funded boundary and blocks an already-queued renewal" do
@@ -459,6 +630,121 @@ defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
 
     assert {:ok, :applied} = Facade.execute_suspension_access_effect_for_system(effect.id)
     assert fetch_current_access_effect!(subscription.id).status == :applied
+  end
+
+  test "financial payment application stays awaiting until late exact commercial reconciliation" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {customer, subscription} =
+      create_subscription("jc242_payment_before_commercial_application", %{
+        started_at: DateTime.add(now, -80 * 86_400, :second)
+      })
+
+    enable_stripe!()
+    post_count = :atomics.new(1, [])
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(post_count, 1, 1)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    [attempt] = renewal_attempts(subscription.id)
+    assert DateTime.compare(attempt.period_end_at, now) == :lt
+
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+    assert {:ok, %{outcome: :authoritative_success, evidence: payment_attempt}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               authoritative_success_observation(payment_intent)
+             )
+
+    collection = collection_for_attempt!(attempt.id)
+    assert collection.financial_outcome == :verified_success
+    assert collection.payment_attempt_id == payment_attempt.id
+
+    assert {:ok, %{rows: [[1]]}} =
+             Repo.query(
+               "SELECT count(*) FROM payment_applications WHERE order_id = $1 AND payment_intent_id = $2",
+               [Ecto.UUID.dump!(attempt.order_id), Ecto.UUID.dump!(payment_intent.id)]
+             )
+
+    assert fetch_subscription!(subscription.id).current_period_end_at ==
+             subscription.current_period_end_at
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.status == :active
+    assert scheduled.cancel_at_period_end
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(scheduled.cancel_at_period_end_at)
+    assert scheduled.current_period_end_at == subscription.current_period_end_at
+
+    assert {:ok, %{due_count: 0, canceled_count: 0}} =
+             Facade.run_due_scheduled_cancellations_for_system(now: attempt.period_end_at)
+
+    awaiting = fetch_subscription!(subscription.id)
+    assert awaiting.status == :active
+    assert awaiting.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(awaiting.cancel_at_period_end_at)
+    assert awaiting.current_period_end_at == subscription.current_period_end_at
+    assert access_effects(subscription.id) == []
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 0
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent.id
+             )
+
+    canceled = fetch_subscription!(subscription.id)
+    assert canceled.status == :canceled
+    assert canceled.current_period_end_at == attempt.period_end_at
+    assert canceled.canceled_at == attempt.period_end_at
+    assert canceled.ended_at == attempt.period_end_at
+    assert fetch_attempt!(attempt.id).status == :succeeded
+
+    effect = fetch_current_access_effect!(subscription.id)
+    assert effect.disposition == :non_effective
+    assert effect.source_version == canceled.aggregate_version
+    assert length(access_effects(subscription.id)) == 1
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 1
+
+    assert {:ok, :noop} =
+             Facade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent.id
+             )
+
+    replayed = fetch_subscription!(subscription.id)
+    assert replayed.aggregate_version == canceled.aggregate_version
+    assert replayed.current_period_end_at == attempt.period_end_at
+    assert fetch_current_access_effect!(subscription.id).id == effect.id
+    assert length(access_effects(subscription.id)) == 1
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 1
+
+    assert {:ok, %{rows: [[1]]}} =
+             Repo.query(
+               "SELECT count(*) FROM payment_applications WHERE order_id = $1 AND payment_intent_id = $2",
+               [Ecto.UUID.dump!(attempt.order_id), Ecto.UUID.dump!(payment_intent.id)]
+             )
+
+    assert {:ok, %{rows: [[0]]}} =
+             Repo.query("SELECT count(*) FROM refunds WHERE order_id = $1", [
+               Ecto.UUID.dump!(attempt.order_id)
+             ])
+
+    assert :atomics.get(post_count, 1) == 1
   end
 
   test "due worker terminalizes with the funded boundary and one effect and email" do

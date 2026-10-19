@@ -3796,6 +3796,7 @@ defmodule Store.Subscriptions.Facade do
   defp cancel_subscription_in_transaction(subscription, requested_mode, attrs, actor) do
     with :ok <- lock_subscription_aggregate_version(subscription),
          {:ok, renewal_attempt} <- find_cancellation_renewal_attempt(subscription),
+         :ok <- ensure_cancellation_attempt_owner(subscription, renewal_attempt),
          {:ok, payment_application_status} <-
            cancellation_payment_application_status(renewal_attempt),
          :ok <-
@@ -3807,7 +3808,7 @@ defmodule Store.Subscriptions.Facade do
              renewal_attempt,
              payment_application_status
            ),
-         target_attrs <-
+         {:ok, target_attrs} <-
            cancellation_target_attrs(
              effective_mode,
              subscription,
@@ -3880,6 +3881,22 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp find_cancellation_renewal_attempt(%Subscription{}), do: {:ok, nil}
+
+  defp ensure_cancellation_attempt_owner(_subscription, nil), do: :ok
+
+  defp ensure_cancellation_attempt_owner(
+         %Subscription{id: subscription_id},
+         %RenewalAttempt{subscription_id: subscription_id}
+       ),
+       do: :ok
+
+  defp ensure_cancellation_attempt_owner(_subscription, _attempt) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "scheduled cancellation attempt must belong to the target Subscription"
+     )}
+  end
 
   defp cancellation_payment_application_status(nil), do: {:ok, :unapplied}
 
@@ -3967,16 +3984,23 @@ defmodule Store.Subscriptions.Facade do
          %RenewalAttempt{id: attempt_id},
          :unapplied
        ) do
-    %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: attempt_id}
+    {:ok, %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: attempt_id}}
   end
 
   defp cancellation_target_attrs(
          :period_end,
-         %Subscription{},
-         %RenewalAttempt{period_end_at: period_end_at},
+         %Subscription{} = subscription,
+         %RenewalAttempt{id: attempt_id, period_end_at: period_end_at} = attempt,
          :applied
        ) do
-    %{cancel_at_period_end_at: period_end_at, cancel_after_renewal_attempt_id: nil}
+    with {:ok, commercially_applied?} <-
+           cancellation_attempt_commercially_applied?(subscription, attempt) do
+      if commercially_applied? do
+        {:ok, %{cancel_at_period_end_at: period_end_at, cancel_after_renewal_attempt_id: nil}}
+      else
+        {:ok, %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: attempt_id}}
+      end
+    end
   end
 
   defp cancellation_target_attrs(
@@ -3985,11 +4009,44 @@ defmodule Store.Subscriptions.Facade do
          nil,
          :unapplied
        ) do
-    %{cancel_at_period_end_at: period_end_at, cancel_after_renewal_attempt_id: nil}
+    {:ok, %{cancel_at_period_end_at: period_end_at, cancel_after_renewal_attempt_id: nil}}
   end
 
   defp cancellation_target_attrs(:now, _subscription, _attempt, _payment_status) do
-    %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: nil}
+    {:ok, %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: nil}}
+  end
+
+  defp cancellation_attempt_commercially_applied?(subscription, attempt) do
+    if reconciliation_period_matches?(subscription, attempt),
+      do: exact_cancellation_reconciliation_applied?(subscription, attempt),
+      else: {:ok, false}
+  end
+
+  defp exact_cancellation_reconciliation_applied?(subscription, attempt) do
+    with {:ok, revision} <- fetch_plan_revision(attempt.plan_revision_id),
+         {:ok, contract_change} <- lock_reconciliation_contract_change(attempt.contract_change_id),
+         :ok <- validate_reconciliation_contract_change(contract_change, subscription, attempt) do
+      cancellation_reconciliation_replay_result(
+        subscription,
+        contract_change,
+        attempt,
+        revision
+      )
+    end
+  end
+
+  defp cancellation_reconciliation_replay_result(subscription, contract_change, attempt, revision) do
+    case exact_reconciliation_replay(
+           subscription,
+           contract_change,
+           attempt,
+           revision,
+           renewal_entitlement_target(attempt)
+         ) do
+      {:continue, :replay} -> {:ok, true}
+      {:continue, :apply} -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp cancellation_action(:period_end), do: :cancel_at_period_end_transition

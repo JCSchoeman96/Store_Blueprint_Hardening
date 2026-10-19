@@ -5,16 +5,23 @@ defmodule Store.Repo.Migrations.Jc242DurablePeriodBoundaryTargets do
     alter table(:subscriptions) do
       add :cancel_at_period_end_at, :utc_datetime_usec
 
-      add :cancel_after_renewal_attempt_id,
-          references(:renewal_attempts,
-            type: :uuid,
-            on_delete: :restrict,
-            name: "subscriptions_cancel_after_renewal_attempt_id_fkey"
-          )
+      add :cancel_after_renewal_attempt_id, :uuid
     end
 
     execute(legacy_target_preflight_sql())
     execute(legacy_target_backfill_sql())
+
+    create unique_index(:renewal_attempts, [:subscription_id, :id],
+             name: "renewal_attempts_subscription_id_id_owner_unique_index"
+           )
+
+    execute("""
+    ALTER TABLE subscriptions
+    ADD CONSTRAINT subscriptions_cancel_after_renewal_attempt_owner_fkey
+    FOREIGN KEY (id, cancel_after_renewal_attempt_id)
+    REFERENCES renewal_attempts (subscription_id, id)
+    ON DELETE RESTRICT
+    """)
 
     create constraint(:subscriptions, :subscriptions_scheduled_cancellation_target_check,
              check: """
@@ -38,6 +45,15 @@ defmodule Store.Repo.Migrations.Jc242DurablePeriodBoundaryTargets do
   end
 
   def down do
+    execute("""
+    ALTER TABLE subscriptions
+    DROP CONSTRAINT IF EXISTS subscriptions_cancel_after_renewal_attempt_owner_fkey
+    """)
+
+    drop_if_exists index(:renewal_attempts, [:subscription_id, :id],
+                     name: "renewal_attempts_subscription_id_id_owner_unique_index"
+                   )
+
     drop_if_exists index(:subscriptions, [:ended_at, :id],
                      name: "subscriptions_scheduled_cancellation_notification_replay_index"
                    )
@@ -149,66 +165,62 @@ defmodule Store.Repo.Migrations.Jc242DurablePeriodBoundaryTargets do
     """
   end
 
-  defp legacy_target_backfill_sql do
+  @doc false
+  def legacy_target_backfill_sql do
     """
+    WITH targets AS (
+      SELECT
+        s.id AS subscription_id,
+        ra.id AS attempt_id,
+        ra.period_end_at AS attempt_period_end_at,
+        COALESCE(
+          EXISTS (
+            SELECT 1
+            FROM payment_applications pa
+            JOIN payment_intents pi
+              ON pi.id = pa.payment_intent_id
+             AND pi.order_id = ra.order_id
+            JOIN orders o ON o.id = ra.order_id AND o.state = 'paid'
+            WHERE pa.order_id = ra.order_id
+              AND pa.payment_intent_id = ra.payment_intent_id
+          )
+          AND s.current_period_start_at = ra.period_start_at
+          AND s.current_period_end_at = ra.period_end_at
+          AND s.next_renewal_at = ra.period_end_at
+          AND s.current_plan_revision_id = ra.plan_revision_id
+          AND s.subscription_plan_id = pr.subscription_plan_id
+          AND s.variant_id = ra.variant_id
+          AND s.quantity = ra.quantity
+          AND s.renewal_amount_minor = ra.amount_minor
+          AND s.renewal_currency = ra.currency
+          AND s.membership_key IS NOT DISTINCT FROM CASE
+            WHEN ra.charged_contract_snapshot->>'entitlement_kind' = 'membership_access'
+              AND NULLIF(ra.charged_contract_snapshot->>'entitlement_scope_key', '') IS NOT NULL
+            THEN ra.charged_contract_snapshot->>'entitlement_scope_key'
+            ELSE NULL
+          END,
+          false
+        ) AS commercially_applied
+      FROM subscriptions s
+      LEFT JOIN renewal_attempts ra
+        ON ra.subscription_id = s.id
+       AND ra.period_start_at = s.current_period_end_at
+      LEFT JOIN plan_revisions pr ON pr.id = ra.plan_revision_id
+      WHERE s.cancel_at_period_end = true
+    )
     UPDATE subscriptions s
     SET cancel_at_period_end_at = CASE
-          WHEN EXISTS (
-            SELECT 1
-            FROM renewal_attempts ra
-            WHERE ra.subscription_id = s.id
-              AND ra.period_start_at = s.current_period_end_at
-              AND EXISTS (
-                SELECT 1
-                FROM payment_applications pa
-                JOIN payment_intents pi
-                  ON pi.id = pa.payment_intent_id
-                 AND pi.order_id = ra.order_id
-                JOIN orders o ON o.id = ra.order_id AND o.state = 'paid'
-                WHERE pa.order_id = ra.order_id
-                  AND pa.payment_intent_id = ra.payment_intent_id
-              )
-          ) THEN (
-            SELECT ra.period_end_at
-            FROM renewal_attempts ra
-            WHERE ra.subscription_id = s.id
-              AND ra.period_start_at = s.current_period_end_at
-            LIMIT 1
-          )
-          WHEN EXISTS (
-            SELECT 1
-            FROM renewal_attempts ra
-            WHERE ra.subscription_id = s.id
-              AND ra.period_start_at = s.current_period_end_at
-          ) THEN NULL
-          ELSE s.current_period_end_at
+          WHEN targets.attempt_id IS NULL THEN s.current_period_end_at
+          WHEN targets.commercially_applied THEN targets.attempt_period_end_at
+          ELSE NULL
         END,
         cancel_after_renewal_attempt_id = CASE
-          WHEN EXISTS (
-            SELECT 1
-            FROM renewal_attempts ra
-            WHERE ra.subscription_id = s.id
-              AND ra.period_start_at = s.current_period_end_at
-              AND NOT EXISTS (
-                SELECT 1
-                FROM payment_applications pa
-                JOIN payment_intents pi
-                  ON pi.id = pa.payment_intent_id
-                 AND pi.order_id = ra.order_id
-                JOIN orders o ON o.id = ra.order_id AND o.state = 'paid'
-                WHERE pa.order_id = ra.order_id
-                  AND pa.payment_intent_id = ra.payment_intent_id
-              )
-          ) THEN (
-            SELECT ra.id
-            FROM renewal_attempts ra
-            WHERE ra.subscription_id = s.id
-              AND ra.period_start_at = s.current_period_end_at
-            LIMIT 1
-          )
+          WHEN targets.attempt_id IS NOT NULL AND NOT targets.commercially_applied
+            THEN targets.attempt_id
           ELSE NULL
         END
-    WHERE s.cancel_at_period_end = true;
+    FROM targets
+    WHERE s.id = targets.subscription_id;
     """
   end
 end
