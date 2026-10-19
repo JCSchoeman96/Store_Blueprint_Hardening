@@ -25,6 +25,7 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
   alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
+  alias Store.Workers.ProcessSubscriptionRenewalWorker
 
   setup context do
     StripeAPIStub.setup_default(context)
@@ -32,19 +33,31 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
   end
 
   test "a scheduled cancellation commits after renewal selection and before B" do
-    # INVARIANT=DO_NOT_RENEW commits before B, so no occurrence or collection may be created.
-    # PRODUCTION_MUTATION_THAT_WOULD_BREAK_THIS_TEST=bind before reloading the locked Subscription.
+    # INVARIANT=DO_NOT_RENEW commits before B, and replay of the same worker intent converges to a no-op.
+    # PRODUCTION_MUTATION_THAT_WOULD_BREAK_THIS_TEST=bind before reloading locked authority or fail the existing retry to re-evaluate.
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     fixture =
       create_committed_subscription_fixture!("jc243_pre_b",
-        started_at: DateTime.add(now, -20 * 86_400, :second)
+        started_at: DateTime.add(now, -20 * 86_400, :second),
+        next_renewal_at: DateTime.add(now, -1, :second)
       )
 
     on_exit(fn -> cleanup_committed_subscription_fixture!(fixture) end)
-    renewal_now = DateTime.add(fixture.subscription.current_period_end_at, 1, :microsecond)
 
     assert DateTime.compare(fixture.subscription.current_period_end_at, now) == :gt
+
+    assert {:ok, [due_job]} =
+             unboxed(fn ->
+               Facade.list_due_renewal_jobs_for_system(now: now, limit: 10)
+             end)
+
+    assert due_job.subscription_id == fixture.subscription_id
+
+    renewal_job_args = %{
+      "subscription_id" => due_job.subscription_id,
+      "renewal_key" => due_job.renewal_key
+    }
 
     {target_plan, target_revision} =
       create_future_plan!(fixture, "jc243_pre_b_target", 2_900)
@@ -75,10 +88,7 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
         receive do
           :start_renewal ->
             unboxed(fn ->
-              Facade.process_due_subscription_renewal_for_system(
-                fixture.subscription_id,
-                now: renewal_now
-              )
+              ProcessSubscriptionRenewalWorker.perform(%Oban.Job{args: renewal_job_args})
             end)
         after
           5_000 -> {:error, :renewal_start_barrier_timeout}
@@ -112,6 +122,22 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
     :ok = :telemetry.detach(handler_id)
 
     assert {:error, %{code: "STALE_RECORD"}} = renewal_result
+    assert [] == renewal_attempts(fixture.subscription_id)
+    assert count_collections(fixture.subscription_id) == 0
+    assert :atomics.get(post_count, 1) == 0
+
+    current_before_retry = fetch_subscription!(fixture.subscription_id)
+    assert current_before_retry.cancel_at_period_end_at ==
+             fixture.subscription.current_period_end_at
+
+    assert is_nil(current_before_retry.cancel_after_renewal_attempt_id)
+
+    retry_result =
+      unboxed(fn ->
+        ProcessSubscriptionRenewalWorker.perform(%Oban.Job{args: renewal_job_args})
+      end)
+
+    assert :ok = retry_result
     assert [] == renewal_attempts(fixture.subscription_id)
     assert count_collections(fixture.subscription_id) == 0
     assert :atomics.get(post_count, 1) == 0
@@ -638,7 +664,11 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
     send(task_pid, {:release_repo_query_barrier, barrier})
     rescind_result = Task.await(task, 10_000)
 
-    assert {:error, %{code: "STALE_RECORD"}} = rescind_result
+    assert {:error,
+            %{
+              code: "VALIDATION_ERROR",
+              message: "only a current scheduled cancellation can be rescinded"
+            }} = rescind_result
 
     canceled = fetch_subscription!(fixture.subscription_id)
     assert canceled.status == :canceled
@@ -1146,6 +1176,13 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
       subscription_attrs =
         if match?(%DateTime{}, started_at),
           do: Map.put(subscription_attrs, :started_at, started_at),
+          else: subscription_attrs
+
+      next_renewal_at = Keyword.get(opts, :next_renewal_at)
+
+      subscription_attrs =
+        if match?(%DateTime{}, next_renewal_at),
+          do: Map.put(subscription_attrs, :next_renewal_at, next_renewal_at),
           else: subscription_attrs
 
       %{subscription: subscription, order: order, line_item: line_item, revision: revision} =
