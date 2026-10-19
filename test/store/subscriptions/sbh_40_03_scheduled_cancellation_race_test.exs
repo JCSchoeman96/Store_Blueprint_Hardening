@@ -127,6 +127,7 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
     assert :atomics.get(post_count, 1) == 0
 
     current_before_retry = fetch_subscription!(fixture.subscription_id)
+
     assert current_before_retry.cancel_at_period_end_at ==
              fixture.subscription.current_period_end_at
 
