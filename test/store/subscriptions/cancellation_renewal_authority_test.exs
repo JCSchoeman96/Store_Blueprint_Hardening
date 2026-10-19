@@ -2011,6 +2011,8 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
         [:store, :subscriptions, :renewal_charge_dispatch_check],
         fn _event, _measurements, metadata, config ->
           if metadata.subscription_id == config.subscription_id do
+            collection = fetch_collection_for_attempt!(metadata.renewal_attempt_id, 1)
+
             result =
               SubscriptionsFacade.cancel_subscription_for_user(
                 config.customer,
@@ -2018,7 +2020,10 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                 :period_end
               )
 
-            send(config.owner, {:canceled_after_b_before_dispatch, result, metadata})
+            send(
+              config.owner,
+              {:canceled_after_b_before_dispatch, result, collection.dispatch_state, metadata}
+            )
           end
         end,
         %{customer: customer, owner: owner, subscription_id: subscription.id}
@@ -2042,7 +2047,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
              )
 
     assert_receive {:canceled_after_b_before_dispatch,
-                    {:ok, %{status: :active, cancel_at_period_end: true}},
+                    {:ok, %{status: :active, cancel_at_period_end: true}}, :not_started,
                     %{
                       renewal_attempt_id: expected_attempt_id,
                       collection_attempt_id: expected_collection_id
@@ -2061,6 +2066,18 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert collection.id == expected_collection_id
     assert collection.dispatch_state == :may_have_been_reached
     assert collection.payment_intent_id == attempt.payment_intent_id
+
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM renewal_attempts WHERE subscription_id = $1",
+               [Ecto.UUID.dump!(subscription.id)]
+             ).rows
+
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM renewal_collection_attempts WHERE renewal_attempt_id = $1",
+               [Ecto.UUID.dump!(attempt.id)]
+             ).rows
   end
 
   test "cancellation after B checkout binding preserves its exact occurrence" do
