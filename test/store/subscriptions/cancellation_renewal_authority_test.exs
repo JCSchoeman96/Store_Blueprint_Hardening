@@ -14,7 +14,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
   alias Store.Entitlements.Facade, as: EntitlementsFacade
   alias Store.Orders.{InventoryReservation, Order, PaymentApplication}
   alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
-  alias Store.Payments.{PaymentIntent, Refunds, WebhookReceipt}
+  alias Store.Payments.PaymentIntent
   alias Store.Payments.Types.ProviderObservation
   alias Store.Pricing.TaxRate
   alias Store.Repo
@@ -97,8 +97,10 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert canceled.status == :active
     assert canceled.cancel_at_period_end
     assert canceled.current_period_end_at == subscription.current_period_end_at
+    assert is_nil(canceled.cancel_at_period_end_at)
+    assert canceled.cancel_after_renewal_attempt_id == attempt.id
     assert [%EntitlementGrant{status: :active}] = grants_for(subscription.id)
-    assert fetch_attempt!(subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert is_nil(fetch_attempt!(subscription.id).failure_code)
     assert count_refunds() == 0
     assert :atomics.get(post_count, 1) == 1
 
@@ -224,7 +226,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert count_refunds() == 0
   end
 
-  test "period-end cancellation after the paid boundary terminalizes an unresolved renewal" do
+  test "period-end cancellation after B awaits the exact unresolved renewal" do
     customer = SubscriptionsFixtures.create_customer!("jc281_expired_period_cancel")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
@@ -275,16 +277,19 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                :period_end
              )
 
-    assert canceled.status == :canceled
-    refute canceled.cancel_at_period_end
-    assert canceled.next_renewal_at == nil
+    assert canceled.status == :active
+    assert canceled.cancel_at_period_end
+    assert is_nil(canceled.cancel_at_period_end_at)
+    assert canceled.cancel_after_renewal_attempt_id == attempt.id
+    assert canceled.next_renewal_at == subscription.next_renewal_at
     assert canceled.next_retry_at == nil
 
-    withdrawn = fetch_attempt!(subscription.id)
-    assert withdrawn.status == :failed
-    assert withdrawn.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    awaiting = fetch_attempt!(subscription.id)
+    assert awaiting.id == attempt.id
+    assert awaiting.status == :processing
+    assert is_nil(awaiting.failure_code)
     assert count_refunds() == 0
-    assert [] == grants_for(subscription.id, :active)
+    assert [%EntitlementGrant{status: :active}] = grants_for(subscription.id)
   end
 
   test "an already-enqueued renewal worker does not charge after scheduled cancellation" do
@@ -1260,7 +1265,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
   end
 
   @tag :jc281_physical
-  test "cancellation after physical reservation releases stock before provider dispatch" do
+  test "cancellation after B preserves its physical reservation before provider dispatch" do
     fixture = physical_renewal_fixture!("cancel_after_reservation", 3)
     enable_stripe!()
     owner = self()
@@ -1279,7 +1284,8 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
             send(
               config.owner,
               {:physical_reservation_before_cancel, reservation.state, inventory.reserved_count,
-               inventory.stock_on_hand, :atomics.get(config.post_count, 1)}
+               inventory.stock_on_hand, :atomics.get(config.post_count, 1),
+               metadata.renewal_attempt_id, metadata.collection_attempt_id}
             )
 
             result =
@@ -1318,31 +1324,53 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                now: fixture.now
              )
 
-    assert_receive {:physical_reservation_before_cancel, :active, 1, 3, 0}
-    assert_receive {:physical_cancel_after_reserve, {:ok, %{status: :canceled}}}
+    assert_receive {:physical_reservation_before_cancel, :active, 1, 3, 0, expected_attempt_id,
+                    expected_collection_id}
+
+    assert_receive {:physical_cancel_after_reserve,
+                    {:ok, %{status: :active, cancel_at_period_end: true}}}
 
     attempt = fetch_attempt!(fixture.subscription.id)
     reservation = fetch_reservation!(attempt.order_id, fixture.variant.id)
     inventory = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
 
-    assert attempt.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert reservation.state == :cancelled
-    assert inventory.reserved_count == 0
+    assert attempt.id == expected_attempt_id
+    assert is_nil(attempt.failure_code)
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id ==
+             attempt.id
+
+    assert reservation.state == :active
+    assert inventory.reserved_count == 1
     assert inventory.stock_on_hand == 3
-    assert :atomics.get(post_count, 1) == 0
+    assert :atomics.get(post_count, 1) == 1
 
-    assert {:ok, :noop} =
-             SubscriptionsFacade.process_due_subscription_renewal_for_system(
-               fixture.subscription.id,
-               now: fixture.now
-             )
+    collection = fetch_collection_for_attempt!(attempt.id, 1)
+    assert collection.id == expected_collection_id
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.payment_intent_id == attempt.payment_intent_id
 
-    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
-    assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).reserved_count == 0
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM renewal_attempts WHERE subscription_id = $1",
+               [Ecto.UUID.dump!(fixture.subscription.id)]
+             ).rows
+
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM renewal_collection_attempts WHERE renewal_attempt_id = $1",
+               [Ecto.UUID.dump!(attempt.id)]
+             ).rows
+
+    assert fetch_attempt!(fixture.subscription.id).id == attempt.id
+    assert fetch_collection_for_attempt!(attempt.id, 1).id == expected_collection_id
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :active
+    assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).reserved_count == 1
+    assert :atomics.get(post_count, 1) == 1
   end
 
   @tag :jc281_physical
-  test "cancellation before physical dispatch releases its exact reservation" do
+  test "cancellation after B preserves its exact physical reservation before dispatch" do
     fixture = physical_renewal_fixture!("cancel_before_reservation", 4)
     enable_stripe!()
     owner = self()
@@ -1362,7 +1390,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                 :period_end
               )
 
-            send(config.owner, {:physical_cancel_before_dispatch, result})
+            send(config.owner, {:physical_cancel_before_dispatch, result, metadata})
           end
         end,
         %{customer: fixture.customer, owner: owner, subscription: fixture.subscription}
@@ -1385,20 +1413,37 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                now: fixture.now
              )
 
-    assert_receive {:physical_cancel_before_dispatch, {:ok, %{status: :canceled}}}
+    assert_receive {:physical_cancel_before_dispatch,
+                    {:ok, %{status: :active, cancel_at_period_end: true}},
+                    %{
+                      renewal_attempt_id: expected_attempt_id,
+                      collection_attempt_id: expected_collection_id
+                    }}
 
     attempt = fetch_attempt!(fixture.subscription.id)
     inventory = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
+    reservation = fetch_reservation!(attempt.order_id, fixture.variant.id)
 
-    assert attempt.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert active_reservations_for_order(attempt.order_id) == 0
-    assert inventory.reserved_count == 0
+    assert attempt.id == expected_attempt_id
+    assert is_nil(attempt.failure_code)
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id ==
+             attempt.id
+
+    assert reservation.state == :active
+    assert active_reservations_for_order(attempt.order_id) == 1
+    assert inventory.reserved_count == 1
     assert inventory.stock_on_hand == 4
-    assert :atomics.get(post_count, 1) == 0
+    assert :atomics.get(post_count, 1) == 1
+
+    collection = fetch_collection_for_attempt!(attempt.id, 1)
+    assert collection.id == expected_collection_id
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.payment_intent_id == attempt.payment_intent_id
   end
 
   @tag :jc281_physical
-  test "late physical renewal success preserves payment truth without consuming withdrawn stock" do
+  test "late physical renewal success funds the exact awaiting occurrence" do
     fixture = physical_renewal_fixture!("late_physical_success", 5)
     enable_stripe!()
     post_count = :atomics.new(1, [])
@@ -1426,16 +1471,19 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).reserved_count == 1
     assert Repo.get_by!(InventoryItem, variant_id: fixture.variant.id).stock_on_hand == 5
 
-    assert {:ok, %{status: :canceled}} =
+    assert {:ok, %{status: :active, cancel_at_period_end: true}} =
              SubscriptionsFacade.cancel_subscription_for_user(
                fixture.customer,
                fixture.subscription.id,
                :period_end
              )
 
-    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
+    awaiting = fetch_subscription!(fixture.subscription.id)
+    assert awaiting.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(awaiting.cancel_at_period_end_at)
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :active
     inventory_after_cancel = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
-    assert inventory_after_cancel.reserved_count == 0
+    assert inventory_after_cancel.reserved_count == 1
     assert inventory_after_cancel.stock_on_hand == 5
 
     observation = authoritative_success_observation(payment_intent)
@@ -1449,26 +1497,30 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert fetch_payment_intent!(payment_intent.id).state == :succeeded
     assert fetch_order!(attempt.order_id).state == :paid
     assert count_payment_applications(attempt.order_id) == 1
-    assert fetch_subscription!(fixture.subscription.id).status == :canceled
-    assert fetch_attempt!(fixture.subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert fetch_subscription!(fixture.subscription.id).status == :active
+    assert is_nil(fetch_attempt!(fixture.subscription.id).failure_code)
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id ==
+             attempt.id
+
+    assert is_nil(fetch_subscription!(fixture.subscription.id).cancel_at_period_end_at)
     assert active_reservations_for_order(attempt.order_id) == 0
 
     inventory_after_success = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
     assert inventory_after_success.reserved_count == 0
-    assert inventory_after_success.stock_on_hand == 5
+    assert inventory_after_success.stock_on_hand == 4
 
     reconciliation_args = reconciliation_args_for_attempt(attempt)
-
-    assert {:ok, payment_intent.amount_received_minor} ==
-             Refunds.refundable_base_minor(
-               attempt.order_id,
-               payment_intent.amount_received_minor
-             )
 
     assert :ok ==
              ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
                args: reconciliation_args
              })
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_at_period_end_at ==
+             attempt.period_end_at
+
+    assert is_nil(fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id)
 
     assert {:ok, %{outcome: :already_applied_success}} =
              Store.Payments.record_and_apply_payment_observation_for_system(
@@ -1482,15 +1534,17 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
              })
 
     assert count_payment_applications(attempt.order_id) == 1
-    refunds = refunds_for(attempt.order_id, payment_intent.id)
-    assert length(refunds) == 1
-    assert hd(refunds).reason == "renewal_collected_after_cancellation"
-    assert hd(refunds).scope_kind == :full_refund
+    assert refunds_for(attempt.order_id, payment_intent.id) == []
+    assert fetch_attempt!(fixture.subscription.id).status == :succeeded
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_at_period_end_at ==
+             attempt.period_end_at
+
     assert active_reservations_for_order(attempt.order_id) == 0
 
     inventory_after_replay = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
     assert inventory_after_replay.reserved_count == 0
-    assert inventory_after_replay.stock_on_hand == 5
+    assert inventory_after_replay.stock_on_hand == 4
     assert :atomics.get(post_count, 1) == 1
   end
 
@@ -1558,7 +1612,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
   end
 
   @tag :jc281_physical
-  test "late physical renewal success after cancellation preserves stock and payment truth" do
+  test "late physical renewal success after B promotes its funded cancellation boundary" do
     fixture = physical_renewal_fixture!("expired_physical_success", 5)
     enable_stripe!()
     post_count = :atomics.new(1, [])
@@ -1600,15 +1654,18 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert inventory_after_expiry.stock_on_hand == 5
     assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :active
 
-    assert {:ok, %{status: :canceled}} =
+    assert {:ok, %{status: :active, cancel_at_period_end: true}} =
              SubscriptionsFacade.cancel_subscription_for_user(
                fixture.customer,
                fixture.subscription.id,
                :period_end
              )
 
-    assert fetch_attempt!(fixture.subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
+    assert fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id ==
+             attempt.id
+
+    assert is_nil(fetch_attempt!(fixture.subscription.id).failure_code)
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :active
     assert count_payment_applications(attempt.order_id) == 0
 
     observation = authoritative_success_observation(payment_intent)
@@ -1635,13 +1692,18 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert fetch_payment_intent!(payment_intent.id).state == :succeeded
     assert fetch_order!(attempt.order_id).state == :paid
     assert count_payment_applications(attempt.order_id) == 1
-    assert fetch_subscription!(fixture.subscription.id).status == :canceled
-    assert fetch_attempt!(fixture.subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
+    assert fetch_subscription!(fixture.subscription.id).status == :active
+    assert is_nil(fetch_attempt!(fixture.subscription.id).failure_code)
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id ==
+             attempt.id
+
+    assert is_nil(fetch_subscription!(fixture.subscription.id).cancel_at_period_end_at)
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :consumed
 
     inventory_after_success = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
     assert inventory_after_success.reserved_count == 0
-    assert inventory_after_success.stock_on_hand == 5
+    assert inventory_after_success.stock_on_hand == 4
 
     reconciliation_args = reconciliation_args_for_attempt(attempt)
 
@@ -1649,6 +1711,11 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
              ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
                args: reconciliation_args
              })
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_at_period_end_at ==
+             attempt.period_end_at
+
+    assert is_nil(fetch_subscription!(fixture.subscription.id).cancel_after_renewal_attempt_id)
 
     assert {:ok, %{outcome: :already_applied_success}} =
              Store.Payments.record_and_apply_payment_observation_for_system(
@@ -1662,17 +1729,20 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
              })
 
     assert count_payment_applications(attempt.order_id) == 1
-    refunds = refunds_for(attempt.order_id, payment_intent.id)
-    assert length(refunds) == 1
-    assert hd(refunds).reason == "renewal_collected_after_cancellation"
-    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :cancelled
-    assert fetch_attempt!(fixture.subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert count_refunds() == 1
+    assert refunds_for(attempt.order_id, payment_intent.id) == []
+    assert fetch_attempt!(fixture.subscription.id).status == :succeeded
+
+    assert fetch_subscription!(fixture.subscription.id).cancel_at_period_end_at ==
+             attempt.period_end_at
+
+    assert fetch_reservation!(attempt.order_id, fixture.variant.id).state == :consumed
+    assert is_nil(fetch_attempt!(fixture.subscription.id).failure_code)
+    assert count_refunds() == 0
     assert :atomics.get(post_count, 1) == 1
 
     inventory_after_replay = Repo.get_by!(InventoryItem, variant_id: fixture.variant.id)
     assert inventory_after_replay.reserved_count == 0
-    assert inventory_after_replay.stock_on_hand == 5
+    assert inventory_after_replay.stock_on_hand == 4
   end
 
   @tag :jc281_physical
@@ -1812,7 +1882,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
         :cancellation_first
       )
 
-    assert {:ok, %{status: :canceled, cancel_at_period_end: false}} =
+    assert {:ok, %{status: :active, cancel_at_period_end: true}} =
              cancellation_first_cancel_result
 
     assert {:ok, %{applied?: true}} = cancellation_first_payment_result
@@ -1820,23 +1890,26 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert fetch_order!(cancellation_first_attempt.order_id).state == :paid
     assert fetch_payment_intent!(cancellation_first_attempt.payment_intent_id).state == :succeeded
 
-    assert fetch_attempt!(cancellation_first.subscription_id).failure_code ==
-             "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert is_nil(fetch_attempt!(cancellation_first.subscription_id).failure_code)
 
-    assert {:ok, :noop} = unboxed_reconcile_renewal(cancellation_first_attempt)
+    assert {:ok, :reconciled} = unboxed_reconcile_renewal(cancellation_first_attempt)
 
     cancellation_first_subscription = fetch_subscription!(cancellation_first.subscription_id)
-    assert cancellation_first_subscription.status == :canceled
+    assert cancellation_first_subscription.status == :active
+    assert cancellation_first_subscription.cancel_at_period_end
+
+    assert cancellation_first_subscription.cancel_at_period_end_at ==
+             cancellation_first_attempt.period_end_at
+
+    assert is_nil(cancellation_first_subscription.cancel_after_renewal_attempt_id)
 
     assert cancellation_first_subscription.current_period_end_at ==
-             cancellation_first.subscription.current_period_end_at
+             cancellation_first_attempt.period_end_at
 
-    assert length(
-             refunds_for(
-               cancellation_first_attempt.order_id,
-               cancellation_first_attempt.payment_intent_id
-             )
-           ) == 1
+    assert refunds_for(
+             cancellation_first_attempt.order_id,
+             cancellation_first_attempt.payment_intent_id
+           ) == []
   end
 
   test "payment application and failed-payment suspension serialize on the renewal Order" do
@@ -1915,7 +1988,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     end
   end
 
-  test "cancellation after binding but before provider dispatch blocks the charge" do
+  test "cancellation after B preserves the exact occurrence before provider dispatch" do
     customer = SubscriptionsFixtures.create_customer!("jc281_cancel_before_dispatch")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!()
@@ -1938,6 +2011,8 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
         [:store, :subscriptions, :renewal_charge_dispatch_check],
         fn _event, _measurements, metadata, config ->
           if metadata.subscription_id == config.subscription_id do
+            collection = fetch_collection_for_attempt!(metadata.renewal_attempt_id, 1)
+
             result =
               SubscriptionsFacade.cancel_subscription_for_user(
                 config.customer,
@@ -1945,7 +2020,10 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                 :period_end
               )
 
-            send(config.owner, {:canceled_before_dispatch, result})
+            send(
+              config.owner,
+              {:canceled_after_b_before_dispatch, result, collection.dispatch_state, metadata}
+            )
           end
         end,
         %{customer: customer, owner: owner, subscription_id: subscription.id}
@@ -1968,16 +2046,41 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                now: now
              )
 
-    assert_receive {:canceled_before_dispatch, {:ok, %{status: :canceled}}}
-    assert :atomics.get(post_count, 1) == 0
-    assert fetch_subscription!(subscription.id).status == :canceled
+    assert_receive {:canceled_after_b_before_dispatch,
+                    {:ok, %{status: :active, cancel_at_period_end: true}}, :not_started,
+                    %{
+                      renewal_attempt_id: expected_attempt_id,
+                      collection_attempt_id: expected_collection_id
+                    }}
+
+    assert :atomics.get(post_count, 1) == 1
+    assert fetch_subscription!(subscription.id).status == :active
 
     attempt = fetch_attempt!(subscription.id)
-    assert attempt.status == :failed
-    assert attempt.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert attempt.id == expected_attempt_id
+    assert attempt.status == :processing
+    assert is_nil(attempt.failure_code)
+    assert fetch_subscription!(subscription.id).cancel_after_renewal_attempt_id == attempt.id
+
+    collection = fetch_collection_for_attempt!(attempt.id, 1)
+    assert collection.id == expected_collection_id
+    assert collection.dispatch_state == :may_have_been_reached
+    assert collection.payment_intent_id == attempt.payment_intent_id
+
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM renewal_attempts WHERE subscription_id = $1",
+               [Ecto.UUID.dump!(subscription.id)]
+             ).rows
+
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM renewal_collection_attempts WHERE renewal_attempt_id = $1",
+               [Ecto.UUID.dump!(attempt.id)]
+             ).rows
   end
 
-  test "cancellation after checkout binding but before processing mark is not overwritten" do
+  test "cancellation after B checkout binding preserves its exact occurrence" do
     customer = SubscriptionsFixtures.create_customer!("jc281_cancel_during_binding")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     plan = SubscriptionsFixtures.create_subscription_plan!()
@@ -2008,7 +2111,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                 :period_end
               )
 
-            send(config.owner, {:canceled_during_binding, result})
+            send(config.owner, {:canceled_during_binding, result, metadata})
           end
         end,
         %{customer: customer, owner: owner, subscription_id: subscription.id}
@@ -2030,15 +2133,28 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                now: now
              )
 
-    assert_receive {:canceled_during_binding, {:ok, %{status: :canceled}}}
-    assert :atomics.get(post_count, 1) == 0
-    assert fetch_subscription!(subscription.id).status == :canceled
+    assert_receive {:canceled_during_binding,
+                    {:ok, %{status: :active, cancel_at_period_end: true}},
+                    %{
+                      renewal_attempt_id: expected_attempt_id,
+                      order_id: expected_order_id,
+                      payment_intent_id: expected_payment_intent_id
+                    }}
+
+    assert :atomics.get(post_count, 1) == 1
+    assert fetch_subscription!(subscription.id).status == :active
 
     attempt = fetch_attempt!(subscription.id)
-    assert attempt.status == :failed
-    assert attempt.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert attempt.order_id
-    assert is_nil(attempt.payment_intent_id)
+    assert attempt.id == expected_attempt_id
+    assert attempt.status == :processing
+    assert is_nil(attempt.failure_code)
+    assert fetch_subscription!(subscription.id).cancel_after_renewal_attempt_id == attempt.id
+    assert attempt.order_id == expected_order_id
+    assert attempt.payment_intent_id == expected_payment_intent_id
+
+    collection = fetch_collection_for_attempt!(attempt.id, 1)
+    assert collection.payment_intent_id == expected_payment_intent_id
+    assert collection.dispatch_state == :may_have_been_reached
   end
 
   test "payment fanout fails closed when an Order has duplicate renewal bindings" do
@@ -2093,7 +2209,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
              )
   end
 
-  test "a late success after cancellation is remediated without granting digital access" do
+  test "a paid B-bound occurrence promotes its cancellation target without granting digital access" do
     customer = SubscriptionsFixtures.create_customer!("jc281_late_collection")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
     digital_asset = create_digital_asset!()
@@ -2145,8 +2261,11 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                :period_end
              )
 
-    assert canceled.status == :canceled
-    assert fetch_attempt!(subscription.id).failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
+    assert canceled.status == :active
+    assert canceled.cancel_at_period_end
+    assert is_nil(canceled.cancel_at_period_end_at)
+    assert canceled.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(fetch_attempt!(subscription.id).failure_code)
 
     order_id = attempt.order_id
     payment_intent_id = attempt.payment_intent_id
@@ -2187,21 +2306,7 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
              |> Ash.Query.filter(expr(order_id == ^order_id))
              |> Ash.read!(domain: Store.Digital, authorize?: false, context: %{system?: true})
 
-    reconciliation_args = reconciliation_args_for_attempt(attempt)
-
-    assert [reconciliation_job] =
-             all_enqueued(
-               worker: ReconcilePaidSubscriptionRenewalWorker,
-               args: reconciliation_args
-             )
-
-    Store.DirectRepo.delete!(reconciliation_job)
-
-    assert [] ==
-             all_enqueued(
-               worker: ReconcilePaidSubscriptionRenewalWorker,
-               args: reconciliation_args
-             )
+    collection = fetch_collection_for_attempt!(attempt.id, 1)
 
     assert {:ok, %{outcome: :already_applied_success}} =
              Store.Payments.record_and_apply_payment_observation_for_system(
@@ -2209,86 +2314,45 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
                observation
              )
 
-    assert [_replayed_reconciliation_job] =
-             all_enqueued(
-               worker: ReconcilePaidSubscriptionRenewalWorker,
-               args: reconciliation_args
-             )
-
     assert {:ok, %{applied?: false}} =
              Store.Payments.apply_payment_success_once(payment_intent_id)
 
-    assert [_idempotent_reconciliation_job] =
-             all_enqueued(
-               worker: ReconcilePaidSubscriptionRenewalWorker,
-               args: reconciliation_args
+    assert {:ok, :reconciled} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent_id
              )
 
-    assert :ok ==
-             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
-               args: reconciliation_args
-             })
+    assert {:ok, :noop} =
+             SubscriptionsFacade.reconcile_paid_subscription_renewal_for_system(order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent_id
+             )
 
-    assert :ok ==
-             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
-               args: reconciliation_args_for_attempt(attempt)
-             })
+    promoted = fetch_subscription!(subscription.id)
+    assert promoted.status == :active
+    assert promoted.cancel_at_period_end
+    assert promoted.cancel_at_period_end_at == attempt.period_end_at
+    assert is_nil(promoted.cancel_after_renewal_attempt_id)
 
-    assert fetch_subscription!(subscription.id).status == :canceled
+    assert promoted.current_period_end_at == attempt.period_end_at
 
-    assert fetch_subscription!(subscription.id).current_period_end_at ==
-             subscription.current_period_end_at
-
-    withdrawn = fetch_attempt!(subscription.id)
-    assert withdrawn.status == :failed
-    assert withdrawn.failure_code == "RENEWAL_AUTHORITY_WITHDRAWN"
-    assert [] == grants_for(subscription.id, :active)
+    reconciled_attempt = fetch_attempt!(subscription.id)
+    assert reconciled_attempt.status == :succeeded
+    assert is_nil(reconciled_attempt.failure_code)
 
     refunds = refunds_for(order_id, payment_intent_id)
-    assert length(refunds) == 1
-    assert hd(refunds).requested_amount_minor == payment_intent.amount_received_minor
-    assert hd(refunds).currency == payment_intent.currency
-    assert hd(refunds).reason == "renewal_collected_after_cancellation"
-    assert hd(refunds).scope_kind == :full_refund
-
-    assert hd(refunds).idempotency_key ==
-             "renewal-cancel-remediation:#{attempt.id}:#{payment_intent.id}"
-
-    refund_receipt =
-      WebhookReceipt
-      |> Ash.Changeset.for_create(
-        :ingest,
-        %{
-          provider: :stripe,
-          raw_body:
-            Jason.encode!(%{
-              "event_type" => "refund.succeeded",
-              "provider_event_id" => "evt_jc281_refund_#{attempt.id}",
-              "refund" => %{
-                "id" => "re_jc281_refund_#{attempt.id}",
-                "idempotency_key" => hd(refunds).idempotency_key
-              }
-            }),
-          headers: %{"content-type" => ["application/json"]}
-        },
-        context: %{system?: true}
-      )
-      |> Ash.create!(domain: Store.Payments, authorize?: false, context: %{system?: true})
-
-    assert :ok = Store.Payments.process_refund_webhook_receipt(refund_receipt)
-    assert fetch_order!(order_id).state == :refunded
+    assert refunds == []
+    assert count_refunds() == 0
 
     assert {:ok, %{applied?: false}} =
              Store.Payments.apply_payment_success_once(payment_intent_id)
 
     assert count_payment_applications(order_id) == 1
-
-    assert :ok ==
-             ReconcilePaidSubscriptionRenewalWorker.perform(%Job{
-               args: reconciliation_args_for_attempt(attempt)
-             })
-
-    assert length(refunds_for(order_id, payment_intent_id)) == 1
+    assert fetch_order!(order_id).state == :paid
+    assert refunds_for(order_id, payment_intent_id) == []
 
     assert :atomics.get(post_count, 1) == 1
   end

@@ -157,7 +157,7 @@ defmodule Store.Subscriptions.Facade do
           {:ok, :applied | :superseded | :noop} | {:error, Error.t() | term()}
   def execute_suspension_access_effect_for_system(effect_id) when is_binary(effect_id) do
     case Repo.transaction(fn -> execute_suspension_access_effect_in_transaction(effect_id) end) do
-      {:ok, {:applied, effect, notifications, user_ids}} ->
+      {:ok, {:applied, effect, notifications, user_ids, reason}} ->
         :ok =
           AshNotifications.notify_post_commit(notifications,
             context: %{
@@ -167,7 +167,7 @@ defmodule Store.Subscriptions.Facade do
             }
           )
 
-        case deliver_access_effect_projection(effect, user_ids) do
+        case deliver_access_effect_projection(effect, user_ids, reason) do
           :ok -> {:ok, :applied}
           {:error, reason} -> {:error, reason}
         end
@@ -201,7 +201,13 @@ defmodule Store.Subscriptions.Facade do
       when is_binary(effect_id) do
     with {:ok, effect} <- fetch_access_effect(effect_id),
          true <- effect.status == :applied and is_list(effect.projection_user_ids),
-         :ok <- deliver_access_effect_projection(effect, effect.projection_user_ids) do
+         {:ok, subscription} <- fetch_subscription_for_renewal(effect.subscription_id),
+         :ok <-
+           deliver_access_effect_projection(
+             effect,
+             effect.projection_user_ids,
+             non_effective_access_effect_reason(subscription)
+           ) do
       :ok
     else
       false -> :ok
@@ -2284,6 +2290,142 @@ defmodule Store.Subscriptions.Facade do
     {:error, Error.new("VALIDATION_ERROR", "boundary suspension options must be a keyword list")}
   end
 
+  @spec run_due_scheduled_cancellations_for_system(keyword()) ::
+          {:ok,
+           %{
+             due_count: non_neg_integer(),
+             canceled_count: non_neg_integer(),
+             failed_count: non_neg_integer(),
+             cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             now: DateTime.t()
+           }}
+          | {:error, Error.t() | term()}
+  def run_due_scheduled_cancellations_for_system(opts \\ [])
+
+  def run_due_scheduled_cancellations_for_system(opts) when is_list(opts) do
+    with :ok <- validate_optional_keyset_cursor(opts[:after_boundary_at], opts[:after_id]),
+         {:ok, database_now} <- database_wall_clock_now() do
+      now = Keyword.get(opts, :now, database_now)
+      limit = opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
+
+      query =
+        Subscription
+        |> Ash.Query.for_read(:read_due_scheduled_cancellations_for_system, %{
+          now: now,
+          after_boundary_at: Keyword.get(opts, :after_boundary_at),
+          after_id: Keyword.get(opts, :after_id),
+          limit: limit
+        })
+
+      case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+        {:ok, subscriptions} ->
+          result = terminalize_due_scheduled_cancellations(subscriptions, opts[:now])
+
+          {:ok,
+           %{
+             due_count: length(subscriptions),
+             canceled_count: result.canceled,
+             failed_count: result.failed,
+             cursor: scheduled_cancellation_cursor(subscriptions, limit),
+             now: now
+           }}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  def run_due_scheduled_cancellations_for_system(_opts) do
+    {:error,
+     Error.new("VALIDATION_ERROR", "scheduled cancellation options must be a keyword list")}
+  end
+
+  @spec replay_scheduled_cancellation_notifications_for_system(keyword()) ::
+          {:ok,
+           %{
+             replay_count: non_neg_integer(),
+             failed_count: non_neg_integer(),
+             cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil
+           }}
+          | {:error, Error.t() | term()}
+  def replay_scheduled_cancellation_notifications_for_system(opts \\ [])
+
+  def replay_scheduled_cancellation_notifications_for_system(opts) when is_list(opts) do
+    limit = opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
+
+    with :ok <- validate_optional_keyset_cursor(opts[:after_ended_at], opts[:after_id]),
+         {:ok, candidates} <- missing_scheduled_cancellation_notifications(opts, limit) do
+      {replay_count, failed_count} =
+        Enum.reduce(candidates, {0, 0}, &count_replayed_notification/2)
+
+      {:ok,
+       %{
+         replay_count: replay_count,
+         failed_count: failed_count,
+         cursor: notification_replay_cursor(candidates, limit)
+       }}
+    end
+  end
+
+  def replay_scheduled_cancellation_notifications_for_system(_opts) do
+    {:error, Error.new("VALIDATION_ERROR", "notification replay options must be a keyword list")}
+  end
+
+  defp terminalize_due_scheduled_cancellations(subscriptions, now_override) do
+    Enum.reduce(subscriptions, %{canceled: 0, failed: 0}, fn subscription, counts ->
+      result = terminalize_due_scheduled_cancellation_for_system(subscription.id, now_override)
+      count_due_scheduled_cancellation(result, counts)
+    end)
+  end
+
+  defp count_due_scheduled_cancellation({:ok, :noop}, counts), do: counts
+
+  defp count_due_scheduled_cancellation(
+         {:ok, {:canceled, canceled, notifications}},
+         counts
+       ) do
+    :ok =
+      AshNotifications.notify_post_commit(notifications,
+        context: %{
+          flow: :scheduled_boundary_cancellation,
+          subscription_id: canceled.id
+        }
+      )
+
+    case enqueue_scheduled_cancellation_email(canceled) do
+      {:ok, _outbox_or_skipped} ->
+        %{counts | canceled: counts.canceled + 1}
+
+      {:error, _reason} ->
+        %{counts | canceled: counts.canceled + 1, failed: counts.failed + 1}
+    end
+  end
+
+  defp count_due_scheduled_cancellation({:error, _reason}, counts),
+    do: %{counts | failed: counts.failed + 1}
+
+  defp count_replayed_notification(subscription, {replayed, failed}) do
+    case enqueue_scheduled_cancellation_email(subscription) do
+      {:ok, _outbox_or_skipped} -> {replayed + 1, failed}
+      {:error, _reason} -> {replayed, failed + 1}
+    end
+  end
+
+  defp validate_optional_keyset_cursor(nil, nil), do: :ok
+
+  defp validate_optional_keyset_cursor(%DateTime{}, id) when is_binary(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, _uuid} -> :ok
+      :error -> {:error, Error.new("VALIDATION_ERROR", "keyset cursor id must be a UUID")}
+    end
+  end
+
+  defp validate_optional_keyset_cursor(_timestamp, _id),
+    do:
+      {:error,
+       Error.new("VALIDATION_ERROR", "keyset cursor timestamp and id are required together")}
+
   @spec list_past_due_missing_failed_payment_boundary_for_system(keyword()) ::
           {:ok, [Subscription.t()]} | {:error, Error.t() | term()}
   def list_past_due_missing_failed_payment_boundary_for_system(opts \\ [])
@@ -2665,6 +2807,28 @@ defmodule Store.Subscriptions.Facade do
          _payment_intent_id
        ),
        do: {:ok, :noop}
+
+  defp finish_paid_renewal_reconciliation(
+         :scheduled_cancellation,
+         updated_subscription,
+         _entitlement_target,
+         notifications,
+         attempt,
+         order_id,
+         payment_intent_id
+       ) do
+    with :ok <-
+           AshNotifications.notify_post_commit(notifications,
+             context: %{
+               flow: :reconcile_paid_renewal,
+               subscription_id: attempt.subscription_id
+             }
+           ),
+         {:ok, _attempt} <- mark_attempt_succeeded(attempt, order_id, payment_intent_id),
+         {:ok, _outbox_or_skipped} <- enqueue_scheduled_cancellation_email(updated_subscription) do
+      {:ok, if(attempt.status == :succeeded, do: :noop, else: :reconciled)}
+    end
+  end
 
   defp finish_paid_renewal_reconciliation(
          outcome,
@@ -3595,8 +3759,15 @@ defmodule Store.Subscriptions.Facade do
             }
           )
 
-        if effective_mode == :now do
-          finalize_immediate_cancellation(canceled, subscription)
+        case {effective_mode, canceled.status, canceled.canceled_reason} do
+          {:now, _status, _reason} ->
+            finalize_immediate_cancellation(canceled, subscription)
+
+          {:period_end, :canceled, "canceled_period_end"} ->
+            _ = enqueue_scheduled_cancellation_email(canceled)
+
+          _ ->
+            :ok
         end
 
         {:ok, canceled}
@@ -3625,6 +3796,7 @@ defmodule Store.Subscriptions.Facade do
   defp cancel_subscription_in_transaction(subscription, requested_mode, attrs, actor) do
     with :ok <- lock_subscription_aggregate_version(subscription),
          {:ok, renewal_attempt} <- find_cancellation_renewal_attempt(subscription),
+         :ok <- ensure_cancellation_attempt_owner(subscription, renewal_attempt),
          {:ok, payment_application_status} <-
            cancellation_payment_application_status(renewal_attempt),
          :ok <-
@@ -3633,18 +3805,30 @@ defmodule Store.Subscriptions.Facade do
            effective_cancellation_mode(
              requested_mode,
              subscription,
+             renewal_attempt,
+             payment_application_status
+           ),
+         {:ok, target_attrs} <-
+           cancellation_target_attrs(
+             effective_mode,
+             subscription,
+             renewal_attempt,
              payment_application_status
            ),
          {:ok, attempt_notifications} <-
            classify_renewal_attempt_for_cancellation(
              renewal_attempt,
              payment_application_status,
-             requested_mode
+             effective_mode
            ),
          {:ok, released_inventory} <-
-           release_withdrawn_renewal_inventory(renewal_attempt, payment_application_status),
+           release_withdrawn_renewal_inventory(
+             renewal_attempt,
+             payment_application_status,
+             effective_mode
+           ),
          action <- cancellation_action(effective_mode),
-         attrs <- cancellation_attrs(attrs, effective_mode),
+         attrs <- cancellation_attrs(attrs, effective_mode, target_attrs),
          {:ok, current_target} <- current_contract_change(subscription),
          {:ok, transition_notifications} <-
            maybe_transition_contract_change(current_target, :cancel),
@@ -3698,6 +3882,22 @@ defmodule Store.Subscriptions.Facade do
 
   defp find_cancellation_renewal_attempt(%Subscription{}), do: {:ok, nil}
 
+  defp ensure_cancellation_attempt_owner(_subscription, nil), do: :ok
+
+  defp ensure_cancellation_attempt_owner(
+         %Subscription{id: subscription_id},
+         %RenewalAttempt{subscription_id: subscription_id}
+       ),
+       do: :ok
+
+  defp ensure_cancellation_attempt_owner(_subscription, _attempt) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "scheduled cancellation attempt must belong to the target Subscription"
+     )}
+  end
+
   defp cancellation_payment_application_status(nil), do: {:ok, :unapplied}
 
   defp cancellation_payment_application_status(%RenewalAttempt{
@@ -3750,13 +3950,21 @@ defmodule Store.Subscriptions.Facade do
 
   defp ensure_cancellation_payment_precedence(_attempt, _payment_application_status), do: :ok
 
-  defp effective_cancellation_mode(:now, _subscription, _payment_application_status), do: :now
+  defp effective_cancellation_mode(:now, _subscription, _attempt, _payment_application_status),
+    do: :now
 
-  defp effective_cancellation_mode(:period_end, _subscription, :applied), do: :period_end
+  defp effective_cancellation_mode(
+         :period_end,
+         _subscription,
+         %RenewalAttempt{},
+         _payment_status
+       ),
+       do: :period_end
 
   defp effective_cancellation_mode(
          :period_end,
          %Subscription{current_period_end_at: %DateTime{} = period_end_at},
+         nil,
          :unapplied
        ) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
@@ -3768,13 +3976,87 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp effective_cancellation_mode(:period_end, %Subscription{}, :unapplied), do: :now
+  defp effective_cancellation_mode(:period_end, %Subscription{}, nil, :unapplied), do: :now
+
+  defp cancellation_target_attrs(
+         :period_end,
+         %Subscription{},
+         %RenewalAttempt{id: attempt_id},
+         :unapplied
+       ) do
+    {:ok, %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: attempt_id}}
+  end
+
+  defp cancellation_target_attrs(
+         :period_end,
+         %Subscription{} = subscription,
+         %RenewalAttempt{id: attempt_id, period_end_at: period_end_at} = attempt,
+         :applied
+       ) do
+    with {:ok, commercially_applied?} <-
+           cancellation_attempt_commercially_applied?(subscription, attempt) do
+      if commercially_applied? do
+        {:ok, %{cancel_at_period_end_at: period_end_at, cancel_after_renewal_attempt_id: nil}}
+      else
+        {:ok, %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: attempt_id}}
+      end
+    end
+  end
+
+  defp cancellation_target_attrs(
+         :period_end,
+         %Subscription{current_period_end_at: %DateTime{} = period_end_at},
+         nil,
+         :unapplied
+       ) do
+    {:ok, %{cancel_at_period_end_at: period_end_at, cancel_after_renewal_attempt_id: nil}}
+  end
+
+  defp cancellation_target_attrs(:now, _subscription, _attempt, _payment_status) do
+    {:ok, %{cancel_at_period_end_at: nil, cancel_after_renewal_attempt_id: nil}}
+  end
+
+  defp cancellation_attempt_commercially_applied?(subscription, attempt) do
+    if reconciliation_period_matches?(subscription, attempt),
+      do: exact_cancellation_reconciliation_applied?(subscription, attempt),
+      else: {:ok, false}
+  end
+
+  defp exact_cancellation_reconciliation_applied?(subscription, attempt) do
+    with {:ok, revision} <- fetch_plan_revision(attempt.plan_revision_id),
+         {:ok, contract_change} <- lock_reconciliation_contract_change(attempt.contract_change_id),
+         :ok <- validate_reconciliation_contract_change(contract_change, subscription, attempt) do
+      cancellation_reconciliation_replay_result(
+        subscription,
+        contract_change,
+        attempt,
+        revision
+      )
+    end
+  end
+
+  defp cancellation_reconciliation_replay_result(subscription, contract_change, attempt, revision) do
+    case exact_reconciliation_replay(
+           subscription,
+           contract_change,
+           attempt,
+           revision,
+           renewal_entitlement_target(attempt)
+         ) do
+      {:continue, :replay} -> {:ok, true}
+      {:continue, :apply} -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp cancellation_action(:period_end), do: :cancel_at_period_end_transition
   defp cancellation_action(:now), do: :cancel_now_transition
 
-  defp cancellation_attrs(attrs, :period_end), do: attrs
-  defp cancellation_attrs(attrs, :now), do: Map.put(attrs, :canceled_reason, "user_request")
+  defp cancellation_attrs(attrs, :period_end, target_attrs),
+    do: Map.merge(attrs, target_attrs)
+
+  defp cancellation_attrs(attrs, :now, _target_attrs),
+    do: Map.put(attrs, :canceled_reason, "user_request")
 
   defp classify_renewal_attempt_for_cancellation(nil, _payment_status, _requested_mode),
     do: {:ok, []}
@@ -3785,9 +4067,15 @@ defmodule Store.Subscriptions.Facade do
 
   defp classify_renewal_attempt_for_cancellation(_attempt, :applied, :period_end), do: {:ok, []}
 
+  defp classify_renewal_attempt_for_cancellation(_attempt, :unapplied, :period_end),
+    do: {:ok, []}
+
   defp classify_renewal_attempt_for_cancellation(attempt, :unapplied, _requested_mode) do
     mark_attempt_authority_withdrawn(attempt)
   end
+
+  defp release_withdrawn_renewal_inventory(_attempt, :unapplied, :period_end),
+    do: {:ok, %{reservations: [], collection_variant_ids: []}}
 
   defp release_withdrawn_renewal_inventory(
          %RenewalAttempt{
@@ -3796,7 +4084,8 @@ defmodule Store.Subscriptions.Facade do
            status: status,
            failure_code: failure_code
          },
-         :unapplied
+         :unapplied,
+         :now
        )
        when is_binary(order_id) and not (status == :failed and failure_code == "PAYMENT_FAILED") do
     with {:ok, %{reservations: reservations}} <-
@@ -3819,7 +4108,7 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp release_withdrawn_renewal_inventory(_attempt, _payment_application_status),
+  defp release_withdrawn_renewal_inventory(_attempt, _payment_application_status, _mode),
     do: {:ok, %{reservations: [], collection_variant_ids: []}}
 
   defp mark_attempt_authority_withdrawn(%RenewalAttempt{
@@ -5844,6 +6133,13 @@ defmodule Store.Subscriptions.Facade do
 
   defp maybe_enqueue_membership_access_ended_email(_subscription, _plan, _reason), do: :ok
 
+  defp enqueue_scheduled_cancellation_email(%Subscription{} = subscription) do
+    Comms.enqueue_membership_access_ended_for_system(
+      subscription.id,
+      "canceled_period_end"
+    )
+  end
+
   defp fetch_variant_for_renewal(variant_id) when is_binary(variant_id) do
     query =
       Variant
@@ -5978,16 +6274,27 @@ defmodule Store.Subscriptions.Facade do
   defp apply_locked_reconciliation(
          %Subscription{status: :canceled} = subscription,
          _contract_change,
-         _attempt,
+         %RenewalAttempt{} = attempt,
          _revision,
          target
        ) do
-    %{
-      outcome: :canceled,
-      subscription: subscription,
-      target: target,
-      notifications: []
-    }
+    if subscription.canceled_reason == "canceled_period_end" and
+         subscription.canceled_at == attempt.period_end_at and
+         subscription.current_period_end_at == attempt.period_end_at do
+      %{
+        outcome: :scheduled_cancellation,
+        subscription: subscription,
+        target: target,
+        notifications: []
+      }
+    else
+      %{
+        outcome: :canceled,
+        subscription: subscription,
+        target: target,
+        notifications: []
+      }
+    end
   end
 
   defp apply_locked_reconciliation(subscription, contract_change, attempt, revision, target) do
@@ -6014,16 +6321,91 @@ defmodule Store.Subscriptions.Facade do
          {:ok, updated, subscription_notifications} <-
            update_reconciled_subscription(subscription, attempt, revision, target),
          {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change),
+         {:ok, outcome, terminal_subscription, terminal_notifications} <-
+           terminalize_late_reconciled_cancellation(subscription, updated, attempt),
          {:ok, _effect} <-
-           establish_suspended_recovery_access_effect(subscription, updated, attempt, target) do
+           maybe_establish_suspended_recovery_access_effect(
+             outcome,
+             subscription,
+             terminal_subscription,
+             attempt,
+             target
+           ) do
       %{
-        outcome: :applied,
-        subscription: updated,
+        outcome: outcome,
+        subscription: terminal_subscription,
         target: target,
-        notifications: subscription_notifications ++ change_notifications
+        notifications:
+          subscription_notifications ++ change_notifications ++ terminal_notifications
       }
     else
       {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp maybe_establish_suspended_recovery_access_effect(
+         :applied,
+         %Subscription{} = previous,
+         %Subscription{} = recovered,
+         %RenewalAttempt{} = attempt,
+         target
+       ),
+       do: establish_suspended_recovery_access_effect(previous, recovered, attempt, target)
+
+  defp maybe_establish_suspended_recovery_access_effect(
+         _outcome,
+         %Subscription{},
+         %Subscription{},
+         %RenewalAttempt{},
+         _target
+       ),
+       do: {:ok, nil}
+
+  defp terminalize_late_reconciled_cancellation(
+         %Subscription{} = previous,
+         %Subscription{} = updated,
+         %RenewalAttempt{} = attempt
+       ) do
+    awaiting_same_attempt? =
+      previous.cancel_at_period_end and
+        previous.cancel_after_renewal_attempt_id == attempt.id and
+        updated.cancel_at_period_end and
+        updated.cancel_after_renewal_attempt_id == nil and
+        updated.cancel_at_period_end_at == attempt.period_end_at
+
+    if awaiting_same_attempt?,
+      do: terminalize_late_paid_cancellation(updated, attempt),
+      else: {:ok, :applied, updated, []}
+  end
+
+  defp terminalize_late_paid_cancellation(updated, attempt) do
+    case database_boundary_reached?(attempt.period_end_at) do
+      {:ok, true} ->
+        terminalize_reconciled_cancellation_at_boundary(updated, attempt)
+
+      {:ok, false} ->
+        {:ok, :applied, updated, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp terminalize_reconciled_cancellation_at_boundary(updated, attempt) do
+    case terminalize_scheduled_cancellation_in_transaction(
+           updated.id,
+           attempt.period_end_at,
+           nil
+         ) do
+      {:canceled, canceled, notifications} ->
+        {:ok, :scheduled_cancellation, canceled, notifications}
+
+      :noop ->
+        {:error,
+         Error.new(
+           "STALE_RECORD",
+           "late paid cancellation target changed during reconciliation"
+         )}
     end
   end
 
@@ -6348,6 +6730,17 @@ defmodule Store.Subscriptions.Facade do
       retry_suppressed_at: nil
     }
 
+    attrs =
+      if subscription.cancel_at_period_end and
+           subscription.cancel_after_renewal_attempt_id == attempt.id do
+        Map.merge(attrs, %{
+          cancel_at_period_end_at: attempt.period_end_at,
+          cancel_after_renewal_attempt_id: nil
+        })
+      else
+        attrs
+      end
+
     subscription
     |> Ash.Changeset.for_update(:extend_period, attrs, context: %{system?: true})
     |> Ash.update(
@@ -6423,6 +6816,193 @@ defmodule Store.Subscriptions.Facade do
       _ -> {:error, Error.new("INTERNAL_ERROR", "database wall clock is unavailable")}
     end
   end
+
+  defp terminalize_due_scheduled_cancellation_for_system(subscription_id, now_override) do
+    case Repo.transaction(fn ->
+           terminalize_scheduled_cancellation_in_transaction(
+             subscription_id,
+             nil,
+             now_override
+           )
+         end) do
+      {:ok, :noop} ->
+        {:ok, :noop}
+
+      {:ok, {:canceled, subscription, notifications}} ->
+        {:ok, {:canceled, subscription, notifications}}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp terminalize_scheduled_cancellation_in_transaction(
+         subscription_id,
+         expected_boundary_at,
+         now_override
+       ) do
+    case fetch_subscription_for_renewal_locked(subscription_id) do
+      {:ok,
+       %Subscription{
+         status: :active,
+         cancel_at_period_end: true,
+         cancel_at_period_end_at: %DateTime{} = boundary_at
+       } = subscription} ->
+        terminalize_if_boundary_current_and_due(
+          subscription,
+          boundary_at,
+          expected_boundary_at,
+          now_override
+        )
+
+      {:ok, %Subscription{}} ->
+        :noop
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp terminalize_if_boundary_current_and_due(
+         subscription,
+         boundary_at,
+         expected_boundary_at,
+         now_override
+       ) do
+    with true <- is_nil(expected_boundary_at) or expected_boundary_at == boundary_at,
+         {:ok, now} <- terminalization_now(now_override) do
+      if DateTime.compare(now, boundary_at) == :lt do
+        :noop
+      else
+        commit_scheduled_boundary_cancellation(subscription)
+      end
+    else
+      false -> :noop
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp terminalization_now(%DateTime{} = now), do: {:ok, now}
+  defp terminalization_now(nil), do: database_wall_clock_now()
+
+  defp terminalization_now(_now),
+    do: {:error, Error.new("VALIDATION_ERROR", "terminalization time must be a DateTime")}
+
+  defp commit_scheduled_boundary_cancellation(subscription) do
+    with {:ok, canceled, notifications} <-
+           subscription
+           |> Ash.Changeset.for_update(
+             :scheduled_boundary_cancellation_transition,
+             %{canceled_reason: "canceled_period_end"},
+             context: %{system?: true}
+           )
+           |> Ash.update(
+             domain: Subscriptions,
+             authorize?: false,
+             context: %{system?: true},
+             return_notifications?: true
+           )
+           |> scheduled_cancellation_update_result(),
+         {:ok, input} <-
+           EstablishAccessEffectInput.new(%{
+             subscription_id: canceled.id,
+             source_version: canceled.aggregate_version,
+             disposition: :non_effective,
+             entitlement_kind: nil,
+             entitlement_scope_key: nil,
+             valid_until_at: nil,
+             source_order_line_item_id: canceled.source_order_line_item_id,
+             contract_change_id: canceled.current_contract_change_id,
+             plan_revision_id: canceled.current_plan_revision_id
+           }),
+         {:ok, _effect} <- establish_access_effect_for_system(input) do
+      {:canceled, canceled, notifications}
+    else
+      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
+    end
+  end
+
+  defp scheduled_cancellation_update_result({:ok, subscription, notifications}),
+    do: {:ok, subscription, notifications}
+
+  defp scheduled_cancellation_update_result({:ok, subscription}),
+    do: {:ok, subscription, []}
+
+  defp scheduled_cancellation_update_result({:error, reason}),
+    do: {:error, reason}
+
+  defp missing_scheduled_cancellation_notifications(opts, limit) do
+    after_ended_at = Keyword.get(opts, :after_ended_at)
+    after_id = Keyword.get(opts, :after_id)
+
+    case Repo.query(
+           """
+           SELECT s.id::text, s.ended_at, s.current_period_end_at
+           FROM subscriptions s
+           JOIN subscription_plans sp ON sp.id = s.subscription_plan_id
+           WHERE s.status = 'canceled'
+             AND s.canceled_reason = 'canceled_period_end'
+             AND s.ended_at IS NOT NULL
+             AND s.current_period_end_at IS NOT NULL
+             AND sp.entitlement_kind = 'membership_access'
+             AND (
+               $1::timestamptz IS NULL OR
+               s.ended_at > $1::timestamptz OR
+               (s.ended_at = $1::timestamptz AND s.id > $2::uuid)
+             )
+             AND (
+               NOT EXISTS (
+                 SELECT 1
+                 FROM email_outboxes eo
+                 WHERE eo.subscription_id = s.id
+                   AND eo.idempotency_key =
+                     'membership_access_ended:sub:' || s.id::text ||
+                     ':reason:canceled_period_end:period_end:' ||
+                     to_char(
+                       s.current_period_end_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                     )
+               ) OR EXISTS (
+                 SELECT 1
+                 FROM email_outboxes eo
+                 WHERE eo.subscription_id = s.id
+                   AND eo.idempotency_key =
+                     'membership_access_ended:sub:' || s.id::text ||
+                     ':reason:canceled_period_end:period_end:' ||
+                     to_char(
+                       s.current_period_end_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                     )
+                   AND eo.state = 'pending'
+                   AND eo.updated_at <= clock_timestamp() - INTERVAL '5 minutes'
+               )
+             )
+           ORDER BY s.ended_at ASC, s.id ASC
+           LIMIT $3
+           """,
+           [after_ended_at, after_id, limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [id, ended_at, current_period_end_at] ->
+           %Subscription{
+             id: id,
+             ended_at: ended_at,
+             current_period_end_at: current_period_end_at
+           }
+         end)}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp notification_replay_cursor(subscriptions, limit) when length(subscriptions) == limit do
+    subscription = List.last(subscriptions)
+    %{timestamp: subscription.ended_at, id: subscription.id}
+  end
+
+  defp notification_replay_cursor(_subscriptions, _limit), do: nil
 
   defp suspend_boundary_result(subscription, counts) do
     case suspend_due_boundary_for_system(subscription.id) do
@@ -7076,16 +7656,19 @@ defmodule Store.Subscriptions.Facade do
       not current_access_effect?(subscription, effect, current) ->
         supersede_stale_suspension_access_effect(effect)
 
-      subscription.status != :suspended or effect.disposition != :non_effective ->
-        Repo.rollback(
-          Error.new(
-            "INVALID_STATE_TRANSITION",
-            "current suspension AccessEffect does not match its Subscription source"
-          )
-        )
-
       effect.status in [:required, :pending, :failed_retryable] ->
-        execute_current_suspension_effect(subscription, effect)
+        case non_effective_access_effect_reason(subscription) do
+          reason when is_binary(reason) and effect.disposition == :non_effective ->
+            execute_current_non_effective_access_effect(subscription, effect, reason)
+
+          _ ->
+            Repo.rollback(
+              Error.new(
+                "INVALID_STATE_TRANSITION",
+                "current non-effective AccessEffect does not match its Subscription source"
+              )
+            )
+        end
 
       true ->
         :noop
@@ -7104,10 +7687,10 @@ defmodule Store.Subscriptions.Facade do
       match?(%AccessEffect{id: id} when id == effect.id, current)
   end
 
-  defp execute_current_suspension_effect(subscription, effect) do
+  defp execute_current_non_effective_access_effect(subscription, effect, reason) do
     with {:ok, pending_effect} <- access_effect_to_pending(effect),
          {:ok, entitlement_result} <-
-           revoke_suspended_subscription_source(subscription.id),
+           revoke_non_effective_subscription_source(subscription.id, reason),
          {:ok, applied_effect} <-
            transition_access_effect_with_attrs(
              pending_effect,
@@ -7116,7 +7699,8 @@ defmodule Store.Subscriptions.Facade do
              :mark_applied,
              %{projection_user_ids: entitlement_result.user_ids}
            ) do
-      {:applied, applied_effect, entitlement_result.notifications, entitlement_result.user_ids}
+      {:applied, applied_effect, entitlement_result.notifications, entitlement_result.user_ids,
+       reason}
     else
       {:error, {:entitlements_convergence_failure, reason}} ->
         Repo.rollback({:entitlements_convergence_failure, reason})
@@ -7138,10 +7722,10 @@ defmodule Store.Subscriptions.Facade do
     {:error, invalid_access_effect_transition(status, :pending)}
   end
 
-  defp revoke_suspended_subscription_source(subscription_id) do
+  defp revoke_non_effective_subscription_source(subscription_id, reason) do
     case EntitlementsFacade.revoke_subscription_source_grants_strict_for_system(
            subscription_id,
-           "grace_expired"
+           reason
          ) do
       {:ok, %{notifications: notifications, user_ids: user_ids}} ->
         {:ok, %{notifications: notifications, user_ids: user_ids}}
@@ -7151,16 +7735,27 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp deliver_access_effect_projection(%AccessEffect{} = effect, user_ids)
+  defp deliver_access_effect_projection(%AccessEffect{} = effect, user_ids, reason)
        when is_list(user_ids) do
     case EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
            user_ids,
-           "grace_expired"
+           reason
          ) do
       :ok -> mark_access_effect_projection_delivered(effect.id, user_ids)
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp non_effective_access_effect_reason(%Subscription{status: :suspended}),
+    do: "grace_expired"
+
+  defp non_effective_access_effect_reason(%Subscription{
+         status: :canceled,
+         canceled_reason: "canceled_period_end"
+       }),
+       do: "canceled_period_end"
+
+  defp non_effective_access_effect_reason(_subscription), do: nil
 
   defp mark_access_effect_projection_delivered(effect_id, expected_user_ids) do
     case Repo.transaction(fn ->
@@ -7375,6 +7970,14 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp boundary_cursor(_subscriptions, _limit), do: nil
+
+  defp scheduled_cancellation_cursor(subscriptions, limit) when length(subscriptions) == limit do
+    subscription = List.last(subscriptions)
+
+    %{timestamp: subscription.cancel_at_period_end_at, id: subscription.id}
+  end
+
+  defp scheduled_cancellation_cursor(_subscriptions, _limit), do: nil
 
   defp execute_effect_result(effect, counts) do
     case execute_suspension_access_effect_for_system(effect.id) do

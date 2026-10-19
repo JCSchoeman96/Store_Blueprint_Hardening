@@ -2371,19 +2371,36 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   end
 
   defp ensure_renewal_authority(
-         %Subscription{status: status} = subscription,
-         %RenewalAttempt{failure_code: failure_code}
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt
        ) do
-    withdrawn? =
-      status in [:canceled, :expired, :suspended] or subscription.cancel_at_period_end or
-        not is_nil(subscription.canceled_at) or not is_nil(subscription.ended_at) or
-        failure_code == @renewal_authority_withdrawn_code
-
-    if withdrawn? do
+    if renewal_authority_withdrawn?(subscription, attempt) do
       {:error, Error.new("RENEWAL_AUTHORITY_WITHDRAWN", "renewal authority is withdrawn")}
     else
       :ok
     end
+  end
+
+  defp renewal_authority_withdrawn?(subscription, attempt) do
+    subscription.status in [:canceled, :expired, :suspended] or
+      attempt.subscription_id != subscription.id or
+      scheduled_cancellation_withdraws_attempt?(subscription, attempt) or
+      not is_nil(subscription.canceled_at) or not is_nil(subscription.ended_at) or
+      attempt.failure_code == @renewal_authority_withdrawn_code
+  end
+
+  defp scheduled_cancellation_withdraws_attempt?(
+         %Subscription{cancel_at_period_end: true} = subscription,
+         %RenewalAttempt{} = attempt
+       ) do
+    not exact_awaiting_cancellation_attempt?(subscription, attempt)
+  end
+
+  defp scheduled_cancellation_withdraws_attempt?(%Subscription{}, %RenewalAttempt{}), do: false
+
+  defp exact_awaiting_cancellation_attempt?(subscription, attempt) do
+    is_nil(subscription.cancel_at_period_end_at) and
+      subscription.cancel_after_renewal_attempt_id == attempt.id
   end
 
   defp ensure_bound_period_is_current(

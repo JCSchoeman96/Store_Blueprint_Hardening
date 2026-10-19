@@ -379,15 +379,16 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
   test "a replayed no-op action does not advance the aggregate version" do
     subscription = create_subscription!()
     initial_version = aggregate_version(subscription)
+    attrs = %{cancel_at_period_end_at: subscription.current_period_end_at}
 
     assert {:ok, first} =
-             update_subscription(subscription, :cancel_at_period_end_transition, %{})
+             update_subscription(subscription, :cancel_at_period_end_transition, attrs)
 
     assert first.cancel_at_period_end
     assert aggregate_version(first) == initial_version + 1
 
     assert {:ok, replayed} =
-             update_subscription(first, :cancel_at_period_end_transition, %{})
+             update_subscription(first, :cancel_at_period_end_transition, attrs)
 
     assert replayed.cancel_at_period_end
     assert aggregate_version(replayed) == initial_version + 1
@@ -523,8 +524,10 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
      %{billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED"}}
   end
 
-  defp action_attributes(:cancel_at_period_end_transition, _writer_a, _writer_b),
-    do: {%{}, %{}}
+  defp action_attributes(:cancel_at_period_end_transition, writer_a, writer_b),
+    do:
+      {%{cancel_at_period_end_at: writer_a.current_period_end_at},
+       %{cancel_at_period_end_at: writer_b.current_period_end_at}}
 
   defp action_attributes(:cancel_now_transition, _writer_a, _writer_b),
     do: {%{canceled_reason: "winner"}, %{canceled_reason: "stale"}}
