@@ -1,0 +1,747 @@
+defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
+  use Store.DataCase, async: false
+
+  import Ash.Expr
+  require Ash.Query
+
+  alias Ash.Resource.Info
+  alias Oban.Job
+  alias Store.Payments.PaymentIntent
+  alias Store.Payments.Types.ProviderObservation
+  alias Store.Repo
+
+  alias Store.Subscriptions.{
+    AccessEffect,
+    Facade,
+    RenewalAttempt,
+    RenewalCollectionAttempt,
+    RenewalCollectionAttempts,
+    Subscription
+  }
+
+  alias Store.SubscriptionsFixtures
+  alias Store.TestSupport.StripeAPIStub
+  alias Store.Workers.RunDueScheduledCancellationsWorker
+
+  setup context do
+    StripeAPIStub.setup_default(context)
+    :ok
+  end
+
+  test "Subscription stores a timestamp or exact renewal attempt as its scheduled target" do
+    assert boundary = Info.attribute(Subscription, :cancel_at_period_end_at)
+    assert boundary.type == Ash.Type.UtcDatetimeUsec
+    assert boundary.allow_nil?
+    refute boundary.public?
+
+    assert attempt_id = Info.attribute(Subscription, :cancel_after_renewal_attempt_id)
+    assert attempt_id.type == Ash.Type.UUID
+    assert attempt_id.allow_nil?
+    refute attempt_id.public?
+
+    assert cancellation_flag = Info.attribute(Subscription, :cancel_at_period_end)
+    assert cancellation_flag.public?
+  end
+
+  test "database rejects a scheduled cancellation without exactly one target" do
+    {_customer, subscription} = create_subscription("jc242_missing_target")
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :check_violation}}} =
+             Repo.query(
+               "UPDATE subscriptions SET cancel_at_period_end = true WHERE id = $1",
+               [Ecto.UUID.dump!(subscription.id)]
+             )
+  end
+
+  test "database rejects target columns when the compatibility flag is false" do
+    {_customer, subscription} = create_subscription("jc242_unflagged_target")
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :check_violation}}} =
+             Repo.query(
+               "UPDATE subscriptions SET cancel_at_period_end_at = $2 WHERE id = $1",
+               [Ecto.UUID.dump!(subscription.id), subscription.current_period_end_at]
+             )
+  end
+
+  test "database rejects both funded and awaiting target forms at once" do
+    {_customer, subscription} = create_subscription("jc242_multiple_targets")
+    attempt = create_renewal_attempt(subscription)
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :check_violation}}} =
+             Repo.query(
+               "UPDATE subscriptions SET cancel_at_period_end = true, cancel_at_period_end_at = $2, cancel_after_renewal_attempt_id = $3 WHERE id = $1",
+               [
+                 Ecto.UUID.dump!(subscription.id),
+                 subscription.current_period_end_at,
+                 Ecto.UUID.dump!(attempt.id)
+               ]
+             )
+  end
+
+  test "migration refuses a legacy cancellation with multiple boundary attempts" do
+    boundary_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    subscription_id = Ecto.UUID.generate()
+
+    Repo.query!("""
+    CREATE TEMP TABLE subscriptions (
+      id uuid PRIMARY KEY,
+      cancel_at_period_end boolean NOT NULL,
+      current_period_end_at timestamptz,
+      status text NOT NULL
+    )
+    """)
+
+    Repo.query!("""
+    CREATE TEMP TABLE renewal_attempts (
+      id uuid PRIMARY KEY,
+      subscription_id uuid NOT NULL,
+      period_start_at timestamptz NOT NULL,
+      period_end_at timestamptz NOT NULL,
+      order_id uuid,
+      payment_intent_id uuid,
+      status text NOT NULL,
+      failure_code text
+    )
+    """)
+
+    Repo.query!("CREATE TEMP TABLE orders (id uuid PRIMARY KEY, state text NOT NULL)")
+
+    Repo.query!("""
+    CREATE TEMP TABLE payment_applications (
+      order_id uuid NOT NULL,
+      payment_intent_id uuid NOT NULL
+    )
+    """)
+
+    Repo.query!("CREATE TEMP TABLE payment_intents (id uuid PRIMARY KEY, order_id uuid NOT NULL)")
+
+    Repo.query!(
+      "INSERT INTO subscriptions (id, cancel_at_period_end, current_period_end_at, status) VALUES ($1, true, $2, 'active')",
+      [Ecto.UUID.dump!(subscription_id), boundary_at]
+    )
+
+    for _ <- 1..2 do
+      Repo.query!(
+        "INSERT INTO renewal_attempts (id, subscription_id, period_start_at, period_end_at, status) VALUES ($1, $2, $3, $4, 'pending')",
+        [
+          Ecto.UUID.dump!(Ecto.UUID.generate()),
+          Ecto.UUID.dump!(subscription_id),
+          boundary_at,
+          DateTime.add(boundary_at, 30, :day)
+        ]
+      )
+    end
+
+    migration = Module.concat(Store.Repo.Migrations, "Jc242DurablePeriodBoundaryTargets")
+
+    unless Code.ensure_loaded?(migration) do
+      migration_path =
+        Path.expand(
+          "../../../priv/repo/migrations/20261019160000_jc242_durable_period_boundary_targets.exs",
+          __DIR__
+        )
+
+      Code.require_file(migration_path)
+    end
+
+    assert Code.ensure_loaded?(migration)
+    preflight_sql = migration.legacy_target_preflight_sql()
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :raise_exception}}} =
+             Repo.query(preflight_sql)
+  end
+
+  test "scheduling before B stores the funded boundary and blocks an already-queued renewal" do
+    {customer, subscription} = create_subscription("jc242_before_b")
+    boundary_at = subscription.current_period_end_at
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_at_period_end
+    assert scheduled.cancel_at_period_end_at == boundary_at
+    assert is_nil(scheduled.cancel_after_renewal_attempt_id)
+
+    assert {:ok, duplicate} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert duplicate.cancel_at_period_end_at == boundary_at
+    assert is_nil(duplicate.cancel_after_renewal_attempt_id)
+
+    assert {:ok, :noop} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id,
+               now: DateTime.add(boundary_at, 1, :second)
+             )
+
+    assert [] == renewal_attempts(subscription.id)
+  end
+
+  test "B-first unpaid occurrence remains the exact awaiting target after its hypothetical end" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {customer, subscription} =
+      create_subscription("jc242_after_b", %{started_at: DateTime.add(now, -80 * 86_400, :second)})
+
+    enable_stripe!()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    [attempt] = renewal_attempts(subscription.id)
+    assert attempt.status == :processing
+    assert DateTime.compare(attempt.period_end_at, now) == :lt
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.status == :active
+    assert scheduled.cancel_at_period_end
+    assert is_nil(scheduled.cancel_at_period_end_at)
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+
+    current_attempt = List.first(renewal_attempts(subscription.id))
+    assert current_attempt.id == attempt.id
+    assert current_attempt.failure_code == nil
+  end
+
+  test "suspension preserves an awaiting exact occurrence cancellation target" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {customer, subscription} =
+      create_subscription("jc242_suspend_awaiting", %{
+        started_at: DateTime.add(now, -80 * 86_400, :second)
+      })
+
+    enable_stripe!()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    [attempt] = renewal_attempts(subscription.id)
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+
+    past_due =
+      scheduled
+      |> Ash.Changeset.for_update(
+        :mark_past_due_transition,
+        %{
+          billing_status_reason: "PAYMENT_FAILED",
+          past_due_since_at: now,
+          failed_payment_boundary_at: scheduled.current_period_end_at,
+          dunning_attempt_count: 1,
+          next_retry_at: nil,
+          retry_suppressed_at: nil
+        },
+        context: %{system?: true}
+      )
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    suspended =
+      past_due
+      |> Ash.Changeset.for_update(:mark_suspended_transition, %{}, context: %{system?: true})
+      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert suspended.status == :suspended
+    assert suspended.cancel_at_period_end
+    assert suspended.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(suspended.cancel_at_period_end_at)
+  end
+
+  test "exact paid application promotes the awaiting occurrence to its funded end" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {customer, subscription} =
+      create_subscription("jc242_paid_promotion", %{
+        started_at: DateTime.add(now, -40 * 86_400, :second)
+      })
+
+    enable_stripe!()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    [attempt] = renewal_attempts(subscription.id)
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+    assert is_nil(scheduled.cancel_at_period_end_at)
+    assert attempt.failure_code == nil
+
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+    observation = authoritative_success_observation(payment_intent)
+
+    assert {:ok, %{outcome: :authoritative_success, evidence: payment_attempt}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               observation
+             )
+
+    collection = collection_for_attempt!(attempt.id)
+    assert collection.financial_outcome == :verified_success
+    assert collection.payment_attempt_id == payment_attempt.id
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    assert handoff.renewal_attempt_id == attempt.id
+    assert handoff.payment_intent_id == payment_intent.id
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent.id
+             )
+
+    promoted = fetch_subscription!(subscription.id)
+    assert promoted.status == :active
+    assert promoted.cancel_at_period_end
+    assert promoted.cancel_at_period_end_at == attempt.period_end_at
+    assert is_nil(promoted.cancel_after_renewal_attempt_id)
+    assert promoted.current_period_end_at == attempt.period_end_at
+    assert fetch_attempt!(attempt.id).status == :succeeded
+  end
+
+  test "paid success for a different occurrence leaves the exact target awaiting" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {customer, subscription} =
+      create_subscription("jc242_different_occurrence", %{
+        started_at: DateTime.add(now, -40 * 86_400, :second)
+      })
+
+    enable_stripe!()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    [attempt] = renewal_attempts(subscription.id)
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+
+    later_attempt =
+      create_renewal_attempt_at(
+        subscription,
+        attempt.period_end_at,
+        "jc242:different-occurrence:#{subscription.id}"
+      )
+
+    assert {:ok, %{num_rows: 1}} =
+             Repo.query(
+               "UPDATE subscriptions SET cancel_after_renewal_attempt_id = $2 WHERE id = $1",
+               [Ecto.UUID.dump!(subscription.id), Ecto.UUID.dump!(later_attempt.id)]
+             )
+
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+    assert {:ok, %{evidence: payment_attempt}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               authoritative_success_observation(payment_intent)
+             )
+
+    collection = collection_for_attempt!(attempt.id)
+    assert collection.payment_attempt_id == payment_attempt.id
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent.id
+             )
+
+    current = fetch_subscription!(subscription.id)
+    assert current.status == :active
+    assert current.cancel_at_period_end
+    assert current.cancel_after_renewal_attempt_id == later_attempt.id
+    assert is_nil(current.cancel_at_period_end_at)
+    assert current.current_period_end_at == attempt.period_end_at
+  end
+
+  test "late exact paid reconciliation cancels at the historical funded boundary" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {customer, subscription} =
+      create_subscription("jc242_late_paid", %{
+        started_at: DateTime.add(now, -80 * 86_400, :second)
+      })
+
+    enable_stripe!()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "processing"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    [attempt] = renewal_attempts(subscription.id)
+    assert DateTime.compare(attempt.period_end_at, now) == :lt
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_after_renewal_attempt_id == attempt.id
+
+    payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+    assert {:ok, %{evidence: payment_attempt}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               authoritative_success_observation(payment_intent)
+             )
+
+    collection = collection_for_attempt!(attempt.id)
+    assert collection.financial_outcome == :verified_success
+    assert collection.payment_attempt_id == payment_attempt.id
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(attempt.order_id,
+               renewal_attempt_id: attempt.id,
+               collection_attempt_id: collection.id,
+               payment_intent_id: payment_intent.id
+             )
+
+    canceled = fetch_subscription!(subscription.id)
+    assert canceled.status == :canceled
+    assert canceled.canceled_reason == "canceled_period_end"
+    assert canceled.canceled_at == attempt.period_end_at
+    assert canceled.ended_at == attempt.period_end_at
+    assert canceled.current_period_end_at == attempt.period_end_at
+    assert is_nil(canceled.cancel_at_period_end_at)
+    assert is_nil(canceled.cancel_after_renewal_attempt_id)
+    assert fetch_attempt!(attempt.id).status == :succeeded
+
+    effect = fetch_current_access_effect!(subscription.id)
+    assert effect.disposition == :non_effective
+    assert effect.source_version == canceled.aggregate_version
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 1
+
+    assert {:ok, :applied} = Facade.execute_suspension_access_effect_for_system(effect.id)
+    assert fetch_current_access_effect!(subscription.id).status == :applied
+  end
+
+  test "due worker terminalizes with the funded boundary and one effect and email" do
+    {customer, subscription} = create_subscription("jc242_due_worker")
+
+    boundary_at = subscription.current_period_end_at
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_at_period_end_at == boundary_at
+    worker_now = DateTime.add(boundary_at, 5 * 60, :second)
+
+    assert :ok =
+             RunDueScheduledCancellationsWorker.perform(%Job{
+               args: %{"now" => DateTime.to_iso8601(worker_now)}
+             })
+
+    canceled = fetch_subscription!(subscription.id)
+    assert canceled.status == :canceled
+    assert canceled.canceled_at == boundary_at
+    assert canceled.ended_at == boundary_at
+    assert canceled.canceled_at < worker_now
+    assert canceled.canceled_reason == "canceled_period_end"
+
+    effect = fetch_current_access_effect!(subscription.id)
+    assert effect.disposition == :non_effective
+    assert effect.source_version == canceled.aggregate_version
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 1
+
+    assert :ok =
+             RunDueScheduledCancellationsWorker.perform(%Job{
+               args: %{"now" => DateTime.to_iso8601(worker_now)}
+             })
+
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 1
+
+    assert {:ok, %{replay_count: 0, failed_count: 0, cursor: nil}} =
+             Facade.replay_scheduled_cancellation_notifications_for_system()
+
+    assert {:ok, _} =
+             Repo.query(
+               "DELETE FROM email_outboxes WHERE subscription_id = $1 AND idempotency_key LIKE $2",
+               [
+                 Ecto.UUID.dump!(subscription.id),
+                 "membership_access_ended:sub:%:reason:canceled_period_end:period_end:%"
+               ]
+             )
+
+    assert {:ok, %{replay_count: 1, failed_count: 0, cursor: nil}} =
+             Facade.replay_scheduled_cancellation_notifications_for_system()
+
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 1
+  end
+
+  test "rescission clears a funded target before the due worker selects it" do
+    {customer, subscription} = create_subscription("jc242_rescind")
+
+    boundary_at = subscription.current_period_end_at
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_at_period_end_at == boundary_at
+
+    assert {:ok, rescinded} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :rescind_period_end)
+
+    refute rescinded.cancel_at_period_end
+    assert is_nil(rescinded.cancel_at_period_end_at)
+    assert is_nil(rescinded.cancel_after_renewal_attempt_id)
+
+    assert {:ok, %{due_count: 0, canceled_count: 0}} =
+             Facade.run_due_scheduled_cancellations_for_system(
+               now: DateTime.add(boundary_at, 1, :second)
+             )
+
+    assert fetch_subscription!(subscription.id).status == :active
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 0
+  end
+
+  test "scheduled-cancellation selectors reject incomplete keyset cursors" do
+    timestamp = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    id = Ecto.UUID.generate()
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             Facade.run_due_scheduled_cancellations_for_system(after_boundary_at: timestamp)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             Facade.run_due_scheduled_cancellations_for_system(after_id: id)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} =
+             Facade.replay_scheduled_cancellation_notifications_for_system(
+               after_ended_at: timestamp
+             )
+  end
+
+  test "failed AccessEffect establishment rolls scheduled terminalization back" do
+    {customer, subscription} = create_subscription("jc242_effect_rollback")
+
+    boundary_at = subscription.current_period_end_at
+
+    assert {:ok, scheduled} =
+             Facade.cancel_subscription_for_user(customer, subscription.id, :period_end)
+
+    assert scheduled.cancel_at_period_end_at == boundary_at
+
+    assert {:ok, _} =
+             Repo.query(
+               "UPDATE subscriptions SET current_plan_revision_id = NULL WHERE id = $1",
+               [
+                 Ecto.UUID.dump!(subscription.id)
+               ]
+             )
+
+    assert {:ok, %{due_count: 1, canceled_count: 0, failed_count: 1}} =
+             Facade.run_due_scheduled_cancellations_for_system(
+               now: DateTime.add(boundary_at, 1, :second)
+             )
+
+    still_scheduled = fetch_subscription!(subscription.id)
+    assert still_scheduled.status == :active
+    assert still_scheduled.cancel_at_period_end
+    assert still_scheduled.cancel_at_period_end_at == boundary_at
+    assert [] == access_effects(subscription.id)
+    assert count_scheduled_cancellation_outboxes(subscription.id) == 0
+  end
+
+  defp create_subscription(prefix, overrides \\ %{}) do
+    customer = SubscriptionsFixtures.create_customer!(prefix)
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:#{prefix}"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(
+        customer.id,
+        variant,
+        plan,
+        Map.merge(%{provider_billing_ref: "pm_#{prefix}"}, overrides)
+      )
+
+    {customer, subscription}
+  end
+
+  defp renewal_attempts(subscription_id) do
+    query = RenewalAttempt |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+
+    Ash.read!(query,
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp collection_for_attempt!(renewal_attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(renewal_attempt_id == ^renewal_attempt_id))
+    |> Ash.read_one!(
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp fetch_attempt!(id) do
+    query = RenewalAttempt |> Ash.Query.filter(expr(id == ^id))
+
+    Ash.read_one!(query,
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp fetch_subscription!(id) do
+    query = Subscription |> Ash.Query.filter(expr(id == ^id))
+
+    Ash.read_one!(query,
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp fetch_current_access_effect!(subscription_id) do
+    {:ok, effect} =
+      Facade.get_current_access_effect_for_system(fetch_subscription!(subscription_id))
+
+    effect
+  end
+
+  defp access_effects(subscription_id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.read!(
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp count_scheduled_cancellation_outboxes(subscription_id) do
+    {:ok, %{rows: [[count]]}} =
+      Repo.query(
+        """
+        SELECT count(*)
+        FROM email_outboxes
+        WHERE subscription_id = $1
+          AND idempotency_key LIKE $2
+        """,
+        [
+          Ecto.UUID.dump!(subscription_id),
+          "membership_access_ended:sub:%:reason:canceled_period_end:period_end:%"
+        ]
+      )
+
+    count
+  end
+
+  defp fetch_payment_intent!(id) do
+    query = PaymentIntent |> Ash.Query.filter(expr(id == ^id))
+
+    Ash.read_one!(query,
+      domain: Store.Payments,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp authoritative_success_observation(%PaymentIntent{} = payment_intent) do
+    %ProviderObservation{
+      provider: payment_intent.provider,
+      provider_reference: payment_intent.provider_payment_id,
+      provider_reference_kind: :payment_intent,
+      provider_transaction_id: payment_intent.provider_payment_id,
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: :authoritative_success,
+      raw_provider_status: "succeeded",
+      amount_minor: payment_intent.amount_received_minor,
+      currency: payment_intent.currency,
+      provider_environment: "test",
+      observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    }
+  end
+
+  defp create_renewal_attempt(subscription) do
+    create_renewal_attempt_at(
+      subscription,
+      subscription.current_period_end_at,
+      "jc242:#{subscription.id}"
+    )
+  end
+
+  defp create_renewal_attempt_at(subscription, period_start_at, renewal_key) do
+    RenewalAttempt
+    |> Ash.Changeset.for_create(
+      :create_or_reuse,
+      %{
+        subscription_id: subscription.id,
+        period_start_at: period_start_at,
+        period_end_at: DateTime.add(period_start_at, 30, :day),
+        renewal_key: renewal_key
+      },
+      context: %{system?: true}
+    )
+    |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp enable_stripe! do
+    Application.put_env(:store, :payments,
+      enabled_providers: [:stripe],
+      stripe: [
+        webhook_secret: "whsec_test_only_change_me",
+        secret_key: "sk_test_store_blueprint",
+        publishable_key: "pk_test_store_blueprint",
+        request_options: StripeAPIStub.req_options()
+      ]
+    )
+  end
+end

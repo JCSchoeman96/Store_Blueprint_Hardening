@@ -59,6 +59,16 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    attribute :cancel_at_period_end_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    attribute :cancel_after_renewal_attempt_id, :uuid do
+      allow_nil?(true)
+      public?(false)
+    end
+
     attribute :started_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -217,6 +227,13 @@ defmodule Store.Subscriptions.Subscription do
       public?(false)
     end
 
+    belongs_to :cancel_after_renewal_attempt, Store.Subscriptions.RenewalAttempt do
+      source_attribute(:cancel_after_renewal_attempt_id)
+      allow_nil?(true)
+      attribute_writable?(true)
+      public?(false)
+    end
+
     belongs_to :variant, Store.Catalog.Variant do
       allow_nil?(false)
       attribute_writable?(true)
@@ -263,6 +280,8 @@ defmodule Store.Subscriptions.Subscription do
         from: [:pending, :active, :past_due, :suspended],
         to: :canceled
       )
+
+      transition(:scheduled_boundary_cancellation_transition, from: :active, to: :canceled)
 
       transition(:mark_expired_transition, from: [:active, :past_due, :suspended], to: :expired)
       transition(:extend_period, from: :past_due, to: :active)
@@ -369,6 +388,38 @@ defmodule Store.Subscriptions.Subscription do
       )
 
       prepare(build(sort: [failed_payment_boundary_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
+    read :read_due_scheduled_cancellations_for_system do
+      argument :now, :utc_datetime_usec do
+        allow_nil?(false)
+      end
+
+      argument :after_boundary_at, :utc_datetime_usec do
+        allow_nil?(true)
+      end
+
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          status == :active and cancel_at_period_end == true and
+            not is_nil(cancel_at_period_end_at) and cancel_at_period_end_at <= ^arg(:now) and
+            (is_nil(^arg(:after_boundary_at)) or
+               cancel_at_period_end_at > ^arg(:after_boundary_at) or
+               (cancel_at_period_end_at == ^arg(:after_boundary_at) and id > ^arg(:after_id)))
+        )
+      )
+
+      prepare(build(sort: [cancel_at_period_end_at: :asc, id: :asc], limit: arg(:limit)))
     end
 
     read :read_past_due_missing_boundary_for_system do
@@ -511,7 +562,20 @@ defmodule Store.Subscriptions.Subscription do
          target: :suspended, state_attribute: :status, lock_attribute: nil}
       )
 
-      change(set_attribute(:cancel_at_period_end, false))
+      change(fn changeset, _context ->
+        case Ash.Changeset.get_data(changeset, :cancel_after_renewal_attempt_id) do
+          nil ->
+            changeset
+            |> Ash.Changeset.change_attribute(:cancel_at_period_end, false)
+            |> Ash.Changeset.change_attribute(:cancel_at_period_end_at, nil)
+
+          _attempt_id ->
+            changeset
+            |> Ash.Changeset.change_attribute(:cancel_at_period_end, true)
+            |> Ash.Changeset.change_attribute(:cancel_at_period_end_at, nil)
+        end
+      end)
+
       change(set_attribute(:next_retry_at, nil))
       change(set_attribute(:retry_suppressed_at, nil))
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
@@ -522,6 +586,8 @@ defmodule Store.Subscriptions.Subscription do
       require_atomic?(false)
 
       accept([
+        :cancel_at_period_end_at,
+        :cancel_after_renewal_attempt_id,
         :current_contract_change_id,
         :pending_variant_id,
         :pending_subscription_plan_id,
@@ -548,6 +614,8 @@ defmodule Store.Subscriptions.Subscription do
       ])
 
       change(set_attribute(:cancel_at_period_end, false))
+      change(set_attribute(:cancel_at_period_end_at, nil))
+      change(set_attribute(:cancel_after_renewal_attempt_id, nil))
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
     end
 
@@ -575,8 +643,38 @@ defmodule Store.Subscriptions.Subscription do
 
         changeset
         |> Ash.Changeset.change_attribute(:cancel_at_period_end, false)
+        |> Ash.Changeset.change_attribute(:cancel_at_period_end_at, nil)
+        |> Ash.Changeset.change_attribute(:cancel_after_renewal_attempt_id, nil)
         |> Ash.Changeset.change_attribute(:canceled_at, now)
         |> Ash.Changeset.change_attribute(:ended_at, now)
+        |> Ash.Changeset.change_attribute(:next_renewal_at, nil)
+        |> Ash.Changeset.change_attribute(:next_retry_at, nil)
+        |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
+      end)
+
+      change(Store.Subscriptions.Changes.OptimisticAggregateLock)
+    end
+
+    update :scheduled_boundary_cancellation_transition do
+      public?(false)
+      require_atomic?(false)
+
+      accept([:canceled_reason])
+
+      change(
+        {Store.Support.Governance.TransitionState,
+         target: :canceled, state_attribute: :status, lock_attribute: nil}
+      )
+
+      change(fn changeset, _context ->
+        boundary_at = Ash.Changeset.get_data(changeset, :cancel_at_period_end_at)
+
+        changeset
+        |> Ash.Changeset.change_attribute(:cancel_at_period_end, false)
+        |> Ash.Changeset.change_attribute(:cancel_at_period_end_at, nil)
+        |> Ash.Changeset.change_attribute(:cancel_after_renewal_attempt_id, nil)
+        |> Ash.Changeset.change_attribute(:canceled_at, boundary_at)
+        |> Ash.Changeset.change_attribute(:ended_at, boundary_at)
         |> Ash.Changeset.change_attribute(:next_renewal_at, nil)
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
@@ -592,6 +690,8 @@ defmodule Store.Subscriptions.Subscription do
         :current_period_start_at,
         :current_period_end_at,
         :next_renewal_at,
+        :cancel_at_period_end_at,
+        :cancel_after_renewal_attempt_id,
         :subscription_plan_id,
         :current_plan_revision_id,
         :variant_id,
@@ -702,6 +802,11 @@ defmodule Store.Subscriptions.Subscription do
       args: [:now, :after_boundary_at, :after_id, :limit]
     )
 
+    define(:list_due_scheduled_cancellations_for_system,
+      action: :read_due_scheduled_cancellations_for_system,
+      args: [:now, :after_boundary_at, :after_id, :limit]
+    )
+
     define(:list_past_due_missing_boundaries_for_system,
       action: :read_past_due_missing_boundary_for_system,
       args: [:after_id, :limit]
@@ -714,6 +819,17 @@ defmodule Store.Subscriptions.Subscription do
 
     check_constraints do
       check_constraint(
+        :cancel_at_period_end,
+        "subscriptions_scheduled_cancellation_target_check",
+        check: """
+        (cancel_at_period_end = false AND cancel_at_period_end_at IS NULL AND
+          cancel_after_renewal_attempt_id IS NULL) OR
+        (cancel_at_period_end = true AND
+          num_nonnulls(cancel_at_period_end_at, cancel_after_renewal_attempt_id) = 1)
+        """
+      )
+
+      check_constraint(
         :failed_payment_boundary_at,
         "subscriptions_active_failed_payment_boundary_check",
         check: "NOT (status = 'active' AND failed_payment_boundary_at IS NOT NULL)"
@@ -721,6 +837,7 @@ defmodule Store.Subscriptions.Subscription do
     end
 
     references do
+      reference(:cancel_after_renewal_attempt, on_delete: :restrict)
       reference(:current_plan_revision, on_delete: :restrict)
       reference(:current_contract_change, on_delete: :restrict)
     end
@@ -733,6 +850,17 @@ defmodule Store.Subscriptions.Subscription do
       index([:failed_payment_boundary_at, :id],
         where: "status = 'past_due' AND failed_payment_boundary_at IS NOT NULL",
         name: "subscriptions_failed_payment_boundary_due_index"
+      )
+
+      index([:cancel_at_period_end_at, :id],
+        where:
+          "status = 'active' AND cancel_at_period_end = true AND cancel_at_period_end_at IS NOT NULL",
+        name: "subscriptions_active_scheduled_cancellation_due_index"
+      )
+
+      index([:ended_at, :id],
+        where: "status = 'canceled' AND canceled_reason = 'canceled_period_end'",
+        name: "subscriptions_scheduled_cancellation_notification_replay_index"
       )
 
       index([:id],
@@ -764,6 +892,7 @@ defmodule Store.Subscriptions.Subscription do
              :get_for_admin,
              :read_due_for_system,
              :read_due_failed_payment_boundary_for_system,
+             :read_due_scheduled_cancellations_for_system,
              :read_past_due_missing_boundary_for_system
            ]) do
       access_type(:runtime)
@@ -779,7 +908,8 @@ defmodule Store.Subscriptions.Subscription do
     policy action([
              :cancel_at_period_end_transition,
              :rescind_cancel_at_period_end_transition,
-             :cancel_now_transition
+             :cancel_now_transition,
+             :scheduled_boundary_cancellation_transition
            ]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))

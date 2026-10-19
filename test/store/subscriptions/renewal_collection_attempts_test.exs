@@ -1248,7 +1248,9 @@ defmodule Store.Subscriptions.RenewalCollectionAttemptsTest do
 
     assert {:ok, _updated} =
              subscription
-             |> Ash.Changeset.for_update(:cancel_at_period_end_transition, %{},
+             |> Ash.Changeset.for_update(
+               :cancel_at_period_end_transition,
+               %{cancel_after_renewal_attempt_id: attempt.id},
                context: %{system?: true}
              )
              |> Ash.update(
