@@ -54,6 +54,13 @@ defmodule Store.Subscriptions.Sbh3003RetryExhaustionTest do
 
     assert exhausted.status == :past_due
     assert exhausted.past_due_since_at == now
+
+    grace_period_days =
+      fetch_current_attempt!(subscription.id).charged_contract_snapshot["grace_period_days"]
+
+    assert exhausted.failed_payment_boundary_at ==
+             DateTime.add(now, grace_period_days * 24 * 60 * 60, :second)
+
     assert exhausted.dunning_attempt_count == 1
     assert exhausted.billing_status_reason == "PAYMENT_METHOD_REQUIRED"
     assert exhausted.next_retry_at == nil
@@ -103,21 +110,32 @@ defmodule Store.Subscriptions.Sbh3003RetryExhaustionTest do
 
     assert {:ok, %{failed_count: 1}} = Facade.run_due_renewals_for_system(now: now, limit: 20)
     first_failure = fetch_subscription!(subscription.id)
+    boundary_at = first_failure.failed_payment_boundary_at
+    assert %DateTime{} = boundary_at
     assert first_failure.dunning_attempt_count == 1
     assert first_failure.past_due_since_at == now
     assert first_failure.next_retry_at == now
     assert is_nil(first_failure.retry_suppressed_at)
 
-    assert fetch_current_attempt!(subscription.id).charged_contract_snapshot["max_retry_attempts"] ==
-             3
+    bound_attempt = fetch_current_attempt!(subscription.id)
+
+    assert bound_attempt.charged_contract_snapshot["max_retry_attempts"] == 3
+
+    grace_period_days = bound_attempt.charged_contract_snapshot["grace_period_days"]
+
+    assert first_failure.failed_payment_boundary_at ==
+             DateTime.add(now, grace_period_days * 24 * 60 * 60, :second)
 
     plan
     |> Ash.Changeset.for_update(
       :update,
-      %{max_retry_attempts: 0, retry_schedule_hours: [0]},
+      %{grace_period_days: 0, max_retry_attempts: 0, retry_schedule_hours: [0]},
       context: %{system?: true}
     )
     |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert fetch_current_attempt!(subscription.id).charged_contract_snapshot["grace_period_days"] ==
+             grace_period_days
 
     final_failure =
       Enum.reduce(2..4, first_failure, fn expected_count, previous ->
@@ -131,6 +149,7 @@ defmodule Store.Subscriptions.Sbh3003RetryExhaustionTest do
         assert updated.status == :past_due
         assert updated.dunning_attempt_count == expected_count
         assert updated.past_due_since_at == now
+        assert updated.failed_payment_boundary_at == boundary_at
         updated
       end)
 

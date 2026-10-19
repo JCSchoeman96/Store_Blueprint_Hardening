@@ -1839,6 +1839,82 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
            ) == 1
   end
 
+  test "payment application and failed-payment suspension serialize on the renewal Order" do
+    fixture = create_committed_renewal_race_fixture!("payment_before_boundary")
+    attempt = process_committed_renewal!(fixture)
+    boundary_at = DateTime.add(DateTime.utc_now() |> DateTime.truncate(:microsecond), -1, :second)
+
+    Sandbox.unboxed_run(Repo, fn ->
+      subscription = fetch_subscription!(fixture.subscription_id)
+
+      assert {:ok, %Subscription{status: :past_due}} =
+               subscription
+               |> Ash.Changeset.for_update(
+                 :mark_past_due_transition,
+                 %{
+                   billing_status_reason: "PAYMENT_FAILED",
+                   past_due_since_at: DateTime.add(boundary_at, -86_400, :second),
+                   failed_payment_boundary_at: boundary_at,
+                   dunning_attempt_count: 1,
+                   next_retry_at: nil,
+                   retry_suppressed_at: boundary_at
+                 },
+                 context: %{system?: true}
+               )
+               |> Ash.update(
+                 domain: Store.Subscriptions,
+                 authorize?: false,
+                 context: %{system?: true}
+               )
+    end)
+
+    parent = self()
+    lock_holder = start_order_lock_holder(attempt.order_id, parent)
+    assert_receive {:renewal_order_locked, blocker_pid}
+
+    operations = %{
+      payment: fn ->
+        payment_intent = fetch_payment_intent!(attempt.payment_intent_id)
+
+        Store.Payments.record_and_apply_payment_observation_for_system(
+          payment_intent,
+          authoritative_success_observation(payment_intent)
+        )
+      end,
+      boundary: fn ->
+        SubscriptionsFacade.run_due_failed_payment_suspensions_for_system(limit: 20)
+      end
+    }
+
+    try do
+      payment_task = start_unboxed_race_operation(:payment, operations.payment, parent)
+      assert_receive {:renewal_race_operation_started, :payment}
+      await_order_waiters!(blocker_pid, 1)
+
+      boundary_task = start_unboxed_race_operation(:boundary, operations.boundary, parent)
+      assert_receive {:renewal_race_operation_started, :boundary}
+      await_order_waiters!(blocker_pid, 2)
+
+      send(lock_holder.pid, :release)
+      assert {:ok, :released} = Task.await(lock_holder, 10_000)
+
+      assert {:ok, %{outcome: :authoritative_success}} = Task.await(payment_task, 10_000)
+
+      assert {:ok, %{due_count: 1, suspended_count: 0, failed_count: 0}} =
+               Task.await(boundary_task, 10_000)
+
+      assert {:ok, :reconciled} = unboxed_reconcile_renewal(attempt)
+
+      recovered = fetch_subscription!(fixture.subscription_id)
+      assert recovered.status == :active
+      assert is_nil(recovered.failed_payment_boundary_at)
+      assert fetch_attempt!(fixture.subscription_id).status == :succeeded
+      assert count_payment_applications(attempt.order_id) == 1
+    after
+      if Process.alive?(lock_holder.pid), do: send(lock_holder.pid, :release)
+    end
+  end
+
   test "cancellation after binding but before provider dispatch blocks the charge" do
     customer = SubscriptionsFixtures.create_customer!("jc281_cancel_before_dispatch")
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
@@ -2396,6 +2472,28 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
   end
 
   defp suspend_subscription!(subscription) do
+    subscription =
+      if subscription.status == :active do
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+        subscription
+        |> Ash.Changeset.for_update(
+          :mark_past_due_transition,
+          %{
+            billing_status_reason: "PAYMENT_FAILED",
+            past_due_since_at: DateTime.add(now, -86_400, :second),
+            failed_payment_boundary_at: DateTime.add(now, -1, :second),
+            dunning_attempt_count: max(subscription.dunning_attempt_count || 0, 1),
+            next_retry_at: nil,
+            retry_suppressed_at: now
+          },
+          context: %{system?: true}
+        )
+        |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+      else
+        subscription
+      end
+
     subscription
     |> Ash.Changeset.for_update(
       :mark_suspended_transition,

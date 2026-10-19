@@ -81,7 +81,7 @@ defmodule Store.Entitlements.Facade do
       |> Ash.create(domain: Entitlements, authorize?: false, context: %{system?: true})
       |> case do
         {:ok, grant} ->
-          maybe_invalidate_user(subscription.user_id, "entitlement_issued")
+          _ = maybe_invalidate_user(subscription.user_id, "entitlement_issued")
           {:ok, grant}
 
         {:error, reason} ->
@@ -226,15 +226,18 @@ defmodule Store.Entitlements.Facade do
   @spec invalidate_subscription_source_users_after_commit_for_system(
           [Ecto.UUID.t()],
           String.t()
-        ) :: :ok
+        ) :: :ok | {:error, %{user_id: Ecto.UUID.t(), step: atom(), reason: term()}}
   def invalidate_subscription_source_users_after_commit_for_system(user_ids, reason)
       when is_list(user_ids) and is_binary(reason) do
     user_ids
     |> Enum.filter(&is_binary/1)
     |> Enum.uniq()
-    |> Enum.each(&maybe_invalidate_user(&1, reason))
-
-    :ok
+    |> Enum.reduce_while(:ok, fn user_id, :ok ->
+      case maybe_invalidate_user(user_id, reason) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp revoke_suspension_source_grants(grants, reason) do

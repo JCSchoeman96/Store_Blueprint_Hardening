@@ -57,6 +57,16 @@ defmodule Store.Subscriptions.AccessEffect do
       public?(false)
     end
 
+    attribute :projection_user_ids, {:array, :uuid} do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    attribute :projection_delivered_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(false)
+    end
+
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
@@ -124,6 +134,72 @@ defmodule Store.Subscriptions.AccessEffect do
       prepare(build(sort: [source_version: :desc]))
     end
 
+    read :read_recoverable_non_effective_for_system do
+      argument :through_updated_at, :utc_datetime_usec do
+        allow_nil?(false)
+      end
+
+      argument :after_updated_at, :utc_datetime_usec do
+        allow_nil?(true)
+      end
+
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          disposition == :non_effective and
+            (status == :required or status == :pending or status == :failed_retryable) and
+            updated_at <= ^arg(:through_updated_at) and
+            (is_nil(^arg(:after_updated_at)) or
+               updated_at > ^arg(:after_updated_at) or
+               (updated_at == ^arg(:after_updated_at) and id > ^arg(:after_id)))
+        )
+      )
+
+      prepare(build(sort: [updated_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
+    read :read_pending_projection_repair_for_system do
+      argument :through_inserted_at, :utc_datetime_usec do
+        allow_nil?(false)
+      end
+
+      argument :after_inserted_at, :utc_datetime_usec do
+        allow_nil?(true)
+      end
+
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          status == :applied and not is_nil(projection_user_ids) and
+            is_nil(projection_delivered_at) and
+            inserted_at <= ^arg(:through_inserted_at) and
+            (is_nil(^arg(:after_inserted_at)) or
+               inserted_at > ^arg(:after_inserted_at) or
+               (inserted_at == ^arg(:after_inserted_at) and id > ^arg(:after_id)))
+        )
+      )
+
+      prepare(build(sort: [inserted_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
     create :establish do
       public?(false)
 
@@ -154,9 +230,16 @@ defmodule Store.Subscriptions.AccessEffect do
     update :mark_applied do
       public?(false)
       require_atomic?(false)
-      accept([])
+      accept([:projection_user_ids])
       change(filter(expr(status == :pending)))
       change(set_attribute(:status, :applied))
+    end
+
+    update :mark_projection_delivered do
+      public?(false)
+      require_atomic?(false)
+      accept([:projection_delivered_at])
+      change(filter(expr(status == :applied and not is_nil(projection_user_ids))))
     end
 
     update :mark_failed_retryable do
@@ -209,6 +292,26 @@ defmodule Store.Subscriptions.AccessEffect do
 
       check_constraint(:target_fingerprint, "access_effects_fingerprint_length_check",
         check: "length(target_fingerprint) = 64"
+      )
+
+      check_constraint(
+        :projection_delivered_at,
+        "access_effects_projection_delivery_evidence_check",
+        check: "projection_delivered_at IS NULL OR projection_user_ids IS NOT NULL"
+      )
+    end
+
+    custom_indexes do
+      index([:updated_at, :id],
+        where:
+          "disposition = 'non_effective' AND status IN ('required', 'pending', 'failed_retryable')",
+        name: "access_effects_non_effective_recovery_index"
+      )
+
+      index([:inserted_at, :id],
+        where:
+          "status = 'applied' AND projection_user_ids IS NOT NULL AND projection_delivered_at IS NULL",
+        name: "access_effects_projection_repair_index"
       )
     end
   end

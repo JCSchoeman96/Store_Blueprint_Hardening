@@ -180,7 +180,14 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
   end
 
   test "suspension keeps the contract open, clears retry authority, and can be repaired" do
-    subscription = create_subscription!()
+    active = create_subscription!()
+
+    assert {:ok, subscription} =
+             update_subscription(active, :mark_past_due_transition, %{
+               billing_status_reason: "PAYMENT_FAILED",
+               dunning_attempt_count: 1
+             })
+
     retry_at = DateTime.add(DateTime.utc_now(), 3_600, :second) |> DateTime.truncate(:microsecond)
 
     assert {:ok, scheduled} =
@@ -257,11 +264,29 @@ defmodule Store.Subscriptions.OptimisticAggregateVersionTest do
              })
   end
 
+  test "failed-payment suspension is PAST_DUE-only and suspended subscriptions may expire" do
+    active = create_subscription!()
+
+    assert {:error, _} = update_subscription(active, :mark_suspended_transition, %{})
+
+    assert {:ok, past_due} =
+             update_subscription(active, :mark_past_due_transition, %{
+               billing_status_reason: "PAYMENT_FAILED",
+               dunning_attempt_count: 1
+             })
+
+    assert {:ok, suspended} = update_subscription(past_due, :mark_suspended_transition, %{})
+    assert suspended.status == :suspended
+
+    assert {:ok, expired} = update_subscription(suspended, :mark_expired_transition, %{})
+    assert expired.status == :expired
+  end
+
   test "every material Subscription action rejects a stale version and increments once" do
     actions = [
       {:activate_now, :pending},
       {:mark_past_due_transition, :active},
-      {:mark_suspended_transition, :active},
+      {:mark_suspended_transition, :past_due},
       {:cancel_at_period_end_transition, :active},
       {:cancel_now_transition, :active},
       {:extend_period, :active},

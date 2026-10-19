@@ -84,6 +84,11 @@ defmodule Store.Subscriptions.Subscription do
       public?(true)
     end
 
+    attribute :failed_payment_boundary_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(false)
+    end
+
     attribute :canceled_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -252,14 +257,14 @@ defmodule Store.Subscriptions.Subscription do
     transitions do
       transition(:activate_now, from: [:pending, :past_due], to: :active)
       transition(:mark_past_due_transition, from: :active, to: :past_due)
-      transition(:mark_suspended_transition, from: [:active, :past_due], to: :suspended)
+      transition(:mark_suspended_transition, from: :past_due, to: :suspended)
 
       transition(:cancel_now_transition,
         from: [:pending, :active, :past_due, :suspended],
         to: :canceled
       )
 
-      transition(:mark_expired_transition, from: [:active, :past_due], to: :expired)
+      transition(:mark_expired_transition, from: [:active, :past_due, :suspended], to: :expired)
       transition(:extend_period, from: :past_due, to: :active)
       transition(:extend_period, from: :suspended, to: :active)
       transition(:extend_period, from: :active, to: :active)
@@ -323,13 +328,68 @@ defmodule Store.Subscriptions.Subscription do
       filter(
         expr(
           ((status == :active and not is_nil(next_renewal_at) and next_renewal_at <= ^arg(:now)) or
-             (status == :past_due and is_nil(retry_suppressed_at) and
+             (status == :past_due and not is_nil(failed_payment_boundary_at) and
+                is_nil(retry_suppressed_at) and
                 (is_nil(next_retry_at) or next_retry_at <= ^arg(:now)))) and
             cancel_at_period_end == false
         )
       )
 
       prepare(build(sort: [next_renewal_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
+    read :read_due_failed_payment_boundary_for_system do
+      argument :now, :utc_datetime_usec do
+        allow_nil?(false)
+      end
+
+      argument :after_boundary_at, :utc_datetime_usec do
+        allow_nil?(true)
+      end
+
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          status == :past_due and not is_nil(failed_payment_boundary_at) and
+            failed_payment_boundary_at <= ^arg(:now) and
+            (is_nil(^arg(:after_boundary_at)) or
+               failed_payment_boundary_at > ^arg(:after_boundary_at) or
+               (failed_payment_boundary_at == ^arg(:after_boundary_at) and
+                  id > ^arg(:after_id)))
+        )
+      )
+
+      prepare(build(sort: [failed_payment_boundary_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
+    read :read_past_due_missing_boundary_for_system do
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          status == :past_due and is_nil(failed_payment_boundary_at) and
+            (is_nil(^arg(:after_id)) or id > ^arg(:after_id))
+        )
+      )
+
+      prepare(build(sort: [id: :asc], limit: arg(:limit)))
     end
 
     create :create_from_order_line do
@@ -400,6 +460,7 @@ defmodule Store.Subscriptions.Subscription do
       )
 
       change(set_attribute(:past_due_since_at, nil))
+      change(set_attribute(:failed_payment_boundary_at, nil))
       change(set_attribute(:billing_status_reason, nil))
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
@@ -413,6 +474,7 @@ defmodule Store.Subscriptions.Subscription do
       accept([
         :billing_status_reason,
         :past_due_since_at,
+        :failed_payment_boundary_at,
         :dunning_attempt_count,
         :next_retry_at,
         :retry_suppressed_at
@@ -548,6 +610,7 @@ defmodule Store.Subscriptions.Subscription do
       )
 
       change(set_attribute(:past_due_since_at, nil))
+      change(set_attribute(:failed_payment_boundary_at, nil))
       change(set_attribute(:billing_status_reason, nil))
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
@@ -633,11 +696,29 @@ defmodule Store.Subscriptions.Subscription do
     define(:list_for_admin, action: :read_for_admin)
     define(:get_for_admin, action: :get_for_admin, args: [:id])
     define(:list_due_for_system, action: :read_due_for_system, args: [:now, :limit])
+
+    define(:list_due_failed_payment_boundaries_for_system,
+      action: :read_due_failed_payment_boundary_for_system,
+      args: [:now, :after_boundary_at, :after_id, :limit]
+    )
+
+    define(:list_past_due_missing_boundaries_for_system,
+      action: :read_past_due_missing_boundary_for_system,
+      args: [:after_id, :limit]
+    )
   end
 
   postgres do
     table("subscriptions")
     repo(Store.Repo)
+
+    check_constraints do
+      check_constraint(
+        :failed_payment_boundary_at,
+        "subscriptions_active_failed_payment_boundary_check",
+        check: "NOT (status = 'active' AND failed_payment_boundary_at IS NOT NULL)"
+      )
+    end
 
     references do
       reference(:current_plan_revision, on_delete: :restrict)
@@ -648,6 +729,17 @@ defmodule Store.Subscriptions.Subscription do
       index([:user_id, :status], name: "subscriptions_user_id_status_index")
       index([:status, :next_renewal_at], name: "subscriptions_status_next_renewal_at_index")
       index([:status, :next_retry_at], name: "subscriptions_status_next_retry_at_index")
+
+      index([:failed_payment_boundary_at, :id],
+        where: "status = 'past_due' AND failed_payment_boundary_at IS NOT NULL",
+        name: "subscriptions_failed_payment_boundary_due_index"
+      )
+
+      index([:id],
+        where: "status = 'past_due' AND failed_payment_boundary_at IS NULL",
+        name: "subscriptions_past_due_missing_boundary_index"
+      )
+
       index([:provider, :provider_subscription_id], name: "subscriptions_provider_ref_index")
       index([:source_order_line_item_id], name: "subscriptions_source_order_line_item_id_index")
       index([:subscription_plan_id], name: "subscriptions_subscription_plan_id_index")
@@ -666,7 +758,14 @@ defmodule Store.Subscriptions.Subscription do
   end
 
   policies do
-    bypass action([:read, :read_for_admin, :get_for_admin, :read_due_for_system]) do
+    bypass action([
+             :read,
+             :read_for_admin,
+             :get_for_admin,
+             :read_due_for_system,
+             :read_due_failed_payment_boundary_for_system,
+             :read_past_due_missing_boundary_for_system
+           ]) do
       access_type(:runtime)
       authorize_if(context_equals(:system?, true))
       authorize_if({Store.Admin.Checks.HasRole, roles: [:super_admin, :admin, :support]})

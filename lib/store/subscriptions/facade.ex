@@ -153,6 +153,120 @@ defmodule Store.Subscriptions.Facade do
     end)
   end
 
+  @spec execute_suspension_access_effect_for_system(String.t()) ::
+          {:ok, :applied | :superseded | :noop} | {:error, Error.t() | term()}
+  def execute_suspension_access_effect_for_system(effect_id) when is_binary(effect_id) do
+    case Repo.transaction(fn -> execute_suspension_access_effect_in_transaction(effect_id) end) do
+      {:ok, {:applied, effect, notifications, user_ids}} ->
+        :ok =
+          AshNotifications.notify_post_commit(notifications,
+            context: %{
+              flow: :execute_suspension_access_effect,
+              subscription_id: effect.subscription_id,
+              access_effect_id: effect.id
+            }
+          )
+
+        case deliver_access_effect_projection(effect, user_ids) do
+          :ok -> {:ok, :applied}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, {:superseded, _effect}} ->
+        {:ok, :superseded}
+
+      {:ok, :noop} ->
+        {:ok, :noop}
+
+      {:error, {:entitlements_convergence_failure, reason}} ->
+        _ = mark_current_access_effect_failed_retryable(effect_id)
+        {:error, Normalize.normalize(reason)}
+
+      {:error, %Ash.Changeset{} = reason} ->
+        _ = mark_current_access_effect_failed_retryable(effect_id)
+        {:error, Normalize.normalize(reason)}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  def execute_suspension_access_effect_for_system(_effect_id) do
+    {:error, Error.new("VALIDATION_ERROR", "AccessEffect id must be a UUID")}
+  end
+
+  @spec repair_suspension_access_effect_projection_for_system(String.t()) ::
+          :ok | {:error, Error.t() | term()}
+  def repair_suspension_access_effect_projection_for_system(effect_id)
+      when is_binary(effect_id) do
+    with {:ok, effect} <- fetch_access_effect(effect_id),
+         true <- effect.status == :applied and is_list(effect.projection_user_ids),
+         :ok <- deliver_access_effect_projection(effect, effect.projection_user_ids) do
+      :ok
+    else
+      false -> :ok
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  def repair_suspension_access_effect_projection_for_system(_effect_id) do
+    {:error, Error.new("VALIDATION_ERROR", "AccessEffect id must be a UUID")}
+  end
+
+  @spec run_subscription_access_effect_recovery_for_system(keyword()) ::
+          {:ok,
+           %{
+             execution_count: non_neg_integer(),
+             projection_count: non_neg_integer(),
+             failed_count: non_neg_integer(),
+             as_of: DateTime.t(),
+             execution_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             projection_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil
+           }}
+          | {:error, Error.t() | term()}
+  def run_subscription_access_effect_recovery_for_system(opts \\ [])
+
+  def run_subscription_access_effect_recovery_for_system(opts) when is_list(opts) do
+    limit = opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
+
+    with {:ok, as_of} <- recovery_as_of(opts),
+         {:ok, projection_effects} <- recovery_effects(opts, :projection, as_of, limit),
+         {:ok, recoverable_effects} <- recovery_effects(opts, :execution, as_of, limit) do
+      execution =
+        Enum.reduce(recoverable_effects, %{completed: 0, failed: 0}, &execute_effect_result/2)
+
+      projection =
+        Enum.reduce(
+          projection_effects,
+          %{completed: 0, failed: 0},
+          &repair_effect_projection_result/2
+        )
+
+      {:ok,
+       %{
+         execution_count: execution.completed,
+         projection_count: projection.completed,
+         failed_count: execution.failed + projection.failed,
+         as_of: as_of,
+         execution_cursor:
+           if(Keyword.get(opts, :skip_execution, false),
+             do: nil,
+             else: recovery_cursor(recoverable_effects, limit, :updated_at)
+           ),
+         projection_cursor:
+           if(Keyword.get(opts, :skip_projection, false),
+             do: nil,
+             else: recovery_cursor(projection_effects, limit, :inserted_at)
+           )
+       }}
+    end
+  end
+
+  def run_subscription_access_effect_recovery_for_system(_opts) do
+    {:error,
+     Error.new("VALIDATION_ERROR", "AccessEffect recovery options must be a keyword list")}
+  end
+
   @spec list_subscriptions_for_user(map(), UserSubscriptionIndexQuery.t()) ::
           {:ok, [Subscription.t()]} | {:error, Error.t() | term()}
   def list_subscriptions_for_user(actor, %UserSubscriptionIndexQuery{} = query)
@@ -2120,6 +2234,78 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
+  @spec run_due_failed_payment_suspensions_for_system(keyword()) ::
+          {:ok,
+           %{
+             due_count: non_neg_integer(),
+             suspended_count: non_neg_integer(),
+             failed_count: non_neg_integer(),
+             cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             now: DateTime.t()
+           }}
+          | {:error, Error.t() | term()}
+  def run_due_failed_payment_suspensions_for_system(opts \\ [])
+
+  def run_due_failed_payment_suspensions_for_system(opts) when is_list(opts) do
+    with {:ok, database_now} <- database_wall_clock_now() do
+      now = Keyword.get(opts, :now, database_now)
+      limit = opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
+
+      query =
+        Subscription
+        |> Ash.Query.for_read(:read_due_failed_payment_boundary_for_system, %{
+          now: now,
+          after_boundary_at: Keyword.get(opts, :after_boundary_at),
+          after_id: Keyword.get(opts, :after_id),
+          limit: limit
+        })
+
+      case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+        {:ok, subscriptions} ->
+          result =
+            Enum.reduce(subscriptions, %{suspended: 0, failed: 0}, &suspend_boundary_result/2)
+
+          {:ok,
+           %{
+             due_count: length(subscriptions),
+             suspended_count: result.suspended,
+             failed_count: result.failed,
+             cursor: boundary_cursor(subscriptions, limit),
+             now: now
+           }}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  def run_due_failed_payment_suspensions_for_system(_opts) do
+    {:error, Error.new("VALIDATION_ERROR", "boundary suspension options must be a keyword list")}
+  end
+
+  @spec list_past_due_missing_failed_payment_boundary_for_system(keyword()) ::
+          {:ok, [Subscription.t()]} | {:error, Error.t() | term()}
+  def list_past_due_missing_failed_payment_boundary_for_system(opts \\ [])
+
+  def list_past_due_missing_failed_payment_boundary_for_system(opts) when is_list(opts) do
+    query =
+      Subscription
+      |> Ash.Query.for_read(:read_past_due_missing_boundary_for_system, %{
+        after_id: Keyword.get(opts, :after_id),
+        limit: opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
+      })
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, subscriptions} -> {:ok, subscriptions}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  def list_past_due_missing_failed_payment_boundary_for_system(_opts) do
+    {:error, Error.new("VALIDATION_ERROR", "quarantine query options must be a keyword list")}
+  end
+
   @spec list_due_renewal_jobs_for_system(keyword()) ::
           {:ok,
            [
@@ -2664,6 +2850,12 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp ensure_subscription_due(
+         %Subscription{status: :past_due, failed_payment_boundary_at: nil},
+         _now
+       ),
+       do: :not_due
+
+  defp ensure_subscription_due(
          %Subscription{status: :past_due, retry_suppressed_at: %DateTime{}},
          _now
        ),
@@ -2710,9 +2902,6 @@ defmodule Store.Subscriptions.Facade do
            {:ok, renewal_identity_period} <- renewal_period(subscription, live_revision, now),
            renewal_key <-
              Scheduler.renewal_key(subscription.id, renewal_identity_period.current_period_end_at),
-           {:ok, expiry_policy} <-
-             renewal_policy_for_occurrence(subscription, renewal_key, live_revision),
-           :continue <- maybe_suspend_past_due(subscription, expiry_policy, now),
            {:ok, binding} <- bind_renewal_attempt(subscription, renewal_key, live_revision) do
         bound_subscription = binding.subscription
         bound_attempt = binding.attempt
@@ -2735,12 +2924,6 @@ defmodule Store.Subscriptions.Facade do
 
         settle_claimed_due_renewal_result(bound_subscription, bound_policy, result, now)
       else
-        :suspended ->
-          :ok
-
-        {:suspension_failed, reason} ->
-          {:error, reason}
-
         {:error,
          %Error{
            code: "VALIDATION_ERROR",
@@ -3756,36 +3939,6 @@ defmodule Store.Subscriptions.Facade do
     }
   end
 
-  defp renewal_policy_for_occurrence(
-         %Subscription{status: :past_due} = subscription,
-         renewal_key,
-         %PlanRevision{} = live_revision
-       ) do
-    case fetch_renewal_attempt_by_key(subscription.id, renewal_key) do
-      {:ok, attempt} -> renewal_policy_for_existing_attempt(attempt, live_revision)
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp renewal_policy_for_occurrence(
-         %Subscription{},
-         _renewal_key,
-         %PlanRevision{} = live_revision
-       ),
-       do: {:ok, renewal_policy(live_revision)}
-
-  defp renewal_policy_for_existing_attempt(nil, %PlanRevision{} = live_revision),
-    do: {:ok, renewal_policy(live_revision)}
-
-  defp renewal_policy_for_existing_attempt(
-         %RenewalAttempt{} = attempt,
-         %PlanRevision{}
-       ) do
-    with :ok <- ensure_complete_bound_renewal_attempt(attempt) do
-      {:ok, renewal_policy_from_attempt(attempt)}
-    end
-  end
-
   defp bind_renewal_attempt(
          %Subscription{} = expected_subscription,
          renewal_key,
@@ -4091,26 +4244,6 @@ defmodule Store.Subscriptions.Facade do
 
   defp enum_snapshot(nil), do: nil
   defp enum_snapshot(value) when is_atom(value), do: Atom.to_string(value)
-
-  defp renewal_policy(%PlanRevision{} = revision) do
-    %{
-      interval_unit: revision.interval_unit,
-      interval_count: revision.interval_count,
-      anchor_mode: revision.anchor_mode,
-      anchor_day_of_month: revision.anchor_day_of_month,
-      billing_timezone: revision.billing_timezone,
-      term_mode: revision.term_mode,
-      term_cycles: revision.term_cycles,
-      term_end_at: revision.term_end_at,
-      access_on_past_due: revision.access_on_past_due,
-      access_on_cancel: revision.access_on_cancel,
-      grace_period_days: revision.grace_period_days,
-      max_retry_attempts: revision.max_retry_attempts,
-      retry_schedule_hours: revision.retry_schedule_hours,
-      entitlement_kind: revision.entitlement_kind,
-      entitlement_scope_key: revision.entitlement_scope_key
-    }
-  end
 
   defp renewal_policy_from_attempt(%RenewalAttempt{charged_contract_snapshot: snapshot})
        when is_map(snapshot) do
@@ -5438,7 +5571,7 @@ defmodule Store.Subscriptions.Facade do
 
   defp submit_off_session_renewal_charge(
          subscription,
-         plan,
+         _plan,
          attempt,
          order,
          payment_intent,
@@ -5480,7 +5613,7 @@ defmodule Store.Subscriptions.Facade do
 
         :requires_action ->
           subscription_update_result =
-            mark_subscription_authentication_required(subscription, plan, now, charge_response)
+            mark_subscription_authentication_required(subscription, attempt, now, charge_response)
 
           _ = enqueue_payment_authentication_required_email(order, charge_response)
 
@@ -5650,17 +5783,33 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp mark_subscription_authentication_required(subscription, plan, now, charge_response) do
-    next_retry_at = Scheduler.grace_expires_at(now, plan)
+  defp mark_subscription_authentication_required(
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt,
+         %DateTime{} = now,
+         charge_response
+       ) do
+    retry_policy = renewal_policy_from_attempt(attempt)
     next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
+    past_due_since_at = dunning_anchor(subscription, now)
+
+    failed_payment_boundary_at =
+      failed_payment_boundary_for_first_failure(
+        subscription,
+        retry_policy,
+        past_due_since_at
+      )
 
     subscription
     |> Ash.Changeset.for_update(
       :mark_past_due_transition,
       %{
         billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED",
+        past_due_since_at: past_due_since_at,
+        failed_payment_boundary_at: failed_payment_boundary_at,
         dunning_attempt_count: next_attempt_count,
-        next_retry_at: next_retry_at
+        next_retry_at: nil,
+        retry_suppressed_at: now
       },
       context: %{system?: true}
     )
@@ -5864,7 +6013,9 @@ defmodule Store.Subscriptions.Facade do
          :ok <- ensure_reconciliation_no_future_target(subscription, contract_change, attempt),
          {:ok, updated, subscription_notifications} <-
            update_reconciled_subscription(subscription, attempt, revision, target),
-         {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change) do
+         {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change),
+         {:ok, _effect} <-
+           establish_suspended_recovery_access_effect(subscription, updated, attempt, target) do
       %{
         outcome: :applied,
         subscription: updated,
@@ -5875,6 +6026,36 @@ defmodule Store.Subscriptions.Facade do
       {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  defp establish_suspended_recovery_access_effect(
+         %Subscription{status: :suspended},
+         %Subscription{} = recovered,
+         %RenewalAttempt{} = attempt,
+         target
+       ) do
+    with {:ok, input} <-
+           EstablishAccessEffectInput.new(%{
+             subscription_id: recovered.id,
+             source_version: recovered.aggregate_version,
+             disposition: :effective,
+             entitlement_kind: target.entitlement_kind,
+             entitlement_scope_key: target.entitlement_scope_key,
+             valid_until_at: recovered.current_period_end_at,
+             source_order_line_item_id: recovered.source_order_line_item_id,
+             contract_change_id: recovered.current_contract_change_id,
+             plan_revision_id: attempt.plan_revision_id
+           }) do
+      establish_access_effect_for_system(input)
+    end
+  end
+
+  defp establish_suspended_recovery_access_effect(
+         %Subscription{},
+         %Subscription{},
+         %RenewalAttempt{},
+         _target
+       ),
+       do: {:ok, nil}
 
   defp lock_reconciliation_contract_change(nil), do: {:ok, nil}
 
@@ -6232,57 +6413,236 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp maybe_suspend_past_due(%Subscription{status: :past_due} = subscription, plan, now) do
-    case subscription.past_due_since_at do
-      %DateTime{} = past_due_since_at ->
-        grace_expires_at = Scheduler.grace_expires_at(past_due_since_at, plan)
+  defp bounded_due_limit(limit) when is_integer(limit) and limit in 1..500, do: limit
+  defp bounded_due_limit(_limit), do: @default_due_limit
 
-        if DateTime.compare(now, grace_expires_at) in [:gt, :eq] do
-          suspend_past_due_subscription(subscription, %{})
-        else
-          :continue
+  defp database_wall_clock_now do
+    case Repo.query("SELECT clock_timestamp()") do
+      {:ok, %{rows: [[%DateTime{} = now]]}} -> {:ok, now}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+      _ -> {:error, Error.new("INTERNAL_ERROR", "database wall clock is unavailable")}
+    end
+  end
+
+  defp suspend_boundary_result(subscription, counts) do
+    case suspend_due_boundary_for_system(subscription.id) do
+      {:ok, {:suspended, suspended, notifications}} ->
+        :ok =
+          AshNotifications.notify_post_commit(notifications,
+            context: %{flow: :failed_payment_boundary_suspension, subscription_id: suspended.id}
+          )
+
+        %{counts | suspended: counts.suspended + 1}
+
+      {:ok, {:reconcile, handoff}} ->
+        case reconcile_paid_subscription_renewal_for_system(handoff.order_id,
+               renewal_attempt_id: handoff.renewal_attempt_id,
+               collection_attempt_id: handoff.collection_attempt_id,
+               payment_intent_id: handoff.payment_intent_id
+             ) do
+          {:ok, _result} -> counts
+          {:error, _reason} -> %{counts | failed: counts.failed + 1}
         end
 
-      _ ->
-        :continue
+      {:ok, :skipped} ->
+        counts
+
+      {:error, _reason} ->
+        %{counts | failed: counts.failed + 1}
     end
   end
 
-  defp maybe_suspend_past_due(%Subscription{}, _plan, _now), do: :continue
+  defp suspend_due_boundary_for_system(subscription_id) do
+    case Repo.transaction(fn -> suspend_due_boundary_in_transaction(subscription_id) end) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
 
-  defp suspend_past_due_subscription(subscription, attrs) do
-    transaction_result = suspend_subscription_and_revoke_in_transaction(subscription, attrs)
+  defp suspend_due_boundary_in_transaction(subscription_id) do
+    case fetch_subscription_for_renewal_locked(subscription_id) do
+      {:ok,
+       %Subscription{
+         status: :past_due,
+         failed_payment_boundary_at: %DateTime{} = boundary_at
+       } = subscription} ->
+        case database_boundary_reached?(boundary_at) do
+          {:ok, true} -> suspend_if_no_exact_paid_success(subscription)
+          {:ok, false} -> :skipped
+          {:error, reason} -> Repo.rollback(reason)
+        end
 
-    case transaction_result do
-      {:ok, %{subscription: suspended, user_ids: user_ids}, notifications} ->
-        project_suspension_after_commit(suspended, user_ids, notifications)
+      {:ok, _subscription} ->
+        :skipped
 
       {:error, reason} ->
-        {:suspension_failed, Normalize.normalize(reason)}
+        Repo.rollback(reason)
     end
   end
 
-  defp suspend_subscription_and_revoke_in_transaction(subscription, attrs) do
-    Repo.transaction(fn ->
-      with :ok <- lock_subscription_aggregate_version(subscription),
-           {:ok, suspended, subscription_notifications} <-
-             mark_subscription_suspended_in_transaction(subscription, attrs),
-           {:ok, %{notifications: grant_notifications, user_ids: user_ids}} <-
-             EntitlementsFacade.revoke_subscription_source_grants_strict_for_system(
-               suspended.id,
-               "grace_expired"
-             ) do
-        {:ok,
-         %{
-           subscription: suspended,
-           notifications: subscription_notifications ++ grant_notifications,
-           user_ids: user_ids
-         }}
-      else
-        {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
-      end
-    end)
-    |> normalize_transaction_notifications()
+  defp database_boundary_reached?(boundary_at) do
+    case Repo.query("SELECT clock_timestamp() >= $1", [boundary_at]) do
+      {:ok, %{rows: [[reached?]]}} when is_boolean(reached?) -> {:ok, reached?}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+      _ -> {:error, Error.new("INTERNAL_ERROR", "database boundary clock check failed")}
+    end
+  end
+
+  defp suspend_if_no_exact_paid_success(subscription) do
+    case current_bound_renewal_attempt(subscription) do
+      {:ok, %RenewalAttempt{status: :succeeded}} ->
+        :skipped
+
+      {:ok, %RenewalAttempt{} = attempt} ->
+        case authoritative_success_for_attempt(attempt) do
+          {:success, handoff} ->
+            {:reconcile, handoff}
+
+          :success_pending ->
+            :skipped
+
+          :none ->
+            commit_failed_payment_suspension(subscription)
+        end
+
+      {:ok, nil} ->
+        Repo.rollback(
+          Error.new(
+            "FAILED_PAYMENT_EVIDENCE_MISSING",
+            "due failed-payment boundary has no exact current RenewalAttempt"
+          )
+        )
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp authoritative_success_for_attempt(attempt) do
+    case find_authoritative_success_handoff(attempt) do
+      {:success, handoff} ->
+        serialize_authoritative_success(attempt, handoff)
+
+      :success_pending ->
+        :success_pending
+
+      :none ->
+        recheck_authoritative_success(attempt)
+    end
+  end
+
+  defp recheck_authoritative_success(attempt) do
+    with {:ok, application_status} <- cancellation_payment_application_status(attempt) do
+      resolve_rechecked_authoritative_success(attempt, application_status)
+    end
+  end
+
+  defp resolve_rechecked_authoritative_success(attempt, application_status) do
+    case find_authoritative_success_handoff(attempt) do
+      {:success, handoff} ->
+        serialize_authoritative_success(attempt, handoff)
+
+      :success_pending ->
+        :success_pending
+
+      :none when application_status == :applied ->
+        :success_pending
+
+      :none ->
+        :none
+    end
+  end
+
+  defp find_authoritative_success_handoff(attempt) do
+    case RenewalCollectionAttempt.list_for_renewal_attempt(attempt.id,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, collections} ->
+        Enum.reduce_while(
+          collections,
+          :none,
+          &collect_authoritative_success_handoff(&1, &2, attempt)
+        )
+
+      {:error, _reason} ->
+        :success_pending
+    end
+  end
+
+  defp collect_authoritative_success_handoff(
+         %RenewalCollectionAttempt{financial_outcome: :verified_success} = collection,
+         :none,
+         attempt
+       ) do
+    validate_authoritative_success_handoff(collection.id, attempt)
+  end
+
+  defp collect_authoritative_success_handoff(_collection, :none, _attempt), do: {:cont, :none}
+
+  defp collect_authoritative_success_handoff(_collection, result, _attempt), do: {:halt, result}
+
+  defp validate_authoritative_success_handoff(collection_id, attempt) do
+    case RenewalCollectionAttempts.success_handoff_for_system(collection_id) do
+      {:ok, handoff}
+      when handoff.order_id == attempt.order_id and handoff.renewal_attempt_id == attempt.id ->
+        {:halt, {:success, handoff}}
+
+      {:error, _reason} ->
+        {:halt, :success_pending}
+
+      _ ->
+        {:cont, :none}
+    end
+  end
+
+  defp serialize_authoritative_success(attempt, handoff) do
+    case PaymentsFacade.serialize_renewal_payment_application_for_system(
+           %RenewalPaymentApplicationInput{
+             order_id: handoff.order_id,
+             payment_intent_id: handoff.payment_intent_id
+           }
+         ) do
+      {:ok, :applied} ->
+        case find_authoritative_success_handoff(attempt) do
+          {:success, current_handoff} -> {:success, current_handoff}
+          _ -> :success_pending
+        end
+
+      {:ok, :unapplied} ->
+        :success_pending
+
+      {:error, _reason} ->
+        :success_pending
+    end
+  end
+
+  defp commit_failed_payment_suspension(subscription) do
+    with {:ok, suspended, notifications} <-
+           mark_subscription_suspended_in_transaction(subscription, %{}),
+         {:ok, _effect} <-
+           establish_suspension_access_effect(suspended) do
+      {:suspended, suspended, notifications}
+    else
+      {:error, reason} -> Repo.rollback(Normalize.normalize(reason))
+    end
+  end
+
+  defp establish_suspension_access_effect(%Subscription{} = subscription) do
+    with {:ok, input} <-
+           EstablishAccessEffectInput.new(%{
+             subscription_id: subscription.id,
+             source_version: subscription.aggregate_version,
+             disposition: :non_effective,
+             entitlement_kind: nil,
+             entitlement_scope_key: nil,
+             valid_until_at: nil,
+             source_order_line_item_id: subscription.source_order_line_item_id,
+             contract_change_id: subscription.current_contract_change_id,
+             plan_revision_id: subscription.current_plan_revision_id
+           }) do
+      establish_access_effect_for_system(input)
+    end
   end
 
   defp mark_subscription_suspended_in_transaction(subscription, attrs) do
@@ -6310,34 +6670,6 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp project_suspension_after_commit(suspended, user_ids, notifications) do
-    :ok =
-      AshNotifications.notify_post_commit(
-        notifications,
-        context: %{
-          flow: :suspend_subscription,
-          subscription_id: suspended.id,
-          reason: "grace_expired"
-        }
-      )
-
-    :ok =
-      EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
-        user_ids,
-        "grace_expired"
-      )
-
-    plan =
-      case fetch_plan(suspended.subscription_plan_id) do
-        {:ok, fetched_plan} -> fetched_plan
-        _ -> nil
-      end
-
-    _ = maybe_enqueue_membership_access_ended_email(suspended, plan, "grace_expired")
-
-    :suspended
-  end
-
   defp mark_attempt_succeeded(attempt, order_id, payment_intent_id) do
     attempt
     |> Ash.Changeset.for_update(
@@ -6359,6 +6691,13 @@ defmodule Store.Subscriptions.Facade do
       next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
       past_due_since_at = dunning_anchor(subscription, now)
 
+      failed_payment_boundary_at =
+        failed_payment_boundary_for_first_failure(
+          subscription,
+          retry_policy,
+          past_due_since_at
+        )
+
       attrs =
         retry_failure_attrs(
           retry_policy,
@@ -6366,7 +6705,8 @@ defmodule Store.Subscriptions.Facade do
           now,
           past_due_since_at,
           next_attempt_count,
-          max_retry_attempts
+          max_retry_attempts,
+          failed_payment_boundary_at
         )
 
       subscription
@@ -6393,7 +6733,8 @@ defmodule Store.Subscriptions.Facade do
          now,
          past_due_since_at,
          attempt_count,
-         max_retry_attempts
+         max_retry_attempts,
+         failed_payment_boundary_at
        ) do
     hard_blocked? = hard_retry_suppressed_reason?(message)
 
@@ -6407,16 +6748,46 @@ defmodule Store.Subscriptions.Facade do
       )
 
     retry_suppressed? =
-      retry_failure_suppressed?(attempt_count, max_retry_attempts, hard_blocked?, scheduled_retry)
+      retry_failure_suppressed?(
+        attempt_count,
+        max_retry_attempts,
+        hard_blocked? or is_nil(failed_payment_boundary_at),
+        scheduled_retry
+      )
 
     %{
       billing_status_reason: message,
       past_due_since_at: past_due_since_at,
+      failed_payment_boundary_at: failed_payment_boundary_at,
       dunning_attempt_count: attempt_count,
       next_retry_at: if(retry_suppressed?, do: nil, else: scheduled_retry),
       retry_suppressed_at: if(retry_suppressed?, do: now, else: nil)
     }
   end
+
+  defp failed_payment_boundary_for_first_failure(
+         %Subscription{failed_payment_boundary_at: %DateTime{} = boundary_at},
+         _retry_policy,
+         _past_due_since_at
+       ),
+       do: boundary_at
+
+  defp failed_payment_boundary_for_first_failure(
+         %Subscription{past_due_since_at: nil},
+         %{grace_period_days: grace_period_days},
+         %DateTime{} = past_due_since_at
+       )
+       when is_integer(grace_period_days) and grace_period_days >= 0 do
+    DateTime.add(past_due_since_at, grace_period_days * 24 * 60 * 60, :second)
+    |> DateTime.truncate(:microsecond)
+  end
+
+  defp failed_payment_boundary_for_first_failure(
+         %Subscription{},
+         _retry_policy,
+         _past_due_since_at
+       ),
+       do: nil
 
   defp scheduled_retry_after_failure(
          _past_due_since_at,
@@ -6481,7 +6852,11 @@ defmodule Store.Subscriptions.Facade do
     subscription
     |> Ash.Changeset.for_update(
       :mark_past_due_transition,
-      %{billing_status_reason: message},
+      %{
+        billing_status_reason: message,
+        next_retry_at: nil,
+        retry_suppressed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      },
       context: %{system?: true}
     )
     |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
@@ -6679,6 +7054,339 @@ defmodule Store.Subscriptions.Facade do
          ) do
       {:ok, %Subscription{} = subscription} -> subscription
       _ -> nil
+    end
+  end
+
+  defp execute_suspension_access_effect_in_transaction(effect_id) do
+    with {:ok, candidate} <- fetch_access_effect(effect_id),
+         {:ok, subscription} <- fetch_subscription_for_renewal_locked(candidate.subscription_id),
+         {:ok, effect} <- fetch_access_effect_locked(effect_id),
+         {:ok, current} <- read_current_access_effect(subscription.id) do
+      execute_locked_suspension_access_effect(subscription, effect, current)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp execute_locked_suspension_access_effect(subscription, effect, current) do
+    cond do
+      effect.status in [:applied, :superseded] ->
+        :noop
+
+      not current_access_effect?(subscription, effect, current) ->
+        supersede_stale_suspension_access_effect(effect)
+
+      subscription.status != :suspended or effect.disposition != :non_effective ->
+        Repo.rollback(
+          Error.new(
+            "INVALID_STATE_TRANSITION",
+            "current suspension AccessEffect does not match its Subscription source"
+          )
+        )
+
+      effect.status in [:required, :pending, :failed_retryable] ->
+        execute_current_suspension_effect(subscription, effect)
+
+      true ->
+        :noop
+    end
+  end
+
+  defp supersede_stale_suspension_access_effect(effect) do
+    case supersede_older_access_effect(effect) do
+      :ok -> {:superseded, effect}
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp current_access_effect?(subscription, effect, current) do
+    subscription.aggregate_version == effect.source_version and
+      match?(%AccessEffect{id: id} when id == effect.id, current)
+  end
+
+  defp execute_current_suspension_effect(subscription, effect) do
+    with {:ok, pending_effect} <- access_effect_to_pending(effect),
+         {:ok, entitlement_result} <-
+           revoke_suspended_subscription_source(subscription.id),
+         {:ok, applied_effect} <-
+           transition_access_effect_with_attrs(
+             pending_effect,
+             :pending,
+             :applied,
+             :mark_applied,
+             %{projection_user_ids: entitlement_result.user_ids}
+           ) do
+      {:applied, applied_effect, entitlement_result.notifications, entitlement_result.user_ids}
+    else
+      {:error, {:entitlements_convergence_failure, reason}} ->
+        Repo.rollback({:entitlements_convergence_failure, reason})
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp access_effect_to_pending(%AccessEffect{status: :required} = effect),
+    do: transition_access_effect(effect, :required, :pending, :mark_pending_from_required)
+
+  defp access_effect_to_pending(%AccessEffect{status: :failed_retryable} = effect),
+    do: transition_access_effect(effect, :failed_retryable, :pending, :retry_to_pending)
+
+  defp access_effect_to_pending(%AccessEffect{status: :pending} = effect), do: {:ok, effect}
+
+  defp access_effect_to_pending(%AccessEffect{status: status}) do
+    {:error, invalid_access_effect_transition(status, :pending)}
+  end
+
+  defp revoke_suspended_subscription_source(subscription_id) do
+    case EntitlementsFacade.revoke_subscription_source_grants_strict_for_system(
+           subscription_id,
+           "grace_expired"
+         ) do
+      {:ok, %{notifications: notifications, user_ids: user_ids}} ->
+        {:ok, %{notifications: notifications, user_ids: user_ids}}
+
+      {:error, reason} ->
+        {:error, {:entitlements_convergence_failure, reason}}
+    end
+  end
+
+  defp deliver_access_effect_projection(%AccessEffect{} = effect, user_ids)
+       when is_list(user_ids) do
+    case EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
+           user_ids,
+           "grace_expired"
+         ) do
+      :ok -> mark_access_effect_projection_delivered(effect.id, user_ids)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp mark_access_effect_projection_delivered(effect_id, expected_user_ids) do
+    case Repo.transaction(fn ->
+           mark_access_effect_projection_delivered_in_transaction(
+             effect_id,
+             expected_user_ids
+           )
+         end) do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp mark_access_effect_projection_delivered_in_transaction(effect_id, expected_user_ids) do
+    case fetch_access_effect_locked(effect_id) do
+      {:ok, effect} -> mark_access_effect_projection_delivered_locked(effect, expected_user_ids)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp mark_access_effect_projection_delivered_locked(effect, expected_user_ids) do
+    cond do
+      effect.status != :applied or effect.projection_user_ids != expected_user_ids ->
+        Repo.rollback(Error.new("STALE_RECORD", "AccessEffect projection evidence changed"))
+
+      match?(%DateTime{}, effect.projection_delivered_at) ->
+        :ok
+
+      true ->
+        persist_access_effect_projection_delivery(effect)
+    end
+  end
+
+  defp persist_access_effect_projection_delivery(effect) do
+    case database_wall_clock_now() do
+      {:ok, delivered_at} ->
+        case update_access_effect(effect, :mark_projection_delivered, %{
+               projection_delivered_at: delivered_at
+             }) do
+          {:ok, _updated_effect} -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp mark_current_access_effect_failed_retryable(effect_id) do
+    case Repo.transaction(fn ->
+           mark_current_access_effect_failed_retryable_in_transaction(effect_id)
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp mark_current_access_effect_failed_retryable_in_transaction(effect_id) do
+    with {:ok, candidate} <- fetch_access_effect(effect_id),
+         {:ok, subscription} <- fetch_subscription_for_renewal_locked(candidate.subscription_id),
+         {:ok, effect} <- fetch_access_effect_locked(effect_id),
+         {:ok, current} <- read_current_access_effect(subscription.id) do
+      if current_access_effect?(subscription, effect, current) do
+        mark_access_effect_retryable_after_failure(effect)
+      else
+        supersede_older_access_effect(effect)
+      end
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp mark_access_effect_retryable_after_failure(%AccessEffect{status: :required} = effect) do
+    with {:ok, pending} <-
+           transition_access_effect(effect, :required, :pending, :mark_pending_from_required),
+         {:ok, _failed} <-
+           transition_access_effect(pending, :pending, :failed_retryable, :mark_failed_retryable) do
+      :ok
+    end
+  end
+
+  defp mark_access_effect_retryable_after_failure(%AccessEffect{status: :pending} = effect) do
+    effect
+    |> transition_access_effect(:pending, :failed_retryable, :mark_failed_retryable)
+    |> result_to_ok()
+  end
+
+  defp mark_access_effect_retryable_after_failure(%AccessEffect{status: :failed_retryable}),
+    do: :ok
+
+  defp mark_access_effect_retryable_after_failure(_effect), do: :ok
+
+  defp fetch_access_effect(effect_id) do
+    query = AccessEffect |> Ash.Query.filter(expr(id == ^effect_id))
+
+    case Ash.read_one(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, %AccessEffect{} = effect} -> {:ok, effect}
+      {:ok, nil} -> {:error, Error.new("NOT_FOUND", "AccessEffect was not found")}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp fetch_access_effect_locked(effect_id) do
+    query =
+      AccessEffect
+      |> Ash.Query.filter(expr(id == ^effect_id))
+      |> Ash.Query.lock("FOR UPDATE")
+
+    case Ash.read_one(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, %AccessEffect{} = effect} -> {:ok, effect}
+      {:ok, nil} -> {:error, Error.new("NOT_FOUND", "AccessEffect was not found")}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp update_access_effect(effect, action, attrs) do
+    effect
+    |> Ash.Changeset.for_update(action, attrs, context: %{system?: true})
+    |> Ash.update(
+      domain: Subscriptions,
+      authorize?: false,
+      context: %{system?: true},
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, %AccessEffect{} = updated, notifications} ->
+        with :ok <- ensure_no_access_effect_notifiers(notifications), do: {:ok, updated}
+
+      {:ok, %AccessEffect{} = updated} ->
+        {:ok, updated}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp list_access_effects_for_system(action, args) do
+    query = AccessEffect |> Ash.Query.for_read(action, args)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, effects} -> {:ok, effects}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp recovery_effects(opts, stream, as_of, limit) do
+    skip? =
+      Keyword.get(
+        opts,
+        if(stream == :execution, do: :skip_execution, else: :skip_projection),
+        false
+      )
+
+    if skip? do
+      {:ok, []}
+    else
+      {action, args} =
+        case stream do
+          :execution ->
+            {:read_recoverable_non_effective_for_system,
+             execution_recovery_args(opts, as_of, limit)}
+
+          :projection ->
+            {:read_pending_projection_repair_for_system,
+             projection_recovery_args(opts, as_of, limit)}
+        end
+
+      list_access_effects_for_system(action, args)
+    end
+  end
+
+  defp recovery_as_of(opts) do
+    case Keyword.get(opts, :as_of) do
+      %DateTime{} = as_of -> {:ok, as_of}
+      nil -> database_wall_clock_now()
+      _ -> {:error, Error.new("VALIDATION_ERROR", "AccessEffect sweep time is invalid")}
+    end
+  end
+
+  defp execution_recovery_args(opts, as_of, limit) do
+    %{
+      through_updated_at: as_of,
+      after_updated_at: Keyword.get(opts, :execution_after_updated_at),
+      after_id: Keyword.get(opts, :execution_after_id),
+      limit: limit
+    }
+  end
+
+  defp projection_recovery_args(opts, as_of, limit) do
+    %{
+      through_inserted_at: as_of,
+      after_inserted_at: Keyword.get(opts, :projection_after_inserted_at),
+      after_id: Keyword.get(opts, :projection_after_id),
+      limit: limit
+    }
+  end
+
+  defp recovery_cursor(effects, limit, timestamp_field) when length(effects) == limit do
+    last_effect = List.last(effects)
+    %{timestamp: Map.fetch!(last_effect, timestamp_field), id: last_effect.id}
+  end
+
+  defp recovery_cursor(_effects, _limit, _timestamp_field), do: nil
+
+  defp boundary_cursor(subscriptions, limit) when length(subscriptions) == limit do
+    subscription = List.last(subscriptions)
+
+    %{
+      timestamp: subscription.failed_payment_boundary_at,
+      id: subscription.id
+    }
+  end
+
+  defp boundary_cursor(_subscriptions, _limit), do: nil
+
+  defp execute_effect_result(effect, counts) do
+    case execute_suspension_access_effect_for_system(effect.id) do
+      {:ok, _result} -> %{counts | completed: counts.completed + 1}
+      {:error, _reason} -> %{counts | failed: counts.failed + 1}
+    end
+  end
+
+  defp repair_effect_projection_result(effect, counts) do
+    case repair_suspension_access_effect_projection_for_system(effect.id) do
+      :ok -> %{counts | completed: counts.completed + 1}
+      {:error, _reason} -> %{counts | failed: counts.failed + 1}
     end
   end
 
@@ -6974,14 +7682,18 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp transition_access_effect(%AccessEffect{} = effect, from, to, action) do
+    transition_access_effect_with_attrs(effect, from, to, action, %{})
+  end
+
+  defp transition_access_effect_with_attrs(%AccessEffect{} = effect, from, to, action, attrs) do
     with {:ok, current_status} <- lock_access_effect_status(effect.id),
          :ok <- ensure_access_effect_transition_status(current_status, from) do
-      perform_access_effect_update(effect, action, from, to)
+      perform_access_effect_update(effect, action, from, to, attrs)
     end
   end
 
-  defp perform_access_effect_update(effect, action, from, to) do
-    changeset = Ash.Changeset.for_update(effect, action, %{}, context: %{system?: true})
+  defp perform_access_effect_update(effect, action, from, to, attrs) do
+    changeset = Ash.Changeset.for_update(effect, action, attrs, context: %{system?: true})
 
     case Ash.update(changeset,
            domain: Subscriptions,
