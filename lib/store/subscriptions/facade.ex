@@ -2168,7 +2168,7 @@ defmodule Store.Subscriptions.Facade do
            get_subscription_for_user(actor, subscription_id),
          {:ok, updated} <-
            if(mode == :rescind_period_end,
-             do: run_rescind_cancellation(subscription, actor),
+             do: run_rescind_cancellation_with_authorized_reload(subscription, actor),
              else: run_cancel(subscription, mode, actor)
            ) do
       {:ok, updated}
@@ -4202,6 +4202,30 @@ defmodule Store.Subscriptions.Facade do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp run_rescind_cancellation_with_authorized_reload(%Subscription{} = subscription, actor) do
+    case run_rescind_cancellation(subscription, actor) do
+      {:error,
+       %Error{
+         code: "STALE_RECORD",
+         message:
+           "subscription changed while the command was in progress; reload and re-evaluate it"
+       }} ->
+        case get_subscription_for_user(actor, subscription.id) do
+          {:ok, %Subscription{} = fresh_subscription} ->
+            run_rescind_cancellation(fresh_subscription, actor)
+
+          {:ok, nil} ->
+            {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
+
+          {:error, reason} ->
+            {:error, Normalize.normalize(reason)}
+        end
+
+      result ->
+        result
     end
   end
 
