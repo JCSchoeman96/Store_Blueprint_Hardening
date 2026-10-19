@@ -134,13 +134,15 @@ defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
 
     migration = Module.concat(Store.Repo.Migrations, "Jc242DurablePeriodBoundaryTargets")
 
-    unless Code.ensure_loaded?(migration) do
-      migration_path =
-        Path.expand(
-          "../../../priv/repo/migrations/20261019160000_jc242_durable_period_boundary_targets.exs",
-          __DIR__
-        )
+    assert [migration_path] =
+             Path.wildcard(
+               Path.expand(
+                 "../../../priv/repo/migrations/*_jc242_durable_period_boundary_targets.exs",
+                 __DIR__
+               )
+             )
 
+    unless Code.ensure_loaded?(migration) do
       Code.require_file(migration_path)
     end
 
