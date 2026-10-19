@@ -81,7 +81,7 @@ defmodule Store.Entitlements.Facade do
       |> Ash.create(domain: Entitlements, authorize?: false, context: %{system?: true})
       |> case do
         {:ok, grant} ->
-          maybe_invalidate_user(subscription.user_id, "entitlement_issued")
+          _ = maybe_invalidate_user(subscription.user_id, "entitlement_issued")
           {:ok, grant}
 
         {:error, reason} ->

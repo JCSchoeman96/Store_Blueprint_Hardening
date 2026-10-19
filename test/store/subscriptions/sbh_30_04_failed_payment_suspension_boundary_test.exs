@@ -51,6 +51,11 @@ defmodule Store.Subscriptions.Sbh3004FailedPaymentSuspensionBoundaryTest do
       |> Enum.map(& &1.id)
 
     refute subscription.id in due_ids
+
+    assert {:ok, quarantined} =
+             Facade.list_past_due_missing_failed_payment_boundary_for_system(limit: 100)
+
+    assert subscription.id in Enum.map(quarantined, & &1.id)
   end
 
   test "independent boundary selection finds retry-suppressed PAST_DUE rows" do

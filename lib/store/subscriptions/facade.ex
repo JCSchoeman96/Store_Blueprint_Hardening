@@ -218,7 +218,10 @@ defmodule Store.Subscriptions.Facade do
            %{
              execution_count: non_neg_integer(),
              projection_count: non_neg_integer(),
-             failed_count: non_neg_integer()
+             failed_count: non_neg_integer(),
+             as_of: DateTime.t(),
+             execution_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             projection_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil
            }}
           | {:error, Error.t() | term()}
   def run_subscription_access_effect_recovery_for_system(opts \\ [])
@@ -2236,7 +2239,9 @@ defmodule Store.Subscriptions.Facade do
            %{
              due_count: non_neg_integer(),
              suspended_count: non_neg_integer(),
-             failed_count: non_neg_integer()
+             failed_count: non_neg_integer(),
+             cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             now: DateTime.t()
            }}
           | {:error, Error.t() | term()}
   def run_due_failed_payment_suspensions_for_system(opts \\ [])
@@ -5566,7 +5571,7 @@ defmodule Store.Subscriptions.Facade do
 
   defp submit_off_session_renewal_charge(
          subscription,
-         plan,
+         _plan,
          attempt,
          order,
          payment_intent,
@@ -5608,7 +5613,7 @@ defmodule Store.Subscriptions.Facade do
 
         :requires_action ->
           subscription_update_result =
-            mark_subscription_authentication_required(subscription, plan, now, charge_response)
+            mark_subscription_authentication_required(subscription, attempt, now, charge_response)
 
           _ = enqueue_payment_authentication_required_email(order, charge_response)
 
@@ -5778,17 +5783,33 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp mark_subscription_authentication_required(subscription, plan, now, charge_response) do
-    next_retry_at = Scheduler.grace_expires_at(now, plan)
+  defp mark_subscription_authentication_required(
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt,
+         %DateTime{} = now,
+         charge_response
+       ) do
+    retry_policy = renewal_policy_from_attempt(attempt)
     next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
+    past_due_since_at = dunning_anchor(subscription, now)
+
+    failed_payment_boundary_at =
+      failed_payment_boundary_for_first_failure(
+        subscription,
+        retry_policy,
+        past_due_since_at
+      )
 
     subscription
     |> Ash.Changeset.for_update(
       :mark_past_due_transition,
       %{
         billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED",
+        past_due_since_at: past_due_since_at,
+        failed_payment_boundary_at: failed_payment_boundary_at,
         dunning_attempt_count: next_attempt_count,
-        next_retry_at: next_retry_at
+        next_retry_at: nil,
+        retry_suppressed_at: now
       },
       context: %{system?: true}
     )
@@ -5992,7 +6013,9 @@ defmodule Store.Subscriptions.Facade do
          :ok <- ensure_reconciliation_no_future_target(subscription, contract_change, attempt),
          {:ok, updated, subscription_notifications} <-
            update_reconciled_subscription(subscription, attempt, revision, target),
-         {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change) do
+         {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change),
+         {:ok, _effect} <-
+           establish_suspended_recovery_access_effect(subscription, updated, attempt, target) do
       %{
         outcome: :applied,
         subscription: updated,
@@ -6003,6 +6026,36 @@ defmodule Store.Subscriptions.Facade do
       {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  defp establish_suspended_recovery_access_effect(
+         %Subscription{status: :suspended},
+         %Subscription{} = recovered,
+         %RenewalAttempt{} = attempt,
+         target
+       ) do
+    with {:ok, input} <-
+           EstablishAccessEffectInput.new(%{
+             subscription_id: recovered.id,
+             source_version: recovered.aggregate_version,
+             disposition: :effective,
+             entitlement_kind: target.entitlement_kind,
+             entitlement_scope_key: target.entitlement_scope_key,
+             valid_until_at: recovered.current_period_end_at,
+             source_order_line_item_id: recovered.source_order_line_item_id,
+             contract_change_id: recovered.current_contract_change_id,
+             plan_revision_id: attempt.plan_revision_id
+           }) do
+      establish_access_effect_for_system(input)
+    end
+  end
+
+  defp establish_suspended_recovery_access_effect(
+         %Subscription{},
+         %Subscription{},
+         %RenewalAttempt{},
+         _target
+       ),
+       do: {:ok, nil}
 
   defp lock_reconciliation_contract_change(nil), do: {:ok, nil}
 

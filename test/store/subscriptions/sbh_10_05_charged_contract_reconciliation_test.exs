@@ -238,6 +238,9 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     suspended = fetch_subscription!(subscription.id)
     assert suspended.status == :suspended
     assert %DateTime{} = suspended.failed_payment_boundary_at
+    [suspension_effect] = access_effect_rows!(subscription.id)
+    assert suspension_effect.source_version == suspended.aggregate_version
+    assert suspension_effect.disposition == "non_effective"
 
     mark_collection_successful!(collection)
     assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
@@ -253,6 +256,20 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert is_nil(recovered.failed_payment_boundary_at)
     assert fetch_attempt!(attempt.id).status == :succeeded
 
+    [active_effect, old_suspension_effect] = access_effect_rows!(subscription.id)
+    assert active_effect.source_version == recovered.aggregate_version
+    assert active_effect.status == "required"
+    assert active_effect.disposition == "effective"
+    assert active_effect.plan_revision_id == attempt.plan_revision_id
+    assert active_effect.entitlement_kind == "membership_access"
+
+    assert active_effect.entitlement_scope_key ==
+             attempt.charged_contract_snapshot["entitlement_scope_key"]
+
+    assert old_suspension_effect.source_version == suspension_effect.source_version
+    assert old_suspension_effect.status == "superseded"
+    assert old_suspension_effect.disposition == "non_effective"
+
     version = recovered.aggregate_version
 
     assert {:ok, :noop} =
@@ -263,6 +280,159 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     assert fetch_subscription!(subscription.id).aggregate_version == version
     assert is_nil(fetch_subscription!(subscription.id).failed_payment_boundary_at)
+    assert length(access_effect_rows!(subscription.id)) == 2
+  end
+
+  test "failure to establish the recovery AccessEffect rolls back paid suspension recovery" do
+    stub_processing_provider_response!()
+
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc239_recovery_effect_rollback", success?: false)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    set_past_due_boundary!(subscription.id, now)
+    assert {:ok, %{suspended_count: 1}} = Facade.run_due_failed_payment_suspensions_for_system()
+
+    suspended = fetch_subscription!(subscription.id)
+    fail_access_effect_insert!(subscription.id)
+    mark_collection_successful!(collection)
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert {:error, _reason} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    after_failure = fetch_subscription!(subscription.id)
+    assert after_failure.status == :suspended
+    assert after_failure.aggregate_version == suspended.aggregate_version
+    assert after_failure.failed_payment_boundary_at == suspended.failed_payment_boundary_at
+    assert fetch_attempt!(attempt.id).status != :succeeded
+
+    [effect] = access_effect_rows!(subscription.id)
+    assert effect.source_version == suspended.aggregate_version
+    assert effect.disposition == "non_effective"
+  end
+
+  test "the first requires_action result fixes the boundary from the bound occurrence policy" do
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      attempt_id = Ecto.UUID.dump!(Map.fetch!(params, "metadata[renewal_attempt_id]"))
+
+      assert {:ok, %{rows: [[plan_id, grace_period_days]]}} =
+               Store.Repo.query(
+                 """
+                 SELECT plan_revisions.subscription_plan_id::text,
+                        renewal_attempts.charged_contract_snapshot->>'grace_period_days'
+                 FROM renewal_attempts
+                 JOIN plan_revisions ON plan_revisions.id = renewal_attempts.plan_revision_id
+                 WHERE renewal_attempts.id = $1
+                 """,
+                 [attempt_id]
+               )
+
+      Store.Repo.query!(
+        "UPDATE subscription_plans SET grace_period_days = $1 WHERE id = $2",
+        [String.to_integer(grace_period_days) + 30, Ecto.UUID.dump!(plan_id)]
+      )
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "requires_action"})
+      )
+    end)
+
+    %{subscription: subscription, attempt: attempt, now: now} =
+      charged_bound_renewal!("jc239_auth_required_boundary", success?: false)
+
+    past_due = fetch_subscription!(subscription.id)
+    grace_period_days = attempt.charged_contract_snapshot["grace_period_days"]
+
+    assert past_due.status == :past_due
+    assert past_due.past_due_since_at == now
+
+    assert past_due.failed_payment_boundary_at ==
+             DateTime.add(now, grace_period_days * 86_400, :second)
+             |> DateTime.truncate(:microsecond)
+
+    assert past_due.next_retry_at == nil
+    assert %DateTime{} = past_due.retry_suppressed_at
+
+    due_ids =
+      Subscription
+      |> Ash.Query.for_read(:read_due_failed_payment_boundary_for_system, %{
+        now: past_due.failed_payment_boundary_at,
+        limit: 20
+      })
+      |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+      |> Enum.map(& &1.id)
+
+    assert subscription.id in due_ids
+  end
+
+  test "replayed requires_action after a Plan change preserves the bound boundary and starts no collection" do
+    charge_count = :atomics.new(1, [])
+    {:ok, params_agent} = Agent.start_link(fn -> nil end)
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add(charge_count, 1, 1)
+      Agent.update(params_agent, fn _previous -> params end)
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "requires_action"})
+      )
+    end)
+
+    %{
+      subscription: subscription,
+      attempt: attempt,
+      revision: revision,
+      now: now,
+      collection: collection
+    } =
+      charged_bound_renewal!("jc239_auth_required_replay", success?: false)
+
+    first = fetch_subscription!(subscription.id)
+    boundary = first.failed_payment_boundary_at
+    grace_days = attempt.charged_contract_snapshot["grace_period_days"]
+
+    Store.Repo.query!(
+      "UPDATE subscription_plans SET grace_period_days = $1 WHERE id = $2",
+      [grace_days + 30, Ecto.UUID.dump!(revision.subscription_plan_id)]
+    )
+
+    params = Agent.get(params_agent, & &1)
+
+    StripeAPIStub.stub_observation(fn conn ->
+      assert conn.method == "GET"
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "requires_action"})
+      )
+    end)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id,
+               now: DateTime.add(boundary, -1, :second)
+             )
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id,
+               now: boundary
+             )
+
+    replayed = fetch_subscription!(subscription.id)
+    assert replayed.past_due_since_at == first.past_due_since_at
+    assert replayed.failed_payment_boundary_at == boundary
+
+    assert replayed.failed_payment_boundary_at ==
+             DateTime.add(now, grace_days * 86_400, :second)
+             |> DateTime.truncate(:microsecond)
+
+    assert :atomics.get(charge_count, 1) == 1
+    assert fetch_collection!(collection.id).id == collection.id
   end
 
   test "a different attempt id cannot recover a suspended occurrence" do
@@ -286,6 +456,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     assert fetch_subscription!(subscription.id).status == :suspended
     assert fetch_attempt!(attempt.id).status != :succeeded
+    assert Enum.all?(access_effect_rows!(subscription.id), &(&1.disposition == "non_effective"))
   end
 
   test "CANCELED and EXPIRED subscriptions cannot be recovered by later success" do
@@ -326,6 +497,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
       assert fetch_subscription!(subscription.id).status == terminal_status
       assert fetch_attempt!(attempt.id).status != :succeeded
+      assert Enum.all?(access_effect_rows!(subscription.id), &(&1.disposition == "non_effective"))
 
       if terminal_status == :canceled do
         assert {:ok, :noop} = result
@@ -965,8 +1137,70 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       order: order,
       collection: fetch_collection!(collection.id),
       revision: revision,
-      contract_change: fetch_contract_change!(contract_change.id)
+      contract_change: fetch_contract_change!(contract_change.id),
+      now: now
     }
+  end
+
+  defp access_effect_rows!(subscription_id) do
+    {:ok, %{rows: rows}} =
+      Store.Repo.query(
+        """
+        SELECT source_version, status::text, disposition::text, plan_revision_id::text,
+               entitlement_kind::text, entitlement_scope_key
+        FROM access_effects
+        WHERE subscription_id = $1
+        ORDER BY source_version DESC
+        """,
+        [Ecto.UUID.dump!(subscription_id)]
+      )
+
+    Enum.map(rows, fn [
+                        source_version,
+                        status,
+                        disposition,
+                        plan_revision_id,
+                        entitlement_kind,
+                        scope_key
+                      ] ->
+      %{
+        source_version: source_version,
+        status: status,
+        disposition: disposition,
+        plan_revision_id: plan_revision_id,
+        entitlement_kind: entitlement_kind,
+        entitlement_scope_key: scope_key
+      }
+    end)
+  end
+
+  defp fail_access_effect_insert!(subscription_id) do
+    function_name = "jc239_fail_recovery_effect_#{System.unique_integer([:positive])}"
+
+    Store.Repo.query!("""
+    CREATE FUNCTION #{function_name}() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF NEW.subscription_id::text = current_setting('store.jc239_fail_recovery_effect_subscription', true) THEN
+        RAISE EXCEPTION 'injected JC-239 recovery AccessEffect insert failure';
+      END IF;
+
+      RETURN NEW;
+    END;
+    $function$;
+    """)
+
+    Store.Repo.query!("""
+    CREATE TRIGGER #{function_name}
+    BEFORE INSERT ON access_effects
+    FOR EACH ROW EXECUTE FUNCTION #{function_name}()
+    """)
+
+    Store.Repo.query!(
+      "SELECT set_config('store.jc239_fail_recovery_effect_subscription', $1, true)",
+      [subscription_id]
+    )
   end
 
   defp set_past_due_boundary!(subscription_id, now) do
