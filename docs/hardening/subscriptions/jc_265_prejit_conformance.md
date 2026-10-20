@@ -1,5 +1,13 @@
 # JC-265 Pre-JIT Conformance Record
 
+> Historical conformance snapshot. This record predates the accepted JC-238 and
+> JC-239 runtime changes. Its retry-exhaustion-to-suspension statement is
+> superseded: retry exhaustion now keeps the Subscription `past_due` with
+> retries suppressed, and the separate `failed_payment_boundary_at` governs
+> suspension. See [current scheduling terms](../../governance/subscription_scheduling_terms.md)
+> and the retry-exhaustion and failed-payment-boundary tests. The remaining
+> JC-265 evidence below records the behavior and scope at the time of that work.
+
 This implementation record covers the NewYou CER-PT-006 retry-exhaustion and late-provider-success pressure test. Store behavior remains provider-independent; NewYou's grace duration and future Paystack recurring mechanics are not defined here.
 
 ## Lifecycle

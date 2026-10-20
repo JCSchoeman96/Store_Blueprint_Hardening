@@ -142,7 +142,7 @@ Key derivation examples:
 
 ### 4.1 Renewal collection identity
 
-For the later, separately admitted SBH-10-04 implementation, a renewal provider request must carry:
+A future implementation of SBH-10-04 requires a renewal provider request to carry:
 
 - `renewal_key` as occurrence metadata;
 - `collection_attempt_id`;
@@ -163,13 +163,15 @@ This is a bounded renewal adapter/contract extension. For create and webhook ide
 
 ### 4.2 Renewal collection status recovery and cancellation
 
-The later SBH-10-04 implementation may extend `Store.Payments.Providers.Behaviour`, the `Store.Payments.Providers` wrapper, the typed Payments facade, and supported provider adapters with `retrieve_renewal_collection_intent` and `cancel_renewal_collection_intent` operations. These operations address only the exact PaymentIntent linked to one durable `collection_attempt_id`; they do not create general PaymentIntent retrieve/cancel APIs.
+A future implementation may extend `Store.Payments.Providers.Behaviour`, the `Store.Payments.Providers` wrapper, the typed Payments facade, and supported provider adapters with `retrieve_renewal_collection_intent` and `cancel_renewal_collection_intent` operations. These operations address only the exact PaymentIntent linked to one durable `collection_attempt_id`; they do not create general PaymentIntent retrieve/cancel APIs.
+
+**Current main status:** the provider behavior, adapters, and typed Payments facade do not yet expose these exact retrieve/cancel operations. The protocol below is the accepted future contract, not an available recovery procedure. Until an adapter implements the exact operations, an unresolved or `requires_action` collection and its active reservation remain in place. A local deadline or cancellation request does not prove terminal financial non-success.
 
 Status retrieval accepts `collection_attempt_id`, `local_intent_id`, and the exact `provider_payment_id` when available. If the provider response was lost before the ID was stored, an adapter may use an exact provider-supported lookup bound to both collection and local intent IDs. Zero or multiple matches, mismatched identity, unknown status, unsupported lookup, timeout, transport failure, or provider 5xx return an ambiguous result. Replaying the provider create key is not proof of current status.
 
 Adapters normalize authenticated provider responses into a canonical collection status bound to the exact provider object and its local correlation metadata. Payments/Subscriptions validate the returned IDs, amount, and currency before updating collection or PaymentIntent evidence. Cancellation targets only that exact provider object; its request or acknowledgement is not terminal evidence. On retry, retrieve status before repeating cancellation. If the provider requires an idempotency key for cancellation, derive a stable operation key from the collection ID; keep it separate from the create key `renewal-collection:<collection_attempt_id>`. Retrieve status again or accept a verified canonical webhook before classifying terminal financial non-success.
 
-The existing local authentication deadline may trigger bounded status retrieval and a cancellation request for a `requires_action` renewal collection. The deadline, local PaymentIntent state, timeout, or cancel acknowledgement cannot release inventory or permit a new collection. After bounded automatic reconciliation is exhausted, preserve the unresolved collection and active hold and escalate for operator review. Only adapters that can safely identify and verify these exact operations may support them; unsupported adapters fail closed. Provider modules retain no Repo/Ash access, Oban enqueue, or business-state transitions. These renewal-only operations do not change generic checkout or dunning policy.
+After exact adapter operations are implemented, the local authentication deadline may trigger bounded status retrieval and a cancellation request for a `requires_action` renewal collection. The deadline, local PaymentIntent state, timeout, or cancel acknowledgement cannot release inventory or permit a new collection. After bounded automatic reconciliation is exhausted, preserve the unresolved collection and active hold and escalate for operator review. Only adapters that can safely identify and verify these exact operations may support them; unsupported adapters fail closed. Provider modules retain no Repo/Ash access, Oban enqueue, or business-state transitions. These renewal-only operations do not change generic checkout or dunning policy.
 
 ---
 

@@ -579,6 +579,8 @@ defmodule Store.Subscriptions.FacadeTest do
              |> Ash.update(domain: Store.Payments, authorize?: false, context: %{system?: true})
 
     payment_intent_count = Store.Repo.aggregate(PaymentIntent, :count, :id)
+    subscription_before_replay = fetch_subscription!(subscription.id)
+    attempt_before_replay = fetch_latest_attempt!(subscription.id)
     StripeAPIStub.stub_unexpected!("requires-action PaymentIntent must not be charged again")
 
     assert {:ok, :processed} =
@@ -589,6 +591,14 @@ defmodule Store.Subscriptions.FacadeTest do
     assert fetch_collection_for_attempt!(attempt.id) == collection
     assert fetch_payment_intent!(payment_intent.id).state == :requires_action
     assert Store.Repo.aggregate(PaymentIntent, :count, :id) == payment_intent_count
+
+    subscription_after_replay = fetch_subscription!(subscription.id)
+    attempt_after_replay = fetch_latest_attempt!(subscription.id)
+
+    assert subscription_after_replay.dunning_attempt_count ==
+             subscription_before_replay.dunning_attempt_count
+
+    assert attempt_after_replay.attempt_no == attempt_before_replay.attempt_no
   end
 
   test "canceled reached collection with local requires action is not charged again" do
