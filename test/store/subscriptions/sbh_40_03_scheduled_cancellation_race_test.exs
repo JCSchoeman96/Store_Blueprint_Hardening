@@ -701,6 +701,7 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
                disposition: :effective,
                entitlement_kind: :membership_access,
                entitlement_scope_key: fixture.plan_scope_key,
+               valid_from_at: subscription.current_period_start_at,
                valid_until_at: subscription.current_period_end_at,
                source_order_line_item_id: fixture.line_item_id,
                contract_change_id: nil,
@@ -792,6 +793,7 @@ defmodule Store.Subscriptions.Sbh4003ScheduledCancellationRaceTest do
 
     terminal_effect = fetch_current_access_effect!(fixture.subscription_id)
     assert terminal_effect.disposition == :non_effective
+    assert is_nil(terminal_effect.valid_from_at)
     assert terminal_effect.source_version == canceled.aggregate_version
     assert terminal_effect.source_version > old_effect.source_version
     assert count_effects_at_version(fixture.subscription_id, canceled.aggregate_version) == 1
