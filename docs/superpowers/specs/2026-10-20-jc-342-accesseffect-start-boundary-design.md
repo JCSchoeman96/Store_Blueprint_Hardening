@@ -1,6 +1,20 @@
 # JC-342 / SBH-50-06R1 — Immutable AccessEffect Start-Boundary Evidence
 
-Status: **DESIGN APPROVED / SPEC REVIEW REQUIRED / IMPLEMENTATION NOT AUTHORIZED**  
+Status: **DESIGN APPROVED / SPEC APPROVED / IMPLEMENTATION PLAN APPROVED**
+Implementation: **NOT STARTED**
+
+Implementation authority activates only after:
+1. This exact plan-authority PR is merged to `main`.
+2. Post-merge CI on that merge commit succeeds.
+
+Implementation plan: `docs/superpowers/plans/2026-10-20-jc-342-accesseffect-start-boundary-implementation-plan.md`
+
+Plan SHA256: `aedc21a64b47cfa0936215455c176894990eca24c6a1bc53fcf472f294442278`
+
+Human approvals:
+- Written specification: APPROVED
+- Implementation plan: APPROVED
+
 Date: 2026-10-20  
 Repository: `JCSchoeman96/Store_Blueprint_Hardening`  
 Design base: `cf57cddcbbba39adbec0adda66b883720b55c2be`  
