@@ -8105,37 +8105,41 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp validate_access_effect_temporal_target(input) do
-    complete_effective_target? =
-      input.disposition == :effective and not is_nil(input.entitlement_kind) and
-        not is_nil(input.entitlement_scope_key)
+  defp validate_access_effect_temporal_target(
+         %{disposition: :effective, entitlement_kind: kind, entitlement_scope_key: scope} = input
+       )
+       when not is_nil(kind) and not is_nil(scope) do
+    validate_effective_access_effect_interval(input)
+  end
 
-    cond do
-      complete_effective_target? and is_nil(input.valid_from_at) ->
-        {:error,
-         Error.new(
-           "VALIDATION_ERROR",
-           "effective AccessEffect targets require valid_from_at"
-         )}
+  defp validate_access_effect_temporal_target(%{valid_from_at: nil}), do: :ok
 
-      complete_effective_target? and not is_nil(input.valid_until_at) and
-          DateTime.compare(input.valid_from_at, input.valid_until_at) != :lt ->
-        {:error,
-         Error.new(
-           "VALIDATION_ERROR",
-           "AccessEffect valid_from_at must be before valid_until_at"
-         )}
+  defp validate_access_effect_temporal_target(_input) do
+    access_effect_temporal_validation_error(
+      "start-less AccessEffect targets must have nil valid_from_at"
+    )
+  end
 
-      not complete_effective_target? and not is_nil(input.valid_from_at) ->
-        {:error,
-         Error.new(
-           "VALIDATION_ERROR",
-           "start-less AccessEffect targets must have nil valid_from_at"
-         )}
+  defp validate_effective_access_effect_interval(%{valid_from_at: nil}) do
+    access_effect_temporal_validation_error(
+      "effective AccessEffect targets require valid_from_at"
+    )
+  end
 
-      true ->
-        :ok
+  defp validate_effective_access_effect_interval(%{valid_until_at: nil}), do: :ok
+
+  defp validate_effective_access_effect_interval(input) do
+    if DateTime.compare(input.valid_from_at, input.valid_until_at) == :lt do
+      :ok
+    else
+      access_effect_temporal_validation_error(
+        "AccessEffect valid_from_at must be before valid_until_at"
+      )
     end
+  end
+
+  defp access_effect_temporal_validation_error(message) do
+    {:error, Error.new("VALIDATION_ERROR", message)}
   end
 
   defp lock_access_effect_subscription(subscription_id) do
