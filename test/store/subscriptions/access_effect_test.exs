@@ -441,6 +441,7 @@ defmodule Store.Subscriptions.AccessEffectTest do
       %{disposition: :non_effective},
       %{entitlement_kind: :digital_library},
       %{entitlement_scope_key: "vip_members"},
+      %{valid_from_at: DateTime.add(input.valid_until_at, -1, :day)},
       %{valid_until_at: DateTime.add(input.valid_until_at, 1, :day)},
       %{valid_until_at: nil},
       %{entitlement_kind: nil, entitlement_scope_key: nil},
@@ -455,6 +456,32 @@ defmodule Store.Subscriptions.AccessEffectTest do
       changed_input = access_effect_input(fixture, changed_fields)
       refute target_fingerprint(changed_input) == fingerprint
     end)
+  end
+
+  test "legacy version 1 target fingerprint matches its fixed historical hash" do
+    {:ok, valid_until_at, 0} = DateTime.from_iso8601("2026-03-04T05:06:07.123456Z")
+
+    fields = %{
+      subscription_id: "018f5c28-85ce-7a11-8f40-0e7e9f1d0001",
+      source_version: 7,
+      disposition: :effective,
+      entitlement_kind: :membership_access,
+      entitlement_scope_key: "members",
+      valid_from_at: nil,
+      valid_until_at: valid_until_at,
+      source_order_line_item_id: "018f5c28-85ce-7a11-8f40-0e7e9f1d0002",
+      contract_change_id: "018f5c28-85ce-7a11-8f40-0e7e9f1d0003",
+      plan_revision_id: "018f5c28-85ce-7a11-8f40-0e7e9f1d0004"
+    }
+
+    legacy_fingerprint = "ec246cd0e293e007341889270a06d681d02cb37adc3375c27ac0b98a3bf3ab86"
+
+    assert AccessEffect.legacy_target_fingerprint_v1(fields) == legacy_fingerprint
+    refute AccessEffect.target_fingerprint(fields) == legacy_fingerprint
+
+    assert AccessEffect.legacy_target_fingerprint_v1(
+             Map.put(fields, :valid_from_at, ~U[2026-02-01 00:00:00Z])
+           ) == legacy_fingerprint
   end
 
   test "source-version gaps are valid and unrelated aggregate writes do not stale the latest target" do

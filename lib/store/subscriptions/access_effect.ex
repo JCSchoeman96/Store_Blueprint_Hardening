@@ -13,7 +13,7 @@ defmodule Store.Subscriptions.AccessEffect do
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
 
   @fingerprint_domain :store_subscriptions_access_effect_target
-  @fingerprint_version 1
+  @fingerprint_version 2
 
   attributes do
     uuid_v7_primary_key(:id)
@@ -337,22 +337,44 @@ defmodule Store.Subscriptions.AccessEffect do
   @doc false
   @spec target_fingerprint(EstablishAccessEffectInput.t() | map()) :: String.t()
   def target_fingerprint(%EstablishAccessEffectInput{} = input) do
-    fingerprint_fields(Map.from_struct(input))
+    target_fingerprint(Map.from_struct(input))
   end
 
-  def target_fingerprint(fields) when is_map(fields), do: fingerprint_fields(fields)
-
-  defp fingerprint_fields(fields) do
+  def target_fingerprint(fields) when is_map(fields) do
     descriptor =
       {@fingerprint_domain, @fingerprint_version,
        uuid_bytes!(Map.fetch!(fields, :subscription_id)), Map.fetch!(fields, :source_version),
        Map.fetch!(fields, :disposition), Map.fetch!(fields, :entitlement_kind),
        Map.fetch!(fields, :entitlement_scope_key),
+       datetime_micros(Map.get(fields, :valid_from_at)),
        datetime_micros(Map.fetch!(fields, :valid_until_at)),
        uuid_bytes!(Map.fetch!(fields, :source_order_line_item_id)),
        optional_uuid_bytes(Map.fetch!(fields, :contract_change_id)),
        uuid_bytes!(Map.fetch!(fields, :plan_revision_id))}
 
+    encode_fingerprint(descriptor)
+  end
+
+  @doc false
+  @spec legacy_target_fingerprint_v1(EstablishAccessEffectInput.t() | map()) :: String.t()
+  def legacy_target_fingerprint_v1(%EstablishAccessEffectInput{} = input) do
+    legacy_target_fingerprint_v1(Map.from_struct(input))
+  end
+
+  def legacy_target_fingerprint_v1(fields) when is_map(fields) do
+    descriptor =
+      {@fingerprint_domain, 1, uuid_bytes!(Map.fetch!(fields, :subscription_id)),
+       Map.fetch!(fields, :source_version), Map.fetch!(fields, :disposition),
+       Map.fetch!(fields, :entitlement_kind), Map.fetch!(fields, :entitlement_scope_key),
+       datetime_micros(Map.fetch!(fields, :valid_until_at)),
+       uuid_bytes!(Map.fetch!(fields, :source_order_line_item_id)),
+       optional_uuid_bytes(Map.fetch!(fields, :contract_change_id)),
+       uuid_bytes!(Map.fetch!(fields, :plan_revision_id))}
+
+    encode_fingerprint(descriptor)
+  end
+
+  defp encode_fingerprint(descriptor) do
     :crypto.hash(:sha256, :erlang.term_to_binary(descriptor, [:deterministic]))
     |> Base.encode16(case: :lower)
   end
@@ -377,6 +399,7 @@ defmodule Store.Subscriptions.AccessEffect do
           :disposition,
           :entitlement_kind,
           :entitlement_scope_key,
+          :valid_from_at,
           :valid_until_at,
           :source_order_line_item_id,
           :contract_change_id,
