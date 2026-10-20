@@ -299,6 +299,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert effect.source_version == suspended.aggregate_version
       assert effect.status == "required"
       assert effect.disposition == "non_effective"
+      assert is_nil(effect.valid_from_at)
       effects_after_suspension = access_effect_rows!(subscription.id)
       suspended_version = suspended.aggregate_version
 
@@ -345,6 +346,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       [effect] = access_effect_rows!(subscription.id)
       assert effect.source_version == suspended.aggregate_version
       assert effect.disposition == "non_effective"
+      assert is_nil(effect.valid_from_at)
 
       assert {:ok, %{due_count: 0, suspended_count: 0, failed_count: 0}} =
                Facade.run_due_failed_payment_suspensions_for_system(now: boundary_at, limit: 20)
@@ -767,9 +769,16 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert recovery_effect.source_version == active.aggregate_version
       assert recovery_effect.status == "required"
       assert recovery_effect.disposition == "effective"
+
+      assert recovery_effect.valid_from_at ==
+               DateTime.to_naive(occurrence.attempt.period_start_at)
+
+      assert recovery_effect.valid_until_at == DateTime.to_naive(active.current_period_end_at)
+
       assert old_effect.source_version == suspension_effect.source_version
       assert old_effect.status == "superseded"
       assert old_effect.disposition == "non_effective"
+      assert is_nil(old_effect.valid_from_at)
       assert Enum.count(effects, &(&1.disposition == "effective")) == 1
     end
   end
@@ -1088,12 +1097,18 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
   defp access_effect_rows!(subscription_id) do
     %{rows: rows} =
       Repo.query!(
-        "SELECT source_version, status::text, disposition::text FROM access_effects WHERE subscription_id = $1 ORDER BY source_version DESC",
+        "SELECT source_version, status::text, disposition::text, valid_from_at, valid_until_at FROM access_effects WHERE subscription_id = $1 ORDER BY source_version DESC",
         [Ecto.UUID.dump!(subscription_id)]
       )
 
-    Enum.map(rows, fn [source_version, status, disposition] ->
-      %{source_version: source_version, status: status, disposition: disposition}
+    Enum.map(rows, fn [source_version, status, disposition, valid_from_at, valid_until_at] ->
+      %{
+        source_version: source_version,
+        status: status,
+        disposition: disposition,
+        valid_from_at: valid_from_at,
+        valid_until_at: valid_until_at
+      }
     end)
   end
 

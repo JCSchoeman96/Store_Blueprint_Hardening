@@ -6446,6 +6446,7 @@ defmodule Store.Subscriptions.Facade do
              disposition: :effective,
              entitlement_kind: target.entitlement_kind,
              entitlement_scope_key: target.entitlement_scope_key,
+             valid_from_at: attempt.period_start_at,
              valid_until_at: recovered.current_period_end_at,
              source_order_line_item_id: recovered.source_order_line_item_id,
              contract_change_id: recovered.current_contract_change_id,
@@ -6934,6 +6935,7 @@ defmodule Store.Subscriptions.Facade do
              disposition: :non_effective,
              entitlement_kind: nil,
              entitlement_scope_key: nil,
+             valid_from_at: nil,
              valid_until_at: nil,
              source_order_line_item_id: canceled.source_order_line_item_id,
              contract_change_id: canceled.current_contract_change_id,
@@ -7240,6 +7242,7 @@ defmodule Store.Subscriptions.Facade do
              disposition: :non_effective,
              entitlement_kind: nil,
              entitlement_scope_key: nil,
+             valid_from_at: nil,
              valid_until_at: nil,
              source_order_line_item_id: subscription.source_order_line_item_id,
              contract_change_id: subscription.current_contract_change_id,
@@ -8050,11 +8053,7 @@ defmodule Store.Subscriptions.Facade do
     if effect.target_fingerprint == AccessEffect.target_fingerprint(input) do
       {:ok, effect}
     else
-      {:error,
-       Error.new(
-         "IDEMPOTENCY_KEY_REUSE_MISMATCH",
-         "AccessEffect source version was reused with different target evidence"
-       )}
+      reuse_legacy_v1_access_effect(input, effect)
     end
   end
 
@@ -8064,6 +8063,24 @@ defmodule Store.Subscriptions.Facade do
          :ok <- validate_access_effect_target_entitlement(input, current_provenance) do
       establish_new_access_effect(input)
     end
+  end
+
+  defp reuse_legacy_v1_access_effect(%{valid_from_at: nil} = input, %AccessEffect{} = effect) do
+    if effect.target_fingerprint == AccessEffect.legacy_target_fingerprint_v1(input) do
+      {:ok, effect}
+    else
+      access_effect_target_mismatch()
+    end
+  end
+
+  defp reuse_legacy_v1_access_effect(_input, _effect), do: access_effect_target_mismatch()
+
+  defp access_effect_target_mismatch do
+    {:error,
+     Error.new(
+       "IDEMPOTENCY_KEY_REUSE_MISMATCH",
+       "AccessEffect source version was reused with different target evidence"
+     )}
   end
 
   defp validate_access_effect_source_version(input, current_provenance) do
@@ -8081,10 +8098,48 @@ defmodule Store.Subscriptions.Facade do
   defp establish_new_access_effect(input) do
     with {:ok, current} <- get_current_access_effect_for_subscription(input.subscription_id),
          :ok <- reject_stale_access_effect_version(input, current),
+         :ok <- validate_access_effect_temporal_target(input),
          {:ok, created} <- create_access_effect_record(input),
          :ok <- supersede_older_access_effect(current) do
       {:ok, created}
     end
+  end
+
+  defp validate_access_effect_temporal_target(
+         %{disposition: :effective, entitlement_kind: kind, entitlement_scope_key: scope} = input
+       )
+       when not is_nil(kind) and not is_nil(scope) do
+    validate_effective_access_effect_interval(input)
+  end
+
+  defp validate_access_effect_temporal_target(%{valid_from_at: nil}), do: :ok
+
+  defp validate_access_effect_temporal_target(_input) do
+    access_effect_temporal_validation_error(
+      "start-less AccessEffect targets must have nil valid_from_at"
+    )
+  end
+
+  defp validate_effective_access_effect_interval(%{valid_from_at: nil}) do
+    access_effect_temporal_validation_error(
+      "effective AccessEffect targets require valid_from_at"
+    )
+  end
+
+  defp validate_effective_access_effect_interval(%{valid_until_at: nil}), do: :ok
+
+  defp validate_effective_access_effect_interval(input) do
+    if DateTime.compare(input.valid_from_at, input.valid_until_at) == :lt do
+      :ok
+    else
+      access_effect_temporal_validation_error(
+        "AccessEffect valid_from_at must be before valid_until_at"
+      )
+    end
+  end
+
+  defp access_effect_temporal_validation_error(message) do
+    {:error, Error.new("VALIDATION_ERROR", message)}
   end
 
   defp lock_access_effect_subscription(subscription_id) do
