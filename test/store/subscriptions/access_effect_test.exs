@@ -450,6 +450,22 @@ defmodule Store.Subscriptions.AccessEffectTest do
              |> EstablishAccessEffectInput.new()
   end
 
+  test "typed AccessEffect struct requires an explicit start key but accepts nil" do
+    fixture = create_subscription_fixture!()
+    attrs = access_effect_input(fixture) |> Map.from_struct()
+    attrs_without_start = Map.delete(attrs, :valid_from_at)
+
+    assert_raise ArgumentError, fn ->
+      struct!(EstablishAccessEffectInput, attrs_without_start)
+    end
+
+    assert %EstablishAccessEffectInput{valid_from_at: nil} =
+             struct!(
+               EstablishAccessEffectInput,
+               Map.put(attrs_without_start, :valid_from_at, nil)
+             )
+  end
+
   test "database constraint rejects either incomplete entitlement pair" do
     fixture = create_subscription_fixture!()
     input = access_effect_input(fixture)
@@ -604,7 +620,7 @@ defmodule Store.Subscriptions.AccessEffectTest do
     variations = [
       %{subscription_id: Ecto.UUID.generate()},
       %{source_version: input.source_version + 1},
-      %{disposition: :non_effective},
+      %{disposition: :non_effective, valid_from_at: input.valid_from_at},
       %{entitlement_kind: :digital_library},
       %{entitlement_scope_key: "vip_members"},
       %{valid_from_at: DateTime.add(input.valid_until_at, -1, :day)},

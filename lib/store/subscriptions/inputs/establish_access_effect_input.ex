@@ -14,6 +14,7 @@ defmodule Store.Subscriptions.Inputs.EstablishAccessEffectInput do
     :disposition,
     :entitlement_kind,
     :entitlement_scope_key,
+    :valid_from_at,
     :valid_until_at,
     :source_order_line_item_id,
     :plan_revision_id
