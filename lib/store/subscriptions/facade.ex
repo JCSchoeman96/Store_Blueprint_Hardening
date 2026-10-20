@@ -6678,8 +6678,8 @@ defmodule Store.Subscriptions.Facade do
       {:ok, %{outcome: :noop}}
     else
       case exact_paid_renewal_success_handoff(attempt) do
-        {:ok, %{} = _handoff} ->
-          {:ok, %{outcome: :success_won}}
+        {:ok, %{} = handoff} ->
+          {:ok, %{outcome: :success_won, handoff: handoff}}
 
         {:ok, nil} ->
           persist_authentication_required_dunning(

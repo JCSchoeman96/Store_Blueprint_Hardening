@@ -268,6 +268,104 @@ defmodule Store.Subscriptions.Sbh2005SuccessVsLateFailureDunningTest do
     assert :atomics.get(provider_calls, 1) == 1
   end
 
+  test "exact paid success wins after requires_action evidence commits before auth settlement",
+       context do
+    fixture = create_due_fixture!("jc235_requires_action_paid_success_race")
+    assert is_binary(fixture.subscription.stored_payment_method_id)
+    parent = self()
+    provider_calls = :atomics.new(1, [])
+    settlement_barrier = make_ref()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      :atomics.add_get(provider_calls, 1, 1)
+      send(parent, {:jc235_auth_provider_returned, params})
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{
+          "status" => "requires_action",
+          "next_action" => %{
+            "redirect_to_url" => %{
+              "url" => "https://payments.example.test/authenticate/jc235-race"
+            }
+          }
+        })
+      )
+    end)
+
+    dunning_handler_id = attach_dunning_counter(self())
+    on_exit(fn -> :telemetry.detach(dunning_handler_id) end)
+
+    start_ref = make_ref()
+
+    renewal_task =
+      Task.async(fn ->
+        receive do
+          {:start_renewal, ^start_ref} -> fixture.run.()
+        end
+      end)
+
+    :ok = Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], renewal_task.pid)
+
+    :ok =
+      Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], renewal_task.pid)
+
+    barrier_handler_id =
+      attach_requires_action_commit_barrier(
+        renewal_task.pid,
+        parent,
+        settlement_barrier
+      )
+
+    on_exit(fn ->
+      send(renewal_task.pid, {:release_requires_action_commit, settlement_barrier})
+      :telemetry.detach(barrier_handler_id)
+      Process.exit(renewal_task.pid, :kill)
+    end)
+
+    send(renewal_task.pid, {:start_renewal, start_ref})
+    assert_receive {:jc235_auth_provider_returned, params}, 10_000
+
+    attempt = fetch_attempt_for_subscription!(fixture.subscription.id)
+    collection_id = Map.fetch!(params, "metadata[collection_attempt_id]")
+    payment_intent_id = Map.fetch!(params, "metadata[local_intent_id]")
+
+    assert_receive {:jc235_requires_action_evidence_committed, ^settlement_barrier}, 10_000
+
+    collection = fetch_collection!(collection_id)
+    assert collection.financial_outcome == :requires_action
+    assert collection.payment_intent_id == payment_intent_id
+
+    mark_collection_successful!(collection, db_now!())
+
+    {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection_id)
+
+    assert handoff.renewal_attempt_id == attempt.id
+    assert handoff.collection_attempt_id == collection_id
+    assert handoff.payment_intent_id == payment_intent_id
+
+    send(renewal_task.pid, {:release_requires_action_commit, settlement_barrier})
+
+    assert {:ok, :processed} = Task.await(renewal_task, 10_000)
+
+    final_attempt = fetch_attempt!(attempt.id)
+    final_subscription = fetch_subscription!(fixture.subscription.id)
+    final_collection = fetch_collection!(collection_id)
+
+    assert final_attempt.status == :succeeded
+    assert final_attempt.attempt_no == attempt.attempt_no
+    assert is_nil(final_attempt.failure_code)
+    assert final_subscription.status == :active
+    assert final_subscription.dunning_attempt_count == 0
+    assert is_nil(final_subscription.failed_payment_boundary_at)
+    assert final_collection.financial_outcome == :verified_success
+    assert final_collection.payment_intent_id == payment_intent_id
+    assert count_collections_for_attempt(attempt.id) == 1
+    assert count_authentication_emails(attempt.order_id) == 0
+    assert :atomics.get(provider_calls, 1) == 1
+    refute_receive {:jc235_dunning, _metadata}, 0
+  end
+
   test "late provider failure after exact paid renewal application cannot reopen dunning",
        context do
     fixture =
@@ -476,6 +574,63 @@ defmodule Store.Subscriptions.Sbh2005SuccessVsLateFailureDunningTest do
       )
 
     handler_id
+  end
+
+  defp attach_requires_action_commit_barrier(target_pid, owner, barrier) do
+    handler_id = {__MODULE__, :requires_action_collection_commit, make_ref()}
+    pending_key = {__MODULE__, :requires_action_collection_commit, barrier}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :repo, :query],
+        fn _event, _measurements, metadata, config ->
+          maybe_block_after_requires_action_evidence(metadata, config)
+        end,
+        %{target_pid: target_pid, owner: owner, barrier: barrier, pending_key: pending_key}
+      )
+
+    handler_id
+  end
+
+  defp maybe_block_after_requires_action_evidence(metadata, config) do
+    query = String.downcase(String.trim(metadata.query || ""))
+
+    cond do
+      self() != config.target_pid ->
+        :ok
+
+      requires_action_collection_update?(query, metadata) ->
+        Process.put(config.pending_key, true)
+
+      transaction_end_query?(query) and Process.get(config.pending_key) ->
+        Process.delete(config.pending_key)
+        wait_for_requires_action_release(config)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp requires_action_collection_update?(query, metadata) do
+    String.starts_with?(query, "update") and
+      String.contains?(query, "renewal_collection_attempts") and
+      String.contains?(query, "financial_outcome") and
+      String.contains?(inspect(Map.get(metadata, :params, [])), "requires_action")
+  end
+
+  defp transaction_end_query?(query) do
+    query == "commit" or String.starts_with?(query, "release savepoint")
+  end
+
+  defp wait_for_requires_action_release(config) do
+    send(config.owner, {:jc235_requires_action_evidence_committed, config.barrier})
+
+    receive do
+      {:release_requires_action_commit, barrier} when barrier == config.barrier -> :ok
+    after
+      10_000 -> send(config.owner, {:jc235_requires_action_commit_timeout, config.barrier})
+    end
   end
 
   defp install_attempt_failure_rejection_trigger!(subscription_id) do
