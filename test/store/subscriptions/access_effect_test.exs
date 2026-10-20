@@ -54,7 +54,7 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
   test "typed AccessEffect input leaves a missing start available for historical replay" do
     fixture = create_subscription_fixture!()
-    input = access_effect_input(fixture)
+    input = access_effect_input(fixture, %{valid_from_at: nil})
 
     assert input.disposition == :effective
     assert input.entitlement_kind
@@ -259,6 +259,172 @@ defmodule Store.Subscriptions.AccessEffectTest do
     assert replay.id == first.id
     assert replay.status == :required
     assert count_access_effects(fixture.subscription.id) == 1
+  end
+
+  test "new effective entitlement targets require a start and create no row when it is absent" do
+    fixture = create_subscription_fixture!()
+    input = access_effect_input(fixture, %{valid_from_at: nil})
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} = establish(input)
+    assert count_access_effects(fixture.subscription.id) == 0
+  end
+
+  test "new effective target intervals require a strict start before end" do
+    fixture = create_subscription_fixture!()
+    end_at = access_effect_input(fixture).valid_until_at
+
+    for start_at <- [end_at, DateTime.add(end_at, 1, :microsecond)] do
+      input = access_effect_input(fixture, %{valid_from_at: start_at})
+
+      assert {:error, %Error{code: "VALIDATION_ERROR"}} = establish(input)
+      assert count_access_effects(fixture.subscription.id) == 0
+    end
+  end
+
+  test "new effective target permits a start before its end" do
+    fixture = create_subscription_fixture!()
+    end_at = access_effect_input(fixture).valid_until_at
+    start_at = DateTime.add(end_at, -1, :day)
+
+    assert {:ok, effect} =
+             fixture
+             |> access_effect_input(%{valid_from_at: start_at})
+             |> establish()
+
+    assert effect.valid_from_at == start_at
+    assert effect.valid_until_at == end_at
+  end
+
+  test "new effective target permits an open-ended future start" do
+    fixture = create_subscription_fixture!()
+    start_at = ~U[2035-01-01 00:00:00Z]
+
+    assert {:ok, effect} =
+             fixture
+             |> access_effect_input(%{valid_from_at: start_at, valid_until_at: nil})
+             |> establish()
+
+    assert DateTime.compare(effect.valid_from_at, DateTime.truncate(start_at, :microsecond)) ==
+             :eq
+
+    assert is_nil(effect.valid_until_at)
+  end
+
+  test "new effective target permits a future start before a later end" do
+    fixture = create_subscription_fixture!()
+    start_at = ~U[2035-01-01 00:00:00Z]
+    end_at = DateTime.add(start_at, 30, :day)
+
+    assert {:ok, effect} =
+             fixture
+             |> access_effect_input(%{valid_from_at: start_at, valid_until_at: end_at})
+             |> establish()
+
+    assert DateTime.compare(effect.valid_from_at, DateTime.truncate(start_at, :microsecond)) ==
+             :eq
+
+    assert DateTime.compare(effect.valid_until_at, DateTime.truncate(end_at, :microsecond)) == :eq
+  end
+
+  test "effective nil/nil targets remain legal only without a start" do
+    fixture =
+      create_subscription_fixture!(%{
+        entitlement_kind: nil,
+        entitlement_scope_key: nil
+      })
+
+    assert {:ok, effect} =
+             fixture
+             |> access_effect_input(%{
+               entitlement_kind: nil,
+               entitlement_scope_key: nil,
+               valid_from_at: nil
+             })
+             |> establish()
+
+    assert is_nil(effect.valid_from_at)
+
+    invalid_fixture =
+      create_subscription_fixture!(%{
+        entitlement_kind: nil,
+        entitlement_scope_key: nil
+      })
+
+    input =
+      access_effect_input(invalid_fixture, %{
+        entitlement_kind: nil,
+        entitlement_scope_key: nil,
+        valid_from_at: ~U[2035-01-01 00:00:00Z]
+      })
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} = establish(input)
+    assert count_access_effects(invalid_fixture.subscription.id) == 0
+  end
+
+  test "new non-effective targets reject a supplied start" do
+    fixture = create_subscription_fixture!()
+
+    input =
+      access_effect_input(fixture, %{
+        disposition: :non_effective,
+        entitlement_kind: nil,
+        entitlement_scope_key: nil,
+        valid_from_at: ~U[2035-01-01 00:00:00Z]
+      })
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} = establish(input)
+    assert count_access_effects(fixture.subscription.id) == 0
+  end
+
+  test "legacy nil-start replay reuses its row without rewriting evidence before new-row validation" do
+    fixture = create_subscription_fixture!()
+    input = access_effect_input(fixture, %{valid_from_at: nil})
+    legacy_fingerprint = AccessEffect.legacy_target_fingerprint_v1(input)
+    historical = insert_legacy_access_effect!(input, legacy_fingerprint)
+
+    before_replay = fetch_access_effect!(historical.id)
+    assert is_nil(before_replay.valid_from_at)
+    assert before_replay.target_fingerprint == legacy_fingerprint
+
+    assert {:ok, replay} = establish(input)
+    assert replay == before_replay
+    assert replay.id == historical.id
+    assert replay.target_fingerprint == legacy_fingerprint
+    assert is_nil(replay.valid_from_at)
+  end
+
+  test "legacy v1 rows reject replay that asserts a non-nil start" do
+    fixture = create_subscription_fixture!()
+    historical_input = access_effect_input(fixture, %{valid_from_at: nil})
+    legacy_fingerprint = AccessEffect.legacy_target_fingerprint_v1(historical_input)
+    historical = insert_legacy_access_effect!(historical_input, legacy_fingerprint)
+
+    incoming =
+      access_effect_input(fixture, %{
+        valid_from_at: DateTime.add(historical_input.valid_until_at, -1, :day)
+      })
+
+    assert {:error, %Error{code: "IDEMPOTENCY_KEY_REUSE_MISMATCH"}} = establish(incoming)
+    assert fetch_access_effect!(historical.id).target_fingerprint == legacy_fingerprint
+    assert is_nil(fetch_access_effect!(historical.id).valid_from_at)
+  end
+
+  test "v2 replay reuses exact starts and conflicts when only the start changes" do
+    fixture = create_subscription_fixture!()
+    end_at = access_effect_input(fixture).valid_until_at
+    start_at = DateTime.add(end_at, -2, :day)
+    input = access_effect_input(fixture, %{valid_from_at: start_at})
+
+    assert {:ok, first} = establish(input)
+    assert {:ok, replay} = establish(input)
+    assert replay.id == first.id
+    assert first.target_fingerprint == target_fingerprint(input)
+    stored_first = fetch_access_effect!(first.id)
+
+    conflicting = access_effect_input(fixture, %{valid_from_at: DateTime.add(start_at, -1, :day)})
+
+    assert {:error, %Error{code: "IDEMPOTENCY_KEY_REUSE_MISMATCH"}} = establish(conflicting)
+    assert fetch_access_effect!(first.id) == stored_first
   end
 
   test "entitlement kind and scope must be supplied as a complete pair" do
@@ -751,17 +917,22 @@ defmodule Store.Subscriptions.AccessEffectTest do
     assert count_oban_jobs() == job_count_before
   end
 
-  defp create_subscription_fixture! do
+  defp create_subscription_fixture!(plan_overrides \\ %{}) do
     customer =
       SubscriptionsFixtures.create_customer!("sbh_50_06_access_effect_#{Ecto.UUID.generate()}")
 
     %{product: product, variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
     plan =
-      SubscriptionsFixtures.create_subscription_plan!(%{
-        entitlement_kind: :membership_access,
-        entitlement_scope_key: "members"
-      })
+      SubscriptionsFixtures.create_subscription_plan!(
+        Map.merge(
+          %{
+            entitlement_kind: :membership_access,
+            entitlement_scope_key: "members"
+          },
+          plan_overrides
+        )
+      )
 
     variant_plan = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
 
@@ -866,14 +1037,19 @@ defmodule Store.Subscriptions.AccessEffectTest do
   defp access_effect_input(fixture, overrides \\ %{}) do
     subscription = fixture.subscription
     revision = fixture.revision
+    disposition = Map.get(overrides, :disposition, :effective)
+
+    default_valid_from_at =
+      if disposition == :effective, do: subscription.current_period_start_at, else: nil
 
     attrs =
       %{
         subscription_id: subscription.id,
         source_version: subscription.aggregate_version,
-        disposition: :effective,
+        disposition: disposition,
         entitlement_kind: revision.entitlement_kind,
         entitlement_scope_key: revision.entitlement_scope_key,
+        valid_from_at: default_valid_from_at,
         valid_until_at: subscription.current_period_end_at,
         source_order_line_item_id: fixture.line_item.id,
         contract_change_id: subscription.current_contract_change_id,
@@ -909,6 +1085,24 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
   defp target_fingerprint(input) do
     AccessEffect.target_fingerprint(input)
+  end
+
+  defp insert_legacy_access_effect!(input, legacy_fingerprint) do
+    effect =
+      AccessEffect
+      |> Ash.Changeset.for_create(:establish, Map.from_struct(input), context: %{system?: true})
+      |> Ash.create!(
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    Repo.query!(
+      "UPDATE access_effects SET target_fingerprint = $2 WHERE id = $1",
+      [Ecto.UUID.dump!(effect.id), legacy_fingerprint]
+    )
+
+    fetch_access_effect!(effect.id)
   end
 
   defp fetch_access_effect!(id) do

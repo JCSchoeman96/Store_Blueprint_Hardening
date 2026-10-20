@@ -8050,11 +8050,7 @@ defmodule Store.Subscriptions.Facade do
     if effect.target_fingerprint == AccessEffect.target_fingerprint(input) do
       {:ok, effect}
     else
-      {:error,
-       Error.new(
-         "IDEMPOTENCY_KEY_REUSE_MISMATCH",
-         "AccessEffect source version was reused with different target evidence"
-       )}
+      reuse_legacy_v1_access_effect(input, effect)
     end
   end
 
@@ -8064,6 +8060,24 @@ defmodule Store.Subscriptions.Facade do
          :ok <- validate_access_effect_target_entitlement(input, current_provenance) do
       establish_new_access_effect(input)
     end
+  end
+
+  defp reuse_legacy_v1_access_effect(%{valid_from_at: nil} = input, %AccessEffect{} = effect) do
+    if effect.target_fingerprint == AccessEffect.legacy_target_fingerprint_v1(input) do
+      {:ok, effect}
+    else
+      access_effect_target_mismatch()
+    end
+  end
+
+  defp reuse_legacy_v1_access_effect(_input, _effect), do: access_effect_target_mismatch()
+
+  defp access_effect_target_mismatch do
+    {:error,
+     Error.new(
+       "IDEMPOTENCY_KEY_REUSE_MISMATCH",
+       "AccessEffect source version was reused with different target evidence"
+     )}
   end
 
   defp validate_access_effect_source_version(input, current_provenance) do
@@ -8081,9 +8095,43 @@ defmodule Store.Subscriptions.Facade do
   defp establish_new_access_effect(input) do
     with {:ok, current} <- get_current_access_effect_for_subscription(input.subscription_id),
          :ok <- reject_stale_access_effect_version(input, current),
+         :ok <- validate_access_effect_temporal_target(input),
          {:ok, created} <- create_access_effect_record(input),
          :ok <- supersede_older_access_effect(current) do
       {:ok, created}
+    end
+  end
+
+  defp validate_access_effect_temporal_target(input) do
+    complete_effective_target? =
+      input.disposition == :effective and not is_nil(input.entitlement_kind) and
+        not is_nil(input.entitlement_scope_key)
+
+    cond do
+      complete_effective_target? and is_nil(input.valid_from_at) ->
+        {:error,
+         Error.new(
+           "VALIDATION_ERROR",
+           "effective AccessEffect targets require valid_from_at"
+         )}
+
+      complete_effective_target? and not is_nil(input.valid_until_at) and
+          DateTime.compare(input.valid_from_at, input.valid_until_at) != :lt ->
+        {:error,
+         Error.new(
+           "VALIDATION_ERROR",
+           "AccessEffect valid_from_at must be before valid_until_at"
+         )}
+
+      not complete_effective_target? and not is_nil(input.valid_from_at) ->
+        {:error,
+         Error.new(
+           "VALIDATION_ERROR",
+           "start-less AccessEffect targets must have nil valid_from_at"
+         )}
+
+      true ->
+        :ok
     end
   end
 
