@@ -1,5 +1,23 @@
 # Active Workstream Registry
 
+## Current authority
+
+`origin/main` is the only canonical Store Blueprint runtime and persistent development authority. Linear is the execution queue. Follow the issue lifecycle and implementation requirements in `AGENTS.md`.
+
+Use the existing main worktree for ordinary implementation and temporary integration branches. Keep one active Linear implementation issue and one short-lived issue branch at a time. Do not create another persistent programme lane or worktree.
+
+Hardening branches and their registers are read-only historical evidence after their accepted changes reach `main`. `hardening/subscriptions` does not grant a separate development base or execution policy. The SUBS master register, loop specification, Codex prompt, and task-contract template remain historical records and are not current agent instructions. Retry-exhaustion-to-suspension statements in the SUBS register and the earlier JC-265 conformance snapshot are superseded by accepted JC-238/239 behavior and `docs/governance/subscription_scheduling_terms.md`. Do not copy the register wholesale into main.
+
+The target is one persistent Store worktree on `main`. Existing worktrees remain until the separate post-merge preservation and cleanup gate proves their contents safe to retire. This registry does not authorize worktree or branch deletion.
+
+Before implementation, confirm the selected Linear issue and its acceptance criteria, then verify its concrete prerequisites on current `origin/main`.
+
+## Archived registry material
+
+Everything after this notice preserves prior workstream governance, activation decisions, SHA pins, and execution records. It is provenance only. References below to persistent S0, PLATFORM, or SUBS lanes, separate registers, task bases, worktree locations, or their STOP rules are superseded by the current authority above and must not be followed for new work.
+
+---
+
 Dynamic authority registry for hardening programmes.
 
 `AGENTS.md` is permanent law. This file records the **current** workstream topology, ownership, lifecycle state, and ownership-relevant pending PRs.

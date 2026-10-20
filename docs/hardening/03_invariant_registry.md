@@ -335,22 +335,22 @@ The state-machine transitions are:
 |---|---|---|---|
 | `activate_now` | `pending`, `past_due` | `active` | Activates or recovers the subscription and clears dunning fields. |
 | `mark_past_due_transition` | `active` | `past_due` | Starts payment-failure/dunning status. |
-| `mark_suspended_transition` | `active`, `past_due` | `suspended` | Ends automatic retry authority and removes current access while keeping the commercial contract open. |
+| `mark_suspended_transition` | `past_due` | `suspended` | Runs only when the stored `failed_payment_boundary_at` is reached. Retry-budget exhaustion leaves the Subscription `past_due`, sets `retry_suppressed_at`, and clears `next_retry_at`. |
 | `cancel_now_transition` | `pending`, `active`, `past_due`, `suspended` | `canceled` | Immediate cancellation, with end/cancellation timestamps and renewal suppression. |
 | `mark_expired_transition` | `active`, `past_due` | `expired` | Represents explicit terminal expiry; dunning and grace exhaustion use `suspended`. |
 | `extend_period` | `active`, `past_due`, `suspended` | `active` | Records an exact paid renewal; suspended recovery uses the existing RenewalAttempt period boundaries. |
 
-There is no `canceled -> active`, `expired -> active`, or `canceled -> pending` transition. `canceled` and `expired` remain terminal. `suspended` is commercially open, is excluded from due/dispatch status sets, and can be repaired only by exact same-renewal Commerce success. `cancel_at_period_end` is a boolean update action, not a status transition. The due-renewal query excludes subscriptions with that flag, but no inspected worker explicitly transitions the record to `canceled` at the period boundary.
+There is no `canceled -> active`, `expired -> active`, or `canceled -> pending` transition. `canceled` and `expired` remain terminal. `suspended` is commercially open, is excluded from due/dispatch status sets, and can be repaired only by exact same-renewal Commerce success. Scheduled cancellation stores a period boundary or the exact RenewalAttempt boundary; `RunDueScheduledCancellationsWorker` locks and re-evaluates current Subscription and payment authority before terminalizing. JC-242/243/341 tests cover the boundary, rescission, and renewal races.
 
 Subscription transitions pass `lock_attribute: nil` to `TransitionState`; material resource writes use `aggregate_version` through `OptimisticAggregateLock`. The state graph and version write are covered by the Subscription aggregate-version tests.
 
 ## Activation, cancellation, failure, recovery, and expiry
 
-**FACT:** A payment-success worker creates the initial active subscription after a paid order. Renewal payment failure records a failed RenewalAttempt and moves an active subscription to `past_due`; retry/grace exhaustion moves it to `suspended` and revokes current access. An exact existing paid renewal can recover `past_due` or `suspended` to `active` using the attempt's original period boundaries. Cancellation remains terminal under JC-281 precedence.
+**FACT:** A payment-success worker creates the initial active subscription after a paid order. Verified terminal renewal failure locks the fresh Subscription and exact owner-scoped RenewalAttempt, then commits attempt failure and dunning state atomically. Exact paid-success authority for that renewal defeats a late failure. Retry exhaustion leaves the Subscription `past_due` with retry suppression; only the separate stored failed-payment boundary moves it to `suspended`. An exact existing paid renewal can recover `past_due` or `suspended` to `active` using the attempt's original period boundaries. Cancellation remains terminal under JC-281 precedence.
 
-Immediate cancellation calls the cancellation transition, clears renewal scheduling fields, and invokes entitlement revocation. Grace expiry calls the expired transition and invokes entitlement revocation. The current state machine makes cancellation terminal even though the field name is `canceled` and no resume action exists.
+Immediate cancellation calls the cancellation transition and clears renewal scheduling fields. Suspension and suspended recovery establish versioned AccessEffect targets with durable source and time evidence. AccessEffect projection failures remain retryable; they do not change the Subscription's PostgreSQL authority.
 
-**GAP:** Cancellation and expiry call entitlement revocation outside the subscription transition and do not fail the subscription operation when the revocation result is ignored. The subscription state can therefore commit while the access-side effect is unsuccessful or unconfirmed.
+**GAP:** Subscription state and access projection are separate durable records. AccessEffect preserves the exact source version and retryable projection state, but a failed projection can leave an access effect pending until recovery runs.
 
 ## Renewal
 
@@ -362,7 +362,9 @@ Renewal creates a virtual renewal order and payment intent, reserves inventory f
 
 **FACT:** Renewal uses the subscription’s stored renewal amount/currency and promotes pending plan/variant/pricing only after the paid renewal reconciliation. `test/store/subscriptions/replay_concurrency_test.exs` proves concurrent renewal ticks create one attempt, do not advance the period twice, and leave one processing attempt.
 
-**GAP:** `RenewalAttempt` itself has no state machine or version field. The initial claim is guarded by SQL CAS, but subsequent `mark_processing`, `mark_succeeded`, and `mark_failed` actions are generic updates. The inspected code does not demonstrate a single lock spanning renewal versus cancellation, plan change, and payment webhook reconciliation. Those races remain extraction risks even though duplicate attempt creation is protected.
+**FACT:** Failure settlement locks the fresh Subscription before the exact owner-scoped RenewalAttempt and writes attempt and dunning consequences in one transaction. Cancellation and scheduled-boundary paths re-read under Subscription authority, and plan-change writes use aggregate-version checks. Provider HTTP remains outside those transactions. JC-235, JC-242/243/341, and current dunning suites cover late payment, cancellation, stale rescission, and failed-payment-boundary races.
+
+**GAP:** `RenewalAttempt` itself has no state machine or version field. The initial claim is guarded by SQL CAS, while subsequent lifecycle writes rely on the owning facade's locks and aggregate-version checks. The database does not impose one global lock across provider work, which remains outside the transaction by design.
 
 ## Plan, variant, and stored payment method changes
 
@@ -539,6 +541,11 @@ Payment replay, receipt duplicate, provider-event uniqueness, and paid interlock
 - Renewal claim uses a SQL compare-and-set on attempt status and timestamp.
 - Process-renewal Oban jobs use worker uniqueness.
 - Provider webhook reconciliation waits for payment success before extending the period.
+- JC-235 settlement binds a failure to the fresh Subscription, exact RenewalAttempt owner, and exact paid-success authority before atomic attempt/dunning writes.
+- JC-250 checkpoint B requires effective history on the exact current or queued PlanRevision. A historically effective retired revision remains valid; DRAFT/unproven revisions fail closed without selecting a newer EFFECTIVE revision.
+- Retry exhaustion suppresses retries while status remains `past_due`; the separately stored failed-payment boundary governs suspension.
+- JC-242/243/341 scheduled cancellation stores exact boundary or RenewalAttempt authority and rechecks it before terminalization.
+- AccessEffect records the source version and durable temporal boundary for effective access; suspended recovery uses the original paid RenewalAttempt start time.
 - Stored renewal amount/currency and pending plan-change fields preserve the current renewal quote.
 - Retry schedules, dunning count, next retry, and retry suppression are stored durably.
 
@@ -546,7 +553,7 @@ Payment replay, receipt duplicate, provider-event uniqueness, and paid interlock
 
 The subscription facade tests cover creation replay, due renewals, missing payment methods, provider failures, pricing promotion, dunning, grace expiry, physical reservation, and retry suppression. The replay concurrency test proves one renewal attempt under concurrent ticks.
 
-**GAP:** Subscription state transitions have `lock_attribute: nil`. Renewal, cancellation, plan change, and payment reconciliation do not share an observed subscription row lock or version guard. RenewalAttempt later status updates are generic. The current tests do not cover renewal-versus-cancellation, renewal-versus-plan-change, or payment-success-versus-expiry races.
+**GAP:** `Subscription` state transitions pass `lock_attribute: nil`, so correctness depends on the facade's explicit row locks and aggregate-version checks. RenewalAttempt later status updates remain generic Ash updates under those owning flows. Provider dispatch and recovery span multiple transactions by design; current adversarial suites cover selected renewal, cancellation, dunning, and payment-success interleavings, not every possible provider/process interruption.
 
 ## Inventory
 

@@ -158,9 +158,11 @@ Interpretation:
   - set `status = :past_due`
   - set `past_due_since_at = now`
   - set `billing_status_reason = :payment_failed`
-- Retry until:
-  - success → `:active` and extend period, clear past_due markers
-  - the configured retry or grace boundary is exhausted → `:suspended`, clear automatic retry scheduling, and make current access non-effective while keeping the commercial contract open
+- Retry exhaustion and the failed-payment boundary are separate decisions:
+  - an eligible retry remains governed by the captured retry schedule
+  - when the retry budget is exhausted, keep `status = :past_due`, set `retry_suppressed_at`, and clear `next_retry_at`
+  - suspend only when the separately stored `failed_payment_boundary_at` is reached; then clear automatic retry scheduling and make current access non-effective while keeping the commercial contract open
+- Successful payment → `:active`, extend the period, and clear past-due markers. Recovery must use the exact authorized RenewalAttempt and its original period boundaries.
 - `:suspended` is not cancellation or terminal expiry. Only authoritative Commerce success for the exact already-authorized RenewalAttempt can restore it, using that attempt's original period boundaries.
 - A customer or admin may cancel a suspended contract; cancellation remains terminal and follows the established payment-versus-cancellation precedence.
 
@@ -279,7 +281,8 @@ The following governance tests MUST exist before declaring subscriptions “done
 
 4) **Dunning correctness**
 - bounded retries follow schedule
-- grace expiry cancels deterministically
+- retry exhaustion leaves the Subscription `:past_due` with retries suppressed
+- reaching the failed-payment boundary suspends deterministically
 - missing payment method transitions to past_due without charging
 
 5) **Idempotency**

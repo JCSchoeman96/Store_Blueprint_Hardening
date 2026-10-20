@@ -1,5 +1,9 @@
 # Phase 27 — Variable Subscriptions
 
+> Historical planning and decision record. This note describes Phase 27 as it
+> stood when written. Its status claims and runtime observations are not current
+> authority; use current code, tests, and authoritative governance documents.
+
 ## GOAL
 
 Implement the Phase 27 variable-subscription spine without violating the existing Orders-as-truth boundary:

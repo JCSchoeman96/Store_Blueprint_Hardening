@@ -2169,7 +2169,7 @@ defmodule Store.Subscriptions.Facade do
          {:ok, updated} <-
            if(mode == :rescind_period_end,
              do: run_rescind_cancellation_with_authorized_reload(subscription, actor),
-             else: run_cancel(subscription, mode, actor)
+             else: run_cancel_with_authorized_retry(subscription, mode, actor, :user)
            ) do
       {:ok, updated}
     else
@@ -2193,7 +2193,7 @@ defmodule Store.Subscriptions.Facade do
       when is_map(actor) and is_binary(subscription_id) and mode in [:now, :period_end] do
     with {:ok, %Subscription{} = subscription} <-
            get_subscription_for_admin(actor, subscription_id),
-         {:ok, canceled} <- run_cancel(subscription, mode, actor) do
+         {:ok, canceled} <- run_cancel_with_authorized_retry(subscription, mode, actor, :admin) do
       {:ok, canceled}
     else
       {:ok, nil} ->
@@ -3083,10 +3083,16 @@ defmodule Store.Subscriptions.Facade do
               :ok
 
             {:error, reason} ->
-              {:error, reason}
+              {:claim_error, reason}
           end
 
-        settle_claimed_due_renewal_result(bound_subscription, bound_policy, result, now)
+        settle_due_renewal_result(
+          result,
+          bound_subscription,
+          bound_attempt,
+          bound_policy,
+          now
+        )
       else
         {:error,
          %Error{
@@ -3110,38 +3116,56 @@ defmodule Store.Subscriptions.Facade do
     result
   end
 
-  defp settle_claimed_due_renewal_result(_subscription, _plan, :ok, _now), do: :ok
-
-  defp settle_claimed_due_renewal_result(
+  defp settle_due_renewal_result(
+         {:claim_error, reason},
          _subscription,
-         _plan,
-         {:error, %Error{code: "STALE_RECORD"} = error},
+         _attempt,
+         _policy,
          _now
        ),
-       do: {:error, error}
+       do: {:error, reason}
 
-  defp settle_claimed_due_renewal_result(
-         _subscription,
-         _plan,
-         {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = error},
-         _now
-       ),
-       do: {:error, error}
-
-  defp settle_claimed_due_renewal_result(
+  defp settle_due_renewal_result(
+         {:renewal_failure, reason, collection_attempt},
          subscription,
-         plan,
-         {:error, %Error{} = error},
+         attempt,
+         policy,
          now
        ) do
-    mark_subscription_past_due(subscription, plan, error, now)
-    |> stale_result_or({:error, error})
+    case settle_renewal_failure(
+           subscription,
+           attempt,
+           collection_attempt,
+           policy,
+           reason,
+           now
+         ) do
+      {:ok, %{outcome: :failure_recorded} = settlement} ->
+        finish_renewal_failure_settlement(settlement)
+        {:error, reason}
+
+      {:ok, %{outcome: :success_won, handoff: handoff}} ->
+        reconcile_failure_suppressed_success(handoff)
+
+      {:ok, %{outcome: outcome}}
+      when outcome in [:success_already_terminal, :terminal_noop] ->
+        :ok
+
+      {:error, settlement_error} ->
+        {:error, settlement_error}
+    end
   end
 
-  defp settle_claimed_due_renewal_result(subscription, plan, {:error, reason}, now) do
-    mark_subscription_past_due(subscription, plan, reason, now)
-    |> stale_result_or({:error, reason})
-  end
+  defp settle_due_renewal_result(
+         {:authentication_settlement_error, reason},
+         _subscription,
+         _attempt,
+         _policy,
+         _now
+       ),
+       do: {:error, reason}
+
+  defp settle_due_renewal_result(result, _subscription, _attempt, _policy, _now), do: result
 
   defp ensure_subscription_contract_resolved(%Subscription{current_plan_revision_id: id})
        when is_binary(id),
@@ -3193,17 +3217,16 @@ defmodule Store.Subscriptions.Facade do
              renewal_period,
              attempt,
              now
-           ),
-         {:ok, _payment_intent} <-
-           request_off_session_renewal_charge(
-             subscription,
-             effective_contract.plan,
-             attempt,
-             checkout,
-             checkout.collection_attempt,
-             now
            ) do
-      :ok
+      request_off_session_renewal_charge(
+        subscription,
+        effective_contract.plan,
+        attempt,
+        checkout,
+        checkout.collection_attempt,
+        now
+      )
+      |> classify_claimed_renewal_charge_result(checkout.collection_attempt)
     else
       {:error, %Error{code: "STALE_RECORD"} = reason} ->
         {:error, reason}
@@ -3232,15 +3255,65 @@ defmodule Store.Subscriptions.Facade do
         :ok
 
       {:error, reason} ->
-        case mark_attempt_failed(attempt, reason) do
-          :terminal_success ->
-            :ok
-
-          :ok ->
-            {:error, reason}
-        end
+        {:renewal_failure, reason, nil}
     end
   end
+
+  defp classify_claimed_renewal_charge_result({:ok, _payment_intent}, _collection_attempt),
+    do: :ok
+
+  defp classify_claimed_renewal_charge_result(
+         {:error, %Error{code: "STALE_RECORD"} = reason},
+         _collection_attempt
+       ),
+       do: {:error, reason}
+
+  defp classify_claimed_renewal_charge_result(
+         {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"}},
+         _collection_attempt
+       ),
+       do: :ok
+
+  defp classify_claimed_renewal_charge_result(
+         {:error,
+          %Error{
+            code: "PAYMENT_OUTCOME_UNRESOLVED",
+            meta: %{existing_collection_replay?: true}
+          } = reason},
+         _collection_attempt
+       ),
+       do: {:error, reason}
+
+  defp classify_claimed_renewal_charge_result(
+         {:error,
+          %Error{
+            code: "INVALID_STATE_TRANSITION",
+            meta: %{already_succeeded?: true}
+          }},
+         _collection_attempt
+       ),
+       do: :ok
+
+  defp classify_claimed_renewal_charge_result(
+         {:error, %Error{code: "PAYMENT_OUTCOME_UNRESOLVED"}},
+         _collection_attempt
+       ),
+       do: :ok
+
+  defp classify_claimed_renewal_charge_result(
+         {:error, %Error{code: "RENEWAL_AUTHORITY_WITHDRAWN"}},
+         _collection_attempt
+       ),
+       do: :ok
+
+  defp classify_claimed_renewal_charge_result(
+         {:error, {:authentication_settlement_failed, reason}},
+         _collection_attempt
+       ),
+       do: {:authentication_settlement_error, reason}
+
+  defp classify_claimed_renewal_charge_result({:error, reason}, collection_attempt),
+    do: {:renewal_failure, reason, collection_attempt}
 
   defp fetch_paid_order(order_id) do
     query = Order |> Ash.Query.filter(expr(id == ^order_id))
@@ -3776,6 +3849,46 @@ defmodule Store.Subscriptions.Facade do
         {:error, Normalize.normalize(reason)}
     end
   end
+
+  defp run_cancel_with_authorized_retry(%Subscription{} = subscription, :now, actor, audience)
+       when audience in [:user, :admin] do
+    case run_cancel_now_or_noop(subscription, actor) do
+      {:error, %Error{code: "STALE_RECORD", message: message}}
+      when message ==
+             "subscription changed while the command was in progress; reload and re-evaluate it" ->
+        case reload_authorized_subscription(audience, actor, subscription.id) do
+          {:ok, %Subscription{} = fresh_subscription} ->
+            run_cancel_now_or_noop(fresh_subscription, actor)
+
+          {:ok, nil} ->
+            {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
+
+          {:error, reason} ->
+            {:error, Normalize.normalize(reason)}
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp run_cancel_with_authorized_retry(%Subscription{} = subscription, mode, actor, _audience),
+    do: run_cancel(subscription, mode, actor)
+
+  defp run_cancel_now_or_noop(
+         %Subscription{status: :canceled, cancel_at_period_end: false} = subscription,
+         _actor
+       ),
+       do: {:ok, subscription}
+
+  defp run_cancel_now_or_noop(%Subscription{} = subscription, actor),
+    do: run_cancel(subscription, :now, actor)
+
+  defp reload_authorized_subscription(:user, actor, subscription_id),
+    do: get_subscription_for_user(actor, subscription_id)
+
+  defp reload_authorized_subscription(:admin, actor, subscription_id),
+    do: get_subscription_for_admin(actor, subscription_id)
 
   defp finalize_immediate_cancellation(canceled, subscription) do
     plan =
@@ -4380,6 +4493,7 @@ defmodule Store.Subscriptions.Facade do
     with false <- legacy_future_projection?(subscription),
          revision = reusable_revision,
          :ok <- ensure_revision_belongs_to_plan(revision, subscription.subscription_plan_id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          :ok <-
            validate_renewal_contract_values(
              subscription.quantity,
@@ -4408,6 +4522,7 @@ defmodule Store.Subscriptions.Facade do
          {:ok, %PlanRevision{} = revision} <-
            fetch_plan_revision(subscription.current_plan_revision_id),
          :ok <- ensure_revision_belongs_to_plan(revision, subscription.subscription_plan_id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          :ok <-
            validate_renewal_contract_values(
              subscription.quantity,
@@ -4438,6 +4553,7 @@ defmodule Store.Subscriptions.Facade do
        ) do
     with :ok <- ensure_current_target_boundary(subscription, target),
          {:ok, %PlanRevision{} = revision} <- fetch_plan_revision(target.target_plan_revision_id),
+         :ok <- ensure_revision_has_purchase_history(revision),
          :ok <- ensure_contract_change_price_matches(target, revision),
          :ok <-
            validate_renewal_contract_values(
@@ -4955,7 +5071,141 @@ defmodule Store.Subscriptions.Facade do
   defp to_naive_datetime(%NaiveDateTime{} = value), do: {:ok, value}
   defp to_naive_datetime(_value), do: {:error, :invalid_datetime}
 
-  defp mark_attempt_failed(%RenewalAttempt{} = attempt, reason) do
+  defp settle_renewal_failure(
+         subscription,
+         attempt,
+         collection_attempt,
+         retry_policy,
+         reason,
+         now
+       ) do
+    transaction_result =
+      Repo.transaction(fn ->
+        with {:ok, locked_subscription} <-
+               fetch_subscription_for_renewal_locked(subscription.id),
+             {:ok, locked_attempt} <-
+               fetch_renewal_attempt_for_failure_settlement(attempt.id, subscription.id),
+             {:ok, settlement} <-
+               settle_locked_renewal_failure(
+                 locked_subscription,
+                 locked_attempt,
+                 collection_attempt,
+                 retry_policy,
+                 reason,
+                 now
+               ) do
+          {:ok, settlement}
+        else
+          {:error, settlement_error} -> Repo.rollback(settlement_error)
+        end
+      end)
+      |> normalize_transaction_notifications()
+
+    case transaction_result do
+      {:ok, settlement, notifications} ->
+        {:ok, Map.put(settlement, :notifications, notifications)}
+
+      {:error, settlement_error} ->
+        {:error, settlement_error}
+    end
+  end
+
+  defp settle_locked_renewal_failure(
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt,
+         collection_attempt,
+         retry_policy,
+         reason,
+         now
+       ) do
+    cond do
+      attempt.status == :succeeded ->
+        {:ok, %{outcome: :success_already_terminal}}
+
+      attempt.failure_code == @renewal_authority_withdrawn_code ->
+        {:ok, %{outcome: :terminal_noop}}
+
+      subscription.status in [:canceled, :expired, :pending] ->
+        {:ok, %{outcome: :terminal_noop}}
+
+      true ->
+        case exact_paid_renewal_success_handoff(attempt) do
+          {:ok, %{} = handoff} ->
+            {:ok, %{outcome: :success_won, handoff: handoff}}
+
+          {:ok, nil} ->
+            persist_failure_and_dunning(
+              subscription,
+              attempt,
+              collection_attempt,
+              retry_policy,
+              reason,
+              now
+            )
+
+          {:error, authority_error} ->
+            {:error, authority_error}
+        end
+    end
+  end
+
+  defp persist_failure_and_dunning(
+         subscription,
+         attempt,
+         _collection_attempt,
+         _retry_policy,
+         reason,
+         _now
+       )
+       when subscription.status == :suspended do
+    with {:ok, _updated_attempt, attempt_notifications} <-
+           mark_attempt_failed_in_transaction(attempt, reason) do
+      {:ok,
+       %{
+         outcome: :failure_recorded,
+         subscription: subscription,
+         dunning_status: :suspended,
+         dunning_count: subscription.dunning_attempt_count || 0,
+         notifications: attempt_notifications
+       }}
+    end
+  end
+
+  defp persist_failure_and_dunning(
+         %Subscription{status: status} = subscription,
+         attempt,
+         _collection_attempt,
+         retry_policy,
+         reason,
+         now
+       )
+       when status in [:active, :past_due] do
+    with {:ok, _updated_attempt, attempt_notifications} <-
+           mark_attempt_failed_in_transaction(attempt, reason),
+         {:ok, updated_subscription, dunning_notifications, dunning_count} <-
+           mark_subscription_past_due_in_transaction(
+             subscription,
+             retry_policy,
+             reason,
+             now
+           ) do
+      {:ok,
+       %{
+         outcome: :failure_recorded,
+         subscription: updated_subscription,
+         dunning_status: :past_due,
+         dunning_count: dunning_count,
+         notifications: attempt_notifications ++ dunning_notifications
+       }}
+    end
+  end
+
+  defp persist_failure_and_dunning(_subscription, _attempt, _collection, _policy, _reason, _now) do
+    {:error,
+     Error.new("STALE_RECORD", "subscription lifecycle changed during failure settlement")}
+  end
+
+  defp mark_attempt_failed_in_transaction(%RenewalAttempt{} = attempt, reason) do
     {failure_code, failure_message} =
       case reason do
         %Error{code: code, message: message} ->
@@ -4973,22 +5223,188 @@ defmodule Store.Subscriptions.Facade do
       attempt_no: attempt_no
     }
 
-    case attempt
-         |> Ash.Changeset.for_update(:mark_failed, attrs, context: %{system?: true})
-         |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true}) do
-      {:ok, _updated_attempt} ->
-        :ok
+    attempt
+    |> Ash.Changeset.for_update(:mark_failed, attrs, context: %{system?: true})
+    |> Ash.update(
+      domain: Subscriptions,
+      authorize?: false,
+      context: %{system?: true},
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, %RenewalAttempt{} = updated, notifications} when is_list(notifications) ->
+        {:ok, updated, notifications}
+
+      {:ok, %RenewalAttempt{} = updated} ->
+        {:ok, updated, []}
 
       {:error, reason} ->
-        if terminal_success_conflict?(reason), do: :terminal_success, else: :ok
+        {:error, Normalize.normalize(reason)}
     end
   end
 
-  defp terminal_success_conflict?(%Ash.Error.Invalid{errors: errors}) when is_list(errors) do
-    Enum.any?(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+  defp mark_subscription_past_due_in_transaction(subscription, retry_policy, reason, now) do
+    message =
+      case reason do
+        %Error{code: code} -> code
+        other -> inspect(other)
+      end
+
+    with {:ok, max_retry_attempts} <- retry_policy_max_attempts(retry_policy) do
+      next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
+      past_due_since_at = dunning_anchor(subscription, now)
+
+      failed_payment_boundary_at =
+        failed_payment_boundary_for_first_failure(
+          subscription,
+          retry_policy,
+          past_due_since_at
+        )
+
+      attrs =
+        retry_failure_attrs(
+          retry_policy,
+          message,
+          now,
+          past_due_since_at,
+          next_attempt_count,
+          max_retry_attempts,
+          failed_payment_boundary_at
+        )
+
+      subscription
+      |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
+      |> Ash.update(
+        domain: Subscriptions,
+        authorize?: false,
+        context: %{system?: true},
+        return_notifications?: true
+      )
+      |> case do
+        {:ok, %Subscription{} = updated, notifications} when is_list(notifications) ->
+          {:ok, updated, notifications, next_attempt_count}
+
+        {:ok, %Subscription{} = updated} ->
+          {:ok, updated, [], next_attempt_count}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
   end
 
-  defp terminal_success_conflict?(_reason), do: false
+  defp fetch_renewal_attempt_for_failure_settlement(attempt_id, subscription_id) do
+    query =
+      RenewalAttempt
+      |> Ash.Query.filter(expr(id == ^attempt_id and subscription_id == ^subscription_id))
+      |> Ash.Query.lock("FOR UPDATE")
+
+    case Ash.read_one(query,
+           domain: Subscriptions,
+           authorize?: false,
+           context: %{system?: true}
+         ) do
+      {:ok, %RenewalAttempt{} = attempt} ->
+        {:ok, attempt}
+
+      {:ok, nil} ->
+        {:error, Error.new("STALE_RECORD", "renewal attempt changed during failure settlement")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp exact_paid_renewal_success_handoff(%RenewalAttempt{order_id: order_id} = attempt)
+       when is_binary(order_id) do
+    query =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(
+        expr(
+          renewal_attempt_id == ^attempt.id and
+            financial_outcome == :verified_success
+        )
+      )
+      |> Ash.Query.limit(2)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, []} ->
+        {:ok, nil}
+
+      {:ok, [%RenewalCollectionAttempt{} = collection]} ->
+        exact_success_handoff_for_collection(attempt, collection)
+
+      {:ok, [_first, _second | _rest]} ->
+        {:error,
+         Error.new(
+           "PAYMENT_EVENT_UNVERIFIED",
+           "renewal attempt has multiple successful collection records"
+         )}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp exact_paid_renewal_success_handoff(%RenewalAttempt{}), do: {:ok, nil}
+
+  defp exact_success_handoff_for_collection(attempt, collection) do
+    with {:ok, handoff} <- RenewalCollectionAttempts.success_handoff_for_system(collection.id),
+         true <-
+           handoff.order_id == attempt.order_id and
+             handoff.renewal_attempt_id == attempt.id and
+             handoff.collection_attempt_id == collection.id and
+             handoff.payment_intent_id == collection.payment_intent_id,
+         {:ok, :applied} <-
+           PaymentsFacade.renewal_payment_application_status_for_system(
+             %RenewalPaymentApplicationInput{
+               order_id: handoff.order_id,
+               payment_intent_id: handoff.payment_intent_id
+             }
+           ),
+         {:ok, %Order{state: :paid}} <- fetch_paid_order(handoff.order_id) do
+      {:ok, handoff}
+    else
+      {:ok, :unapplied} ->
+        {:ok, nil}
+
+      false ->
+        {:error,
+         Error.new("PAYMENT_EVENT_UNVERIFIED", "renewal success handoff identity conflicts")}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reconcile_failure_suppressed_success(handoff) do
+    case reconcile_paid_subscription_renewal_for_system(handoff.order_id,
+           renewal_attempt_id: handoff.renewal_attempt_id,
+           collection_attempt_id: handoff.collection_attempt_id,
+           payment_intent_id: handoff.payment_intent_id
+         ) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp finish_renewal_failure_settlement(settlement) do
+    :ok =
+      AshNotifications.notify_post_commit(settlement.notifications,
+        context: %{
+          flow: :settle_renewal_failure,
+          subscription_id: settlement.subscription.id
+        }
+      )
+
+    emit_subscription_dunning_telemetry(
+      settlement.subscription,
+      settlement.dunning_status,
+      settlement.dunning_count
+    )
+
+    :ok
+  end
 
   defp ensure_renewal_chargeability(subscription, _plan) do
     with :ok <- Providers.ensure_enabled_provider(subscription.provider),
@@ -5693,33 +6109,42 @@ defmodule Store.Subscriptions.Facade do
       }
     )
 
-    if reached_collection_requires_reconciliation?(
-         collection_attempt,
-         payment_intent,
-         subscription
-       ) do
-      reconcile_existing_renewal_collection(payment_intent, collection_attempt)
-    else
-      input = %AttachAndClaimInput{
-        collection_attempt_id: collection_attempt.id,
-        renewal_attempt_id: bound_attempt.id,
-        subscription_id: subscription.id,
-        payment_intent_id: payment_intent.id,
-        expected_epoch: collection_attempt.dispatch_epoch,
-        now: now
-      }
+    result =
+      if reached_collection_requires_reconciliation?(
+           collection_attempt,
+           payment_intent,
+           subscription
+         ) do
+        reconcile_existing_renewal_collection(payment_intent, collection_attempt)
+      else
+        input = %AttachAndClaimInput{
+          collection_attempt_id: collection_attempt.id,
+          renewal_attempt_id: bound_attempt.id,
+          subscription_id: subscription.id,
+          payment_intent_id: payment_intent.id,
+          expected_epoch: collection_attempt.dispatch_epoch,
+          now: now
+        }
 
-      case RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input) do
-        {:ok, claim} ->
-          submit_claimed_renewal_collection(subscription, plan, bound_attempt, claim, now)
+        case RenewalCollectionAttempts.attach_and_claim_dispatch_for_system(input) do
+          {:ok, claim} ->
+            submit_claimed_renewal_collection(subscription, plan, bound_attempt, claim, now)
 
-        {:error, %Error{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} ->
-          fence_withdrawn_renewal_collection(collection_attempt, now)
+          {:error, %Error{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} ->
+            fence_withdrawn_renewal_collection(collection_attempt, now)
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
-    end
+
+    settle_replayed_authentication_required(
+      result,
+      subscription,
+      bound_attempt,
+      collection_attempt,
+      now
+    )
   end
 
   defp submit_claimed_renewal_collection(subscription, plan, bound_attempt, claim, now) do
@@ -5913,39 +6338,16 @@ defmodule Store.Subscriptions.Facade do
              payment_intent,
              observation
            ) do
-      case outcome do
-        outcome when outcome in [:authoritative_success, :already_applied_success] ->
-          {:ok, payment_intent}
-
-        :verified_terminal_non_success ->
-          {:error,
-           Error.new(
-             "PAYMENT_FAILED",
-             "off-session renewal charge reached terminal failure"
-           )}
-
-        :requires_action ->
-          subscription_update_result =
-            mark_subscription_authentication_required(subscription, attempt, now, charge_response)
-
-          _ = enqueue_payment_authentication_required_email(order, charge_response)
-
-          stale_result_or(
-            subscription_update_result,
-            {:error,
-             Error.new(
-               "PAYMENT_AUTHENTICATION_REQUIRED",
-               "customer authentication is required to complete renewal"
-             )}
-          )
-
-        _ ->
-          {:error,
-           Error.new(
-             "PAYMENT_OUTCOME_UNRESOLVED",
-             "provider response does not establish terminal payment outcome"
-           )}
-      end
+      handle_off_session_renewal_outcome(
+        outcome,
+        subscription,
+        attempt,
+        order,
+        payment_intent,
+        collection_attempt,
+        charge_response,
+        now
+      )
     else
       {:error, %Error{code: "PAYMENT_EVENT_UNVERIFIED"}} ->
         {:error,
@@ -5958,6 +6360,85 @@ defmodule Store.Subscriptions.Facade do
         {:error, reason}
     end
   end
+
+  defp handle_off_session_renewal_outcome(
+         outcome,
+         _subscription,
+         _attempt,
+         _order,
+         payment_intent,
+         _collection_attempt,
+         _charge_response,
+         _now
+       )
+       when outcome in [:authoritative_success, :already_applied_success],
+       do: {:ok, payment_intent}
+
+  defp handle_off_session_renewal_outcome(
+         :verified_terminal_non_success,
+         _subscription,
+         _attempt,
+         _order,
+         _payment_intent,
+         _collection_attempt,
+         _charge_response,
+         _now
+       ) do
+    {:error, Error.new("PAYMENT_FAILED", "off-session renewal charge reached terminal failure")}
+  end
+
+  defp handle_off_session_renewal_outcome(
+         :requires_action,
+         subscription,
+         attempt,
+         order,
+         payment_intent,
+         collection_attempt,
+         charge_response,
+         now
+       ) do
+    case settle_authentication_required(subscription, attempt, collection_attempt, now) do
+      {:ok, :settled} ->
+        enqueue_authentication_required_email_result(
+          enqueue_payment_authentication_required_email(order, charge_response)
+        )
+
+      {:ok, :success_won} ->
+        {:ok, payment_intent}
+
+      {:ok, :noop} ->
+        {:error, payment_authentication_required_error()}
+
+      {:error, reason} ->
+        {:error, {:authentication_settlement_failed, reason}}
+    end
+  end
+
+  defp handle_off_session_renewal_outcome(
+         _outcome,
+         _subscription,
+         _attempt,
+         _order,
+         _payment_intent,
+         _collection_attempt,
+         _charge_response,
+         _now
+       ) do
+    {:error,
+     Error.new(
+       "PAYMENT_OUTCOME_UNRESOLVED",
+       "provider response does not establish terminal payment outcome"
+     )}
+  end
+
+  defp enqueue_authentication_required_email_result({:ok, _outbox}),
+    do: {:error, payment_authentication_required_error()}
+
+  defp enqueue_authentication_required_email_result({:error, :missing_action_url}),
+    do: {:error, payment_authentication_required_error()}
+
+  defp enqueue_authentication_required_email_result({:error, reason}),
+    do: {:error, {:authentication_settlement_failed, Normalize.normalize(reason)}}
 
   defp renewal_collection_charge_request(
          %RenewalAttempt{} = attempt,
@@ -6096,11 +6577,161 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp mark_subscription_authentication_required(
+  defp settle_replayed_authentication_required(
+         {:error, %Error{code: "PAYMENT_AUTHENTICATION_REQUIRED"} = error},
+         subscription,
+         attempt,
+         collection_attempt,
+         now
+       ) do
+    case settle_authentication_required(subscription, attempt, collection_attempt, now,
+           replay?: true
+         ) do
+      {:ok, outcome} when outcome in [:success_won, :noop] -> {:ok, :processed}
+      {:ok, _outcome} -> {:error, error}
+      {:error, reason} -> {:error, {:authentication_settlement_failed, reason}}
+    end
+  end
+
+  defp settle_replayed_authentication_required(
+         result,
+         _subscription,
+         _attempt,
+         _collection,
+         _now
+       ),
+       do: result
+
+  defp settle_authentication_required(subscription, attempt, collection_attempt, now, opts \\ []) do
+    replay? = Keyword.get(opts, :replay?, false)
+
+    transaction_result =
+      Repo.transaction(fn ->
+        with {:ok, locked_subscription} <-
+               fetch_subscription_for_renewal_locked(subscription.id),
+             {:ok, locked_attempt} <-
+               fetch_renewal_attempt_for_failure_settlement(attempt.id, subscription.id),
+             {:ok, settlement} <-
+               settle_locked_authentication_required(
+                 locked_subscription,
+                 locked_attempt,
+                 collection_attempt,
+                 now,
+                 replay?
+               ) do
+          {:ok, settlement}
+        else
+          {:error, settlement_error} -> Repo.rollback(settlement_error)
+        end
+      end)
+      |> normalize_transaction_notifications()
+
+    case transaction_result do
+      {:ok, %{outcome: :settled} = settlement, notifications} ->
+        settlement = Map.put(settlement, :notifications, notifications)
+
+        :ok =
+          AshNotifications.notify_post_commit(settlement.notifications,
+            context: %{
+              flow: :settle_authentication_required_renewal,
+              subscription_id: settlement.subscription.id,
+              renewal_attempt_id: attempt.id,
+              collection_attempt_id: collection_attempt.id
+            }
+          )
+
+        emit_subscription_dunning_telemetry(
+          settlement.subscription,
+          :past_due,
+          settlement.dunning_count
+        )
+
+        {:ok, :settled}
+
+      {:ok, %{outcome: :success_won, handoff: handoff}, _notifications} ->
+        case reconcile_failure_suppressed_success(handoff) do
+          :ok -> {:ok, :success_won}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %{outcome: :noop}, _notifications} ->
+        {:ok, :noop}
+
+      {:error, settlement_error} ->
+        {:error, settlement_error}
+    end
+  end
+
+  defp settle_locked_authentication_required(
          %Subscription{} = subscription,
          %RenewalAttempt{} = attempt,
-         %DateTime{} = now,
-         charge_response
+         collection_attempt,
+         now,
+         replay?
+       ) do
+    terminal? =
+      attempt.status == :succeeded or
+        attempt.failure_code == @renewal_authority_withdrawn_code or
+        subscription.status in [:canceled, :expired, :pending, :suspended]
+
+    if terminal? do
+      {:ok, %{outcome: :noop}}
+    else
+      case exact_paid_renewal_success_handoff(attempt) do
+        {:ok, %{} = _handoff} ->
+          {:ok, %{outcome: :success_won}}
+
+        {:ok, nil} ->
+          persist_authentication_required_dunning(
+            subscription,
+            attempt,
+            collection_attempt,
+            now,
+            replay?
+          )
+
+        {:error, authority_error} ->
+          {:error, authority_error}
+      end
+    end
+  end
+
+  defp persist_authentication_required_dunning(
+         subscription,
+         attempt,
+         collection_attempt,
+         now,
+         replay?
+       ) do
+    with {:ok, {collection_outcome, exact_collection}} <-
+           fetch_requires_action_collection(collection_attempt, attempt, replay?),
+         false <- authentication_required_dunning_already_settled?(subscription) do
+      case collection_outcome do
+        :unresolved ->
+          {:ok, %{outcome: :noop}}
+
+        :requires_action ->
+          persist_authentication_required_dunning_transition(
+            subscription,
+            attempt,
+            exact_collection,
+            now
+          )
+      end
+    else
+      true ->
+        {:ok, %{outcome: :noop}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp persist_authentication_required_dunning_transition(
+         subscription,
+         attempt,
+         exact_collection,
+         now
        ) do
     retry_policy = renewal_policy_from_attempt(attempt)
     next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
@@ -6113,29 +6744,120 @@ defmodule Store.Subscriptions.Facade do
         past_due_since_at
       )
 
+    attrs = %{
+      billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED",
+      past_due_since_at: past_due_since_at,
+      failed_payment_boundary_at: failed_payment_boundary_at,
+      dunning_attempt_count: next_attempt_count,
+      next_retry_at: nil,
+      retry_suppressed_at: now
+    }
+
     subscription
-    |> Ash.Changeset.for_update(
-      :mark_past_due_transition,
-      %{
-        billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED",
-        past_due_since_at: past_due_since_at,
-        failed_payment_boundary_at: failed_payment_boundary_at,
-        dunning_attempt_count: next_attempt_count,
-        next_retry_at: nil,
-        retry_suppressed_at: now
-      },
-      context: %{system?: true}
-    )
+    |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
     |> Ash.update(
       domain: Subscriptions,
       authorize?: false,
-      context: %{system?: true}
+      context: %{system?: true},
+      return_notifications?: true
     )
-    |> normalize_subscription_update_result(subscription)
     |> case do
-      {:error, %Error{code: "STALE_RECORD"} = error} -> {:error, error}
-      _ -> charge_response
+      {:ok, %Subscription{} = updated, notifications} when is_list(notifications) ->
+        {:ok,
+         %{
+           outcome: :settled,
+           subscription: updated,
+           dunning_count: next_attempt_count,
+           collection_attempt: exact_collection,
+           notifications: notifications
+         }}
+
+      {:ok, %Subscription{} = updated} ->
+        {:ok,
+         %{
+           outcome: :settled,
+           subscription: updated,
+           dunning_count: next_attempt_count,
+           collection_attempt: exact_collection,
+           notifications: []
+         }}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
+  end
+
+  defp fetch_requires_action_collection(
+         %RenewalCollectionAttempt{
+           id: collection_id,
+           payment_intent_id: expected_payment_intent_id
+         },
+         %RenewalAttempt{id: attempt_id},
+         replay?
+       ) do
+    query =
+      RenewalCollectionAttempt
+      |> Ash.Query.filter(expr(id == ^collection_id and renewal_attempt_id == ^attempt_id))
+
+    case Ash.read_one(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, %RenewalCollectionAttempt{} = collection} ->
+        validate_requires_action_collection_identity(
+          collection,
+          expected_payment_intent_id,
+          replay?
+        )
+
+      {:ok, nil} ->
+        {:error, Error.new("STALE_RECORD", "renewal collection owner changed")}
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp validate_requires_action_collection_identity(
+         %RenewalCollectionAttempt{} = collection,
+         expected_payment_intent_id,
+         replay?
+       ) do
+    if is_nil(expected_payment_intent_id) or
+         collection.payment_intent_id == expected_payment_intent_id do
+      classify_requires_action_collection_outcome(collection, replay?)
+    else
+      {:error, Error.new("STALE_RECORD", "renewal collection payment identity changed")}
+    end
+  end
+
+  defp classify_requires_action_collection_outcome(
+         %RenewalCollectionAttempt{financial_outcome: :requires_action} = collection,
+         _replay?
+       ),
+       do: {:ok, {:requires_action, collection}}
+
+  defp classify_requires_action_collection_outcome(
+         %RenewalCollectionAttempt{financial_outcome: :unresolved} = collection,
+         true
+       ),
+       do: {:ok, {:unresolved, collection}}
+
+  defp classify_requires_action_collection_outcome(%RenewalCollectionAttempt{}, _replay?) do
+    {:error, Error.new("STALE_RECORD", "renewal collection no longer requires authentication")}
+  end
+
+  defp authentication_required_dunning_already_settled?(%Subscription{
+         status: :past_due,
+         billing_status_reason: "PAYMENT_AUTHENTICATION_REQUIRED",
+         retry_suppressed_at: %DateTime{}
+       }),
+       do: true
+
+  defp authentication_required_dunning_already_settled?(_subscription), do: false
+
+  defp payment_authentication_required_error do
+    Error.new(
+      "PAYMENT_AUTHENTICATION_REQUIRED",
+      "customer authentication is required to complete renewal"
+    )
   end
 
   defp enqueue_payment_authentication_required_email(%Order{} = order, charge_response) do
@@ -7287,45 +8009,6 @@ defmodule Store.Subscriptions.Facade do
     |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
   end
 
-  defp mark_subscription_past_due(subscription, retry_policy, reason, now) do
-    message =
-      case reason do
-        %Error{code: code} -> code
-        other -> inspect(other)
-      end
-
-    with {:ok, max_retry_attempts} <- retry_policy_max_attempts(retry_policy) do
-      next_attempt_count = max((subscription.dunning_attempt_count || 0) + 1, 1)
-      past_due_since_at = dunning_anchor(subscription, now)
-
-      failed_payment_boundary_at =
-        failed_payment_boundary_for_first_failure(
-          subscription,
-          retry_policy,
-          past_due_since_at
-        )
-
-      attrs =
-        retry_failure_attrs(
-          retry_policy,
-          message,
-          now,
-          past_due_since_at,
-          next_attempt_count,
-          max_retry_attempts,
-          failed_payment_boundary_at
-        )
-
-      subscription
-      |> persist_subscription_dunning_update(:past_due, attrs)
-      |> finish_subscription_dunning_update(
-        subscription,
-        :past_due,
-        next_attempt_count
-      )
-    end
-  end
-
   defp retry_policy_max_attempts(%{max_retry_attempts: max_retry_attempts})
        when is_integer(max_retry_attempts) and max_retry_attempts >= 0,
        do: {:ok, max_retry_attempts}
@@ -7432,18 +8115,6 @@ defmodule Store.Subscriptions.Facade do
          scheduled_retry
        ) do
     attempt_count > max_retry_attempts or hard_blocked? or scheduled_retry == :exhausted
-  end
-
-  defp finish_subscription_dunning_update(result, subscription, status, attempt_count) do
-    emit_subscription_dunning_telemetry(subscription, status, attempt_count)
-    stale_result_or(result, :ok)
-  end
-
-  defp persist_subscription_dunning_update(subscription, _status, attrs) do
-    subscription
-    |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
-    |> Ash.update(domain: Subscriptions, authorize?: false, context: %{system?: true})
-    |> normalize_subscription_update_result(subscription)
   end
 
   defp dunning_anchor(%Subscription{past_due_since_at: nil}, now), do: now

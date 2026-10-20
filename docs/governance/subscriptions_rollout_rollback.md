@@ -34,7 +34,8 @@ Before deploy:
    - verify due-renewal fan-out enqueues one per `subscription_id + renewal_key`
    - verify jittered renewal jobs do not burst immediately
    - verify inline Stripe SetupIntent card-update flow updates the stored payment method and immediately retries past-due subscriptions
-   - verify physical renewals reserve inventory before Stripe and eagerly release reservations on known failure paths
+   - verify physical renewals reserve inventory before provider dispatch and release only after a durable pre-submission fence or verified terminal financial non-success
+   - verify `requires_action` and unresolved collections keep their exact collection identity and active reservation; a later collection waits for verified terminal non-success and permitted dunning
    - verify physical-renewal shipping surge blocks move subscriptions to retry-suppressed `:past_due`
 3. **Customer exposure**
    - set `expose_purchase?` to `true`
@@ -56,6 +57,13 @@ If severe regression is detected:
 7. Run reconciliation command set (below).
 
 Do not run destructive state rewrites from web/controllers.
+
+For an in-flight renewal, reconcile the exact `RenewalAttempt`, collection attempt,
+PaymentIntent, and reservation key. A local deadline, timeout, or provider cancel
+acknowledgement does not prove terminal financial non-success. Current main does
+not expose the exact provider retrieve/cancel operations described in the
+[provider contract](payment_provider_contract.md#42-renewal-collection-status-recovery-and-cancellation),
+so do not treat that future protocol as an available manual recovery command.
 
 ## Reconciliation Commands
 

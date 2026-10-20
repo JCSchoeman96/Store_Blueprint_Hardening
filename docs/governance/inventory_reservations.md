@@ -70,7 +70,7 @@ Pinned quantity behavior (MUST):
 
 ### 5.1 Physical subscription-renewal generations
 
-The later, separately admitted SBH-10-04 implementation may use multiple historical reservation rows for one physical renewal Order/variant. This exception applies only to renewal collection generations. Generic checkout keeps the single-row `(order_id, variant_id)` behavior and the key `order:<order_id>:sku:<variant_id>`.
+Current main uses multiple historical reservation rows for one physical renewal Order/variant. This exception applies only to renewal collection generations. Generic checkout keeps the single-row `(order_id, variant_id)` behavior and the key `order:<order_id>:sku:<variant_id>`.
 
 Each renewal generation uses a server-derived key that includes the exact collection and reservation-generation identities:
 
@@ -92,9 +92,7 @@ Before payment-success consumption for a physical renewal, Subscription validati
 
 ### 5.2 Exact renewal-generation transaction guard
 
-This capability belongs to Orders under S0 inventory-concurrency authority. Its
-implementation requires the separate admission gates in the
-[JC-229 guard correction](sbh_10_04_cross_domain_authority_amendment.md#jc-229-dispatch-atomicity-correction).
+This accepted capability belongs to Orders under inventory-concurrency authority.
 An ordinary recovery read does not authorize a physical dispatch transition.
 
 A governed business caller already in a Store.Repo PostgreSQL transaction may ask
