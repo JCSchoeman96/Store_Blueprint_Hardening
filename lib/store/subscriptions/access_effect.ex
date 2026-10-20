@@ -46,6 +46,11 @@ defmodule Store.Subscriptions.AccessEffect do
       public?(false)
     end
 
+    attribute :valid_from_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(false)
+    end
+
     attribute :valid_until_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(false)
@@ -212,6 +217,7 @@ defmodule Store.Subscriptions.AccessEffect do
         :disposition,
         :entitlement_kind,
         :entitlement_scope_key,
+        :valid_from_at,
         :valid_until_at
       ])
 

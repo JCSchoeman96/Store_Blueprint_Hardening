@@ -30,6 +30,38 @@ defmodule Store.Subscriptions.AccessEffectTest do
     refute delivered_at.public?
   end
 
+  test "AccessEffect stores private nullable valid_from_at evidence" do
+    attribute = Info.attribute(AccessEffect, :valid_from_at)
+
+    assert attribute
+    assert attribute.type == Ash.Type.UtcDatetimeUsec
+    assert attribute.allow_nil?
+    refute attribute.public?
+
+    fixture = create_subscription_fixture!()
+    start_at = ~U[2026-09-01 00:00:00.123456Z]
+
+    input =
+      access_effect_input(fixture, %{
+        valid_from_at: start_at,
+        valid_until_at: DateTime.add(start_at, 1, :day)
+      })
+
+    assert Map.get(input, :valid_from_at) == start_at
+    assert {:ok, effect} = establish(input)
+    assert effect.valid_from_at == start_at
+  end
+
+  test "typed AccessEffect input leaves a missing start available for historical replay" do
+    fixture = create_subscription_fixture!()
+    input = access_effect_input(fixture)
+
+    assert input.disposition == :effective
+    assert input.entitlement_kind
+    assert input.entitlement_scope_key
+    assert Map.get(input, :valid_from_at) == nil
+  end
+
   test "bounded recovery selector finds unresolved non-effective effects" do
     fixture = create_subscription_fixture!()
 
@@ -239,6 +271,17 @@ defmodule Store.Subscriptions.AccessEffectTest do
 
     assert {:error, %Error{code: "VALIDATION_ERROR"}} =
              EstablishAccessEffectInput.new(%{attrs | entitlement_kind: nil})
+  end
+
+  test "typed AccessEffect input rejects a non-DateTime start" do
+    fixture = create_subscription_fixture!()
+    input = access_effect_input(fixture)
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} =
+             input
+             |> Map.from_struct()
+             |> Map.put(:valid_from_at, "2026-09-01T00:00:00Z")
+             |> EstablishAccessEffectInput.new()
   end
 
   test "database constraint rejects either incomplete entitlement pair" do
