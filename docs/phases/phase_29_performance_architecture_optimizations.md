@@ -321,17 +321,28 @@ BASELINE_ESTABLISHED
     ↓
 LOAD_ACTIVE
     ↓
-COOLDOWN
-    ↓
-CONVERGED | NOT_CONVERGED | INCONCLUSIVE
+COOLDOWN ── repeat guard ──→ BASELINE_ESTABLISHED
+    ├──→ CONVERGED
+    ├──→ NOT_CONVERGED
+    └──→ INCONCLUSIVE
+
+Terminal states: CONVERGED, NOT_CONVERGED, INCONCLUSIVE
+Outgoing transitions from terminal states: none
 ```
 
-- **UNMEASURED → BASELINE_ESTABLISHED:** Fix the scenario, build identity, workload and process-class mix, node topology and identities, sampling dimensions, baseline window, and scenario-specific bounds. Do not change the workload definition during the run.
+- **UNMEASURED → BASELINE_ESTABLISHED:** Fix the scenario, build identity, workload and process-class mix, node topology and identities, sampling dimensions, baseline window, scenario-specific bounds, and required repetition count. The required count must be at least two for a convergence/no-accumulation claim. Do not change the workload definition during the run.
 - **BASELINE_ESTABLISHED → LOAD_ACTIVE:** Start the bounded workload and retain time-series and peak evidence for the dimensions selected by the scenario.
 - **LOAD_ACTIVE → COOLDOWN:** Complete the workload normally, retain peak evidence, and observe a predeclared cooldown window long enough to assess the relevant drain and recovery behavior. There is no universal cooldown duration.
-- **COOLDOWN → CONVERGED:** The measured dimensions return to their accepted scenario envelopes, and at least two equivalent bounded repetitions show no accumulating state between runs. Each repetition follows the lifecycle. One run can diagnose a problem but cannot certify non-accumulation.
+- **COOLDOWN → BASELINE_ESTABLISHED:** Repeat guard: convergence certification was requested, completed valid comparable repetitions are below the required count, and the scenario, workload, build, and topology remain equivalent. Side effects: retain the completed run's evidence, increment the completed comparable repetition count, and begin the next bounded repetition with a new baseline and run-local evidence.
+- **COOLDOWN → CONVERGED:** At least two valid equivalent bounded repetitions completed; all relevant measured dimensions satisfy their accepted envelopes; and no state accumulates between repetitions. One run can diagnose a problem but cannot certify non-accumulation.
 - **COOLDOWN → NOT_CONVERGED:** A relevant bound is violated or unexplained resource state persists or accumulates across equivalent runs.
-- **Any state → INCONCLUSIVE:** Instrumentation needed for the claim is unavailable, a run is invalid or incomparable, a node is lost, or evidence does not cover the predeclared window. Mark unavailable dimensions UNMEASURED rather than estimating them.
+- **Any non-terminal state → INCONCLUSIVE:** Instrumentation needed for the claim is unavailable, a run is invalid or incomparable, a node is lost, or evidence does not cover the predeclared window. Mark unavailable dimensions UNMEASURED rather than estimating them.
+
+Terminal outcome effects:
+
+- **CONVERGED:** A positive convergence or no-accumulation claim is permitted only for the covered dimensions, scenario, build, and topology.
+- **NOT_CONVERGED:** A positive convergence or no-accumulation claim is blocked.
+- **INCONCLUSIVE:** A positive runtime-safety, convergence, or capacity claim is blocked for dimensions the evidence does not establish.
 
 UNMEASURED is an evidence state, not a pass. A safety, convergence, or capacity claim cannot pass when a dimension relevant to that claim is UNMEASURED. Unrelated changes do not need runtime measurements; their review may state that runtime evidence is not applicable and give a reason.
 

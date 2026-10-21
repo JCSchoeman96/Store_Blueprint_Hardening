@@ -42,7 +42,7 @@ Avoid embedding user PII in keys.
 ## Performance & Scaling Review (MANDATORY for new actions)
 For every new domain action, answer:
 - Data layer (hot/warm/cold)?
-- What does the 100k-user architecture review require, and is separate measured-capacity evidence needed?
+- Is the architecture safe under the defined 100k-user scenario, and what separate measured-capacity evidence is required before making a capacity claim?
 - DB indexes required?
 - Redis representation needed?
 - Can this be streamed instead of loaded?
