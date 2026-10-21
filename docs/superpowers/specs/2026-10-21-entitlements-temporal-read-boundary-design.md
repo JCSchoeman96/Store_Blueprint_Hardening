@@ -95,6 +95,8 @@ Server-side access decisions must evaluate the grant against a fresh, explicitly
 
 JC-342 persists immutable AccessEffect start evidence but explicitly leaves entitlement read-side enforcement to downstream work. Until ENT-T1's temporal evaluator is implemented and covered, JC-245 must not project a future-dated effective target into an active `EntitlementGrant`.
 
+This design permits future exact-source convergence only after human acceptance of ENT-T1, implementation and verification of its read gate, and availability of the exact current AccessEffect start. JC-245/246 implementation remains blocked now.
+
 When admitted later, exact-source convergence must:
 
 - select the current AccessEffect under the existing source/version and stale-target rules;
@@ -128,6 +130,9 @@ Classification precedence is `REVOKED`, then `ENDED`, then `INACTIVE`, then `FUT
 - `FUTURE → ENDED` if its end is reached before its start, though a newly established effective target must reject such an inverted interval.
 - Any non-revoked state → `REVOKED` when persisted status becomes revoked or `revoked_at` becomes non-nil.
 - Any non-revoked state → `ENDED` when persisted status becomes expired.
+- Under `TIME_ONLY_EVALUATION`, `REVOKED` and `ENDED` are absorbing classifications as `as_of` advances. No time-only transition leaves either classification.
+- Persisted update transition `REVOKED → FUTURE | EFFECTIVE | ENDED`: allowed only when existing source/convergence authority and the authorized `EntitlementGrant :issue` action update that same source-identity row; the new classification is derived from the updated fields and explicit `as_of`.
+- Persisted update transition `ENDED → FUTURE | EFFECTIVE | ENDED`: allowed only under the same existing source/convergence and `:issue` authority; the new classification is derived from the updated fields and explicit `as_of`.
 
 ### TRANSITION_GUARDS
 
@@ -137,6 +142,7 @@ Classification precedence is `REVOKED`, then `ENDED`, then `INACTIVE`, then `FUT
 - End equality is ended: `valid_to_at == as_of` means `ENDED`.
 - Non-active or unclassifiable statuses fail closed as `INACTIVE`, except explicit `:revoked` and `:expired` classifications above.
 - A fresh grant read is not required for a time-only transition; the same raw row can cross `FUTURE → EFFECTIVE` or `EFFECTIVE → ENDED` as `as_of` changes.
+- Reclassification after a persisted update requires existing source/convergence authority and the authorized `EntitlementGrant :issue` action (`lib/store/entitlements/entitlement_grant.ex`). Future exact-source convergence remains gated by §5 and JC-245/246 authority. This design grants no new update or reactivation authority.
 
 ### SIDE_EFFECTS
 
@@ -146,8 +152,8 @@ Classification precedence is `REVOKED`, then `ENDED`, then `INACTIVE`, then `FUT
 
 ### TERMINAL_STATES
 
-- `REVOKED` and `ENDED` are terminal for the particular grant row's read classification.
-- A later commercial target is represented by the existing source-convergence rules and a later/current grant target, not by reopening an ended or revoked row through read-time evaluation.
+- `REVOKED` and `ENDED` are read-time classifications, not globally terminal persisted row states. They are terminal only under `TIME_ONLY_EVALUATION` as `as_of` advances.
+- An authorized persisted update under existing source/convergence rules or the `EntitlementGrant :issue` action can update the same source identity and row. The read classification is then recomputed from the resulting persisted fields and explicit `as_of`. No new status or schema is introduced.
 - `INACTIVE` and `FUTURE` are not terminal classifications; they may become effective as time advances only when a valid start exists and no end/revocation guard prevents it.
 
 ## 7. LiveView refresh strategy decision
@@ -332,8 +338,9 @@ BOUNDARY_TIMER_DB_CALLS=0
 BOUNDARY_TIMER_CACHE_FETCHES=0
 BOUNDARY_TIMER_PUBSUB_BROADCASTS=0
 FUTURE_GRANT_REQUIRES_START_MUTATION=NO
-JC245_MAY_WRITE_FUTURE_GRANT=YES
+JC245_MAY_WRITE_FUTURE_GRANT=NO_NOW__YES_ONLY_AFTER_ENT_T1_ACCEPTANCE_READ_GATE_AND_EXACT_ACCESSEFFECT_START
 JC245_REQUIRES_EXACT_ACCESSEFFECT_START=YES
+JC245_FUTURE_CONVERGENCE_AUTHORITY=ARCHITECTURALLY_ALLOWED_AFTER_ENT_T1_ACCEPTANCE_READ_GATE_AND_EXACT_ACCESSEFFECT_START
 RAW_CACHE_REEVALUATED_ON_ACCESS=YES
 SHARED_SCHEDULER=NO
 REDIS_SCHEDULER=NO
@@ -348,6 +355,7 @@ MIGRATION=NO
 REDIS_CHANGE=NO
 OBAN_ACTIVATION_JOB=NO
 JC245_246_CURRENT_STATUS=BLOCKED_PENDING_ENT_T1_AUTHORITY_ACCEPTANCE_AND_READ_GATE
+JC245_246_IMPLEMENTATION_STATUS=BLOCKED_NOW
 ENT_T1=PASS
 NEXT_ACTION=STOP_FOR_AUTHORITY_REVIEW
 RUNTIME_CODE_CHANGED=NO

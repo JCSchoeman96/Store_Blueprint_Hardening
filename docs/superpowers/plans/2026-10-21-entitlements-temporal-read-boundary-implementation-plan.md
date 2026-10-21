@@ -18,11 +18,7 @@ Design: `docs/superpowers/specs/2026-10-21-entitlements-temporal-read-boundary-d
 
 This is a future implementation plan, not execution authority. Per-LiveView nearest-boundary timers are the frozen design. Do not start implementation until the human accepts the design and plan as authority. JC-245/246 future grant convergence remains blocked until that acceptance and the read-side gate implementation.
 
-## Goal
-
-Make entitlement reads obey the half-open interval `[valid_from_at, valid_to_at)`, evaluate against explicit `as_of`, separate raw cached rows from materialized projections, and establish the read-side prerequisite for future exact-source JC-245 grants.
-
-## Frozen requirements
+## Global constraints
 
 - `valid_from_at <= as_of` and `as_of < valid_to_at` when an end exists.
 - Start is inclusive; end is exclusive.
@@ -41,6 +37,10 @@ Make entitlement reads obey the half-open interval `[valid_from_at, valid_to_at)
 - Keep Cachex raw-set contents and 60-second TTL unchanged; write invalidation remains post-commit and PubSub write-driven.
 - 100,000-view architecture is bounded to at most 100,000 timer entries and no process per timer. Capacity remains UNMEASURED; no throughput claim.
 - Future exact-source JC-245 behavior remains gated on this read contract and must use immutable AccessEffect interval evidence.
+
+## Review focus
+
+Review raw Cachex rows separately from materialized LiveView projections. Verify that each logical entitlement decision captures one explicit `as_of`, and that timer messages only refresh presentation from the held raw set. Check source identity, stale-target rules, and exact AccessEffect interval evidence before any later JC-245 implementation. No implementation starts until the human accepts this design and plan.
 
 ## Proposed file boundary after review
 
@@ -81,85 +81,48 @@ These four production files and the three focused test paths below are the compl
 
 If a server-side LiveView event uses an old assign as an authorization decision, stop and document the exact caller. Add only the narrowly required re-evaluation and regression test after review confirms it belongs in ENT-T1. Do not silently expand the file boundary.
 
-## Task 1: Specify the deterministic evaluator tests
+## Task 1: Migrate temporal evaluation atomically to explicit `as_of`
 
-**Files:** `test/store/entitlements/types/entitlement_set_test.exs`
+**Files:** `lib/store/entitlements/types/entitlement_set.ex`, `lib/store/entitlements/facade.ex`, `lib/store_web/live/entitlement_aware.ex`, `lib/store_web/live/subscriptions_live/index.ex`, `test/store/entitlements/types/entitlement_set_test.exs`, `test/store/entitlements/facade_test.exs`, `test/store_web/live/subscriptions_live_test.exs`.
 
-1. Create grants with fixed UTC microsecond starts and ends.
-2. Assert one microsecond before start is ineffective, exact start is effective, and one microsecond after start is effective.
-3. Assert one microsecond before end is effective, exact end is ineffective, and one microsecond after end is ineffective.
-4. Assert nil end is open-ended and nil start fails closed.
-5. Assert revoked and non-active grants remain ineffective within otherwise valid windows.
-6. Assert multiple overlapping current grants and a mixed set of current, future, ended, revoked, and open-ended grants.
-7. Assert an offset `DateTime` representing the same UTC instant produces the same result, with no rounding of microseconds.
-8. Run only the new focused test and confirm the current behavior fails for the intended missing start gate/API contract.
+1. [ ] Add fixed-instant tests for `[valid_from_at, valid_to_at)`: one microsecond before, exact equality, and one microsecond after both edges; nil start/end; revoked, inactive, expired; overlapping and mixed grants; equivalent UTC instants with different offsets; and deterministic repeated evaluation at one `as_of`.
+2. [ ] Run the focused evaluator and facade tests. Confirm RED for the missing-start predicate using the boundary tests. Record with a static signature/source check that implicit-time defaults still exist; do not claim those tests fail while explicit `as_of` arities remain accepted.
+3. [ ] Implement `effective_grants(set, as_of)` and `has_entitlement?(set, kind, scope_key, as_of)` with required explicit `as_of`. Preserve exact `:utc_datetime_usec` comparisons, inclusive start, exclusive end, nil-start fail-closed behavior, and active/unrevoked status filtering.
+4. [ ] While the old defaults still exist, migrate every production and test caller to the explicit API. Capture one UTC `as_of` per logical evaluation in `EntitlementAware` and `SubscriptionsLive.Index`; migrate facade tests and every `EntitlementSet` caller.
+5. [ ] After the call-site migration, remove hidden default-time arities in the same atomic task. Remove `scopes_by_kind` from the set and builder after confirming it has no consumers. Keep Cachex raw rows and TTL unchanged. Test reuse of the same raw set across future-start and end boundaries with no second Repo query.
+6. [ ] Search and xref all evaluator calls. Confirm no implicit-time caller or hidden wall-clock read remains, then rerun the focused evaluator, facade, and caller tests.
 
-**Acceptance:** the tests fully encode `[start, end)`, including exact equality at both edges, with no sleep and no DB dependency.
+**RED→GREEN verification:** fixed-time boundary tests prove the missing-start defect RED. The static signature/source check records the pre-migration defaults. Migrate all callers while the defaults still exist, then remove those defaults in the same atomic task. Focused evaluator, facade, and caller tests plus the no-implicit-caller search establish GREEN only after all steps complete. Do not claim an intermediate GREEN.
 
-**STOP:** if `DateTime` canonicalization cannot represent the accepted UTC microsecond precision without ambiguity, record the type decision before implementation.
+**STOP:** if one caller cannot supply a coherent explicit instant within the four approved production files, stop and return to authority review before widening scope.
 
-## Task 2: Implement explicit `as_of` temporal evaluation
-
-**Files:** `lib/store/entitlements/types/entitlement_set.ex`, focused evaluator tests.
-
-1. Change the evaluator APIs so temporal evaluation requires an explicit `as_of` value.
-2. Compare `DateTime` instants directly, preserving the exact `:utc_datetime_usec` boundary without rounding or truncation.
-3. Filter active, unrevoked grants with non-nil `valid_from_at <= as_of` and nil end or `as_of < valid_to_at`.
-4. Ensure `has_entitlement?` passes that same instant into grant filtering.
-5. Keep clock capture in callers outside the evaluator. Do not add a hidden default.
-6. Run focused evaluator tests and inspect all compile-time callers before proceeding.
-
-**Acceptance:** every in-repository temporal evaluator call supplies an explicit instant, and boundary tests pass.
-
-**STOP:** if a caller cannot supply one coherent instant for its logical operation, do not add per-grant clock reads. Identify and review that caller.
-
-## Task 3: Remove stale derived cache projection
-
-**Files:** `lib/store/entitlements/facade.ex`, `lib/store/entitlements/types/entitlement_set.ex`, focused facade tests.
-
-1. Reconfirm with `rg` that `scopes_by_kind` has no production or test consumer.
-2. Remove the field and its fetch-time projection builder.
-3. Keep cached grant rows raw and derive any visible list at one explicit `as_of`.
-4. Add tests that evaluate the same fetched set across both a future start and an expiry boundary at explicit instants, without a second Repo query.
-5. Preserve existing write invalidation and concurrent miss coalescing tests.
-
-**Acceptance:** no stale `scopes_by_kind` data remains in the set; repeated temporal projection from one set adds zero database queries.
-
-**STOP:** if a hidden/external consumer depends on the struct field or if repository telemetry shows a new query is needed to evaluate at a second instant.
-
-## Task 4: Review existing production consumers
-
-**Candidate files:** `lib/store_web/live/entitlement_aware.ex`, `lib/store_web/live/subscriptions_live/index.ex`.
-
-This task remains unauthorized until the human accepts the design and plan. It is included because the current call sites use implicit time and the subscriptions index stores a time-derived `entitlements` projection.
-
-1. Search all `effective_grants/2` and `has_entitlement?/4` call sites.
-2. Pass one explicit captured `as_of` to each logical evaluation, including `EntitlementAware` and `SubscriptionsLive.Index`.
-3. Verify server-side decisions re-evaluate at action time rather than trusting a prior LiveView assign.
-4. Keep write-driven PubSub invalidation as the existing refresh path.
-5. Leave start/end projection refresh to Task 5's selected timer; do not treat that presentation refresh as authorization authority.
-
-**Acceptance:** all current callers compile with explicit `as_of`; any authorization-sensitive event evaluates current grants at decision time.
-
-**STOP:** if a required caller cannot preserve one explicit `as_of` for a logical evaluation within the four approved runtime files. Return to authority review before expanding scope.
-
-## Task 5: Implement the frozen LiveView boundary timer
+## Task 2: Add local materialized-projection boundary refresh
 
 **Files:** `lib/store_web/live/entitlement_aware.ex`, `lib/store_web/live/subscriptions_live/index.ex`, `test/store_web/live/subscriptions_live_test.exs`.
 
-1. On connected view set assignment or refresh, best-effort cancel the previous timer, advance generation, and derive the current projection and `next_temporal_boundary/2` from the assigned raw set.
-2. If `next_temporal_boundary/2` or a carried boundary is `<= as_of`, immediately refresh in process from the held raw set, capture a fresh UTC `as_of`, and derive again. Never schedule delay zero or enter a zero-delay loop.
-3. Keep no timer if the helper returns nil. Otherwise arm one `:erlang.start_timer/3` one-shot timer. Its delivered message carries the runtime timer reference; include the current generation token in the payload.
-4. A chunk message captures a fresh UTC `as_of` and compares it with the stored target. If still future, re-arm locally without evaluating grants or authorization or fetching data. If scheduling/mailbox delay means the actual boundary has passed, take the actual-boundary refresh path in that handler.
-5. A matching actual-boundary message captures one explicit UTC `as_of`, reevaluates the held raw set, updates the `SubscriptionsLive.Index` materialized `entitlements` list, and schedules the next boundary.
-6. A stale reference or generation is ignored. Set replacement enters `REPLACED`, best-effort cancels, advances generation, and schedules from the new set. If a future boundary remains, transition to `SCHEDULED`; otherwise transition to `NO_TIMER`.
-7. Before-boundary chunk lifecycle is `SCHEDULED → REARM → SCHEDULED`; a delayed chunk whose target has passed uses `SCHEDULED → REFRESHING`; actual boundary lifecycle is `SCHEDULED → REFRESHING → SCHEDULED` or `NO_TIMER`; process termination is terminal and runtime cancels timers targeting the exited PID.
-8. Convert time remaining to integer milliseconds by rounding up. Add no randomized or policy delay. Millisecond rounding can schedule the wake less than one millisecond after the exact microsecond boundary; runtime delivery may be later. No authorization decision may rely on the timer.
-9. Assert boundary/chunk handlers perform zero Repo queries, Cachex fetches, PubSub broadcasts, Redis operations, Oban work, or durable mutations.
+1. [ ] Add controllable timer/message tests for no relevant boundary, exact start/end refresh, set replacement, timer cancellation, stale timer reference/generation, and local one-day chunk re-arm. Do not use sleeps.
+2. [ ] Run the focused LiveView tests and confirm RED for missing boundary refresh.
+3. [ ] On connected view assignment or set refresh, best-effort cancel the old timer, advance generation, and derive the current projection and next future boundary from the held raw set with one explicit UTC `as_of`.
+4. [ ] If a derived or carried boundary is `<= as_of`, refresh the projection immediately in process, capture a fresh UTC `as_of`, and derive again. Never schedule delay zero or enter a zero-delay loop.
+5. [ ] Keep `NO_TIMER` when no relevant future boundary can change the projection. Otherwise schedule one `:erlang.start_timer/3` one-shot timer with ref and generation. Use `MAX_SCHEDULE_CHUNK_MS=86400000`; do not add jitter or adaptive runtime behavior.
+6. [ ] A pre-boundary chunk expiry captures fresh UTC `as_of` and compares only with the stored target. If still future, re-arm locally without grant/authorization evaluation or DB, Cachex, PubSub, Redis, Oban, or durable side effects. At the true boundary, evaluate the held set at one explicit `as_of`, refresh the materialized projection, and schedule the next boundary.
+7. [ ] Ignore stale ref/generation messages. On set replacement, enter `REPLACED`, cancel best effort, increment generation, and schedule from the new set. Process termination is terminal; timers target the LiveView PID.
+8. [ ] Round remaining microseconds up to integer milliseconds. This may wake less than one millisecond after the exact boundary; no policy or randomized delay is added. Runtime or mailbox delay may make the rendered UI temporarily stale. Authorization independently evaluates raw grants at a fresh explicit `as_of` and never depends on timer delivery.
+9. [ ] Assert timer handlers perform zero Repo queries, Cachex fetches, PubSub broadcasts, Redis operations, Oban work, or durable mutations.
 
-Use controllable timer/message tests for start and end boundaries, timer cancellation/replacement, stale reference/generation, no-boundary behavior, and long-horizon local re-arm. Do not use sleeps.
+**RED→GREEN verification:** controllable timer tests fail before the boundary handler exists and pass after it handles start/end transitions, replacement, stale messages, and chunk re-arm. Confirm at most one active timer per relevant connected view, no timer otherwise, and zero I/O or durable side effects.
 
-**Acceptance:** at most one active timer per relevant connected view; zero timers otherwise; start/end projection transitions occur from the held raw set; stale messages have no effect; pre-boundary re-arm causes no grant/authorization evaluation; no timer handler fetch or broadcast; server authorization still rechecks independently. 100,000-view timer, mailbox, and rendering capacity remains UNMEASURED.
+## Task 3: Audit the completed migration and runtime bounds
+
+This is a verification task after Tasks 1 and 2, not a place to defer caller migration.
+
+1. [ ] Re-run static search/xref for every `effective_grants` and `has_entitlement?` call and confirm explicit `as_of` at all production and test sites.
+2. [ ] Confirm Cachex stores raw rows with the existing 60-second TTL and only post-commit write invalidation changes its contents.
+3. [ ] Confirm the four production files and three test paths are the only changed runtime/test paths. Do not edit `lib/store/entitlements/cache.ex`.
+4. [ ] Verify `MAX_SCHEDULE_CHUNK_MS=86400000` is the fixed application re-arm cap, and verify `:erlang.start_timer/3` API and cancellation semantics against pinned OTP 28.3. Do not claim a numeric OTP maximum or add adaptive behavior.
+5. [ ] Record the Performance & Scaling Review and Runtime Resource Safety Review. At 100,000 relevant views, retain the architecture pass with constraints, but mark timer, mailbox, render capacity and throughput UNMEASURED. A coincident cohort may cluster expiration and re-arm work; boundary handling adds no DB, Cachex, Redis, Oban, or PubSub amplification.
+
+**Acceptance:** audit evidence confirms all caller migrations, scope limits, and timer constraints. No capacity or throughput claim is made without at least two equivalent bounded repetitions.
 
 ## Required validation after later implementation approval
 
@@ -216,8 +179,9 @@ BOUNDARY_TIMER_DB_CALLS=0
 BOUNDARY_TIMER_CACHE_FETCHES=0
 BOUNDARY_TIMER_PUBSUB_BROADCASTS=0
 FUTURE_GRANT_REQUIRES_START_MUTATION=NO
-JC245_MAY_WRITE_FUTURE_GRANT=YES
+JC245_MAY_WRITE_FUTURE_GRANT=NO_NOW__YES_ONLY_AFTER_ENT_T1_ACCEPTANCE_READ_GATE_AND_EXACT_ACCESSEFFECT_START
 JC245_REQUIRES_EXACT_ACCESSEFFECT_START=YES
+JC245_FUTURE_CONVERGENCE_AUTHORITY=ARCHITECTURALLY_ALLOWED_AFTER_ENT_T1_ACCEPTANCE_READ_GATE_AND_EXACT_ACCESSEFFECT_START
 RAW_CACHE_REEVALUATED_ON_ACCESS=YES
 SHARED_SCHEDULER=NO
 REDIS_SCHEDULER=NO
@@ -232,6 +196,7 @@ MIGRATION=NO
 REDIS_CHANGE=NO
 OBAN_ACTIVATION_JOB=NO
 JC245_246_CURRENT_STATUS=BLOCKED_PENDING_ENT_T1_AUTHORITY_ACCEPTANCE_AND_READ_GATE
+JC245_246_IMPLEMENTATION_STATUS=BLOCKED_NOW
 ENT_T1=PASS
 NEXT_ACTION=STOP_FOR_AUTHORITY_REVIEW
 RUNTIME_CODE_CHANGED=NO
