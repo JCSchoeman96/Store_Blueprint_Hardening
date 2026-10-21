@@ -195,6 +195,8 @@ Use current code, tests, accepted changes on `main`, and relevant technical docu
   - caching (ETS/Redis), TTL, invalidation, stampede protection
   - Oban uniqueness/idempotency
   - telemetry/logging
+- Runtime-affecting changes MUST include a “Runtime Resource Safety Review” covering relevant memory, GC, mailbox, resource cleanup, and post-load convergence concerns. Use `NOT_APPLICABLE` with a short reason for unrelated or documentation-only work.
+- Do not claim runtime safety, convergence, or capacity when a relevant evidence dimension is `UNMEASURED`. A single run is diagnostic; convergence/no-accumulation claims require at least two equivalent bounded repetitions.
 - References:
   - `docs/governance/performance_scaling.md`
   - `docs/phases/phase_29_performance_architecture_optimizations.md`

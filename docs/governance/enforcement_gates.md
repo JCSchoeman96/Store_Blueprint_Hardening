@@ -12,6 +12,21 @@ mix check MUST include:
   2) moduledoc gate
   3) docs-first phase notes gate
 
+## Runtime resource-safety review gate (review-time)
+
+This is a human review requirement, not a mechanical `mix check` gate. Do not claim that CI measures GC, mailbox depth, runtime-resource cleanup, or post-load convergence unless an existing job actually collects that evidence.
+
+For changes that affect runtime process state, queues, resource allocation or cleanup, or a performance-sensitive path, require a Runtime Resource Safety Review. The review covers the relevant PERF-MEM-001, PERF-GC-001, PERF-MBOX-001, and PERF-RESOURCE-001 invariants from Phase 29. Use existing performance-smoke, chaos, or Phase 30 evidence where it fits. Do not add a collector or workload as part of this review gate.
+
+Record one result:
+
+- `PASS`: the review supports the claims made, with relevant measured evidence where a safety, convergence, or capacity claim is made. State bounds and rationale are workload- and process-class-specific.
+- `FAIL`: evidence shows a relevant bound violation, unbounded accumulation, or missing resource ownership or cleanup path.
+- `INCONCLUSIVE`: the evidence is invalid or insufficient for the requested claim. A relevant dimension marked `UNMEASURED` prevents a positive claim for that dimension; a single run cannot certify convergence.
+- `NOT_APPLICABLE`: the change has no relevant runtime-state or resource impact. Include a short reason. Documentation-only and otherwise unrelated changes may use this result.
+
+This gate does not add a scanner, job, or test requirement to `mix check`. See [Phase 29](../phases/phase_29_performance_architecture_optimizations.md) for the detailed evidence lifecycle and convergence rules.
+
 ## Migration ordering governance note (MUST)
 - Migration execution order is filename timestamp order. Dependency tables must be created before dependents that reference them.
 - Migrations must remain deterministic: avoid conditional branching on `table_exists?` or environment state for core schema shape.

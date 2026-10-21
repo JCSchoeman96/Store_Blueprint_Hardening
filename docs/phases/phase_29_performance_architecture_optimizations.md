@@ -288,6 +288,78 @@ Emit telemetry for:
 - Track “queries per request” for hot paths.
 - Add alerts for p95/p99 breaches.
 
+### 10.3 Runtime failure classification
+
+Classify resource evidence before calling a result a leak, a capacity failure, or a pass:
+
+- **Transient peak pressure:** memory, queues, process counts, or resource use rises during bounded load and returns to the accepted scenario envelope during cooldown.
+- **Retained but bounded state:** the BEAM or an allocator retains memory after load, while the relevant live state, ownership, and cardinality remain bounded across equivalent runs. Record allocator-retained memory separately from live process, binary, ETS, queue, and external-resource state when those dimensions are available.
+- **Allocation or GC pressure:** allocation and collection activity harms latency or throughput even when memory returns to its envelope. Review the affected workload and process class; GC activity alone does not prove a leak.
+- **Mailbox or queue pressure:** messages or jobs arrive faster than the relevant consumer drains them, exceed a justified bound, or remain stale after the workload ends.
+- **Persistent state growth or resource leak:** process state, process count, binary or ETS state, atom-table growth, timers, monitors, handlers, ports, NIF-owned resources, or another tracked resource accumulates without a bounded owner and cleanup path.
+- **Inconclusive evidence:** the run cannot distinguish these cases because instrumentation is missing, the scenario changed, a node was lost, or the observation window was insufficient.
+
+RSS is supporting operating-system evidence. RSS growth or failure to return to its prior value does not by itself establish a BEAM leak.
+
+### 10.4 Runtime resource-safety invariants
+
+- **PERF-MEM-001 — bounded memory state:** For each relevant workload and node, identify the memory dimensions needed to explain growth, including process state, binaries, ETS, queues, and external resources when applicable. Separate live state from allocator-retained memory. Define a scenario-specific accepted envelope and investigate persistent growth across equivalent runs. Do not use RSS alone as the leak criterion.
+- **PERF-GC-001 — workload-specific GC pressure:** Evaluate allocation and garbage-collection cost for the affected workload and process class. State the bound and rationale for that class. A global GC count, frequency, or duration threshold is not valid for every process class. Distinguish collection churn from retained state and report unavailable GC evidence as UNMEASURED.
+- **PERF-MBOX-001 — bounded mailbox backlog:** Identify message-producing and consuming processes, the workload-specific backlog bound, the reason for that bound, and the expected drain behavior. Consider message age or queueing time where available. Do not apply one mailbox-depth limit to every process class.
+- **PERF-RESOURCE-001 — owned resource lifecycle:** Every process or transient resource introduced by a relevant change has a clear owner, bounded lifetime or cardinality, and cleanup path. Review process termination, atom creation, ETS ownership, binary retention, timers, monitors, telemetry handlers, ports, NIF or external resources, and applicable Cachex, Redis, PubSub, or Oban state under their existing authority.
+
+These invariants do not set universal numeric thresholds. Each scenario must define its workload, process classes, accepted bounds, and rationale before evidence is collected.
+
+### 10.5 Runtime evidence and convergence protocol
+
+Use this evidence lifecycle for a runtime-safety or convergence claim:
+
+```text
+UNMEASURED
+    ↓
+BASELINE_ESTABLISHED
+    ↓
+LOAD_ACTIVE
+    ↓
+COOLDOWN ── repeat guard ──→ BASELINE_ESTABLISHED
+    ├──→ CONVERGED
+    ├──→ NOT_CONVERGED
+    └──→ INCONCLUSIVE
+
+Terminal states: CONVERGED, NOT_CONVERGED, INCONCLUSIVE
+Outgoing transitions from terminal states: none
+```
+
+- **UNMEASURED → BASELINE_ESTABLISHED:** Fix the scenario, build identity, workload and process-class mix, node topology and identities, sampling dimensions, baseline window, scenario-specific bounds, and required repetition count. The required count must be at least two for a convergence/no-accumulation claim. Do not change the workload definition during the run.
+- **BASELINE_ESTABLISHED → LOAD_ACTIVE:** Start the bounded workload and retain time-series and peak evidence for the dimensions selected by the scenario.
+- **LOAD_ACTIVE → COOLDOWN:** Complete the workload normally, retain peak evidence, and observe a predeclared cooldown window long enough to assess the relevant drain and recovery behavior. There is no universal cooldown duration.
+- **COOLDOWN → BASELINE_ESTABLISHED:** Repeat guard: convergence certification was requested, completed valid comparable repetitions are below the required count, and the scenario, workload, build, and topology remain equivalent. Side effects: retain the completed run's evidence, increment the completed comparable repetition count, and begin the next bounded repetition with a new baseline and run-local evidence.
+- **COOLDOWN → CONVERGED:** At least two valid equivalent bounded repetitions completed; all relevant measured dimensions satisfy their accepted envelopes; and no state accumulates between repetitions. One run can diagnose a problem but cannot certify non-accumulation.
+- **COOLDOWN → NOT_CONVERGED:** A relevant bound is violated or unexplained resource state persists or accumulates across equivalent runs.
+- **Any non-terminal state → INCONCLUSIVE:** Instrumentation needed for the claim is unavailable, a run is invalid or incomparable, a node is lost, or evidence does not cover the predeclared window. Mark unavailable dimensions UNMEASURED rather than estimating them.
+
+Terminal outcome effects:
+
+- **CONVERGED:** A positive convergence or no-accumulation claim is permitted only for the covered dimensions, scenario, build, and topology.
+- **NOT_CONVERGED:** A positive convergence or no-accumulation claim is blocked.
+- **INCONCLUSIVE:** A positive runtime-safety, convergence, or capacity claim is blocked for dimensions the evidence does not establish.
+
+UNMEASURED is an evidence state, not a pass. A safety, convergence, or capacity claim cannot pass when a dimension relevant to that claim is UNMEASURED. Unrelated changes do not need runtime measurements; their review may state that runtime evidence is not applicable and give a reason.
+
+For a multi-node claim, preserve node identity and report relevant evidence per node. Aggregate totals can hide a single node that is growing or failing to drain.
+
+Use existing performance-smoke, chaos, or Phase 30 tooling where it fits the scenario. This contract does not require a new collector or test harness.
+
+This protocol is a review and evidence contract. It does not add time-sensitive performance assertions to ordinary CI runs.
+
+### 10.6 High-concurrency and flash-sale resource review
+
+Treat a 100k-user flash-sale review as an architecture review unless a separate measured-capacity gate has passed. A headline connection count is not a workload definition. State the active request or event rate, request mix, burst shape, process classes, node topology, and bounded queueing assumptions needed to review the design.
+
+Review where waiting state lives, who owns it, how it is bounded, what backpressure applies, and how it is released after demand falls. Include memory, GC, mailbox, and resource-lifecycle dimensions that matter to the scenario. Mark missing instrumentation UNMEASURED. Do not make a safety or capacity claim from a single run or from aggregate RSS alone.
+
+This review does not replace the measured-capacity requirements or change the load scenarios and acceptance thresholds in §11 or the PERF-006 gate. Use the existing performance-smoke, chaos, and Phase 30 evidence paths; do not create a competing performance framework.
+
 ---
 
 ## 11) Load testing & validation plan
