@@ -42,7 +42,22 @@ Avoid embedding user PII in keys.
 ## Performance & Scaling Review (MANDATORY for new actions)
 For every new domain action, answer:
 - Data layer (hot/warm/cold)?
-- Safe under 100k concurrent users?
+- What does the 100k-user architecture review require, and is separate measured-capacity evidence needed?
 - DB indexes required?
 - Redis representation needed?
 - Can this be streamed instead of loaded?
+
+## Runtime resource safety review
+
+For runtime-affecting or hot-path changes, review the resource lifecycle alongside query, cache, and scaling behavior. The detailed invariants and evidence protocol are defined in [Phase 29](../phases/phase_29_performance_architecture_optimizations.md).
+
+- Process and task lifetime, orphaning, and termination behavior.
+- Process heap/state and binary retention, ETS ownership and cardinality, and atom growth.
+- Mailbox or queue backlog, workload-specific bounds, backpressure, and drain behavior.
+- Allocation and GC pressure for the affected process classes.
+- Cachex, Redis, and Oban backlog, expiry, and cleanup under their existing policies.
+- LiveView and socket termination, PubSub subscriptions, timers, monitors, and telemetry-handler cleanup.
+- Ports, NIFs, and other external-resource ownership and release.
+- Post-load cooldown behavior and per-node evidence for multi-node claims.
+
+Do not use RSS alone to decide whether BEAM resources converged. If a relevant dimension is not measured, record it as UNMEASURED and do not claim runtime safety, convergence, or capacity for that dimension. Unrelated or documentation-only changes may mark this review not applicable with a short reason.

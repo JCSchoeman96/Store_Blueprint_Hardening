@@ -1,6 +1,20 @@
 # TOON Prompts — Store Blueprint (Single-Tenant Hardening)
 One task per prompt. No mixed responsibilities.
 
+## Runtime resource-safety note contract
+
+For prompts that affect runtime process state, hot paths, queues, caches, or resource lifecycles, include these conditional fields in the Note:
+
+- `MEMORY`: relevant state dimensions, scenario-specific bounds, and any missing evidence marked `UNMEASURED`.
+- `GC`: affected process classes, workload-specific evidence or bound, and `UNMEASURED` where instrumentation is unavailable.
+- `MAILBOX`: producer/consumer, backlog bound, backpressure, and expected drain behavior.
+- `RESOURCE CLEANUP`: owner and cleanup path for processes, ETS, binaries, timers, monitors, PubSub, handlers, ports, NIFs, and applicable queues.
+- `POST-LOAD CONVERGENCE`: baseline and cooldown evidence when a convergence claim is needed; use at least two equivalent bounded repetitions to certify no accumulation.
+
+For documentation-only or unrelated prompts, write `RUNTIME_RESOURCE_REVIEW: NOT_APPLICABLE` and give a short reason. Do not invent measurements. A relevant `UNMEASURED` dimension blocks a positive safety, convergence, or capacity claim, but does not make runtime evidence mandatory for unrelated work. Use existing performance-smoke, chaos, or Phase 30 tooling when evidence is needed. A 100k-user review remains an architecture review unless the separate measured-capacity gate passes.
+
+Keep the existing performance Note fields explicit: indexes, cache, TTL, Redis structure, invalidation, PubSub, and Oban. Write `none` when a field does not apply. Do not create a second performance architecture.
+
 ---
 
 ## Scaffolding Prompt (Whole project)
