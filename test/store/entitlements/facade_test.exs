@@ -114,7 +114,47 @@ defmodule Store.Entitlements.FacadeTest do
     assert {:ok, second_set} = Facade.entitlement_set_for_user(customer)
 
     assert first_set.fetched_at == second_set.fetched_at
-    assert EntitlementSet.has_entitlement?(first_set, :membership_access, "membership:cached")
+
+    grant = Enum.find(first_set.grants, &(&1.scope_key == "membership:cached"))
+    before_start = DateTime.add(grant.valid_from_at, -1, :microsecond)
+    at_start = grant.valid_from_at
+    at_end = grant.valid_to_at
+    telemetry_ref = make_ref()
+    parent = self()
+
+    :telemetry.attach_many(
+      "entitlement-read-time-test-#{inspect(telemetry_ref)}",
+      [[:store, :repo, :query]],
+      fn _event, _measurements, metadata, _config ->
+        if is_binary(metadata.query) and String.contains?(metadata.query, "entitlement_grants") do
+          send(parent, {:entitlement_query, telemetry_ref})
+        end
+      end,
+      nil
+    )
+
+    try do
+      refute EntitlementSet.has_entitlement?(
+               first_set,
+               :membership_access,
+               "membership:cached",
+               before_start
+             )
+
+      assert EntitlementSet.has_entitlement?(
+               first_set,
+               :membership_access,
+               "membership:cached",
+               at_start
+             )
+
+      assert EntitlementSet.effective_grants(first_set, before_start) == []
+      assert EntitlementSet.effective_grants(first_set, at_start) == [grant]
+      assert EntitlementSet.effective_grants(first_set, at_end) == []
+      assert drain_query_messages(telemetry_ref, 0) == 0
+    after
+      :telemetry.detach("entitlement-read-time-test-#{inspect(telemetry_ref)}")
+    end
 
     customer_id = customer.id
 
@@ -127,40 +167,14 @@ defmodule Store.Entitlements.FacadeTest do
 
     assert {:ok, refreshed_set} = Facade.entitlement_set_for_user(customer)
     refute refreshed_set.fetched_at == first_set.fetched_at
-    refute EntitlementSet.has_entitlement?(refreshed_set, :membership_access, "membership:cached")
-
-    short_lived_subscription =
-      subscription
-      |> Ash.Changeset.for_update(
-        :extend_period,
-        %{
-          current_period_end_at:
-            DateTime.utc_now() |> DateTime.add(1, :second) |> DateTime.truncate(:microsecond)
-        },
-        context: %{system?: true}
-      )
-      |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
-
-    assert {:ok, _grant} =
-             Facade.issue_subscription_entitlement_for_system(short_lived_subscription, plan)
-
-    assert {:ok, short_lived_set} = Facade.entitlement_set_for_user(customer)
-
-    assert EntitlementSet.has_entitlement?(
-             short_lived_set,
-             :membership_access,
-             "membership:cached"
-           )
-
-    Process.sleep(1_100)
+    refreshed_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     refute EntitlementSet.has_entitlement?(
-             short_lived_set,
+             refreshed_set,
              :membership_access,
-             "membership:cached"
+             "membership:cached",
+             refreshed_as_of
            )
-
-    assert EntitlementSet.effective_grants(short_lived_set) == []
   end
 
   test "entitlement_set_for_user coalesces concurrent cache misses" do
@@ -244,11 +258,13 @@ defmodule Store.Entitlements.FacadeTest do
 
     assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
     assert {:ok, cached_set} = Facade.entitlement_set_for_user(customer)
+    cached_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     assert EntitlementSet.has_entitlement?(
              cached_set,
              :membership_access,
-             "membership:worker-revoke"
+             "membership:worker-revoke",
+             cached_as_of
            )
 
     Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(customer.id))
@@ -271,7 +287,8 @@ defmodule Store.Entitlements.FacadeTest do
     assert_receive {:entitlements_invalidated, ^customer_id, "grace_expired", _occurred_at}
 
     assert {:ok, refreshed_set} = Facade.entitlement_set_for_user(customer)
-    assert EntitlementSet.effective_grants(refreshed_set) == []
+    refreshed_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    assert EntitlementSet.effective_grants(refreshed_set, refreshed_as_of) == []
   end
 
   defp fetch_entitlement!(subscription_id) do
