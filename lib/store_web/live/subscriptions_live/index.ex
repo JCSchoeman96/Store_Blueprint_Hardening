@@ -261,8 +261,14 @@ defmodule StoreWeb.SubscriptionsLive.Index do
 
   defp cancel_boundary_timer(socket) do
     case socket.assigns[:entitlement_boundary_timer_ref] do
-      timer_ref when is_reference(timer_ref) -> Process.cancel_timer(timer_ref)
-      _ -> :ok
+      timer_ref when is_reference(timer_ref) ->
+        case Process.cancel_timer(timer_ref) do
+          remaining_ms when is_integer(remaining_ms) -> :ok
+          false -> :ok
+        end
+
+      _ ->
+        :ok
     end
 
     socket
