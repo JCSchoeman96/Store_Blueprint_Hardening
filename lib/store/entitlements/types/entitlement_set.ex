@@ -33,18 +33,15 @@ defmodule Store.Entitlements.Types.EntitlementSet do
   @spec next_temporal_boundary(t(), DateTime.t()) :: DateTime.t() | nil
   def next_temporal_boundary(%__MODULE__{} = set, as_of) when is_struct(as_of, DateTime) do
     Enum.reduce(set.grants, nil, fn grant, earliest ->
-      case next_boundary_for(grant, as_of) do
-        %DateTime{} = boundary ->
-          if is_nil(earliest) or DateTime.compare(boundary, earliest) == :lt do
-            boundary
-          else
-            earliest
-          end
-
-        nil ->
-          earliest
-      end
+      earlier_boundary(earliest, next_boundary_for(grant, as_of))
     end)
+  end
+
+  defp earlier_boundary(nil, candidate), do: candidate
+  defp earlier_boundary(current, nil), do: current
+
+  defp earlier_boundary(current, candidate) do
+    if DateTime.compare(candidate, current) == :lt, do: candidate, else: current
   end
 
   defp grant_effective?(%EntitlementGrant{} = grant, as_of) do

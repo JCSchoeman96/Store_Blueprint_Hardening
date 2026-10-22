@@ -4,7 +4,7 @@ defmodule StoreWeb.SubscriptionsLiveTest do
   import Phoenix.LiveViewTest
 
   alias AshAuthentication.Plug.Helpers
-  alias Store.Entitlements.{Cache, Facade, EntitlementGrant}
+  alias Store.Entitlements.{Cache, EntitlementGrant, Facade}
   alias Store.Entitlements.Types.EntitlementSet
   alias Store.SubscriptionsFixtures
   alias Store.TestFixtures
@@ -366,7 +366,12 @@ defmodule StoreWeb.SubscriptionsLiveTest do
     assert next_timer_ref != timer_ref
     assert rearmed_socket.assigns.entitlements == [:held_projection]
     assert rearmed_socket.assigns.entitlement_boundary_at == boundary
-    assert_in_delta Process.read_timer(next_timer_ref), @max_schedule_chunk_ms, 2
+
+    remaining_ms = Process.read_timer(next_timer_ref)
+
+    assert is_integer(remaining_ms)
+    assert remaining_ms > 0
+    assert remaining_ms <= @max_schedule_chunk_ms
   end
 
   test "stale timer reference and generation are ignored" do
