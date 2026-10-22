@@ -66,13 +66,17 @@ defmodule StoreWeb.Live.EntitlementAware do
   def handle_invalidation(_socket, _message, _opts), do: :ignored
 
   defp maybe_redirect_after_invalidation(socket, opts) do
+    as_of = utc_now()
+
     with {kind, scope_key} <- Keyword.get(opts, :required_entitlement),
          redirect_to when is_binary(redirect_to) <- Keyword.get(opts, :redirect_to),
          %{entitlement_set: entitlement_set} when not is_nil(entitlement_set) <- socket.assigns,
-         false <- EntitlementSet.has_entitlement?(entitlement_set, kind, scope_key) do
+         false <- EntitlementSet.has_entitlement?(entitlement_set, kind, scope_key, as_of) do
       push_navigate(socket, to: redirect_to)
     else
       _ -> socket
     end
   end
+
+  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 end

@@ -11,6 +11,8 @@ defmodule StoreWeb.SubscriptionsLive.Index do
   alias StoreWeb.Live.EntitlementAware
   alias StoreWeb.Params.Subscriptions.UserSubscriptionIndexParams
 
+  @max_schedule_chunk_ms 86_400_000
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -20,7 +22,10 @@ defmodule StoreWeb.SubscriptionsLive.Index do
      |> assign(
        subscriptions: [],
        entitlements: [],
-       query_error: nil
+       query_error: nil,
+       entitlement_boundary_timer_ref: nil,
+       entitlement_boundary_generation: 0,
+       entitlement_boundary_at: nil
      )}
   end
 
@@ -32,29 +37,45 @@ defmodule StoreWeb.SubscriptionsLive.Index do
          {:ok, subscriptions} <- SubscriptionsFacade.list_subscriptions_for_user(actor, sub_query),
          {:ok, entitlement_set} <- EntitlementsFacade.entitlement_set_for_user(actor) do
       {:noreply,
-       assign(socket,
-         subscriptions: subscriptions,
-         entitlement_set: entitlement_set,
-         entitlements: EntitlementSet.effective_grants(entitlement_set),
-         query_error: nil
-       )}
+       socket
+       |> assign(:subscriptions, subscriptions)
+       |> assign(:query_error, nil)
+       |> replace_entitlement_projection(entitlement_set, utc_now())}
     else
       {:error, error} ->
-        {:noreply, assign(socket, subscriptions: [], entitlements: [], query_error: error)}
+        {:noreply,
+         socket
+         |> assign(:subscriptions, [])
+         |> assign(:query_error, error)
+         |> replace_entitlement_projection(nil, utc_now())}
     end
   end
 
   @impl true
+  def handle_info(
+        {:timeout, timer_ref, {:entitlement_boundary, generation, boundary}},
+        socket
+      )
+      when is_reference(timer_ref) and is_integer(generation) and is_struct(boundary, DateTime) do
+    if timer_ref == socket.assigns[:entitlement_boundary_timer_ref] and
+         generation == socket.assigns[:entitlement_boundary_generation] do
+      as_of = utc_now()
+
+      if DateTime.compare(boundary, as_of) == :gt do
+        {:noreply, rearm_boundary_timer(socket, boundary, generation, as_of)}
+      else
+        {:noreply, refresh_at_boundary(socket, generation, as_of)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info(message, socket) do
     case EntitlementAware.handle_invalidation(socket, message) do
       {:handled, socket} ->
-        entitlements =
-          case socket.assigns[:entitlement_set] do
-            nil -> []
-            entitlement_set -> EntitlementSet.effective_grants(entitlement_set)
-          end
-
-        {:noreply, assign(socket, :entitlements, entitlements)}
+        {:noreply,
+         replace_entitlement_projection(socket, socket.assigns[:entitlement_set], utc_now())}
 
       :ignored ->
         {:noreply, socket}
@@ -142,4 +163,112 @@ defmodule StoreWeb.SubscriptionsLive.Index do
 
   defp format_datetime(%DateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%d %H:%M:%S UTC")
   defp format_datetime(_), do: "-"
+
+  defp replace_entitlement_projection(socket, %EntitlementSet{} = entitlement_set, as_of) do
+    socket = cancel_boundary_timer(socket)
+    generation = socket.assigns[:entitlement_boundary_generation] + 1
+
+    socket =
+      socket
+      |> assign(:entitlement_set, entitlement_set)
+      |> assign(:entitlements, EntitlementSet.effective_grants(entitlement_set, as_of))
+      |> assign(:entitlement_boundary_generation, generation)
+      |> assign(:entitlement_boundary_timer_ref, nil)
+      |> assign(:entitlement_boundary_at, nil)
+
+    schedule_next_boundary(socket, entitlement_set, generation, as_of)
+  end
+
+  defp replace_entitlement_projection(socket, nil, _as_of) do
+    socket = cancel_boundary_timer(socket)
+    generation = socket.assigns[:entitlement_boundary_generation] + 1
+
+    socket
+    |> assign(:entitlement_set, nil)
+    |> assign(:entitlements, [])
+    |> assign(:entitlement_boundary_generation, generation)
+    |> assign(:entitlement_boundary_timer_ref, nil)
+    |> assign(:entitlement_boundary_at, nil)
+  end
+
+  defp refresh_at_boundary(socket, generation, as_of) do
+    case socket.assigns[:entitlement_set] do
+      %EntitlementSet{} = entitlement_set ->
+        socket
+        |> assign(:entitlement_boundary_timer_ref, nil)
+        |> assign(:entitlement_boundary_at, nil)
+        |> assign(:entitlements, EntitlementSet.effective_grants(entitlement_set, as_of))
+        |> schedule_next_boundary(entitlement_set, generation, as_of)
+
+      _ ->
+        socket
+        |> assign(:entitlement_boundary_timer_ref, nil)
+        |> assign(:entitlement_boundary_at, nil)
+    end
+  end
+
+  defp schedule_next_boundary(socket, entitlement_set, generation, as_of) do
+    case EntitlementSet.next_temporal_boundary(entitlement_set, as_of) do
+      nil ->
+        socket
+        |> assign(:entitlement_boundary_timer_ref, nil)
+        |> assign(:entitlement_boundary_at, nil)
+
+      %DateTime{} = boundary ->
+        scheduled_as_of = utc_now()
+
+        if DateTime.compare(boundary, scheduled_as_of) == :gt do
+          schedule_boundary_timer(socket, boundary, generation, scheduled_as_of)
+        else
+          socket
+          |> assign(
+            :entitlements,
+            EntitlementSet.effective_grants(entitlement_set, scheduled_as_of)
+          )
+          |> schedule_next_boundary(entitlement_set, generation, scheduled_as_of)
+        end
+    end
+  end
+
+  defp schedule_boundary_timer(socket, boundary, generation, as_of) do
+    if Phoenix.LiveView.connected?(socket) do
+      remaining_ms =
+        boundary
+        |> DateTime.diff(as_of, :microsecond)
+        |> then(&div(&1 + 999, 1_000))
+        |> min(@max_schedule_chunk_ms)
+
+      timer_ref =
+        :erlang.start_timer(
+          remaining_ms,
+          self(),
+          {:entitlement_boundary, generation, boundary}
+        )
+
+      socket
+      |> assign(:entitlement_boundary_timer_ref, timer_ref)
+      |> assign(:entitlement_boundary_at, boundary)
+    else
+      socket
+      |> assign(:entitlement_boundary_timer_ref, nil)
+      |> assign(:entitlement_boundary_at, nil)
+    end
+  end
+
+  defp rearm_boundary_timer(socket, boundary, generation, as_of) do
+    schedule_boundary_timer(socket, boundary, generation, as_of)
+  end
+
+  defp cancel_boundary_timer(socket) do
+    case socket.assigns[:entitlement_boundary_timer_ref] do
+      timer_ref when is_reference(timer_ref) -> Process.cancel_timer(timer_ref)
+      _ -> :ok
+    end
+
+    socket
+    |> assign(:entitlement_boundary_timer_ref, nil)
+    |> assign(:entitlement_boundary_at, nil)
+  end
+
+  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 end

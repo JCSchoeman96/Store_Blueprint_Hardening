@@ -380,24 +380,9 @@ defmodule Store.Entitlements.Facade do
     %EntitlementSet{
       user_id: user_id,
       grants: grants,
-      scopes_by_kind: scopes_by_kind(grants, fetched_at),
       fetched_at: fetched_at,
       expires_at: DateTime.add(fetched_at, div(EntitlementsCache.ttl_ms(), 1_000), :second)
     }
-  end
-
-  defp scopes_by_kind(grants, now) do
-    %EntitlementSet{
-      user_id: "__build__",
-      grants: grants,
-      scopes_by_kind: %{},
-      fetched_at: now,
-      expires_at: now
-    }
-    |> EntitlementSet.effective_grants(now)
-    |> Enum.reduce(%{}, fn grant, acc ->
-      Map.update(acc, grant.kind, MapSet.new([grant.scope_key]), &MapSet.put(&1, grant.scope_key))
-    end)
   end
 
   defp normalize_entitlement_set_result({:ok, %EntitlementSet{} = set}), do: {:ok, set}
