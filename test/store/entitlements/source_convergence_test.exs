@@ -64,6 +64,8 @@ defmodule Store.Entitlements.SourceConvergenceTest do
   alias Store.Entitlements.Facade
   alias Store.Entitlements.Inputs.SubscriptionSourceConvergenceInput
   alias Store.Entitlements.Types.SourceConvergenceResult
+  alias Store.Repo
+  alias Store.Support.Errors.Error
   alias Store.SubscriptionsFixtures
 
   @system_context %{system?: true}
@@ -85,6 +87,28 @@ defmodule Store.Entitlements.SourceConvergenceTest do
     assert [target] = active_grants!(source.subscription_id)
     assert target.id == result.target_grant_id
     assert_target_matches_input(target, input)
+  end
+
+  test "rejects a manually corrupted reason before querying or mutating grants" do
+    assert_malformed_input_rejected(:reason, fn valid_input -> %{valid_input | reason: ""} end)
+  end
+
+  test "rejects a manually corrupted AccessEffect ID before querying or mutating grants" do
+    assert_malformed_input_rejected(:access_effect_id, fn valid_input ->
+      %{valid_input | access_effect_id: "not-a-uuid"}
+    end)
+  end
+
+  test "rejects a manually corrupted source version before querying or mutating grants" do
+    assert_malformed_input_rejected(:source_version, fn valid_input ->
+      %{valid_input | source_version: 0}
+    end)
+  end
+
+  test "rejects a manually corrupted target fingerprint before querying or mutating grants" do
+    assert_malformed_input_rejected(:target_fingerprint, fn valid_input ->
+      %{valid_input | target_fingerprint: "bad"}
+    end)
   end
 
   test "exact replay keeps the target identity and returns the same result" do
@@ -491,6 +515,29 @@ defmodule Store.Entitlements.SourceConvergenceTest do
     assert target.valid_to_at == input.valid_until_at
     assert target.revoked_at == nil
     assert target.revoked_reason == nil
+  end
+
+  defp assert_malformed_input_rejected(field, corrupt_input) do
+    source = source_fixture!("task4_malformed_#{field}")
+    malformed_input = corrupt_input.(input(source))
+
+    assert grants!(source.subscription_id) == []
+
+    {:error, {result, statements}} =
+      Repo.transaction(fn ->
+        assert Repo.in_transaction?()
+
+        report =
+          capture_repo_queries(fn ->
+            Facade.converge_subscription_source_grants_for_system(malformed_input)
+          end)
+
+        Repo.rollback(report)
+      end)
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} = result
+    assert statements == [], "expected no facade queries for malformed #{field}"
+    assert grants!(source.subscription_id) == []
   end
 
   defp reset_source_grants!(subscription_id) do

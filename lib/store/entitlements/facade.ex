@@ -251,8 +251,14 @@ defmodule Store.Entitlements.Facade do
   def converge_subscription_source_grants_for_system(input) do
     if Repo.in_transaction?() do
       case input do
-        %SubscriptionSourceConvergenceInput{} ->
-          converge_subscription_source_grants_in_transaction(input)
+        %SubscriptionSourceConvergenceInput{} = input ->
+          case SubscriptionSourceConvergenceInput.new(Map.from_struct(input)) do
+            {:ok, validated_input} ->
+              converge_subscription_source_grants_in_transaction(validated_input)
+
+            {:error, %Error{code: "VALIDATION_ERROR"} = error} ->
+              {:error, error}
+          end
 
         _input ->
           source_convergence_validation_error()
