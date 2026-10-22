@@ -264,21 +264,32 @@ defmodule Store.Entitlements.SourceConvergence do
   defp pair_row_matches?(input, target_grant_id, selected_row) do
     case normalize_source_row(selected_row, input.subscription_id) do
       {:ok, row} ->
-        row.id == target_grant_id and
-          row.user_id == input.user_id and
-          row.kind == input.entitlement_kind and
-          row.scope_key == input.entitlement_scope_key and
-          row.source_kind == :subscription and
-          row.source_id == input.subscription_id and
-          row.status == :active and
-          same_datetime?(row.valid_from_at, input.valid_from_at) and
-          same_datetime?(row.valid_to_at, input.valid_until_at) and
-          is_nil(row.revoked_at) and
-          is_nil(row.revoked_reason)
+        pair_identity_matches?(row, input, target_grant_id) and
+          pair_interval_matches?(row, input) and
+          pair_revocation_fields_clear?(row)
 
       :error ->
         false
     end
+  end
+
+  defp pair_identity_matches?(row, input, target_grant_id) do
+    row.id == target_grant_id and
+      row.user_id == input.user_id and
+      row.kind == input.entitlement_kind and
+      row.scope_key == input.entitlement_scope_key and
+      row.source_kind == :subscription and
+      row.source_id == input.subscription_id and
+      row.status == :active
+  end
+
+  defp pair_interval_matches?(row, input) do
+    same_datetime?(row.valid_from_at, input.valid_from_at) and
+      same_datetime?(row.valid_to_at, input.valid_until_at)
+  end
+
+  defp pair_revocation_fields_clear?(row) do
+    is_nil(row.revoked_at) and is_nil(row.revoked_reason)
   end
 
   defp same_datetime?(nil, nil), do: true

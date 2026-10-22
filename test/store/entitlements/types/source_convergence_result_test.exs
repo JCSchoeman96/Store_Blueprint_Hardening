@@ -10,15 +10,13 @@ defmodule Store.Entitlements.Types.SourceConvergenceResultTest do
 
   test "pair result contains the frozen fields" do
     result =
-      apply(SourceConvergenceResult, :__struct__, [
-        [
-          mode: :pair,
-          subscription_id: @subscription_id,
-          target_grant_id: @target_grant_id,
-          revoked_grant_ids: [@revoked_grant_id],
-          projection_user_ids: [@user_id]
-        ]
-      ])
+      %SourceConvergenceResult{
+        mode: :pair,
+        subscription_id: @subscription_id,
+        target_grant_id: @target_grant_id,
+        revoked_grant_ids: [@revoked_grant_id],
+        projection_user_ids: [@user_id]
+      }
 
     assert Map.from_struct(result) == %{
              mode: :pair,
@@ -31,15 +29,13 @@ defmodule Store.Entitlements.Types.SourceConvergenceResultTest do
 
   test "empty result retains the owner and has no target" do
     result =
-      apply(SourceConvergenceResult, :__struct__, [
-        [
-          mode: :empty,
-          subscription_id: @subscription_id,
-          target_grant_id: nil,
-          revoked_grant_ids: [],
-          projection_user_ids: [@user_id]
-        ]
-      ])
+      %SourceConvergenceResult{
+        mode: :empty,
+        subscription_id: @subscription_id,
+        target_grant_id: nil,
+        revoked_grant_ids: [],
+        projection_user_ids: [@user_id]
+      }
 
     assert Map.from_struct(result) == %{
              mode: :empty,

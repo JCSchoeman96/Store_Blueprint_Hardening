@@ -3,6 +3,7 @@ defmodule Store.Entitlements.EntitlementGrantConvergenceActionsTest do
 
   require Ash.Query
 
+  alias Ash.Resource.Info, as: ResourceInfo
   alias Store.Entitlements.EntitlementGrant
   alias Store.Repo
   alias Store.SubscriptionsFixtures
@@ -14,7 +15,7 @@ defmodule Store.Entitlements.EntitlementGrantConvergenceActionsTest do
     valid_from_at = utc_now()
     valid_to_at = DateTime.add(valid_from_at, 86_400, :second)
 
-    action = Ash.Resource.Info.action(EntitlementGrant, :converge_source_target)
+    action = ResourceInfo.action(EntitlementGrant, :converge_source_target)
 
     assert %Ash.Resource.Actions.Create{} = action
 
@@ -117,7 +118,7 @@ defmodule Store.Entitlements.EntitlementGrantConvergenceActionsTest do
   end
 
   test "generic issue keeps its accepted fields and upsert contract" do
-    action = Ash.Resource.Info.action(EntitlementGrant, :issue)
+    action = ResourceInfo.action(EntitlementGrant, :issue)
 
     assert %Ash.Resource.Actions.Create{} = action
 
@@ -176,7 +177,7 @@ defmodule Store.Entitlements.EntitlementGrantConvergenceActionsTest do
   end
 
   test "generic revoke remains non-atomic and accepts only revocation fields" do
-    action = Ash.Resource.Info.action(EntitlementGrant, :revoke)
+    action = ResourceInfo.action(EntitlementGrant, :revoke)
 
     assert %Ash.Resource.Actions.Update{} = action
     assert action.require_atomic? == false
@@ -202,7 +203,7 @@ defmodule Store.Entitlements.EntitlementGrantConvergenceActionsTest do
   end
 
   test "valid_from_at remains required and defaults to DateTime.utc_now/0" do
-    attribute = Ash.Resource.Info.attribute(EntitlementGrant, :valid_from_at)
+    attribute = ResourceInfo.attribute(EntitlementGrant, :valid_from_at)
 
     assert attribute.allow_nil? == false
     assert attribute.default == (&DateTime.utc_now/0)
@@ -213,7 +214,7 @@ defmodule Store.Entitlements.EntitlementGrantConvergenceActionsTest do
     grant = legacy_issue!(source, %{status: :active, valid_from_at: utc_now()})
     reason = "source convergence revoke"
 
-    action = Ash.Resource.Info.action(EntitlementGrant, :revoke_for_source_convergence)
+    action = ResourceInfo.action(EntitlementGrant, :revoke_for_source_convergence)
 
     assert %Ash.Resource.Actions.Update{} = action
     assert action.require_atomic? == true
