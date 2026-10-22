@@ -8,7 +8,7 @@ Status: A1 design pass. Review draft only. This document does not authorize impl
 
 ## Decision
 
-The current main source supports a bounded design for shared Subscription-source convergence and separate EFFECTIVE and NON_EFFECTIVE AccessEffect executors. The shared foundation can be planned as its own PR. JC-245 and JC-246 remain blocked on that foundation. JC-300 remains a separate later source-writer cutover gate.
+The current main source supports a bounded design for shared Subscription-source convergence and separate EFFECTIVE and NON_EFFECTIVE AccessEffect executors. A source-order coverage phase, F0.5, must also land before either executor can run in production. The current lane inventory found six target-changing Subscription paths. Ordinary charged renewal and immediate cancellation do not establish a new AccessEffect today, so each can leave an older desired target appearing latest. F0.5 closes those gaps and reconciles any pre-existing executable effects that may already follow an uncovered transition. JC-300 remains a separate later grant-writer cutover gate.
 
 This pass does not claim global grant convergence. Existing legacy writers can still bypass the AccessEffect fence until their assigned cutover. It does not authorize coding, change Linear state, or revise SBH-50.
 
@@ -64,7 +64,9 @@ Fingerprint integrity and target executability are separate checks. A historical
 | Cache and PubSub | Cachex is a read projection with a 60-second TTL. The facade calls invalidation after its write paths, but its public post-commit entrypoint does not check Repo.in_transaction? today. See lib/store/entitlements/cache.ex:8-104 and lib/store/entitlements/facade.ex:226-240, 394-398. |
 | Recovery worker | The existing Oban worker is unique over worker, queue, and args for 55 seconds, with max_attempts 5. It carries keyset cursors. It is orchestration only. See lib/store/workers/run_subscription_access_effect_recovery_worker.ex:1-109. |
 
-AccessEffect is established today for suspended recovery, scheduled cancellation, and failed-payment suspension. The call sites are lib/store/subscriptions/facade.ex:7158-7178, 7654-7666, and 7948-7974. The initial paid-order subscription and immediate cancellation paths do not establish an AccessEffect today.
+AccessEffect is established today for suspended renewal recovery, scheduled boundary cancellation, and failed-payment suspension. Each producer runs inside a transaction holding the Subscription row lock. The call sites are lib/store/subscriptions/facade.ex:7064-7089, 7158-7178, 7638-7669, and 7783-8001. Two other current target-changing paths have no effect producer: ordinary charged renewal updates the current period and may apply a queued contract change at lib/store/subscriptions/facade.ex:7463-7503, then issues a grant through a separate legacy transaction at :7526-7554; immediate cancellation updates the Subscription under its source lock at :3909-3963 and revokes grants after commit at :3893-3904. Initial paid-order creation starts a new Subscription source, so no older effect can be superseded there. F0.5 adds effect ordering to the two missing paths and reconciles existing executable effects before executor activation.
+
+The full source-order lane inventory appears under [Subscription target-order coverage](#subscription-target-order-coverage). The `activate_now` and `mark_expired_transition` actions have no production call sites in this base. Any future producer for either action must enter the inventory and establish the resulting target under the same Subscription lock before F1 or F2 is activated.
 
 The existing non-effective executor is partial. It locks Subscription then candidate AccessEffect, reads the latest effect, derives a reason from Subscription state, calls the row-by-row revoker, and marks APPLIED in one local transaction. Its currentness predicate requires aggregate_version equality at lib/store/subscriptions/facade.ex:8338-8408. That equality is wrong for an unrelated aggregate bump. It is a current implementation defect, not the A1 rule.
 
@@ -76,6 +78,7 @@ The existing non-effective executor is partial. It locks Subscription then candi
 | Store.Entitlements | Converge the complete grant set for exactly one Subscription source, inside the caller-owned PostgreSQL transaction. Owns the post-commit Cachex and PubSub projection helper. | Does not load Subscription or Plan policy, derive targets from status, choose current effects, or mark AccessEffect APPLIED. |
 | AccessEffect executor | One separate EFFECTIVE executor in JC-245 and one separate NON_EFFECTIVE executor in JC-246. Each uses the shared source fence and Entitlements convergence authority. | No combined generic executor and no cross-source mutation. |
 | Oban recovery worker | Page bounded recovery selectors and call the appropriate executor. | Queue order, uniqueness, retries, and worker memory are not correctness authority. |
+| F0.5 source-order coverage | Ensure every current target-changing Subscription transition creates a newer immutable AccessEffect under the same Subscription lock, and reconcile executable effects that predate the coverage change. | Does not cut over direct grant writers. |
 | JC-300 | Prove source coverage and cut over all remaining direct grant writers. | It does not merge into either executor PR. |
 
 No NewYou target-set or multi-component policy is part of this design.
@@ -115,31 +118,41 @@ The input contains no Subscription or Plan struct, status, access_on_cancel or a
 Keep three concepts separate:
 
 - Desired disposition is EFFECTIVE or NON_EFFECTIVE.
-- EntitlementGrant persists an active or revoked row state.
+- EntitlementGrant persists an active, revoked, or expired row state.
 - ENT-T1 classifies a read at `as_of` as FUTURE, EFFECTIVE, ENDED, REVOKED, or INACTIVE.
 
 These values describe different facts and must not be collapsed into one lifecycle.
+
+For NON_EFFECTIVE convergence, select rows by persisted `EntitlementGrant.status = :active` and exact Subscription source only. Revoke every such row regardless of whether ENT-T1 classifies its interval as FUTURE, EFFECTIVE, or ENDED at the supplied `as_of`. Persisted `:revoked` and `:expired` rows may remain as history. Do not require a row with persisted `status = :expired` to be revoked.
 
 ## AccessEffect and convergence state machines
 
 AccessEffect execution follows these transitions:
 
 ```text
-REQUIRED
-  -> PENDING
-  -> APPLIED
+Successful execution, in one outer transaction:
+  REQUIRED -> PENDING -> APPLIED
+  FAILED_RETRYABLE -> PENDING -> APPLIED
+  PENDING -> APPLIED
 
-PENDING
-  -> FAILED_RETRYABLE
-  -> PENDING
+Failure recording, only after execution rollback, in a separate transaction:
+  REQUIRED -> PENDING -> FAILED_RETRYABLE
+  PENDING -> FAILED_RETRYABLE
+  FAILED_RETRYABLE -> FAILED_RETRYABLE (no-op)
 
-PENDING
-  -> SUPERSEDED
+Stale supersession, in one transaction after source and effect locks:
+  REQUIRED -> PENDING -> SUPERSEDED
+  FAILED_RETRYABLE -> PENDING -> SUPERSEDED
+  PENDING -> SUPERSEDED
 
 APPLIED and SUPERSEDED are terminal.
 ```
 
-The candidate may enter convergence only while the caller holds the exact Subscription lock and candidate AccessEffect lock, the latest effect ID equals the candidate ID, `effect.source_version <= subscription.aggregate_version`, the fingerprint passes the ordered integrity check, the target is executable, and the candidate status is executable. A stale candidate with valid, executable evidence may become SUPERSEDED without grant mutation. An incomplete nil-start EFFECTIVE pair fails before stale handling and is not marked SUPERSEDED.
+The candidate may enter convergence only while the caller holds the exact Subscription lock and candidate AccessEffect lock, the latest effect ID equals the candidate ID, `effect.source_version <= subscription.aggregate_version`, the fingerprint passes the ordered integrity check, the target is executable, the executor admits that disposition, and the candidate status is executable. Move REQUIRED and FAILED_RETRYABLE through PENDING before APPLIED. The APPLIED update and convergence commit together. If convergence rolls back, the PENDING update rolls back too.
+
+After rollback, the failure recorder starts a separate transaction and repeats the same Subscription lock, candidate lock, latest-effect, source-version, fingerprint, and executability proof. It records REQUIRED as PENDING then FAILED_RETRYABLE, records PENDING as FAILED_RETRYABLE, and leaves FAILED_RETRYABLE unchanged. If the candidate became stale, supersede it through PENDING where required. Never mark REQUIRED or FAILED_RETRYABLE directly APPLIED or SUPERSEDED. An incomplete nil-start EFFECTIVE pair fails before stale handling and is not marked SUPERSEDED.
+
+Disposition admission belongs to each executor, after shared target validation and before any lifecycle mutation or stale supersession. JC-245 accepts EFFECTIVE only. JC-246 accepts NON_EFFECTIVE only. A wrong-disposition candidate returns without changing status, grants, APPLIED, or SUPERSEDED. The two entrypoints are separate executors, not aliases for a generic execute-any-current operation.
 
 Exact-source convergence follows this transaction-local state machine:
 
@@ -165,9 +178,10 @@ The caller owns one outer Store.Repo PostgreSQL transaction. A shared internal S
 4. Require `effect.source_version <= subscription.aggregate_version`. A greater value fails closed. Equality is not required.
 5. Recompute v2 from persisted fields first. Only after a v2 mismatch, try v1 when persisted `valid_from_at` is nil. Any mismatch fails closed. Do not rewrite a fingerprint or reconstruct a start.
 6. Validate target executability before stale handling. An EFFECTIVE pair with nil start is execution-incomplete even if v1 integrity passed. Fail without grant convergence, APPLIED, or SUPERSEDED. EFFECTIVE nil/nil with nil start and the current NON_EFFECTIVE nil-start empty target remain executable.
-7. Read the latest AccessEffect for the Subscription, ordered by source_version descending. Require its ID to equal the candidate ID before convergence. A valid, executable candidate whose ID is not latest may be superseded without touching grants.
-8. Permit execution only from required, pending, or failed_retryable. Applied and superseded are non-executable.
-9. Build the typed Entitlements input from the locked Subscription identity and persisted AccessEffect evidence. Do not load Plan or infer a target from current status.
+7. Read the latest AccessEffect for the Subscription, ordered by source_version descending. Record whether its ID equals the candidate ID. Do not change lifecycle state in the shared fence.
+8. Return the validated, locked candidate and current/stale result to the executor. The JC-245 caller admits only EFFECTIVE; the JC-246 caller admits only NON_EFFECTIVE. Reject a wrong disposition before stale supersession or any status transition.
+9. For an admitted stale candidate, use the legal PENDING path to mark it SUPERSEDED without touching grants. For an admitted current candidate, permit execution only from required, pending, or failed_retryable. Move required or failed_retryable to pending inside the outer transaction. Applied and superseded are non-executable.
+10. Build the typed Entitlements input from the locked Subscription identity and persisted AccessEffect evidence. Do not load Plan or infer a target from current status.
 
 The latest effect ID is the source-target ordering check. The source_version inequality allows unrelated aggregate updates while the latest effect remains the same. The current equality comparison at lib/store/subscriptions/facade.ex:8383-8385 must be removed from executor currentness.
 
@@ -214,6 +228,9 @@ The source lock stays held through commit. It prevents a newer effect producer f
 - A candidate with source_version greater than the locked aggregate version fails closed. Do not treat it as current.
 - A fingerprint mismatch fails closed before any grant mutation.
 - A convergence error rolls back all source grant changes and the APPLIED transition. Record a retryable status only after that rollback, in a separate transaction, and only if the same candidate remains current.
+- The execution transaction moves REQUIRED or FAILED_RETRYABLE to PENDING before convergence, leaves PENDING unchanged, and permits only PENDING to become APPLIED. Any rollback also rolls back the move to PENDING.
+- The separate failure recorder repeats the corrected source-lock and current-effect proof. It uses REQUIRED -> PENDING -> FAILED_RETRYABLE, PENDING -> FAILED_RETRYABLE, and FAILED_RETRYABLE no-op. It does not record failure from an effect that no longer passes currentness and integrity checks.
+- A stale effect reaches SUPERSEDED through PENDING. The wrong executor cannot supersede an effect with the other disposition.
 - `LOCAL_TRANSACTION_IDEMPOTENCE=YES` applies while the Subscription source mutex is held and the same target is replayed in the caller's transaction.
 - `GLOBAL_SOURCE_CONVERGENCE_IDEMPOTENCE=NOT_YET_PROVEN`. Legacy source writers can bypass the fence until JC-300; do not promote local replay behavior into a global convergence claim.
 - `NON_EFFECTIVE_REPLAY_IDEMPOTENT=LOCALLY_YES_GLOBALLY_NOT_PROVEN` remains true for the same reason.
@@ -252,12 +269,39 @@ The search covered every EntitlementGrant and entitlement_grants reference in li
 | Lane | Current behavior and evidence | Future owner | Class |
 |---|---|---|---|
 | Initial paid-order subscription issue | create_subscriptions_from_paid_order_for_system runs issue_subscription_entitlements_after_commit. maybe_issue_entitlement converts issue errors to skipped. The facade helper derives valid_from_at from DateTime.utc_now(). See lib/store/subscriptions/facade.ex:2057-2074, 3704-3712, 3786-3795 and lib/store/entitlements/facade.ex:53-95. No AccessEffect is established in this path. | JC-300 source cutover | RETAIN_UNTIL_JC300 |
-| Ordinary charged renewal | finish_paid_renewal_reconciliation calls sync_charged_renewal_entitlement, which uses the strict single-grant issue helper and a separate transaction. The helper derives valid_from_at from worker time. See lib/store/subscriptions/facade.ex:2841-2851, 7526-7554 and lib/store/entitlements/facade.ex:97-156. Ordinary renewals do not establish an AccessEffect. | JC-300 source cutover | RETAIN_UNTIL_JC300 |
+| Ordinary charged renewal | finish_paid_renewal_reconciliation calls sync_charged_renewal_entitlement, which uses the strict single-grant issue helper and a separate transaction. The helper derives valid_from_at from worker time. See lib/store/subscriptions/facade.ex:2841-2851, 7526-7554 and lib/store/entitlements/facade.ex:97-156. Ordinary renewals do not establish an AccessEffect today. | F0.5 adds source-order effect; JC-300 cuts over the grant writer | RETAIN_UNTIL_JC300 |
 | Suspended charged-renewal recovery | apply_first_reconciliation establishes an EFFECTIVE AccessEffect using attempt.period_start_at, then the paid-renewal finish path still invokes the strict issue helper. Thread the effect ID through the result and have JC-245 execute it instead of issuing a second legacy grant. See lib/store/subscriptions/facade.ex:7064-7089, 7158-7178, 2841-2851, 7526-7554. | JC-245 | REPLACE_IN_JC245 |
-| Immediate cancellation | finalize_immediate_cancellation calls the legacy post-commit revoke and discards its result. It updates source grants one at a time and can suppress mutation failures. No AccessEffect is established for this path. User and Admin API callers share this path. See lib/store/subscriptions/facade.ex:2162-2208, 3893-3906 and lib/store/entitlements/facade.ex:160-195, 346-360. | JC-300 source cutover | RETAIN_UNTIL_JC300 |
+| Immediate cancellation | finalize_immediate_cancellation calls the legacy post-commit revoke and discards its result. It updates source grants one at a time and can suppress mutation failures. No AccessEffect is established for this path. User and Admin API callers share this path. See lib/store/subscriptions/facade.ex:2162-2208, 3868-3908 and lib/store/entitlements/facade.ex:160-195, 346-360. | F0.5 adds source-order effect; JC-300 cuts over the grant writer | RETAIN_UNTIL_JC300 |
 | AccessEffect non-effective execution | execute_suspension_access_effect_for_system covers suspension and scheduled-cancellation effects. The executor locks the source and candidate, but calls the row-by-row strict revoker. Its current aggregate equality check is wrong. See lib/store/subscriptions/facade.ex:156-194, 8338-8456 and lib/store/entitlements/facade.ex:198-222, 243-344. | JC-246 | REPLACE_IN_JC246 |
 
-Counts use distinct execution lanes, not raw call-site count. There are five lanes, four write facade call sites, and no unclassified writer. The three retained lanes are explicit compatibility debt, not evidence of a global fence. JC-300 must audit them again at its own current base.
+This grant-writer audit counts five distinct effect/grant execution lanes and four direct grant-write facade call sites. It is separate from the Subscription target-order inventory below. The three writers retained until JC-300 are explicit compatibility debt, not evidence of a global grant fence. JC-300 must audit them again at its own current base.
+
+## Subscription target-order coverage
+
+The latest-effect ID and `source_version <= aggregate_version` prove target currentness only if each target-changing Subscription transition either establishes a newer immutable AccessEffect under the same source lock or cannot supersede an executable unresolved effect. The source audit found six current target-changing lanes and classified each:
+
+At the A1 base, `ACCESS_TARGET_ORDER_COVERAGE=INCOMPLETE`: ordinary charged renewal and immediate cancellation are not yet ordered. F1 or F2 production activation requires `ACCESS_TARGET_ORDER_COVERAGE=COMPLETE`. Complete means every current target-changing lane establishes its newer immutable effect under the Subscription lock or is proven lifecycle-disjoint from every executable unresolved effect, with no unclassified lane.
+
+| Lane | Current code evidence | Target-order classification and owner |
+|---|---|---|
+| Initial paid-order creation | Creates a new Subscription and issues its first grant after commit. It cannot supersede an earlier AccessEffect for that source. See lib/store/subscriptions/facade.ex:2057-2130, 3600-3712, 3786-3795. | Source creation has no predecessor effect. Keep the grant writer in JC-300. |
+| Ordinary charged renewal, including an applied queued contract change | The locked reconciliation updates current period and current PlanRevision. Only a previously suspended Subscription gets an AccessEffect. The ordinary path later issues a grant in a separate transaction. See lib/store/subscriptions/facade.ex:2780-2851, 7001-7089, 7463-7503, 7526-7554. | Ordering gap. F0.5 must establish an EFFECTIVE effect inside this locked renewal transaction. Keep the legacy grant writer until JC-300. |
+| Suspended charged-renewal recovery | The reconciliation locks the Subscription, extends its period, then creates an EFFECTIVE effect with the exact attempt period start and recovered period end in the same transaction. See lib/store/subscriptions/facade.ex:7001-7089, 7158-7178. | Ordered today. F1 consumes this effect and removes the second legacy issue from this branch. |
+| Failed-payment suspension | The boundary worker locks the Subscription, changes it to suspended, and creates a NON_EFFECTIVE effect before commit. See lib/store/subscriptions/facade.ex:7783-8001. | Ordered today. F2 executes the effect. |
+| Immediate cancellation | The cancellation transaction locks the Subscription and changes it to canceled; the legacy revoke runs after commit. No effect is created in the transaction. See lib/store/subscriptions/facade.ex:3868-3908. | Ordering gap. F0.5 must establish a NON_EFFECTIVE effect in the cancellation transaction. Keep the legacy revoke until JC-300. |
+| Scheduled boundary cancellation, including late paid cancellation terminalization | The boundary path locks the Subscription, changes it to canceled, and creates a NON_EFFECTIVE effect in the same transaction. Late paid cancellation uses that same terminalization helper. See lib/store/subscriptions/facade.ex:7110-7140, 7567-7669. | Ordered today. F2 executes the effect. |
+
+The following Subscription writes do not change the current exact target under the current runtime and are lifecycle-disjoint from executable unresolved effects:
+
+- Failed-renewal and authentication-required transitions to `past_due` change status and dunning fields, not the current period or PlanRevision. The current runtime does not read `access_on_past_due`; it only validates and snapshots that field. A future policy implementation must establish an ordered effect before it can coexist with F1 or F2.
+- A scheduled cancellation request or rescission changes cancellation flags and future-target fields. It does not change the current period or current PlanRevision. The runtime does not read `access_on_cancel`. Boundary terminalization creates the ordered NON_EFFECTIVE effect. Any future policy that changes access at request time must establish an ordered effect before F1 or F2 activation.
+- Queued plan and variant changes remain pending until renewal applies them. Their current-target change is part of the renewal lane above.
+- Payment-method, provider-billing-reference, and dunning-counter updates do not change entitlement identity or interval.
+- `activate_now` and `mark_expired_transition` have no production call sites in this base. A future producer for either action must be classified and ordered before F1 or F2 activation.
+
+F0.5 is required after the F0 shared foundation and before either executor is activated in production. It adds the two missing effect producers under the existing Subscription row lock and reconciles pre-existing executable effects that may follow an older uncovered renewal or immediate cancellation. Reconciliation must be bounded and resumable. It must establish a new effect from the locked current Subscription target evidence; it must not rewrite an old effect fingerprint, reconstruct a historical EFFECTIVE start, or infer target state from a grant row. If current source evidence cannot yield an exact supported target, keep that source out of executor recovery and fail the F0.5 gate. Do not restore aggregate-version equality as an executor rule. F0.5 must include a Performance & Scaling Review and Runtime Resource Safety Review for its bounded reconciliation and any recovery worker or selector it adds.
+
+F0.5 changes source-target ordering only. It does not replace ordinary renewal issue or immediate cancellation revoke. Those grant writers remain assigned to JC-300. F0.5 acceptance sets `ACCESS_TARGET_ORDER_COVERAGE=COMPLETE` only after it proves every current target-changing lane is ordered and no pre-existing executable effect can remain the latest ID after an uncovered target change. Until then, F1 and F2 stay inactive in production.
 
 ## Lock order and compatibility
 
@@ -288,17 +332,18 @@ Runtime Resource Safety Review for this A1 round is NOT_APPLICABLE because it ch
 This review draft proposes these future file boundaries only:
 
 - F0 shared foundation: lib/store/entitlements/facade.ex, lib/store/entitlements/entitlement_grant.ex for a dedicated convergence action that leaves generic `:issue` behavior and the `valid_from_at` default unchanged, new typed input/result modules under lib/store/entitlements/inputs/ and lib/store/entitlements/types/, lib/store/subscriptions/access_effect.ex for the effective recovery selector, lib/store/subscriptions/facade.ex for the shared internal current-effect fence, one effective-recovery index migration and its generated AccessEffect snapshot, and focused Entitlements, source-fence, and selector tests.
-- F1 JC-245: lib/store/subscriptions/access_effect.ex, lib/store/subscriptions/facade.ex, the existing recovery worker and its cursor arguments, and focused executor/recovery tests. F1 uses the selector and index introduced in F0 and adds no migration.
-- F2 JC-246: lib/store/subscriptions/facade.ex and focused non-effective executor/projection tests. Keep the existing non-effective selector and index.
+- F0.5 source-order coverage: current Subscription target-changing call sites and their focused source-order/backfill tests. It adds EFFECTIVE and NON_EFFECTIVE AccessEffect establishment for ordinary charged renewal and immediate cancellation, plus bounded reconciliation of executable effects that predate that ordering coverage. It retains both legacy grant writers for JC-300. Any selector, migration, or worker needed for this bounded reconciliation must be specified and accepted in that phase; this A1 draft does not authorize one.
+- F1 JC-245: lib/store/subscriptions/access_effect.ex, lib/store/subscriptions/facade.ex, the existing recovery worker and its cursor arguments, and focused executor/recovery tests. F1 uses the selector and index introduced in F0, requires accepted F0.5 source-order coverage, admits EFFECTIVE only, and adds no migration.
+- F2 JC-246: lib/store/subscriptions/facade.ex and focused non-effective executor/projection tests. Keep the existing non-effective selector and index. F2 requires accepted F0.5 source-order coverage and admits NON_EFFECTIVE only.
 - F3 JC-300: the then-current Subscription and Entitlements writer call sites, source-coverage tests, and any separately admitted migration or index work proven necessary at that base.
 
 The only migration admitted by this design is F0's additive effective recovery index and matching snapshot. No runtime, test, or migration work is authorized until its own issue and human approval are accepted.
 
 ## Stops and admission gates
 
-Stop the affected phase if the base moves, the repository is dirty, or more than one worktree exists before implementation. Stop if implementation starts under this draft, any non-documentation file changes during A1, currentness still requires source_version equality, latest effect ID or persisted fingerprint cannot be proven, an effective pair uses worker time, nil targets or pair cardinality become ambiguous, a multi-target schema is proposed, any mutation can partially commit, only per-row mutation is possible, recovery selection cannot use its exact partial index, projection/cache/Redis/ETS becomes correctness authority, any writer is unclassified, executors are combined, JC-300 is absorbed into an executor PR, or NewYou policy is introduced.
+Stop the affected phase if the base moves, the repository is dirty, or more than one worktree exists before implementation. Stop if implementation starts under this draft, any non-documentation file changes during A1, currentness still requires source_version equality, latest effect ID or persisted fingerprint cannot be proven, an effective pair uses worker time, nil targets or pair cardinality become ambiguous, a multi-target schema is proposed, any mutation can partially commit, only per-row mutation is possible, recovery selection cannot use its exact partial index, projection/cache/Redis/ETS becomes correctness authority, any Subscription target-changing lane is unclassified, F1 or F2 production activation precedes F0.5 acceptance, executors are combined, JC-300 is absorbed into an executor PR, or NewYou policy is introduced.
 
-A1 passes because the proposed design clears those gates: exact effect ID and fingerprint checks are defined, source-version equality is removed, set-oriented mutation has a bounded Ash API path, all five writer lanes are classified, and executor and cutover PRs remain separate. Fingerprint integrity is separate from target executability. A1 does not authorize a global change to `:issue`; F0 uses a dedicated bounded upsert and retains the resource default. Runtime capacity and query latency remain unmeasured and are not claimed.
+A1 is ready for exact-byte review. The six target-changing lanes are classified, the two missing effect producers and pre-existing effect reconciliation have an explicit F0.5 owner, and F1/F2 cannot activate before F0.5 acceptance. The source-version equality rule remains removed. Fingerprint integrity is separate from target executability. A1 does not authorize a global change to `:issue`; F0 uses a dedicated bounded upsert and retains the resource default. Runtime capacity and query latency remain unmeasured and are not claimed.
 
 ## A1 machine report
 
@@ -346,7 +391,25 @@ A1 passes because the proposed design clears those gates: exact effect ID and fi
     LEGACY_REPLACE_JC245=1
     LEGACY_REPLACE_JC246=1
     LEGACY_RETAIN_JC300=3
-    LEGACY_REVIEW_REQUIRED=0
+    LEGACY_WRITER_REVIEW_REQUIRED=0
+    ACCESS_TARGET_ORDER_COVERAGE_REQUIRED=YES
+    ACCESS_TARGET_ORDER_COVERAGE_AT_A1_BASE=INCOMPLETE
+    TARGET_CHANGING_LANES_CLASSIFIED=6
+    TARGET_ORDER_REVIEW_REQUIRED=0
+    TARGET_ORDER_GAPS_ASSIGNED_TO=F0_5
+    F0_5_SOURCE_ORDER_COVERAGE=REQUIRED_BEFORE_JC245_AND_JC246_ACTIVATION
+    F1_F2_ACTIVATION_GATE=ACCESS_TARGET_ORDER_COVERAGE_COMPLETE
+    F1_F2_ACTIVATION_BEFORE_ORDER_COVERAGE=NO
+    REQUIRED_TO_PENDING=YES
+    FAILED_RETRYABLE_TO_PENDING=YES
+    PENDING_TO_APPLIED_ONLY=YES
+    POST_ROLLBACK_FAILURE_TRANSITIONS=REQUIRED_TO_PENDING_TO_FAILED_RETRYABLE; PENDING_TO_FAILED_RETRYABLE; FAILED_RETRYABLE_NOOP; REPEAT_CURRENT_EFFECT_SOURCE_LOCK_PROOF
+    F1_DISPOSITION=EFFECTIVE_ONLY
+    F2_DISPOSITION=NON_EFFECTIVE_ONLY
+    WRONG_EXECUTOR_MUTATION=NO
+    ACTIVE_TEMPORALLY_FUTURE_REVOKED_BY_NON_EFFECTIVE=YES
+    ACTIVE_TEMPORALLY_ENDED_REVOKED_BY_NON_EFFECTIVE=YES
+    PERSISTED_REVOKED_EXPIRED_HISTORY_MAY_REMAIN=YES
     FOUNDATION_PR_SEPARATE=YES
     JC245_PR_SEPARATE=YES
     JC246_PR_SEPARATE=YES
@@ -356,9 +419,9 @@ A1 passes because the proposed design clears those gates: exact effect ID and fi
     RUNTIME_CHANGED=NO
     TESTS_CHANGED=NO
     MIGRATIONS_CHANGED=NO
-    A1_AUTHORITY=PASS
-    SHARED_FOUNDATION_ADMISSION=READY_FOR_PLAN
-    JC245_ADMISSION=BLOCKED_ON_SHARED_FOUNDATION
-    JC246_ADMISSION=BLOCKED_ON_SHARED_FOUNDATION
+    A1_AUTHORITY=READY_FOR_EXACT_BYTE_REVIEW
+    SHARED_FOUNDATION_ADMISSION=READY_FOR_PLAN_AFTER_AUTHORITY_ACCEPTANCE
+    JC245_ADMISSION=BLOCKED_ON_SHARED_FOUNDATION_AND_F0_5_ORDER_COVERAGE
+    JC246_ADMISSION=BLOCKED_ON_SHARED_FOUNDATION_AND_F0_5_ORDER_COVERAGE
     JC300=SEPARATE_LATER_GATE
-    NEXT_ACTION=STOP_FOR_REVIEW
+    NEXT_ACTION=STOP_FOR_EXACT_BYTE_REVIEW
