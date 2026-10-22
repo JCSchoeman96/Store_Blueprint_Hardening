@@ -261,26 +261,80 @@ defmodule Store.Subscriptions.Sbh3004FailedPaymentSuspensionBoundaryTest do
              )
   end
 
-  test "boundary and quarantine selectors use their partial indexes" do
-    Repo.query!("SET LOCAL enable_seqscan = off")
+  test "boundary and quarantine selectors match their partial index contracts" do
+    indexes =
+      Repo.query!("""
+      SELECT
+        index_class.relname,
+        index_metadata.indisvalid,
+        index_metadata.indisready,
+        ARRAY(
+          SELECT pg_get_indexdef(index_metadata.indexrelid, key_position, true)
+          FROM generate_series(1, index_metadata.indnkeyatts) AS key_position
+          ORDER BY key_position
+        ),
+        pg_get_expr(index_metadata.indpred, index_metadata.indrelid)
+      FROM pg_index AS index_metadata
+      JOIN pg_class AS index_class ON index_class.oid = index_metadata.indexrelid
+      WHERE index_metadata.indrelid = 'public.subscriptions'::regclass
+        AND index_class.relname IN (
+          'subscriptions_failed_payment_boundary_due_index',
+          'subscriptions_past_due_missing_boundary_index'
+        )
+      ORDER BY index_class.relname
+      """).rows
+      |> Map.new(fn [name, valid?, ready?, keys, predicate] ->
+        {name, %{valid?: valid?, ready?: ready?, keys: keys, predicate: predicate}}
+      end)
 
-    assert {:ok, %{rows: boundary_plan}} =
-             Repo.query(
-               "EXPLAIN SELECT id FROM subscriptions WHERE status = 'past_due' AND failed_payment_boundary_at IS NOT NULL AND failed_payment_boundary_at <= clock_timestamp() ORDER BY failed_payment_boundary_at, id LIMIT 100"
-             )
+    assert indexes == %{
+             "subscriptions_failed_payment_boundary_due_index" => %{
+               valid?: true,
+               ready?: true,
+               keys: ["failed_payment_boundary_at", "id"],
+               predicate:
+                 "((status = 'past_due'::text) AND (failed_payment_boundary_at IS NOT NULL))"
+             },
+             "subscriptions_past_due_missing_boundary_index" => %{
+               valid?: true,
+               ready?: true,
+               keys: ["id"],
+               predicate: "((status = 'past_due'::text) AND (failed_payment_boundary_at IS NULL))"
+             }
+           }
 
-    boundary_plan = boundary_plan |> List.flatten() |> Enum.join(" ")
-    assert boundary_plan =~ "subscriptions_failed_payment_boundary_due_index"
-    assert boundary_plan =~ "Limit"
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
-    assert {:ok, %{rows: quarantine_plan}} =
-             Repo.query(
-               "EXPLAIN SELECT id FROM subscriptions WHERE status = 'past_due' AND failed_payment_boundary_at IS NULL AND id > '00000000-0000-7000-8000-000000000000'::uuid ORDER BY id LIMIT 100"
-             )
+    boundary_selector =
+      Subscription
+      |> Ash.Query.for_read(:read_due_failed_payment_boundary_for_system, %{
+        now: now,
+        after_boundary_at: nil,
+        after_id: nil,
+        limit: 100
+      })
 
-    quarantine_plan = quarantine_plan |> List.flatten() |> Enum.join(" ")
-    assert quarantine_plan =~ "subscriptions_past_due_missing_boundary_index"
-    assert quarantine_plan =~ "Limit"
+    quarantine_selector =
+      Subscription
+      |> Ash.Query.for_read(:read_past_due_missing_boundary_for_system, %{
+        after_id: "00000000-0000-7000-8000-000000000000",
+        limit: 100
+      })
+
+    boundary_filter = inspect(boundary_selector.filter)
+    quarantine_filter = inspect(quarantine_selector.filter)
+
+    assert boundary_filter =~ "status == :past_due"
+    assert boundary_filter =~ "not is_nil(failed_payment_boundary_at)"
+    assert boundary_filter =~ "failed_payment_boundary_at <="
+    assert boundary_selector.sort == [failed_payment_boundary_at: :asc, id: :asc]
+    assert boundary_selector.limit == 100
+
+    assert quarantine_filter =~ "status == :past_due"
+    assert quarantine_filter =~ "is_nil(failed_payment_boundary_at)"
+    assert quarantine_filter =~ "id >"
+    assert quarantine_selector.sort == [id: :asc]
+    assert quarantine_selector.limit == 100
   end
 
   defp create_subscription!(prefix) do
