@@ -1,4 +1,4 @@
-ExUnit.start()
+ExUnit.start(exclude: [:real_connections])
 Ecto.Adapters.SQL.Sandbox.mode(Store.Repo, :manual)
 Ecto.Adapters.SQL.Sandbox.mode(Store.DirectRepo, :manual)
 
