@@ -1,11 +1,12 @@
 # F0.5 — AccessEffect Target-Order Coverage
 
-Status: **DESIGN APPROVED / SPEC APPROVED / IMPLEMENTATION PLAN APPROVED**  
-Implementation: **AUTHORIZED on branch from canonical base**
+Status: **Implementation correction for PR #181, 2026-10-23**
+
+This document records technical behavior. Approval and merge state are tracked on PR #181.
 
 Implementation plan: `docs/superpowers/plans/2026-10-23-access-effect-f0-5-target-order-coverage-implementation-plan.md`
 
-Plan SHA256: `f57d09299b0637d090027b0ea32f839e9afa2863fd451af4fadb3d34d1c151d2`
+Plan SHA256: `aadaff1e126107261ec2207846b99706e1d702ae251732a92503c87979ac8d78`
 
 Date: 2026-10-23  
 Repository: `JCSchoeman96/Store_Blueprint_Hardening`  
@@ -37,9 +38,9 @@ F0.5 deliverables:
 
 - Producer A: every successfully **applied** charged renewal establishes EFFECTIVE target (not only suspended recovery).
 - Producer B: immediate cancellation (`effective_mode == :now`) establishes NON_EFFECTIVE inside the cancellation transaction.
-- Bounded dual-stream reconciliation over unresolved EFFECTIVE and NON_EFFECTIVE AccessEffect risk sets.
+- One bounded reconciliation stream over all unresolved AccessEffects, ordered by immutable `inserted_at, id`.
 - Dedicated Oban worker for resumable sweeps.
-- Six-lane coverage proof.
+- Evidence-backed six-lane source audit with focused lifecycle tests.
 
 No generic source system, no new outbox, no Entitlements mutation, no Redis/Cachex/PubSub correctness.
 
@@ -110,39 +111,69 @@ Period-end intent remains target-neutral. Legacy post-commit revoke unchanged.
 
 ## 8. Historical reconciliation
 
-Candidate set: `status IN (required, pending, failed_retryable)` for both dispositions, via existing `access_effects_effective_recovery_index` and `access_effects_non_effective_recovery_index`.
+Candidate set: `status IN (required, pending, failed_retryable)` across both dispositions. F0.5 uses the dedicated `read_target_order_candidates_for_system` selector and does not reuse the mutable `updated_at` recovery selectors.
 
-Independent keyset cursors per disposition; one frozen `as_of` / `through_updated_at` per sweep.
+Freeze one `as_of` watermark and use one keyset cursor:
 
-Per candidate: one transaction, Subscription `FOR UPDATE`, re-read latest effect, derive/compare target, establish only on mismatch. Never Entitlements, never mark APPLIED, never PubSub/Cachex.
+```text
+through_inserted_at, after_inserted_at, after_id, limit
+```
+
+The selector filters `inserted_at <= through_inserted_at`, sorts by `(inserted_at, id)`, uses no OFFSET, and never scans Subscriptions. The cursor key does not change when an AccessEffect moves through `required`, `pending`, and `failed_retryable`.
+
+The matching partial PostgreSQL index is:
+
+```sql
+CREATE INDEX access_effects_target_order_reconciliation_index
+ON access_effects (inserted_at, id)
+WHERE status IN ('required', 'pending', 'failed_retryable');
+```
+
+Per candidate, use one transaction in this order: read the exact AccessEffect only to learn `subscription_id`; lock the Subscription `FOR UPDATE`; lock the exact AccessEffect `FOR UPDATE`; use that locked row; read the latest effect; derive the current target; classify terminal candidates and newer current effects as no-ops; return already covered when evidence matches; otherwise establish the target. Never execute effects, mutate Entitlements, or mark an effect APPLIED.
+
+Each worker call selects and processes at most its requested limit, bounded to 1..500 candidates. It resumes from one immutable cursor. Never Entitlements, never mark APPLIED, never PubSub/Cachex.
 
 Unprovable target fails the **page** with effect id and subscription id.
 
 ## 9. Six-lane matrix
 
-| Lane | F0.5 |
-|---|---|
-| Initial paid-order creation | Lifecycle-disjoint (no prior target) |
-| Ordinary charged renewal | Producer A |
-| Suspended charged recovery | Producer A (generalized) |
-| Failed-payment suspension | Existing NON_EFFECTIVE preserved |
-| Immediate cancellation | Producer B |
-| Scheduled boundary cancellation | Existing NON_EFFECTIVE preserved |
+| Lane | Production path | Evidence |
+|---|---|---|
+| Initial paid-order creation | New source creation has no prior AccessEffect target to order | `test/store/workers/subscriptions_ensure_for_paid_order_worker_test.exs` |
+| Ordinary charged renewal | `maybe_establish_charged_renewal_access_effect/4` | `test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs` |
+| Suspended charged recovery | Same applied-renewal producer after recovery | `test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs` |
+| Failed-payment suspension | Existing suspension transition and NON_EFFECTIVE producer | `test/store/subscriptions/sbh_30_04_failed_payment_suspension_boundary_test.exs` |
+| Immediate cancellation | `maybe_establish_immediate_cancellation_access_effect/2` under the cancellation transaction | `test/store/subscriptions/sbh_20_02_renewal_immediate_cancellation_test.exs` |
+| Scheduled boundary cancellation | Existing `commit_scheduled_boundary_cancellation/1` producer | `test/store/subscriptions/sbh_40_02_durable_period_boundary_terminalization_test.exs` |
+
+The source audit found four lifecycle producer paths in `Store.Subscriptions.Facade`: applied charged renewal, cancel-now, failed-payment suspension, and scheduled-boundary cancellation. Target-order reconciliation adds a repair writer. Initial paid-order creation remains lifecycle-disjoint. At review, rerun `rg -n 'establish_access_effect_for_system\\(|:extend_period|:scheduled_boundary_cancellation_transition|:mark_suspended_transition|create_subscription' lib/store/subscriptions/facade.ex lib/store/subscriptions/subscription.ex`, trace each target-changing write to its caller and transaction, and classify any new writer before accepting coverage. The current writer search finds no additional production callers; the table and focused tests are evidence, while a lane count alone is not a completeness proof.
 
 ## 10. Concurrency
 
 1. Subscription `FOR UPDATE` is the source mutex.
 2. Producers and reconciliation establish under that lock before commit.
 3. AccessEffect rows are not the mutex.
-4. Newer producer vs reconciliation races serialize safely via source lock.
+4. Producer-first and reconciliation-first real-connection tests prove that both lock-arrival orders serialize.
+5. After waiting, reconciliation uses the locked candidate row. It treats a candidate that became terminal as a no-op.
 
 ## 11. Performance & scaling
 
 - Cold PostgreSQL authority only; no new cache/TTL/Redis/PubSub.
-- Reuse existing partial recovery indexes; no new index without EXPLAIN proof.
-- Reconciliation off hot path; page size 1..500; one source transaction per candidate.
+- Reconciliation runs off the customer hot path.
+- One status-filtered keyset SELECT per page uses `access_effects_target_order_reconciliation_index` on `(inserted_at, id)`.
+- One worker invocation processes no more than `limit` candidates, with `limit` clamped to 1..500; each candidate gets one source transaction and up to five source/effect reads before an optional insert.
+- The page has at most 500 AccessEffect rows in memory. No cache stampede or invalidation path applies.
+- Oban uses unique args per cursor page, so a continuation has an idempotent job key.
 
-## 12. Success criteria
+## 12. Runtime resource safety review
+
+- Memory: page list is capped at 500 rows and the reducer processes rows sequentially.
+- GC: no process retains candidate rows after a worker call; repeated-load measurements remain unmeasured.
+- Mailbox: the worker does not spawn producers or send per-candidate messages; it enqueues at most one continuation.
+- Resource cleanup: each candidate transaction commits or rolls back before the next begins; no new external handles are opened.
+- Post-load convergence and capacity: unmeasured. This review makes no convergence or capacity claim.
+
+## 13. Success criteria
 
 ```text
 ORDINARY_RENEWAL_ORDERING=COMPLETE

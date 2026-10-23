@@ -31,7 +31,8 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         entitlement_scope_key: "gold"
       }
 
-      assert {:ok, derived} = AccessEffectTargetOrder.derive_current_target(subscription, revision)
+      assert {:ok, derived} =
+               AccessEffectTargetOrder.derive_current_target(subscription, revision)
 
       assert derived.disposition == :effective
       assert derived.entitlement_kind == :membership_access
@@ -57,7 +58,9 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         entitlement_scope_key: nil
       }
 
-      assert {:ok, derived} = AccessEffectTargetOrder.derive_current_target(subscription, revision)
+      assert {:ok, derived} =
+               AccessEffectTargetOrder.derive_current_target(subscription, revision)
+
       assert derived.valid_from_at == nil
       assert derived.valid_until_at == @period_end
     end

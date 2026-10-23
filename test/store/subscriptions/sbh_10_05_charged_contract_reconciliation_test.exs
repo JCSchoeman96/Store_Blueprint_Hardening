@@ -119,6 +119,30 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert renewal_effect.plan_revision_id == attempt.plan_revision_id
   end
 
+  test "a charged nil/nil target keeps valid_from_at nil in its AccessEffect" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("sbh_10_05_nil_target", target_entitlement: {nil, nil})
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    applied = fetch_subscription!(subscription.id)
+    assert applied.status == :active
+
+    [effect] = access_effect_rows!(subscription.id)
+    assert effect.disposition == "effective"
+    assert effect.source_version == applied.aggregate_version
+    assert effect.entitlement_kind == nil
+    assert effect.entitlement_scope_key == nil
+    assert effect.valid_from_at == nil
+    assert datetime_equal?(effect.valid_until_at, attempt.period_end_at)
+  end
+
   test "an exact charged replay leaves the applied subscription version unchanged" do
     %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
       charged_bound_renewal!("sbh_10_05_replay", quantity: 2)
@@ -1093,14 +1117,17 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
         currency: "USD"
       })
 
+    {target_entitlement_kind, target_entitlement_scope_key} =
+      Keyword.get(opts, :target_entitlement, {:membership_access, "gold"})
+
     target_plan =
       SubscriptionsFixtures.create_subscription_plan!(%{
         interval_unit: :month,
         interval_count: 2,
         amount_minor: 4_700,
         currency: "EUR",
-        entitlement_kind: :membership_access,
-        entitlement_scope_key: "gold"
+        entitlement_kind: target_entitlement_kind,
+        entitlement_scope_key: target_entitlement_scope_key
       })
 
     SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)

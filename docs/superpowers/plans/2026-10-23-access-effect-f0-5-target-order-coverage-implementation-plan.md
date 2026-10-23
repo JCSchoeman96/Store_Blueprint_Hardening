@@ -15,7 +15,7 @@
 ## Global constraints
 
 - No JC-245/JC-246 execution, no grant cutover, no Entitlements file changes.
-- No Subscription table scan; reuse existing recovery reads/indexes.
+- No Subscription table scan; use one dedicated AccessEffect selector ordered by immutable `(inserted_at, id)` and its matching partial index.
 - No Redis/Cachex/PubSub for correctness.
 - Subscription `FOR UPDATE` remains source mutex.
 
@@ -56,7 +56,16 @@
 **Modify:** `lib/store/subscriptions/facade.ex`
 
 - `run_access_effect_target_order_reconciliation_for_system/1`
-- Dual cursors; per-candidate transaction; page fail on blocker.
+- One `through_inserted_at` watermark and `(after_inserted_at, after_id)` cursor.
+- Lock Subscription before the exact AccessEffect; use the locked candidate for terminal/currentness checks.
+- Process at most the requested number of candidates, with a hard maximum of 500.
+
+**Modify:** `lib/store/subscriptions/access_effect.ex`
+
+- Add `read_target_order_candidates_for_system` with unresolved statuses only, no OFFSET, and immutable keyset ordering.
+- Add `access_effects_target_order_reconciliation_index` on `(inserted_at, id)` for the same unresolved-status predicate.
+
+**Generate:** PostgreSQL migration and `AccessEffect` resource snapshot.
 
 **Files:**
 
@@ -69,20 +78,29 @@
 - `lib/store/workers/reconcile_subscription_access_effect_target_order_worker.ex`
 - `test/store/workers/reconcile_subscription_access_effect_target_order_worker_test.exs`
 - Register in `lib/store/support/governance/surface_registry.ex`
+- Freeze `as_of` once and continue with one `(after_inserted_at, after_id)` cursor.
+- Enqueue one continuation only when a page contains exactly the requested number of candidates.
 
 ## Phase G — Coverage proof
 
-- Six-lane inventory test module or extensions.
-- Producer vs reconciliation race (real connections where required).
-- Index usage assertion in reconciliation read tests (mirror effective recovery tests).
+- Remove the constant-only lane count test.
+- Document the six production lanes with source paths and focused test files; rerun the `establish_access_effect_for_system/1` source audit during review.
+- Test the `updated_at` mutation race through the frozen immutable cursor.
+- Prove cancel-now target evidence and transaction rollback on effect insertion failure.
+- Prove producer-first and reconciliation-first source-lock contention with real database connections.
+- Verify the new partial index definition and migration snapshot.
 
 ## Phase H — Acceptance
 
 - Full affected tests + CI checks.
-- PR with Performance & Scaling Review (cold Postgres, indexes reused, caches N/A).
+- PR Performance & Scaling Review: one indexed candidate query per page, one transaction per candidate, no more than 500 candidates per job, no correctness cache.
+- PR Runtime Resource Safety Review: at most 500 candidate rows per page, sequential per-candidate transactions, one continuation job at most; repeated-load convergence/capacity remains unmeasured.
+- Run the real-connection F0.5 contention proof twice in CI.
 
 ## STOP conditions
 
 - Canonical `main` ≠ approved base without owner ack.
 - New unclassified target-changing writer discovered.
-- Need to change Entitlements semantics or add migrations.
+- Immutable candidate discovery cannot use the matching partial index.
+- A candidate can still escape the frozen sweep or Subscription is not the first correctness lock.
+- Need to change Entitlements semantics or enter F1/F2/JC-300 scope.

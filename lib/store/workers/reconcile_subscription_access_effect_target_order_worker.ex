@@ -25,45 +25,22 @@ defmodule Store.Workers.ReconcileSubscriptionAccessEffectTargetOrderWorker do
 
   defp parse_opts(args) do
     with {:ok, as_of} <- parse_datetime(Map.get(args, "as_of")),
-         {:ok, effective_after_updated_at} <-
-           parse_datetime(Map.get(args, "effective_after_updated_at")),
-         {:ok, non_effective_after_updated_at} <-
-           parse_datetime(Map.get(args, "non_effective_after_updated_at")),
+         {:ok, after_inserted_at} <- parse_datetime(Map.get(args, "after_inserted_at")),
          {:ok, limit} <- parse_limit(Map.get(args, "limit", 100)),
-         :ok <- validate_optional_id(Map.get(args, "effective_after_id")),
-         :ok <- validate_optional_id(Map.get(args, "non_effective_after_id")) do
-      opts = [
-        limit: limit,
-        skip_effective: Map.get(args, "skip_effective", false),
-        skip_non_effective: Map.get(args, "skip_non_effective", false)
-      ]
+         :ok <- validate_optional_id(Map.get(args, "after_id")),
+         :ok <- validate_cursor_pair(after_inserted_at, Map.get(args, "after_id")) do
+      opts = [limit: limit]
 
       opts = if as_of, do: Keyword.put(opts, :as_of, as_of), else: opts
 
       opts =
-        if effective_after_updated_at,
-          do: Keyword.put(opts, :effective_after_updated_at, effective_after_updated_at),
+        if after_inserted_at,
+          do: Keyword.put(opts, :after_inserted_at, after_inserted_at),
           else: opts
 
       opts =
-        if Map.get(args, "effective_after_id"),
-          do: Keyword.put(opts, :effective_after_id, Map.get(args, "effective_after_id")),
-          else: opts
-
-      opts =
-        if non_effective_after_updated_at,
-          do:
-            Keyword.put(
-              opts,
-              :non_effective_after_updated_at,
-              non_effective_after_updated_at
-            ),
-          else: opts
-
-      opts =
-        if Map.get(args, "non_effective_after_id"),
-          do:
-            Keyword.put(opts, :non_effective_after_id, Map.get(args, "non_effective_after_id")),
+        if Map.get(args, "after_id"),
+          do: Keyword.put(opts, :after_id, Map.get(args, "after_id")),
           else: opts
 
       {:ok, opts}
@@ -72,19 +49,15 @@ defmodule Store.Workers.ReconcileSubscriptionAccessEffectTargetOrderWorker do
     end
   end
 
-  defp enqueue_next_page(%{effective_cursor: nil, non_effective_cursor: nil}, _limit, _args),
-    do: :ok
+  defp enqueue_next_page(%{candidate_cursor: nil}, _limit, _args), do: :ok
 
-  defp enqueue_next_page(result, limit, args) do
+  defp enqueue_next_page(%{candidate_cursor: cursor} = result, limit, args) do
     continuation = %{
       "as_of" => DateTime.to_iso8601(result.as_of),
       "limit" => limit,
-      "skip_effective" => is_nil(result.effective_cursor),
-      "skip_non_effective" => is_nil(result.non_effective_cursor)
+      "after_inserted_at" => DateTime.to_iso8601(cursor.inserted_at),
+      "after_id" => cursor.id
     }
-
-    continuation = add_cursor(continuation, result.effective_cursor, :effective)
-    continuation = add_cursor(continuation, result.non_effective_cursor, :non_effective)
 
     continuation =
       if Map.has_key?(args, "sweep_id"),
@@ -100,23 +73,20 @@ defmodule Store.Workers.ReconcileSubscriptionAccessEffectTargetOrderWorker do
     end
   end
 
-  defp add_cursor(args, nil, _stream), do: args
-
-  defp add_cursor(args, %{timestamp: timestamp, id: id}, :effective) do
-    args
-    |> Map.put("effective_after_updated_at", DateTime.to_iso8601(timestamp))
-    |> Map.put("effective_after_id", id)
-  end
-
-  defp add_cursor(args, %{timestamp: timestamp, id: id}, :non_effective) do
-    args
-    |> Map.put("non_effective_after_updated_at", DateTime.to_iso8601(timestamp))
-    |> Map.put("non_effective_after_id", id)
-  end
-
   defp validate_optional_id(nil), do: :ok
-  defp validate_optional_id(value) when is_binary(value), do: :ok
+
+  defp validate_optional_id(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, _uuid} -> :ok
+      :error -> :error
+    end
+  end
+
   defp validate_optional_id(_value), do: :error
+
+  defp validate_cursor_pair(nil, nil), do: :ok
+  defp validate_cursor_pair(%DateTime{}, id) when is_binary(id), do: :ok
+  defp validate_cursor_pair(_timestamp, _id), do: :error
 
   defp parse_datetime(nil), do: {:ok, nil}
 

@@ -75,7 +75,8 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
         target
       )
       when is_map(target) do
-    pair? = pair_present?(Map.get(target, :entitlement_kind), Map.get(target, :entitlement_scope_key))
+    pair? =
+      pair_present?(Map.get(target, :entitlement_kind), Map.get(target, :entitlement_scope_key))
 
     %{
       subscription_id: subscription.id,
@@ -112,37 +113,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
          :ok <- require_uuid(subscription.current_plan_revision_id, "plan revision"),
          :ok <- require_period_end(subscription.current_period_end_at),
          {:ok, kind, scope} <- revision_entitlement_pair(revision) do
-      if pair_present?(kind, scope) do
-        with :ok <- require_period_start(subscription.current_period_start_at) do
-          {:ok,
-           %{
-             disposition: :effective,
-             entitlement_kind: kind,
-             entitlement_scope_key: scope,
-             valid_from_at: subscription.current_period_start_at,
-             valid_until_at: subscription.current_period_end_at,
-             source_order_line_item_id: subscription.source_order_line_item_id,
-             contract_change_id: subscription.current_contract_change_id,
-             plan_revision_id: subscription.current_plan_revision_id
-           }}
-        end
-      else
-        if kind == nil and scope == nil do
-          {:ok,
-           %{
-             disposition: :effective,
-             entitlement_kind: nil,
-             entitlement_scope_key: nil,
-             valid_from_at: nil,
-             valid_until_at: subscription.current_period_end_at,
-             source_order_line_item_id: subscription.source_order_line_item_id,
-             contract_change_id: subscription.current_contract_change_id,
-             plan_revision_id: subscription.current_plan_revision_id
-           }}
-        else
-          incomplete_pair_error()
-        end
-      end
+      effective_target_evidence(subscription, kind, scope)
     else
       {:error, %Error{} = error} -> {:error, error}
       :error -> missing_plan_revision_error()
@@ -150,6 +121,39 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
   end
 
   defp derive_effective_target(%Subscription{}, nil), do: missing_plan_revision_error()
+
+  defp effective_target_evidence(%Subscription{} = subscription, kind, scope)
+       when not is_nil(kind) and not is_nil(scope) do
+    with :ok <- require_period_start(subscription.current_period_start_at) do
+      {:ok,
+       %{
+         disposition: :effective,
+         entitlement_kind: kind,
+         entitlement_scope_key: scope,
+         valid_from_at: subscription.current_period_start_at,
+         valid_until_at: subscription.current_period_end_at,
+         source_order_line_item_id: subscription.source_order_line_item_id,
+         contract_change_id: subscription.current_contract_change_id,
+         plan_revision_id: subscription.current_plan_revision_id
+       }}
+    end
+  end
+
+  defp effective_target_evidence(%Subscription{} = subscription, nil, nil) do
+    {:ok,
+     %{
+       disposition: :effective,
+       entitlement_kind: nil,
+       entitlement_scope_key: nil,
+       valid_from_at: nil,
+       valid_until_at: subscription.current_period_end_at,
+       source_order_line_item_id: subscription.source_order_line_item_id,
+       contract_change_id: subscription.current_contract_change_id,
+       plan_revision_id: subscription.current_plan_revision_id
+     }}
+  end
+
+  defp effective_target_evidence(%Subscription{}, _kind, _scope), do: incomplete_pair_error()
 
   defp non_effective_evidence(%Subscription{} = subscription) do
     %{
