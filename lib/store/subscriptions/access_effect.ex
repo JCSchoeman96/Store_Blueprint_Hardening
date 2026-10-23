@@ -413,6 +413,28 @@ defmodule Store.Subscriptions.AccessEffect do
     encode_fingerprint(descriptor)
   end
 
+  @doc false
+  @spec persisted_fingerprint_status(t()) :: :v2_match | :v1_legacy_match | :mismatch
+  def persisted_fingerprint_status(%{__struct__: __MODULE__} = effect) do
+    if effect.target_fingerprint == target_fingerprint(effect) do
+      :v2_match
+    else
+      case effect.valid_from_at do
+        nil ->
+          if effect.target_fingerprint == legacy_target_fingerprint_v1(effect) do
+            :v1_legacy_match
+          else
+            :mismatch
+          end
+
+        _persisted_start ->
+          :mismatch
+      end
+    end
+  rescue
+    _error in [ArgumentError, MatchError] -> :mismatch
+  end
+
   defp encode_fingerprint(descriptor) do
     :crypto.hash(:sha256, :erlang.term_to_binary(descriptor, [:deterministic]))
     |> Base.encode16(case: :lower)
