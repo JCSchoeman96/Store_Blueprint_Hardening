@@ -8810,7 +8810,7 @@ defmodule Store.Subscriptions.Facade do
 
     case reason do
       %Error{code: code, message: message, meta: existing} ->
-        Error.new(code, message, Map.merge(existing || %{}, meta))
+        Error.new(code, message, Map.merge(existing, meta))
 
       other ->
         Error.new("TARGET_ORDER_BLOCKED", inspect(other), meta)

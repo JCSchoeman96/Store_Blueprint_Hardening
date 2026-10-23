@@ -116,7 +116,6 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
       effective_target_evidence(subscription, kind, scope)
     else
       {:error, %Error{} = error} -> {:error, error}
-      :error -> missing_plan_revision_error()
     end
   end
 
