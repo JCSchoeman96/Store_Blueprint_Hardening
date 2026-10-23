@@ -385,9 +385,6 @@ defmodule Store.Entitlements.Facade do
     end
   end
 
-  defp revoke_active_non_targets(_input, _source_state, _target_grant_id, _rows),
-    do: source_convergence_internal_error()
-
   defp find_atomic_revoke_precheck_data(grant_id, locked_rows) do
     case Enum.find(locked_rows, &(&1.id == grant_id)) do
       %EntitlementGrant{} = grant -> {:ok, grant}
@@ -476,9 +473,6 @@ defmodule Store.Entitlements.Facade do
            "subscription source revoke did not complete atomically",
            %{bulk_status: status}
          )}
-
-      _result ->
-        source_convergence_internal_error()
     end
   end
 
