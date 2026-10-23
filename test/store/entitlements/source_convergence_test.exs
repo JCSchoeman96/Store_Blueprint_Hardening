@@ -65,8 +65,8 @@ defmodule Store.Entitlements.SourceConvergenceTest do
   alias Store.Entitlements.Inputs.SubscriptionSourceConvergenceInput
   alias Store.Entitlements.Types.SourceConvergenceResult
   alias Store.Repo
-  alias Store.Support.Errors.Error
   alias Store.SubscriptionsFixtures
+  alias Store.Support.Errors.Error
 
   @system_context %{system?: true}
   @target_fingerprint String.duplicate("a", 64)
@@ -415,14 +415,16 @@ defmodule Store.Entitlements.SourceConvergenceTest do
   end
 
   defp converge_in_transaction(input) do
-    case Repo.transaction(fn ->
-           case Facade.converge_subscription_source_grants_for_system(input) do
-             {:ok, _result} = result -> result
-             {:error, reason} -> Repo.rollback(reason)
-           end
-         end) do
+    case Repo.transaction(fn -> converge_transaction_result(input) end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp converge_transaction_result(input) do
+    case Facade.converge_subscription_source_grants_for_system(input) do
+      {:ok, _result} = result -> result
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 

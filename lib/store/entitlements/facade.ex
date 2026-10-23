@@ -250,23 +250,23 @@ defmodule Store.Entitlements.Facade do
   """
   def converge_subscription_source_grants_for_system(input) do
     if Repo.in_transaction?() do
-      case input do
-        %SubscriptionSourceConvergenceInput{} = input ->
-          case SubscriptionSourceConvergenceInput.new(Map.from_struct(input)) do
-            {:ok, validated_input} ->
-              converge_subscription_source_grants_in_transaction(validated_input)
-
-            {:error, %Error{code: "VALIDATION_ERROR"} = error} ->
-              {:error, error}
-          end
-
-        _input ->
-          source_convergence_validation_error()
-      end
+      validate_and_converge_source_input(input)
     else
       source_convergence_validation_error()
     end
   end
+
+  defp validate_and_converge_source_input(%SubscriptionSourceConvergenceInput{} = input) do
+    case SubscriptionSourceConvergenceInput.new(Map.from_struct(input)) do
+      {:ok, validated_input} ->
+        converge_subscription_source_grants_in_transaction(validated_input)
+
+      {:error, %Error{code: "VALIDATION_ERROR"} = error} ->
+        {:error, error}
+    end
+  end
+
+  defp validate_and_converge_source_input(_input), do: source_convergence_validation_error()
 
   defp converge_subscription_source_grants_in_transaction(input) do
     with {:ok, locked_rows} <- lock_subscription_source_grants(input),
@@ -380,9 +380,8 @@ defmodule Store.Entitlements.Facade do
        ) do
     with {:ok, precheck_data} <- find_atomic_revoke_precheck_data(first_grant_id, locked_rows),
          :ok <- atomic_revoke_precheck(input.reason, precheck_data),
-         {:ok, query} <- active_source_revoke_query(input, mode, target_grant_id),
-         :ok <- execute_atomic_source_revoke(query, input.reason) do
-      :ok
+         {:ok, query} <- active_source_revoke_query(input, mode, target_grant_id) do
+      execute_atomic_source_revoke(query, input.reason)
     end
   end
 
@@ -529,17 +528,22 @@ defmodule Store.Entitlements.Facade do
          "subscription source projection invalidation requires a post-commit call"
        )}
     else
-      user_ids
-      |> Enum.filter(&is_binary/1)
-      |> Enum.uniq()
-      |> Enum.reduce_while(:ok, fn user_id, :ok ->
-        case maybe_invalidate_user(user_id, reason) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
+      invalidate_subscription_source_users(user_ids, reason)
     end
   end
+
+  defp invalidate_subscription_source_users(user_ids, reason) do
+    user_ids
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn user_id, :ok ->
+      maybe_invalidate_user(user_id, reason)
+      |> reduce_invalidation_result()
+    end)
+  end
+
+  defp reduce_invalidation_result(:ok), do: {:cont, :ok}
+  defp reduce_invalidation_result({:error, _reason} = error), do: {:halt, error}
 
   defp revoke_suspension_source_grants(grants, reason) do
     user_ids =

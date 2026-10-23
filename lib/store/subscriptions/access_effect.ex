@@ -419,21 +419,21 @@ defmodule Store.Subscriptions.AccessEffect do
     if effect.target_fingerprint == target_fingerprint(effect) do
       :v2_match
     else
-      case effect.valid_from_at do
-        nil ->
-          if effect.target_fingerprint == legacy_target_fingerprint_v1(effect) do
-            :v1_legacy_match
-          else
-            :mismatch
-          end
-
-        _persisted_start ->
-          :mismatch
-      end
+      persisted_v1_fingerprint_status(effect)
     end
   rescue
     _error in [ArgumentError, MatchError] -> :mismatch
   end
+
+  defp persisted_v1_fingerprint_status(%{valid_from_at: nil} = effect) do
+    if effect.target_fingerprint == legacy_target_fingerprint_v1(effect) do
+      :v1_legacy_match
+    else
+      :mismatch
+    end
+  end
+
+  defp persisted_v1_fingerprint_status(_effect), do: :mismatch
 
   defp encode_fingerprint(descriptor) do
     :crypto.hash(:sha256, :erlang.term_to_binary(descriptor, [:deterministic]))

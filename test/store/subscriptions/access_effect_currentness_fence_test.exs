@@ -4,8 +4,8 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFenceTest do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias Store.Entitlements.Inputs.SubscriptionSourceConvergenceInput
   alias Store.DirectRepo
+  alias Store.Entitlements.Inputs.SubscriptionSourceConvergenceInput
   alias Store.Repo
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.AccessEffectCurrentnessFence
@@ -414,25 +414,38 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFenceTest do
     normalized = String.downcase(sql)
 
     cond do
-      String.contains?(normalized, "from \"subscriptions\"") and
-          String.contains?(normalized, "for update") ->
+      locked_subscription_select?(normalized) ->
         :locked_subscription
 
-      String.contains?(normalized, "from \"access_effects\"") and
-          String.contains?(normalized, "order by") ->
+      latest_access_effect_select?(normalized) ->
         :latest_effect
 
-      String.contains?(normalized, "from \"access_effects\"") and
-          String.contains?(normalized, "for update") ->
+      locked_access_effect_select?(normalized) ->
         :locked_exact_effect
 
-      String.contains?(normalized, "from \"access_effects\"") and
-          String.contains?(normalized, "subscription_id") ->
+      unlocked_access_effect_select?(normalized) ->
         :unlocked_exact_effect
 
       true ->
         :other
     end
+  end
+
+  defp locked_subscription_select?(sql) do
+    String.contains?(sql, "from \"subscriptions\"") and String.contains?(sql, "for update")
+  end
+
+  defp latest_access_effect_select?(sql) do
+    String.contains?(sql, "from \"access_effects\"") and String.contains?(sql, "order by")
+  end
+
+  defp locked_access_effect_select?(sql) do
+    String.contains?(sql, "from \"access_effects\"") and String.contains?(sql, "for update")
+  end
+
+  defp unlocked_access_effect_select?(sql) do
+    String.contains?(sql, "from \"access_effects\"") and
+      String.contains?(sql, "subscription_id")
   end
 
   defp select_query?(sql), do: String.starts_with?(String.downcase(String.trim(sql)), "select")
@@ -508,42 +521,7 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFenceTest do
       :telemetry.attach(
         handler_id,
         [:store, :repo, :query],
-        fn _event, _measurements, metadata, {pid, ref, key, candidate_id, subscription_id} ->
-          send(pid, {ref, metadata.query})
-
-          if self() == pid and Process.get(key) != true and effect_lookup_query?(metadata.query) do
-            Process.put(key, true)
-
-            task =
-              Task.async(fn ->
-                Sandbox.unboxed_run(DirectRepo, fn ->
-                  {:ok, result} =
-                    DirectRepo.transaction(fn ->
-                      DirectRepo.query!("SET LOCAL lock_timeout = '5s'")
-
-                      DirectRepo.query!(
-                        "UPDATE access_effects SET subscription_id = $2 WHERE id = $1",
-                        [Ecto.UUID.dump!(candidate_id), Ecto.UUID.dump!(subscription_id)]
-                      )
-                    end)
-
-                  result
-                end)
-              end)
-
-            case Task.yield(task, 6_000) do
-              {:ok, _result} ->
-                :ok
-
-              {:exit, reason} ->
-                exit(reason)
-
-              nil ->
-                _ = Task.shutdown(task, :brutal_kill)
-                raise "candidate identity mutation did not finish within six seconds"
-            end
-          end
-        end,
+        &handle_candidate_reassignment_query/4,
         {self(), message_ref, mutation_key, effect_id, new_subscription_id}
       )
 
@@ -553,6 +531,68 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFenceTest do
     after
       Process.delete(mutation_key)
       :telemetry.detach(handler_id)
+    end
+  end
+
+  defp handle_candidate_reassignment_query(
+         _event,
+         _measurements,
+         metadata,
+         {pid, ref, key, candidate_id, subscription_id}
+       ) do
+    send(pid, {ref, metadata.query})
+
+    should_reassign_candidate?(
+      self() == pid and Process.get(key) != true and effect_lookup_query?(metadata.query),
+      key,
+      candidate_id,
+      subscription_id
+    )
+  end
+
+  defp should_reassign_candidate?(true, key, candidate_id, subscription_id) do
+    Process.put(key, true)
+    reassign_candidate_on_direct_repo(candidate_id, subscription_id)
+  end
+
+  defp should_reassign_candidate?(false, _key, _candidate_id, _subscription_id), do: :ok
+
+  defp reassign_candidate_on_direct_repo(candidate_id, subscription_id) do
+    task = Task.async(fn -> update_candidate_on_direct_repo(candidate_id, subscription_id) end)
+    await_candidate_reassignment(task)
+  end
+
+  defp update_candidate_on_direct_repo(candidate_id, subscription_id) do
+    Sandbox.unboxed_run(DirectRepo, fn ->
+      reassign_candidate_in_transaction(candidate_id, subscription_id)
+    end)
+  end
+
+  defp reassign_candidate_in_transaction(candidate_id, subscription_id) do
+    {:ok, result} =
+      DirectRepo.transaction(fn ->
+        DirectRepo.query!("SET LOCAL lock_timeout = '5s'")
+
+        DirectRepo.query!(
+          "UPDATE access_effects SET subscription_id = $2 WHERE id = $1",
+          [Ecto.UUID.dump!(candidate_id), Ecto.UUID.dump!(subscription_id)]
+        )
+      end)
+
+    result
+  end
+
+  defp await_candidate_reassignment(task) do
+    case Task.yield(task, 6_000) do
+      {:ok, _result} ->
+        :ok
+
+      {:exit, reason} ->
+        exit(reason)
+
+      nil ->
+        _ = Task.shutdown(task, :brutal_kill)
+        raise "candidate identity mutation did not finish within six seconds"
     end
   end
 
