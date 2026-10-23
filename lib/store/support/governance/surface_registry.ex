@@ -215,7 +215,8 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:revoke_subscription_entitlements_for_system, 1},
         {:revoke_subscription_entitlements_for_system, 2},
         {:revoke_subscription_source_grants_strict_for_system, 2},
-        {:invalidate_subscription_source_users_after_commit_for_system, 2}
+        {:invalidate_subscription_source_users_after_commit_for_system, 2},
+        {:converge_subscription_source_grants_for_system, 1}
       ]
     }
   }

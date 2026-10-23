@@ -139,6 +139,39 @@ defmodule Store.Subscriptions.AccessEffect do
       prepare(build(sort: [source_version: :desc]))
     end
 
+    read :read_recoverable_effective_for_system do
+      argument :through_updated_at, :utc_datetime_usec do
+        allow_nil?(false)
+      end
+
+      argument :after_updated_at, :utc_datetime_usec do
+        allow_nil?(true)
+      end
+
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          disposition == :effective and
+            (status == :required or status == :pending or status == :failed_retryable) and
+            updated_at <= ^arg(:through_updated_at) and
+            (is_nil(^arg(:after_updated_at)) or
+               updated_at > ^arg(:after_updated_at) or
+               (updated_at == ^arg(:after_updated_at) and id > ^arg(:after_id)))
+        )
+      )
+
+      prepare(build(sort: [updated_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
     read :read_recoverable_non_effective_for_system do
       argument :through_updated_at, :utc_datetime_usec do
         allow_nil?(false)
@@ -314,6 +347,12 @@ defmodule Store.Subscriptions.AccessEffect do
         name: "access_effects_non_effective_recovery_index"
       )
 
+      index([:updated_at, :id],
+        where:
+          "disposition = 'effective' AND status IN ('required', 'pending', 'failed_retryable')",
+        name: "access_effects_effective_recovery_index"
+      )
+
       index([:inserted_at, :id],
         where:
           "status = 'applied' AND projection_user_ids IS NOT NULL AND projection_delivered_at IS NULL",
@@ -373,6 +412,28 @@ defmodule Store.Subscriptions.AccessEffect do
 
     encode_fingerprint(descriptor)
   end
+
+  @doc false
+  @spec persisted_fingerprint_status(t()) :: :v2_match | :v1_legacy_match | :mismatch
+  def persisted_fingerprint_status(%{__struct__: __MODULE__} = effect) do
+    if effect.target_fingerprint == target_fingerprint(effect) do
+      :v2_match
+    else
+      persisted_v1_fingerprint_status(effect)
+    end
+  rescue
+    _error in [ArgumentError, MatchError] -> :mismatch
+  end
+
+  defp persisted_v1_fingerprint_status(%{valid_from_at: nil} = effect) do
+    if effect.target_fingerprint == legacy_target_fingerprint_v1(effect) do
+      :v1_legacy_match
+    else
+      :mismatch
+    end
+  end
+
+  defp persisted_v1_fingerprint_status(_effect), do: :mismatch
 
   defp encode_fingerprint(descriptor) do
     :crypto.hash(:sha256, :erlang.term_to_binary(descriptor, [:deterministic]))

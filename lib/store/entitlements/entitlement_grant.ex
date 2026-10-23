@@ -47,6 +47,27 @@ defmodule Store.Entitlements.EntitlementGrant do
       return_skipped_upsert?(true)
     end
 
+    create :converge_source_target do
+      accept([:user_id, :kind, :scope_key, :source_id, :valid_from_at, :valid_to_at])
+
+      upsert?(true)
+      upsert_identity(:unique_user_scope_source)
+
+      upsert_fields([
+        :status,
+        :valid_from_at,
+        :valid_to_at,
+        :revoked_at,
+        :revoked_reason,
+        :updated_at
+      ])
+
+      change(set_attribute(:source_kind, :subscription))
+      change(set_attribute(:status, :active))
+      change(set_attribute(:revoked_at, nil))
+      change(set_attribute(:revoked_reason, nil))
+    end
+
     update :revoke do
       require_atomic?(false)
       accept([:revoked_reason, :revoked_at])
@@ -56,6 +77,15 @@ defmodule Store.Entitlements.EntitlementGrant do
         |> Ash.Changeset.change_attribute(:status, :revoked)
         |> maybe_set_revoked_at()
       end)
+    end
+
+    update :revoke_for_source_convergence do
+      require_atomic?(true)
+      accept([:revoked_reason])
+      require_attributes([:revoked_reason])
+
+      change(set_attribute(:status, :revoked))
+      change(atomic_update(:revoked_at, expr(now())))
     end
 
     update :expire do
