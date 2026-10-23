@@ -197,6 +197,8 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:repair_suspension_access_effect_projection_for_system, 1},
         {:run_subscription_access_effect_recovery_for_system, 0},
         {:run_subscription_access_effect_recovery_for_system, 1},
+        {:run_access_effect_target_order_reconciliation_for_system, 0},
+        {:run_access_effect_target_order_reconciliation_for_system, 1},
         {:establish_access_effect_for_system, 1},
         {:get_current_access_effect_for_system, 1},
         {:mark_access_effect_pending_for_system, 1},

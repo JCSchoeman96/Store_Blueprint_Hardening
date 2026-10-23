@@ -110,6 +110,37 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert applied.aggregate_version == before.aggregate_version + 1
     assert fetch_contract_change!(contract_change.id).status == :applied
     assert fetch_attempt!(attempt.id).status == :succeeded
+
+    [renewal_effect] = access_effect_rows!(subscription.id)
+    assert renewal_effect.disposition == "effective"
+    assert renewal_effect.source_version == applied.aggregate_version
+    assert datetime_equal?(renewal_effect.valid_from_at, attempt.period_start_at)
+    assert datetime_equal?(renewal_effect.valid_until_at, attempt.period_end_at)
+    assert renewal_effect.plan_revision_id == attempt.plan_revision_id
+  end
+
+  test "a charged nil/nil target keeps valid_from_at nil in its AccessEffect" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("sbh_10_05_nil_target", target_entitlement: {nil, nil})
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    applied = fetch_subscription!(subscription.id)
+    assert applied.status == :active
+
+    [effect] = access_effect_rows!(subscription.id)
+    assert effect.disposition == "effective"
+    assert effect.source_version == applied.aggregate_version
+    assert effect.entitlement_kind == nil
+    assert effect.entitlement_scope_key == nil
+    assert effect.valid_from_at == nil
+    assert datetime_equal?(effect.valid_until_at, attempt.period_end_at)
   end
 
   test "an exact charged replay leaves the applied subscription version unchanged" do
@@ -1086,14 +1117,17 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
         currency: "USD"
       })
 
+    {target_entitlement_kind, target_entitlement_scope_key} =
+      Keyword.get(opts, :target_entitlement, {:membership_access, "gold"})
+
     target_plan =
       SubscriptionsFixtures.create_subscription_plan!(%{
         interval_unit: :month,
         interval_count: 2,
         amount_minor: 4_700,
         currency: "EUR",
-        entitlement_kind: :membership_access,
-        entitlement_scope_key: "gold"
+        entitlement_kind: target_entitlement_kind,
+        entitlement_scope_key: target_entitlement_scope_key
       })
 
     SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
@@ -1147,7 +1181,8 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       Store.Repo.query(
         """
         SELECT source_version, status::text, disposition::text, plan_revision_id::text,
-               entitlement_kind::text, entitlement_scope_key
+               entitlement_kind::text, entitlement_scope_key,
+               valid_from_at, valid_until_at
         FROM access_effects
         WHERE subscription_id = $1
         ORDER BY source_version DESC
@@ -1161,7 +1196,9 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
                         disposition,
                         plan_revision_id,
                         entitlement_kind,
-                        scope_key
+                        scope_key,
+                        valid_from_at,
+                        valid_until_at
                       ] ->
       %{
         source_version: source_version,
@@ -1169,7 +1206,9 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
         disposition: disposition,
         plan_revision_id: plan_revision_id,
         entitlement_kind: entitlement_kind,
-        entitlement_scope_key: scope_key
+        entitlement_scope_key: scope_key,
+        valid_from_at: valid_from_at,
+        valid_until_at: valid_until_at
       }
     end)
   end
@@ -1508,5 +1547,15 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
     |> Ash.Query.sort(inserted_at: :desc)
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp datetime_equal?(left, %DateTime{} = right) do
+    left =
+      case left do
+        %DateTime{} = dt -> dt
+        %NaiveDateTime{} = naive -> DateTime.from_naive!(naive, "Etc/UTC")
+      end
+
+    DateTime.compare(left, right) == :eq
   end
 end

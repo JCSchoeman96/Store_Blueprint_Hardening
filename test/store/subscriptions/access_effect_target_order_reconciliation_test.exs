@@ -1,0 +1,292 @@
+defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
+  use Store.DataCase, async: false
+
+  require Ash.Query
+  import Ash.Expr
+
+  alias Store.Repo
+  alias Store.Subscriptions.AccessEffect
+  alias Store.Subscriptions.Facade
+  alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
+  alias Store.SubscriptionsFixtures
+
+  @cursor_floor "00000000-0000-7000-8000-000000000000"
+
+  test "candidate selector and partial index use the immutable key and unresolved statuses" do
+    query =
+      AccessEffect
+      |> Ash.Query.for_read(:read_target_order_candidates_for_system, %{
+        through_inserted_at: ~U[2026-10-23 12:00:00.000000Z],
+        after_inserted_at: nil,
+        after_id: nil,
+        limit: 500
+      })
+
+    assert query.sort == [inserted_at: :asc, id: :asc]
+    assert query.limit == 500
+    refute inspect(query.filter) =~ "disposition"
+
+    %{rows: [[valid?, ready?, key_columns, predicate]]} =
+      Repo.query!("""
+      SELECT index_state.indisvalid,
+             index_state.indisready,
+             ARRAY(
+               SELECT attribute.attname
+               FROM unnest(index_state.indkey) WITH ORDINALITY AS key(attnum, position)
+               JOIN pg_attribute AS attribute
+                 ON attribute.attrelid = index_state.indrelid
+                AND attribute.attnum = key.attnum
+               WHERE key.position <= index_state.indnkeyatts
+               ORDER BY key.position
+             ) AS key_columns,
+             pg_get_expr(index_state.indpred, index_state.indrelid) AS predicate
+      FROM pg_index AS index_state
+      JOIN pg_class AS index_relation ON index_relation.oid = index_state.indexrelid
+      JOIN pg_class AS table_relation ON table_relation.oid = index_state.indrelid
+      WHERE table_relation.relname = 'access_effects'
+        AND index_relation.relname = 'access_effects_target_order_reconciliation_index'
+      """)
+
+    assert valid?
+    assert ready?
+    assert key_columns == ["inserted_at", "id"]
+
+    normalized_predicate = String.downcase(predicate)
+    assert normalized_predicate =~ "status"
+    assert normalized_predicate =~ "required"
+    assert normalized_predicate =~ "pending"
+    assert normalized_predicate =~ "failed_retryable"
+    refute normalized_predicate =~ "disposition"
+  end
+
+  test "reconciliation repairs a stale effective target without churn when evidence already matches" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+    revision = fixture.revision
+
+    stale =
+      establish_effect!(
+        subscription,
+        revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    bump_aggregate_version!(subscription.id)
+    bump_aggregate_version!(subscription.id)
+    subscription = reload_subscription!(subscription.id)
+
+    set_updated_at!([stale], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: stale.inserted_at,
+               after_inserted_at: stale.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.repaired_count == 1
+    assert result.noop_count == 0
+    assert result.already_covered_count == 0
+
+    rows = access_effect_rows!(subscription.id)
+    assert length(rows) == 2
+    assert Enum.any?(rows, &(&1.status == "superseded"))
+
+    assert Enum.any?(
+             rows,
+             &(&1.status == "required" and &1.source_version == subscription.aggregate_version)
+           )
+  end
+
+  test "reconciliation already_covered when target evidence matches current subscription" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+    revision = fixture.revision
+
+    effect =
+      establish_effect!(
+        subscription,
+        revision,
+        %{
+          valid_from_at: subscription.current_period_start_at,
+          valid_until_at: subscription.current_period_end_at
+        }
+      )
+
+    set_updated_at!([effect], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: effect.inserted_at,
+               after_inserted_at: effect.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.already_covered_count == 1
+    assert result.repaired_count == 0
+    assert length(access_effect_rows!(subscription.id)) == 1
+  end
+
+  test "unresolved candidate remains discoverable after lifecycle updates move updated_at past the watermark" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    bump_aggregate_version!(subscription.id)
+
+    through_inserted_at = DateTime.add(candidate.inserted_at, 1, :second)
+    after_inserted_at = candidate.inserted_at
+
+    assert {:ok, pending} = Facade.mark_access_effect_pending_for_system(candidate)
+    assert {:ok, failed} = Facade.mark_access_effect_failed_retryable_for_system(pending)
+
+    moved_updated_at = DateTime.add(through_inserted_at, 1, :second)
+    set_updated_at!([failed], moved_updated_at)
+    assert access_effect_updated_at!(failed.id) == DateTime.to_naive(moved_updated_at)
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: through_inserted_at,
+               after_inserted_at: after_inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.repaired_count == 1
+    assert result.noop_count == 0
+
+    repaired = List.last(access_effect_rows!(subscription.id))
+    assert repaired.source_version == subscription.aggregate_version + 1
+    assert repaired.status == "required"
+  end
+
+  test "reconciliation fails closed when current target evidence is unsupported" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    Repo.query!(
+      "UPDATE subscriptions SET status = 'expired', aggregate_version = aggregate_version + 1 WHERE id = $1",
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    assert {:error, %{code: "TARGET_ORDER_UNSUPPORTED_STATE"}} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 10,
+               as_of: candidate.inserted_at,
+               after_inserted_at: candidate.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    [unchanged] = access_effect_rows!(subscription.id)
+    assert unchanged.status == "required"
+    assert unchanged.source_version == candidate.source_version
+  end
+
+  defp subscription_fixture! do
+    customer =
+      SubscriptionsFixtures.create_customer!("f05_reconcile_#{Ecto.UUID.generate()}")
+
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "f05-members"
+      })
+
+    SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan)
+  end
+
+  defp establish_effect!(subscription, revision, overrides) do
+    attrs =
+      %{
+        subscription_id: subscription.id,
+        source_version: Map.get(overrides, :source_version, subscription.aggregate_version),
+        disposition: :effective,
+        entitlement_kind: revision.entitlement_kind,
+        entitlement_scope_key: revision.entitlement_scope_key,
+        valid_from_at: Map.get(overrides, :valid_from_at, subscription.current_period_start_at),
+        valid_until_at: subscription.current_period_end_at,
+        source_order_line_item_id: subscription.source_order_line_item_id,
+        contract_change_id: subscription.current_contract_change_id,
+        plan_revision_id: revision.id
+      }
+
+    assert {:ok, input} = EstablishAccessEffectInput.new(attrs)
+    assert {:ok, effect} = Facade.establish_access_effect_for_system(input)
+    effect
+  end
+
+  defp bump_aggregate_version!(subscription_id) do
+    Repo.query!(
+      "UPDATE subscriptions SET aggregate_version = aggregate_version + 1 WHERE id = $1",
+      [
+        Ecto.UUID.dump!(subscription_id)
+      ]
+    )
+  end
+
+  defp reload_subscription!(id) do
+    Store.Subscriptions.Subscription
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp set_updated_at!(effects, updated_at) do
+    Enum.each(effects, fn effect ->
+      Repo.query!("UPDATE access_effects SET updated_at = $2 WHERE id = $1", [
+        Ecto.UUID.dump!(effect.id),
+        updated_at
+      ])
+    end)
+  end
+
+  defp access_effect_updated_at!(effect_id) do
+    {:ok, %{rows: [[updated_at]]}} =
+      Repo.query("SELECT updated_at FROM access_effects WHERE id = $1", [
+        Ecto.UUID.dump!(effect_id)
+      ])
+
+    updated_at
+  end
+
+  defp access_effect_rows!(subscription_id) do
+    {:ok, result} =
+      Repo.query(
+        """
+        SELECT id::text, status, disposition, source_version, valid_from_at, valid_until_at
+        FROM access_effects
+        WHERE subscription_id = $1
+        ORDER BY source_version ASC
+        """,
+        [Ecto.UUID.dump!(subscription_id)]
+      )
+
+    result.rows
+    |> Enum.map(fn [id, status, disposition, source_version, from_at, until_at] ->
+      %{
+        id: id,
+        status: status,
+        disposition: disposition,
+        source_version: source_version,
+        valid_from_at: from_at,
+        valid_until_at: until_at
+      }
+    end)
+  end
+end

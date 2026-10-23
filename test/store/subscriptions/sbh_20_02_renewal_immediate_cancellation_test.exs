@@ -1,7 +1,7 @@
 defmodule Store.Subscriptions.Sbh2002RenewalImmediateCancellationTest do
   use Store.DataCase, async: false
 
-  @normal_cancel_now_query_bound 15
+  @normal_cancel_now_query_bound 20
 
   import Ash.Expr
   require Ash.Query
@@ -233,6 +233,72 @@ defmodule Store.Subscriptions.Sbh2002RenewalImmediateCancellationTest do
       "JC-232 normal_cancel_now_queries=#{stats.query_count} " <>
         "query_bound=#{@normal_cancel_now_query_bound}"
     )
+  end
+
+  test "cancel-now establishes current NON_EFFECTIVE target before transaction commit" do
+    fixture = create_sandboxed_subscription_fixture!("cancel_effect_atomic")
+
+    assert {:ok, canceled} =
+             Repo.transaction(fn ->
+               assert {:ok, canceled} =
+                        Facade.cancel_subscription_for_user(
+                          fixture.customer,
+                          fixture.subscription_id,
+                          :now
+                        )
+
+               assert [effect] = access_effect_rows!(fixture.subscription_id)
+               assert effect.status == "required"
+               assert effect.disposition == "non_effective"
+               assert effect.source_version == canceled.aggregate_version
+               assert effect.entitlement_kind == nil
+               assert effect.entitlement_scope_key == nil
+               assert effect.valid_from_at == nil
+               assert effect.valid_until_at == nil
+               assert effect.source_order_line_item_id == canceled.source_order_line_item_id
+               assert effect.contract_change_id == canceled.current_contract_change_id
+               assert effect.plan_revision_id == canceled.current_plan_revision_id
+
+               canceled
+             end)
+
+    assert canceled.status == :canceled
+
+    assert [effect] = access_effect_rows!(fixture.subscription_id)
+
+    assert effect.source_version == canceled.aggregate_version
+    assert effect.disposition == "non_effective"
+  end
+
+  test "cancel-now rolls back when NON_EFFECTIVE AccessEffect establishment fails" do
+    fixture = create_sandboxed_subscription_fixture!("cancel_effect_rollback")
+
+    {trigger_name, function_name} = fail_cancel_access_effect_insert!()
+    before = fetch_subscription!(fixture.subscription_id)
+    before_effect_count = access_effect_count!(fixture.subscription_id)
+
+    try do
+      Repo.query!(
+        "SELECT set_config('store.f05_fail_cancel_effect_subscription', $1, false)",
+        [fixture.subscription_id]
+      )
+
+      assert {:error, %Error{}} =
+               Facade.cancel_subscription_for_user(
+                 fixture.customer,
+                 fixture.subscription_id,
+                 :now
+               )
+
+      current = fetch_subscription!(fixture.subscription_id)
+      assert current.status == :active
+      assert current.cancel_at_period_end == false
+      assert current.aggregate_version == before.aggregate_version
+      assert access_effect_count!(fixture.subscription_id) == before_effect_count
+    after
+      Repo.query!("SELECT set_config('store.f05_fail_cancel_effect_subscription', '', false)")
+      drop_cancel_access_effect_failure_trigger!(trigger_name, function_name)
+    end
   end
 
   test "cancel-now rejects refreshed expired state without changing its command" do
@@ -568,6 +634,21 @@ defmodule Store.Subscriptions.Sbh2002RenewalImmediateCancellationTest do
     fixture
   end
 
+  defp create_sandboxed_subscription_fixture!(suffix) do
+    unique = "#{suffix}_#{Ecto.UUID.generate()}"
+    customer = SubscriptionsFixtures.create_customer!("jc245_#{unique}")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+    plan = SubscriptionsFixtures.create_subscription_plan!()
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc245_#{unique}"
+      })
+
+    %{customer: customer, subscription_id: subscription.id}
+  end
+
   defp cleanup_committed_fixture!(fixture) do
     Sandbox.unboxed_run(Repo, fn ->
       sub_id = Ecto.UUID.dump!(fixture.subscription_id)
@@ -832,6 +913,89 @@ defmodule Store.Subscriptions.Sbh2002RenewalImmediateCancellationTest do
 
   defp fixture_subscription_version(subscription_id) do
     fixture_subscription(subscription_id).aggregate_version
+  end
+
+  defp access_effect_rows!(subscription_id) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT status::text, disposition::text, source_version, entitlement_kind::text,
+               entitlement_scope_key, valid_from_at, valid_until_at,
+               source_order_line_item_id::text, contract_change_id::text,
+               plan_revision_id::text
+        FROM access_effects
+        WHERE subscription_id = $1
+        ORDER BY source_version DESC, inserted_at DESC, id DESC
+        """,
+        [Ecto.UUID.dump!(subscription_id)]
+      )
+
+    Enum.map(rows, fn [
+                        status,
+                        disposition,
+                        source_version,
+                        entitlement_kind,
+                        entitlement_scope_key,
+                        valid_from_at,
+                        valid_until_at,
+                        source_order_line_item_id,
+                        contract_change_id,
+                        plan_revision_id
+                      ] ->
+      %{
+        status: status,
+        disposition: disposition,
+        source_version: source_version,
+        entitlement_kind: entitlement_kind,
+        entitlement_scope_key: entitlement_scope_key,
+        valid_from_at: valid_from_at,
+        valid_until_at: valid_until_at,
+        source_order_line_item_id: source_order_line_item_id,
+        contract_change_id: contract_change_id,
+        plan_revision_id: plan_revision_id
+      }
+    end)
+  end
+
+  defp access_effect_count!(subscription_id) do
+    %{rows: [[count]]} =
+      Repo.query!("SELECT count(*) FROM access_effects WHERE subscription_id = $1", [
+        Ecto.UUID.dump!(subscription_id)
+      ])
+
+    count
+  end
+
+  defp fail_cancel_access_effect_insert! do
+    suffix = System.unique_integer([:positive])
+    trigger_name = "f05_fail_cancel_effect_#{suffix}"
+
+    Repo.query!("""
+      CREATE FUNCTION #{trigger_name}() RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF NEW.subscription_id::text = current_setting('store.f05_fail_cancel_effect_subscription', true) THEN
+          RAISE EXCEPTION 'injected F0.5 cancel AccessEffect insert failure';
+        END IF;
+
+        RETURN NEW;
+      END;
+      $function$;
+    """)
+
+    Repo.query!("""
+      CREATE TRIGGER #{trigger_name}
+      BEFORE INSERT ON access_effects
+      FOR EACH ROW EXECUTE FUNCTION #{trigger_name}()
+    """)
+
+    {trigger_name, trigger_name}
+  end
+
+  defp drop_cancel_access_effect_failure_trigger!(trigger_name, function_name) do
+    Repo.query!("DROP TRIGGER IF EXISTS #{trigger_name} ON access_effects")
+    Repo.query!("DROP FUNCTION IF EXISTS #{function_name}()")
   end
 
   defp fixture_subscription(subscription_id) do

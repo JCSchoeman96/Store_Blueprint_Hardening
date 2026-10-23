@@ -102,6 +102,9 @@ Subscriptions:
 - SHIPPING_COST_SURGE
 - PAYMENT_METHOD_UPDATE_UNSUPPORTED
 - PAYMENT_AUTHENTICATION_REQUIRED
+- TARGET_ORDER_BLOCKED: historical AccessEffect reconciliation could not safely establish the current subscription target.
+- TARGET_ORDER_UNPROVABLE: current subscription target evidence is incomplete or contradictory, so reconciliation fails closed.
+- TARGET_ORDER_UNSUPPORTED_STATE: subscription lifecycle state requires renewed authority review before target-order reconciliation.
 
 Entitlements:
 - ENTITLEMENT_NOT_FOUND

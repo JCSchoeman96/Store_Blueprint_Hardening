@@ -205,6 +205,38 @@ defmodule Store.Subscriptions.AccessEffect do
       prepare(build(sort: [updated_at: :asc, id: :asc], limit: arg(:limit)))
     end
 
+    read :read_target_order_candidates_for_system do
+      argument :through_inserted_at, :utc_datetime_usec do
+        allow_nil?(false)
+      end
+
+      argument :after_inserted_at, :utc_datetime_usec do
+        allow_nil?(true)
+      end
+
+      argument :after_id, :uuid do
+        allow_nil?(true)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(100)
+        constraints(min: 1, max: 500)
+      end
+
+      filter(
+        expr(
+          (status == :required or status == :pending or status == :failed_retryable) and
+            inserted_at <= ^arg(:through_inserted_at) and
+            (is_nil(^arg(:after_inserted_at)) or
+               inserted_at > ^arg(:after_inserted_at) or
+               (inserted_at == ^arg(:after_inserted_at) and id > ^arg(:after_id)))
+        )
+      )
+
+      prepare(build(sort: [inserted_at: :asc, id: :asc], limit: arg(:limit)))
+    end
+
     read :read_pending_projection_repair_for_system do
       argument :through_inserted_at, :utc_datetime_usec do
         allow_nil?(false)
@@ -351,6 +383,11 @@ defmodule Store.Subscriptions.AccessEffect do
         where:
           "disposition = 'effective' AND status IN ('required', 'pending', 'failed_retryable')",
         name: "access_effects_effective_recovery_index"
+      )
+
+      index([:inserted_at, :id],
+        where: "status IN ('required', 'pending', 'failed_retryable')",
+        name: "access_effects_target_order_reconciliation_index"
       )
 
       index([:inserted_at, :id],
