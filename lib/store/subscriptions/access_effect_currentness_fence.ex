@@ -132,7 +132,11 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFence do
          valid_until_at: valid_until_at
        })
        when not is_nil(kind) and not is_nil(scope) do
-    validate_pair_interval(valid_from_at, valid_until_at)
+    if valid_entitlement_scope_key?(scope) do
+      validate_pair_interval(valid_from_at, valid_until_at)
+    else
+      validation_error("AccessEffect entitlement scope key is invalid")
+    end
   end
 
   defp validate_executable_target(%AccessEffect{
@@ -159,6 +163,12 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFence do
 
   defp validate_pair_interval(_valid_from_at, _valid_until_at),
     do: validation_error("AccessEffect interval must contain DateTime evidence")
+
+  defp valid_entitlement_scope_key?(scope) when is_binary(scope) do
+    byte_size(scope) in 1..255 and String.valid?(scope) and String.trim(scope) != ""
+  end
+
+  defp valid_entitlement_scope_key?(_scope), do: false
 
   defp find_latest_effect(subscription_id) do
     query =

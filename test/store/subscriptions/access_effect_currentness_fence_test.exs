@@ -281,6 +281,40 @@ defmodule Store.Subscriptions.AccessEffectCurrentnessFenceTest do
              prove_in_caller_transaction(effect.id)
   end
 
+  test "rejects an empty persisted scope with a valid fingerprint" do
+    assert_corrupt_scope_rejected("")
+  end
+
+  test "rejects a whitespace-only persisted scope with a valid fingerprint" do
+    assert_corrupt_scope_rejected("   ")
+  end
+
+  test "rejects an oversized persisted scope with a valid fingerprint" do
+    assert_corrupt_scope_rejected(String.duplicate("s", 256))
+  end
+
+  defp assert_corrupt_scope_rejected(scope) do
+    fixture = create_subscription_fixture!()
+    effect = establish_effect!(fixture)
+
+    Repo.query!(
+      "UPDATE access_effects SET entitlement_scope_key = $2 WHERE id = $1",
+      [Ecto.UUID.dump!(effect.id), scope]
+    )
+
+    recompute_v2_fingerprint!(effect.id)
+    corrupted_effect = reload_effect!(effect.id)
+
+    assert AccessEffect.persisted_fingerprint_status(corrupted_effect) == :v2_match
+
+    {result, queries} =
+      capture_repo_queries(fn -> prove_in_caller_transaction(effect.id) end)
+
+    assert {:error, %Error{code: "VALIDATION_ERROR"}} = result
+    assert Enum.count(queries, &select_query?/1) == 3
+    refute Enum.any?(queries, &latest_effect_query?/1)
+  end
+
   defp assert_locked_source_and_build_input(evidence, subscription) do
     assert evidence.source.subscription_id == subscription.id
     assert evidence.source.user_id == subscription.user_id
