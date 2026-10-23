@@ -50,6 +50,7 @@ defmodule Store.Subscriptions.Facade do
 
   alias Store.Subscriptions.{
     AccessEffect,
+    AccessEffectTargetOrder,
     ContractChange,
     PlanRevision,
     RenewalAttempt,
@@ -271,6 +272,55 @@ defmodule Store.Subscriptions.Facade do
   def run_subscription_access_effect_recovery_for_system(_opts) do
     {:error,
      Error.new("VALIDATION_ERROR", "AccessEffect recovery options must be a keyword list")}
+  end
+
+  @spec run_access_effect_target_order_reconciliation_for_system(keyword()) ::
+          {:ok,
+           %{
+             repaired_count: non_neg_integer(),
+             noop_count: non_neg_integer(),
+             already_covered_count: non_neg_integer(),
+             as_of: DateTime.t(),
+             effective_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             non_effective_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil
+           }}
+          | {:error, Error.t() | term()}
+  def run_access_effect_target_order_reconciliation_for_system(opts \\ [])
+
+  def run_access_effect_target_order_reconciliation_for_system(opts) when is_list(opts) do
+    limit = opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
+
+    with {:ok, as_of} <- recovery_as_of(opts),
+         {:ok, effective_effects} <-
+           target_order_recovery_effects(opts, :effective, as_of, limit),
+         {:ok, non_effective_effects} <-
+           target_order_recovery_effects(opts, :non_effective, as_of, limit),
+         {:ok, counts} <-
+           reconcile_target_order_page(effective_effects ++ non_effective_effects) do
+      {:ok,
+       %{
+         repaired_count: counts.repaired,
+         noop_count: counts.noop,
+         already_covered_count: counts.already_covered,
+         as_of: as_of,
+         effective_cursor:
+           target_order_cursor(effective_effects, limit, Keyword.get(opts, :skip_effective, false)),
+         non_effective_cursor:
+           target_order_cursor(
+             non_effective_effects,
+             limit,
+             Keyword.get(opts, :skip_non_effective, false)
+           )
+       }}
+    end
+  end
+
+  def run_access_effect_target_order_reconciliation_for_system(_opts) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "AccessEffect target-order reconciliation options must be a keyword list"
+     )}
   end
 
   @spec list_subscriptions_for_user(map(), UserSubscriptionIndexQuery.t()) ::
@@ -3946,7 +3996,9 @@ defmodule Store.Subscriptions.Facade do
          {:ok, transition_notifications} <-
            maybe_transition_contract_change(current_target, :cancel),
          {:ok, canceled, subscription_notifications} <-
-           update_subscription_contract_change(subscription, action, attrs, actor) do
+           update_subscription_contract_change(subscription, action, attrs, actor),
+         {:ok, _effect} <-
+           maybe_establish_immediate_cancellation_access_effect(effective_mode, canceled) do
       {:ok,
        %{
          subscription: canceled,
@@ -7070,9 +7122,8 @@ defmodule Store.Subscriptions.Facade do
          {:ok, outcome, terminal_subscription, terminal_notifications} <-
            terminalize_late_reconciled_cancellation(subscription, updated, attempt),
          {:ok, _effect} <-
-           maybe_establish_suspended_recovery_access_effect(
+           maybe_establish_charged_renewal_access_effect(
              outcome,
-             subscription,
              terminal_subscription,
              attempt,
              target
@@ -7089,23 +7140,27 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp maybe_establish_suspended_recovery_access_effect(
+  defp maybe_establish_charged_renewal_access_effect(
          :applied,
-         %Subscription{} = previous,
-         %Subscription{} = recovered,
+         %Subscription{} = renewed,
          %RenewalAttempt{} = attempt,
          target
        ),
-       do: establish_suspended_recovery_access_effect(previous, recovered, attempt, target)
+       do: establish_charged_renewal_access_effect(renewed, attempt, target)
 
-  defp maybe_establish_suspended_recovery_access_effect(
-         _outcome,
-         %Subscription{},
-         %Subscription{},
-         %RenewalAttempt{},
-         _target
-       ),
+  defp maybe_establish_charged_renewal_access_effect(_outcome, _renewed, _attempt, _target),
        do: {:ok, nil}
+
+  defp maybe_establish_immediate_cancellation_access_effect(:now, %Subscription{} = canceled) do
+    attrs = AccessEffectTargetOrder.immediate_cancellation_establish_attrs(canceled)
+
+    with {:ok, input} <- EstablishAccessEffectInput.new(attrs) do
+      establish_access_effect_for_system(input)
+    end
+  end
+
+  defp maybe_establish_immediate_cancellation_access_effect(_effective_mode, _canceled),
+    do: {:ok, nil}
 
   defp terminalize_late_reconciled_cancellation(
          %Subscription{} = previous,
@@ -7155,36 +7210,17 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp establish_suspended_recovery_access_effect(
-         %Subscription{status: :suspended},
-         %Subscription{} = recovered,
+  defp establish_charged_renewal_access_effect(
+         %Subscription{} = renewed,
          %RenewalAttempt{} = attempt,
          target
        ) do
-    with {:ok, input} <-
-           EstablishAccessEffectInput.new(%{
-             subscription_id: recovered.id,
-             source_version: recovered.aggregate_version,
-             disposition: :effective,
-             entitlement_kind: target.entitlement_kind,
-             entitlement_scope_key: target.entitlement_scope_key,
-             valid_from_at: attempt.period_start_at,
-             valid_until_at: recovered.current_period_end_at,
-             source_order_line_item_id: recovered.source_order_line_item_id,
-             contract_change_id: recovered.current_contract_change_id,
-             plan_revision_id: attempt.plan_revision_id
-           }) do
+    attrs = AccessEffectTargetOrder.charged_renewal_establish_attrs(renewed, attempt, target)
+
+    with {:ok, input} <- EstablishAccessEffectInput.new(attrs) do
       establish_access_effect_for_system(input)
     end
   end
-
-  defp establish_suspended_recovery_access_effect(
-         %Subscription{},
-         %Subscription{},
-         %RenewalAttempt{},
-         _target
-       ),
-       do: {:ok, nil}
 
   defp lock_reconciliation_contract_change(nil), do: {:ok, nil}
 
@@ -8657,6 +8693,150 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp recovery_cursor(_effects, _limit, _timestamp_field), do: nil
+
+  defp target_order_cursor(_effects, _limit, true), do: nil
+
+  defp target_order_cursor(effects, limit, false),
+    do: recovery_cursor(effects, limit, :updated_at)
+
+  defp target_order_recovery_effects(opts, stream, as_of, limit) do
+    skip? =
+      Keyword.get(
+        opts,
+        if(stream == :effective, do: :skip_effective, else: :skip_non_effective),
+        false
+      )
+
+    if skip? do
+      {:ok, []}
+    else
+      action =
+        if stream == :effective,
+          do: :read_recoverable_effective_for_system,
+          else: :read_recoverable_non_effective_for_system
+
+      args = target_order_recovery_args(opts, stream, as_of, limit)
+      list_access_effects_for_system(action, args)
+    end
+  end
+
+  defp target_order_recovery_args(opts, stream, as_of, limit) do
+    {after_updated_at_key, after_id_key} =
+      if stream == :effective,
+        do: {:effective_after_updated_at, :effective_after_id},
+        else: {:non_effective_after_updated_at, :non_effective_after_id}
+
+    %{
+      through_updated_at: as_of,
+      after_updated_at: Keyword.get(opts, after_updated_at_key),
+      after_id: Keyword.get(opts, after_id_key),
+      limit: limit
+    }
+  end
+
+  defp reconcile_target_order_page(effects) do
+    Enum.reduce_while(effects, {:ok, %{repaired: 0, noop: 0, already_covered: 0}}, fn effect,
+                                                                                       {:ok, counts} ->
+      case reconcile_target_order_candidate(effect.id) do
+        {:ok, :repaired} ->
+          {:cont, {:ok, %{counts | repaired: counts.repaired + 1}}}
+
+        {:ok, :newer_effect_present} ->
+          {:cont, {:ok, %{counts | noop: counts.noop + 1}}}
+
+        {:ok, :already_covered} ->
+          {:cont, {:ok, %{counts | already_covered: counts.already_covered + 1}}}
+
+        {:error, reason} ->
+          {:halt, {:error, target_order_page_error(effect, reason)}}
+      end
+    end)
+  end
+
+  defp reconcile_target_order_candidate(effect_id) do
+    case Repo.transaction(fn -> reconcile_target_order_candidate_in_transaction(effect_id) end) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp reconcile_target_order_candidate_in_transaction(effect_id) do
+    with {:ok, candidate} <- fetch_access_effect(effect_id),
+         {:ok, subscription} <- fetch_subscription_for_renewal_locked(candidate.subscription_id),
+         {:ok, _locked} <- fetch_access_effect_locked(effect_id),
+         {:ok, current} <- read_current_access_effect(subscription.id) do
+      reconcile_locked_target_order_candidate(subscription, candidate, current)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp reconcile_locked_target_order_candidate(subscription, candidate, current) do
+    if match?(%AccessEffect{id: id} when id == candidate.id, current) do
+      with {:ok, revision} <- plan_revision_for_target_order_reconciliation(subscription),
+           {:ok, derived} <- AccessEffectTargetOrder.derive_current_target(subscription, revision) do
+        if AccessEffectTargetOrder.covered?(candidate, derived) do
+          :already_covered
+        else
+          establish_reconciled_target_order_effect(subscription, derived)
+        end
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    else
+      :newer_effect_present
+    end
+  end
+
+  defp establish_reconciled_target_order_effect(subscription, derived) do
+    attrs =
+      Map.merge(derived, %{
+        subscription_id: subscription.id,
+        source_version: subscription.aggregate_version
+      })
+
+    with {:ok, input} <- EstablishAccessEffectInput.new(attrs),
+         {:ok, _effect} <- establish_access_effect_for_system(input) do
+      :repaired
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp plan_revision_for_target_order_reconciliation(
+         %Subscription{status: status} = subscription
+       )
+       when status in [:active, :past_due],
+       do: fetch_plan_revision_for_target_order_reconciliation(subscription)
+
+  defp plan_revision_for_target_order_reconciliation(%Subscription{}), do: {:ok, nil}
+
+  defp fetch_plan_revision_for_target_order_reconciliation(%Subscription{
+         current_plan_revision_id: nil
+       }),
+       do: {:error, Error.new("TARGET_ORDER_UNPROVABLE", "subscription plan revision is missing")}
+
+  defp fetch_plan_revision_for_target_order_reconciliation(%Subscription{} = subscription),
+    do: fetch_plan_revision(subscription.current_plan_revision_id)
+
+  defp target_order_page_error(%AccessEffect{} = effect, reason) do
+    meta =
+      Map.merge(error_meta(reason), %{
+        access_effect_id: effect.id,
+        subscription_id: effect.subscription_id
+      })
+
+    case reason do
+      %Error{code: code, message: message, meta: existing} ->
+        Error.new(code, message, Map.merge(existing || %{}, meta))
+
+      other ->
+        Error.new("TARGET_ORDER_BLOCKED", inspect(other), meta)
+    end
+  end
+
+  defp error_meta(%Error{meta: meta}) when is_map(meta), do: meta
+  defp error_meta(_), do: %{}
 
   defp boundary_cursor(subscriptions, limit) when length(subscriptions) == limit do
     subscription = List.last(subscriptions)
