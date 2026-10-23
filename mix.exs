@@ -97,6 +97,7 @@ defmodule Store.MixProject do
       # Security floors for transitive HTTP/authentication runtime packages.
       {:mint, ">= 1.11.0 and < 2.0.0-0"},
       {:plug, ">= 1.19.5 and < 2.0.0-0"},
+      {:plug_crypto, ">= 2.2.1 and < 3.0.0-0"},
       {:hpax, ">= 1.0.4 and < 2.0.0-0"},
       {:thousand_island, ">= 1.5.0 and < 2.0.0-0"},
       {:ymlr, ">= 5.1.6 and < 6.0.0-0"},
