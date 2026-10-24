@@ -12,6 +12,7 @@ defmodule Store.Subscriptions.Facade do
   alias Store.Checkout.CheckoutDraft
   alias Store.Comms
   alias Store.Entitlements.Facade, as: EntitlementsFacade
+  alias Store.Entitlements.Inputs.SubscriptionSourceConvergenceInput
   alias Store.Orders
   alias Store.Orders.Order
   alias Store.Orders.OrderLineItem
@@ -50,6 +51,7 @@ defmodule Store.Subscriptions.Facade do
 
   alias Store.Subscriptions.{
     AccessEffect,
+    AccessEffectCurrentnessFence,
     AccessEffectTargetOrder,
     ContractChange,
     PlanRevision,
@@ -75,6 +77,7 @@ defmodule Store.Subscriptions.Facade do
   @shipping_surge_percent_bps 2_000
   @shipping_surge_absolute_minor 5_000
   @renewal_authority_withdrawn_code "RENEWAL_AUTHORITY_WITHDRAWN"
+  @effective_access_effect_projection_reason "effective_access_effect_applied"
   @payment_retry_reasons MapSet.new([
                            "PAYMENT_METHOD_REQUIRED",
                            "PAYMENT_FAILED",
@@ -154,6 +157,77 @@ defmodule Store.Subscriptions.Facade do
     end)
   end
 
+  @spec execute_effective_access_effect_for_system(String.t()) ::
+          {:ok, :applied | :applied_projection_pending | :superseded | :noop}
+          | {:error, Error.t() | term()}
+  def execute_effective_access_effect_for_system(effect_id) when is_binary(effect_id) do
+    Repo.transaction(fn -> execute_effective_access_effect_in_transaction(effect_id) end)
+    |> handle_effective_access_effect_transaction(effect_id)
+  end
+
+  def execute_effective_access_effect_for_system(_effect_id) do
+    {:error, Error.new("VALIDATION_ERROR", "AccessEffect id must be a UUID")}
+  end
+
+  defp handle_effective_access_effect_transaction(
+         {:ok, {:applied, effect, user_ids}},
+         _effect_id
+       ) do
+    :ok =
+      AshNotifications.notify_post_commit([],
+        context: %{
+          flow: :execute_effective_access_effect,
+          subscription_id: effect.subscription_id,
+          access_effect_id: effect.id
+        }
+      )
+
+    case deliver_access_effect_projection(
+           effect,
+           user_ids,
+           @effective_access_effect_projection_reason
+         ) do
+      :ok -> {:ok, :applied}
+      {:error, _reason} -> {:ok, :applied_projection_pending}
+    end
+  end
+
+  defp handle_effective_access_effect_transaction({:ok, {:superseded, _effect}}, _effect_id),
+    do: {:ok, :superseded}
+
+  defp handle_effective_access_effect_transaction({:ok, :noop}, _effect_id),
+    do: {:ok, :noop}
+
+  defp handle_effective_access_effect_transaction(
+         {:error, {:effective_execution_failure, reason}},
+         effect_id
+       ) do
+    case record_effective_access_effect_failure(effect_id) do
+      :ok ->
+        {:error, Normalize.normalize(reason)}
+
+      {:error, recording_reason} ->
+        {:error,
+         Error.new(
+           "INTERNAL_ERROR",
+           "EFFECTIVE AccessEffect failure could not be recorded",
+           %{
+             execution_failure: inspect(reason),
+             failure_recording_failure: inspect(recording_reason)
+           }
+         )}
+    end
+  end
+
+  defp handle_effective_access_effect_transaction(
+         {:error, {:effective_proof_failure, reason}},
+         _effect_id
+       ),
+       do: {:error, Normalize.normalize(reason)}
+
+  defp handle_effective_access_effect_transaction({:error, reason}, _effect_id),
+    do: {:error, Normalize.normalize(reason)}
+
   @spec execute_suspension_access_effect_for_system(String.t()) ::
           {:ok, :applied | :superseded | :noop} | {:error, Error.t() | term()}
   def execute_suspension_access_effect_for_system(effect_id) when is_binary(effect_id) do
@@ -207,7 +281,7 @@ defmodule Store.Subscriptions.Facade do
            deliver_access_effect_projection(
              effect,
              effect.projection_user_ids,
-             non_effective_access_effect_reason(subscription)
+             access_effect_projection_reason(effect, subscription)
            ) do
       :ok
     else
@@ -224,10 +298,12 @@ defmodule Store.Subscriptions.Facade do
           {:ok,
            %{
              execution_count: non_neg_integer(),
+             effective_execution_count: non_neg_integer(),
              projection_count: non_neg_integer(),
              failed_count: non_neg_integer(),
              as_of: DateTime.t(),
              execution_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
+             effective_execution_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil,
              projection_cursor: %{timestamp: DateTime.t(), id: Ecto.UUID.t()} | nil
            }}
           | {:error, Error.t() | term()}
@@ -236,11 +312,16 @@ defmodule Store.Subscriptions.Facade do
   def run_subscription_access_effect_recovery_for_system(opts) when is_list(opts) do
     limit = opts |> Keyword.get(:limit, @default_due_limit) |> bounded_due_limit()
 
-    with {:ok, as_of} <- recovery_as_of(opts),
+    with :ok <- validate_effective_execution_cursor(opts),
+         {:ok, as_of} <- recovery_as_of(opts),
          {:ok, projection_effects} <- recovery_effects(opts, :projection, as_of, limit),
-         {:ok, recoverable_effects} <- recovery_effects(opts, :execution, as_of, limit) do
+         {:ok, recoverable_effects} <- recovery_effects(opts, :execution, as_of, limit),
+         {:ok, effective_effects} <- recovery_effects(opts, :effective_execution, as_of, limit) do
       execution =
         Enum.reduce(recoverable_effects, %{completed: 0, failed: 0}, &execute_effect_result/2)
+
+      effective_execution =
+        Enum.reduce(effective_effects, %{completed: 0, failed: 0}, &execute_effect_result/2)
 
       projection =
         Enum.reduce(
@@ -252,13 +333,19 @@ defmodule Store.Subscriptions.Facade do
       {:ok,
        %{
          execution_count: execution.completed,
+         effective_execution_count: effective_execution.completed,
          projection_count: projection.completed,
-         failed_count: execution.failed + projection.failed,
+         failed_count: execution.failed + effective_execution.failed + projection.failed,
          as_of: as_of,
          execution_cursor:
            if(Keyword.get(opts, :skip_execution, false),
              do: nil,
              else: recovery_cursor(recoverable_effects, limit, :updated_at)
+           ),
+         effective_execution_cursor:
+           if(Keyword.get(opts, :skip_effective_execution, false),
+             do: nil,
+             else: recovery_cursor(effective_effects, limit, :updated_at)
            ),
          projection_cursor:
            if(Keyword.get(opts, :skip_projection, false),
@@ -2818,14 +2905,10 @@ defmodule Store.Subscriptions.Facade do
     with :ok <- ensure_matching_attempt_payment(order_id, attempt, payment_intent_id),
          {:ok, %Order{state: :paid} = order} <- fetch_paid_order(order_id),
          :ok <- ensure_renewal_payment_application(order.id, payment_intent_id),
-         {:ok, outcome, updated_subscription, entitlement_target, notifications} <-
-           reconcile_paid_renewal_attempt(attempt),
+         {:ok, reconciliation} <- reconcile_paid_renewal_attempt(attempt),
          {:ok, result} <-
            finish_paid_renewal_reconciliation(
-             outcome,
-             updated_subscription,
-             entitlement_target,
-             notifications,
+             reconciliation,
              attempt,
              order_id,
              payment_intent_id
@@ -2837,10 +2920,7 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp finish_paid_renewal_reconciliation(
-         :canceled,
-         _subscription,
-         _entitlement_target,
-         _notifications,
+         %{outcome: :canceled},
          _attempt,
          _order_id,
          _payment_intent_id
@@ -2848,10 +2928,11 @@ defmodule Store.Subscriptions.Facade do
        do: {:ok, :noop}
 
   defp finish_paid_renewal_reconciliation(
-         :scheduled_cancellation,
-         updated_subscription,
-         _entitlement_target,
-         notifications,
+         %{
+           outcome: :scheduled_cancellation,
+           subscription: updated_subscription,
+           notifications: notifications
+         },
          attempt,
          order_id,
          payment_intent_id
@@ -2870,10 +2951,14 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp finish_paid_renewal_reconciliation(
-         outcome,
-         updated_subscription,
-         entitlement_target,
-         notifications,
+         %{
+           outcome: outcome,
+           subscription: updated_subscription,
+           target: entitlement_target,
+           notifications: notifications,
+           renewal_access_effect_id: effect_id,
+           grant_writer_lane: grant_writer_lane
+         },
          attempt,
          order_id,
          payment_intent_id
@@ -2886,7 +2971,13 @@ defmodule Store.Subscriptions.Facade do
              }
            ),
          :ok <- emit_paid_renewal_access_sync_boundary(updated_subscription, attempt),
-         :ok <- sync_charged_renewal_entitlement(updated_subscription, entitlement_target),
+         :ok <-
+           sync_charged_renewal_access(
+             grant_writer_lane,
+             effect_id,
+             updated_subscription,
+             entitlement_target
+           ),
          {:ok, _attempt} <- mark_attempt_succeeded(attempt, order_id, payment_intent_id) do
       {:ok,
        if(outcome == :already_applied and attempt.status == :succeeded,
@@ -7032,7 +7123,7 @@ defmodule Store.Subscriptions.Facade do
 
     case result do
       {:ok, value} ->
-        {:ok, value.outcome, value.subscription, value.target, value.notifications}
+        {:ok, value}
 
       {:error, reason} ->
         {:error, Normalize.normalize(reason)}
@@ -7059,6 +7150,44 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp apply_locked_reconciliation(
+         %Subscription{} = subscription,
+         contract_change,
+         %RenewalAttempt{} = attempt,
+         revision,
+         target
+       ) do
+    case find_historical_charged_renewal_effect(subscription, attempt, target) do
+      {:ok, %AccessEffect{} = effect} ->
+        case charged_renewal_effect_handoff(effect, subscription, attempt, target) do
+          {:ok, effect_id, lane} ->
+            %{
+              outcome: :already_applied,
+              subscription: subscription,
+              target: target,
+              notifications: [],
+              renewal_access_effect_id: effect_id,
+              grant_writer_lane: lane
+            }
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+
+      {:ok, nil} ->
+        apply_locked_reconciliation_without_historical_effect(
+          subscription,
+          contract_change,
+          attempt,
+          revision,
+          target
+        )
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp apply_locked_reconciliation_without_historical_effect(
          %Subscription{status: :canceled} = subscription,
          _contract_change,
          %RenewalAttempt{} = attempt,
@@ -7084,15 +7213,21 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp apply_locked_reconciliation(subscription, contract_change, attempt, revision, target) do
+  defp apply_locked_reconciliation_without_historical_effect(
+         subscription,
+         contract_change,
+         attempt,
+         revision,
+         target
+       ) do
     case exact_reconciliation_replay(subscription, contract_change, attempt, revision, target) do
       {:continue, :replay} ->
-        %{
-          outcome: :already_applied,
-          subscription: subscription,
-          target: target,
-          notifications: []
-        }
+        Repo.rollback(
+          Error.new(
+            "VALIDATION_ERROR",
+            "charged renewal replay has no unique historical EFFECTIVE AccessEffect"
+          )
+        )
 
       {:continue, :apply} ->
         apply_first_reconciliation(subscription, contract_change, attempt, revision, target)
@@ -7110,17 +7245,21 @@ defmodule Store.Subscriptions.Facade do
          {:ok, change_notifications} <- apply_reconciliation_contract_change(contract_change),
          {:ok, outcome, terminal_subscription, terminal_notifications} <-
            terminalize_late_reconciled_cancellation(subscription, updated, attempt),
-         {:ok, _effect} <-
+         {:ok, effect} <-
            maybe_establish_charged_renewal_access_effect(
              outcome,
              terminal_subscription,
              attempt,
              target
-           ) do
+           ),
+         {:ok, effect_id, grant_writer_lane} <-
+           charged_renewal_effect_handoff(effect, terminal_subscription, attempt, target) do
       %{
         outcome: outcome,
         subscription: terminal_subscription,
         target: target,
+        renewal_access_effect_id: effect_id,
+        grant_writer_lane: grant_writer_lane,
         notifications:
           subscription_notifications ++ change_notifications ++ terminal_notifications
       }
@@ -7139,6 +7278,163 @@ defmodule Store.Subscriptions.Facade do
 
   defp maybe_establish_charged_renewal_access_effect(_outcome, _renewed, _attempt, _target),
     do: {:ok, nil}
+
+  defp charged_renewal_effect_handoff(nil, _subscription, _attempt, _target),
+    do: {:ok, nil, nil}
+
+  defp charged_renewal_effect_handoff(
+         %AccessEffect{} = effect,
+         %Subscription{} = subscription,
+         %RenewalAttempt{} = attempt,
+         target
+       ) do
+    with :ok <- validate_charged_renewal_effect_identity(effect, subscription, attempt, target),
+         {:ok, predecessor} <- immediate_access_effect_predecessor(effect) do
+      lane =
+        case predecessor do
+          %AccessEffect{disposition: :non_effective} -> :suspended_recovery
+          %AccessEffect{disposition: :effective} -> :ordinary
+          nil -> :ordinary
+        end
+
+      {:ok, effect.id, lane}
+    end
+  end
+
+  defp validate_charged_renewal_effect_identity(effect, subscription, attempt, target) do
+    if charged_renewal_effect_identity_matches?(effect, subscription, attempt, target) do
+      :ok
+    else
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "charged renewal EFFECTIVE AccessEffect does not match immutable occurrence evidence"
+       )}
+    end
+  end
+
+  defp charged_renewal_effect_identity_matches?(effect, subscription, attempt, target) do
+    Enum.all?([
+      effect.subscription_id == subscription.id,
+      effect.disposition == :effective,
+      effect.plan_revision_id == attempt.plan_revision_id,
+      effect.entitlement_kind == Map.get(target, :entitlement_kind),
+      effect.entitlement_scope_key == Map.get(target, :entitlement_scope_key),
+      charged_renewal_effect_start_matches?(effect, target, attempt),
+      effect.source_order_line_item_id == subscription.source_order_line_item_id,
+      datetime_equal?(effect.valid_until_at, attempt.period_end_at)
+    ])
+  end
+
+  defp charged_renewal_effect_start_matches?(effect, target, attempt) do
+    case {Map.get(target, :entitlement_kind), Map.get(target, :entitlement_scope_key)} do
+      {kind, scope_key} when not is_nil(kind) and is_binary(scope_key) ->
+        datetime_equal?(effect.valid_from_at, attempt.period_start_at)
+
+      {nil, nil} ->
+        is_nil(effect.valid_from_at)
+
+      _ ->
+        false
+    end
+  end
+
+  defp find_historical_charged_renewal_effect(subscription, attempt, target) do
+    with :ok <- validate_charged_renewal_target_pair(target) do
+      query =
+        AccessEffect
+        |> Ash.Query.filter(
+          expr(
+            subscription_id == ^subscription.id and
+              disposition == :effective and
+              plan_revision_id == ^attempt.plan_revision_id and
+              source_order_line_item_id == ^subscription.source_order_line_item_id and
+              valid_until_at == ^attempt.period_end_at
+          )
+        )
+        |> charged_renewal_target_filter(target, attempt)
+        |> Ash.Query.sort(source_version: :desc)
+        |> Ash.Query.limit(2)
+
+      case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+        {:ok, [%AccessEffect{} = effect]} ->
+          {:ok, effect}
+
+        {:ok, []} ->
+          {:ok, nil}
+
+        {:ok, [_first, _second | _rest]} ->
+          {:error,
+           Error.new(
+             "VALIDATION_ERROR",
+             "charged renewal has ambiguous historical EFFECTIVE AccessEffect evidence"
+           )}
+
+        {:error, reason} ->
+          {:error, Normalize.normalize(reason)}
+      end
+    end
+  end
+
+  defp validate_charged_renewal_target_pair(target) do
+    case {Map.get(target, :entitlement_kind), Map.get(target, :entitlement_scope_key)} do
+      {nil, nil} ->
+        :ok
+
+      {kind, scope_key} when not is_nil(kind) and is_binary(scope_key) ->
+        :ok
+
+      _ ->
+        {:error,
+         Error.new("VALIDATION_ERROR", "charged renewal entitlement target pair is incomplete")}
+    end
+  end
+
+  defp charged_renewal_target_filter(query, target, attempt) do
+    case {Map.get(target, :entitlement_kind), Map.get(target, :entitlement_scope_key)} do
+      {nil, nil} ->
+        Ash.Query.filter(
+          query,
+          expr(
+            is_nil(entitlement_kind) and is_nil(entitlement_scope_key) and
+              is_nil(valid_from_at)
+          )
+        )
+
+      {kind, scope_key} ->
+        Ash.Query.filter(
+          query,
+          expr(
+            entitlement_kind == ^kind and entitlement_scope_key == ^scope_key and
+              valid_from_at == ^attempt.period_start_at
+          )
+        )
+    end
+  end
+
+  defp immediate_access_effect_predecessor(%AccessEffect{} = effect) do
+    query =
+      AccessEffect
+      |> Ash.Query.filter(
+        expr(
+          subscription_id == ^effect.subscription_id and
+            source_version < ^effect.source_version
+        )
+      )
+      |> Ash.Query.sort(source_version: :desc)
+      |> Ash.Query.limit(1)
+
+    case Ash.read(query, domain: Subscriptions, authorize?: false, context: %{system?: true}) do
+      {:ok, [predecessor]} -> {:ok, predecessor}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp datetime_equal?(%DateTime{} = left, %DateTime{} = right),
+    do: DateTime.compare(left, right) == :eq
+
+  defp datetime_equal?(_, _), do: false
 
   defp maybe_establish_immediate_cancellation_access_effect(:now, %Subscription{} = canceled) do
     attrs = AccessEffectTargetOrder.immediate_cancellation_establish_attrs(canceled)
@@ -7554,6 +7850,37 @@ defmodule Store.Subscriptions.Facade do
     end)
     |> normalize_transaction_notifications()
     |> project_subscription_entitlement_sync(subscription_id)
+  end
+
+  defp sync_charged_renewal_access(:ordinary, _effect_id, subscription, target),
+    do: sync_charged_renewal_entitlement(subscription, target)
+
+  defp sync_charged_renewal_access(:suspended_recovery, effect_id, _subscription, _target)
+       when is_binary(effect_id) do
+    case execute_effective_access_effect_for_system(effect_id) do
+      {:ok, outcome}
+      when outcome in [:applied, :applied_projection_pending, :superseded, :noop] ->
+        :ok
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
+
+      other ->
+        {:error,
+         Error.new(
+           "INTERNAL_ERROR",
+           "EFFECTIVE charged-renewal handoff returned an invalid outcome",
+           %{outcome: inspect(other)}
+         )}
+    end
+  end
+
+  defp sync_charged_renewal_access(_lane, _effect_id, _subscription, _target) do
+    {:error,
+     Error.new(
+       "VALIDATION_ERROR",
+       "charged-renewal EFFECTIVE AccessEffect handoff classification is missing"
+     )}
   end
 
   defp sync_charged_renewal_entitlement_in_transaction(_subscription_id, %{entitlement_kind: nil}) do
@@ -8360,6 +8687,168 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
+  defp execute_effective_access_effect_in_transaction(effect_id) do
+    case AccessEffectCurrentnessFence.prove(effect_id) do
+      {:ok, evidence} ->
+        effect = evidence.access_effect
+
+        if effect.disposition == :effective do
+          execute_locked_effective_access_effect(evidence)
+        else
+          Repo.rollback(
+            {:effective_proof_failure,
+             Error.new(
+               "INVALID_STATE_TRANSITION",
+               "EFFECTIVE executor requires an EFFECTIVE AccessEffect"
+             )}
+          )
+        end
+
+      {:error, reason} ->
+        Repo.rollback({:effective_proof_failure, reason})
+    end
+  end
+
+  defp execute_locked_effective_access_effect(
+         %{access_effect: %AccessEffect{} = effect} = evidence
+       ) do
+    cond do
+      effect.status in [:applied, :superseded] ->
+        :noop
+
+      evidence.status == :stale ->
+        supersede_effective_access_effect(effect)
+
+      evidence.status == :current ->
+        converge_current_effective_access_effect(evidence)
+
+      true ->
+        Repo.rollback(
+          {:effective_proof_failure,
+           Error.new(
+             "INTERNAL_ERROR",
+             "AccessEffect currentness proof returned an invalid state"
+           )}
+        )
+    end
+  catch
+    :throw, {DBConnection, _connection_ref, reason} ->
+      Repo.rollback({:effective_execution_failure, reason})
+  end
+
+  defp supersede_effective_access_effect(effect) do
+    case supersede_older_access_effect(effect) do
+      :ok -> {:superseded, effect}
+      {:error, reason} -> Repo.rollback({:effective_execution_failure, reason})
+    end
+  end
+
+  defp converge_current_effective_access_effect(%{
+         source: %{subscription_id: subscription_id, user_id: user_id},
+         access_effect: %AccessEffect{} = effect
+       }) do
+    with {:ok, pending_effect} <- access_effect_to_pending(effect),
+         {:ok, input} <- effective_source_convergence_input(subscription_id, user_id, effect),
+         {:ok, convergence} <- converge_effective_access_source(input),
+         {:ok, applied_effect} <-
+           mark_effective_access_effect_applied(pending_effect, convergence) do
+      {:applied, applied_effect, convergence.projection_user_ids}
+    else
+      {:error, {:effective_execution_failure, reason}} ->
+        Repo.rollback({:effective_execution_failure, reason})
+
+      {:error, reason} ->
+        Repo.rollback({:effective_proof_failure, reason})
+    end
+  end
+
+  defp converge_effective_access_source(input) do
+    case safely_converge_subscription_source(input) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, {:effective_execution_failure, reason}}
+    end
+  end
+
+  defp mark_effective_access_effect_applied(effect, convergence) do
+    case transition_access_effect_with_attrs(
+           effect,
+           :pending,
+           :applied,
+           :mark_applied,
+           %{projection_user_ids: convergence.projection_user_ids}
+         ) do
+      {:ok, applied_effect} -> {:ok, applied_effect}
+      {:error, reason} -> {:error, {:effective_execution_failure, reason}}
+    end
+  end
+
+  defp safely_converge_subscription_source(input) do
+    EntitlementsFacade.converge_subscription_source_grants_for_system(input)
+  rescue
+    exception -> {:error, exception}
+  catch
+    :throw, {DBConnection, _connection_ref, reason} -> {:error, reason}
+  end
+
+  defp effective_source_convergence_input(subscription_id, user_id, effect) do
+    attrs = %{
+      subscription_id: subscription_id,
+      user_id: user_id,
+      disposition: :effective,
+      entitlement_kind: effect.entitlement_kind,
+      entitlement_scope_key: effect.entitlement_scope_key,
+      valid_from_at: effect.valid_from_at,
+      valid_until_at: effect.valid_until_at,
+      reason: @effective_access_effect_projection_reason,
+      access_effect_id: effect.id,
+      source_version: effect.source_version,
+      target_fingerprint: effect.target_fingerprint
+    }
+
+    case SubscriptionSourceConvergenceInput.new(attrs) do
+      {:ok, input} -> {:ok, input}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp record_effective_access_effect_failure(effect_id) do
+    case Repo.transaction(fn ->
+           record_effective_access_effect_failure_in_transaction(effect_id)
+         end) do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp record_effective_access_effect_failure_in_transaction(effect_id) do
+    case AccessEffectCurrentnessFence.prove(effect_id) do
+      {:ok, %{access_effect: %AccessEffect{disposition: :effective} = effect} = evidence} ->
+        record_effective_access_effect_failure_for_proof(evidence, effect)
+
+      {:ok, _evidence} ->
+        Repo.rollback(
+          Error.new("INVALID_STATE_TRANSITION", "failure recording requires an EFFECTIVE effect")
+        )
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp record_effective_access_effect_failure_for_proof(%{status: :stale}, effect) do
+    case supersede_older_access_effect(effect) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp record_effective_access_effect_failure_for_proof(%{status: :current}, effect) do
+    case mark_access_effect_retryable_after_failure(effect) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
   defp execute_suspension_access_effect_in_transaction(effect_id) do
     with {:ok, candidate} <- fetch_access_effect(effect_id),
          {:ok, subscription} <- fetch_subscription_for_renewal_locked(candidate.subscription_id),
@@ -8480,6 +8969,18 @@ defmodule Store.Subscriptions.Facade do
 
   defp non_effective_access_effect_reason(_subscription), do: nil
 
+  defp access_effect_projection_reason(
+         %AccessEffect{disposition: :effective},
+         _subscription
+       ),
+       do: @effective_access_effect_projection_reason
+
+  defp access_effect_projection_reason(
+         %AccessEffect{disposition: :non_effective},
+         subscription
+       ),
+       do: non_effective_access_effect_reason(subscription)
+
   defp mark_access_effect_projection_delivered(effect_id, expected_user_ids) do
     case Repo.transaction(fn ->
            mark_access_effect_projection_delivered_in_transaction(
@@ -8487,8 +8988,11 @@ defmodule Store.Subscriptions.Facade do
              expected_user_ids
            )
          end) do
-      {:ok, :ok} -> :ok
-      {:error, reason} -> {:error, Normalize.normalize(reason)}
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, Normalize.normalize(reason)}
     end
   end
 
@@ -8625,12 +9129,14 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp recovery_effects(opts, stream, as_of, limit) do
-    skip? =
-      Keyword.get(
-        opts,
-        if(stream == :execution, do: :skip_execution, else: :skip_projection),
-        false
-      )
+    skip_key =
+      case stream do
+        :execution -> :skip_execution
+        :effective_execution -> :skip_effective_execution
+        :projection -> :skip_projection
+      end
+
+    skip? = Keyword.get(opts, skip_key, false)
 
     if skip? do
       {:ok, []}
@@ -8640,6 +9146,10 @@ defmodule Store.Subscriptions.Facade do
           :execution ->
             {:read_recoverable_non_effective_for_system,
              execution_recovery_args(opts, as_of, limit)}
+
+          :effective_execution ->
+            {:read_recoverable_effective_for_system,
+             effective_execution_recovery_args(opts, as_of, limit)}
 
           :projection ->
             {:read_pending_projection_repair_for_system,
@@ -8667,6 +9177,15 @@ defmodule Store.Subscriptions.Facade do
     }
   end
 
+  defp effective_execution_recovery_args(opts, as_of, limit) do
+    %{
+      through_updated_at: as_of,
+      after_updated_at: Keyword.get(opts, :effective_execution_after_updated_at),
+      after_id: Keyword.get(opts, :effective_execution_after_id),
+      limit: limit
+    }
+  end
+
   defp projection_recovery_args(opts, as_of, limit) do
     %{
       through_inserted_at: as_of,
@@ -8688,6 +9207,23 @@ defmodule Store.Subscriptions.Facade do
       {nil, nil} -> :ok
       {%DateTime{}, id} when is_binary(id) -> :ok
       _ -> {:error, Error.new("VALIDATION_ERROR", "AccessEffect target-order cursor is invalid")}
+    end
+  end
+
+  defp validate_effective_execution_cursor(opts) do
+    case {
+      Keyword.get(opts, :effective_execution_after_updated_at),
+      Keyword.get(opts, :effective_execution_after_id)
+    } do
+      {nil, nil} ->
+        :ok
+
+      {%DateTime{}, id} when is_binary(id) ->
+        :ok
+
+      _ ->
+        {:error,
+         Error.new("VALIDATION_ERROR", "EFFECTIVE AccessEffect recovery cursor is invalid")}
     end
   end
 
@@ -8840,7 +9376,13 @@ defmodule Store.Subscriptions.Facade do
   defp scheduled_cancellation_cursor(_subscriptions, _limit), do: nil
 
   defp execute_effect_result(effect, counts) do
-    case execute_suspension_access_effect_for_system(effect.id) do
+    result =
+      case effect.disposition do
+        :effective -> execute_effective_access_effect_for_system(effect.id)
+        :non_effective -> execute_suspension_access_effect_for_system(effect.id)
+      end
+
+    case result do
       {:ok, _result} -> %{counts | completed: counts.completed + 1}
       {:error, _reason} -> %{counts | failed: counts.failed + 1}
     end

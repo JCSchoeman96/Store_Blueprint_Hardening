@@ -194,6 +194,7 @@ defmodule Store.Support.Governance.SurfaceRegistry do
         {:list_past_due_missing_failed_payment_boundary_for_system, 0},
         {:list_past_due_missing_failed_payment_boundary_for_system, 1},
         {:execute_suspension_access_effect_for_system, 1},
+        {:execute_effective_access_effect_for_system, 1},
         {:repair_suspension_access_effect_projection_for_system, 1},
         {:run_subscription_access_effect_recovery_for_system, 0},
         {:run_subscription_access_effect_recovery_for_system, 1},

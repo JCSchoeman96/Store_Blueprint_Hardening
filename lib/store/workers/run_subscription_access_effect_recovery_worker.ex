@@ -27,14 +27,23 @@ defmodule Store.Workers.RunSubscriptionAccessEffectRecoveryWorker do
     with {:ok, as_of} <- parse_datetime(Map.get(args, "as_of")),
          {:ok, execution_after_updated_at} <-
            parse_datetime(Map.get(args, "execution_after_updated_at")),
+         {:ok, effective_execution_after_updated_at} <-
+           parse_datetime(Map.get(args, "effective_execution_after_updated_at")),
          {:ok, projection_after_inserted_at} <-
            parse_datetime(Map.get(args, "projection_after_inserted_at")),
          {:ok, limit} <- parse_limit(Map.get(args, "limit", 100)),
          :ok <- validate_optional_id(Map.get(args, "execution_after_id")),
+         :ok <-
+           validate_cursor_pair(
+             Map.get(args, "effective_execution_after_updated_at"),
+             Map.get(args, "effective_execution_after_id")
+           ),
+         :ok <- validate_optional_id(Map.get(args, "effective_execution_after_id")),
          :ok <- validate_optional_id(Map.get(args, "projection_after_id")) do
       opts = [
         limit: limit,
         skip_execution: Map.get(args, "skip_execution", false),
+        skip_effective_execution: Map.get(args, "skip_effective_execution", false),
         skip_projection: Map.get(args, "skip_projection", false)
       ]
 
@@ -48,6 +57,26 @@ defmodule Store.Workers.RunSubscriptionAccessEffectRecoveryWorker do
       opts =
         if Map.get(args, "execution_after_id"),
           do: Keyword.put(opts, :execution_after_id, Map.get(args, "execution_after_id")),
+          else: opts
+
+      opts =
+        if effective_execution_after_updated_at,
+          do:
+            Keyword.put(
+              opts,
+              :effective_execution_after_updated_at,
+              effective_execution_after_updated_at
+            ),
+          else: opts
+
+      opts =
+        if Map.get(args, "effective_execution_after_id"),
+          do:
+            Keyword.put(
+              opts,
+              :effective_execution_after_id,
+              Map.get(args, "effective_execution_after_id")
+            ),
           else: opts
 
       opts =
@@ -66,18 +95,31 @@ defmodule Store.Workers.RunSubscriptionAccessEffectRecoveryWorker do
     end
   end
 
-  defp enqueue_next_page(%{execution_cursor: nil, projection_cursor: nil}, _limit, _args),
-    do: :ok
+  defp enqueue_next_page(
+         %{
+           effective_execution_cursor: nil,
+           execution_cursor: nil,
+           projection_cursor: nil
+         },
+         _limit,
+         _args
+       ),
+       do: :ok
 
   defp enqueue_next_page(result, limit, args) do
     continuation = %{
       "as_of" => DateTime.to_iso8601(result.as_of),
       "limit" => limit,
       "skip_execution" => is_nil(result.execution_cursor),
+      "skip_effective_execution" => is_nil(result.effective_execution_cursor),
       "skip_projection" => is_nil(result.projection_cursor)
     }
 
     continuation = add_cursor(continuation, result.execution_cursor, :execution)
+
+    continuation =
+      add_cursor(continuation, result.effective_execution_cursor, :effective_execution)
+
     continuation = add_cursor(continuation, result.projection_cursor, :projection)
 
     continuation =
@@ -102,6 +144,12 @@ defmodule Store.Workers.RunSubscriptionAccessEffectRecoveryWorker do
     |> Map.put("execution_after_id", id)
   end
 
+  defp add_cursor(args, %{timestamp: timestamp, id: id}, :effective_execution) do
+    args
+    |> Map.put("effective_execution_after_updated_at", DateTime.to_iso8601(timestamp))
+    |> Map.put("effective_execution_after_id", id)
+  end
+
   defp add_cursor(args, %{timestamp: timestamp, id: id}, :projection) do
     args
     |> Map.put("projection_after_inserted_at", DateTime.to_iso8601(timestamp))
@@ -111,6 +159,13 @@ defmodule Store.Workers.RunSubscriptionAccessEffectRecoveryWorker do
   defp validate_optional_id(nil), do: :ok
   defp validate_optional_id(value) when is_binary(value), do: :ok
   defp validate_optional_id(_value), do: :error
+
+  defp validate_cursor_pair(nil, nil), do: :ok
+
+  defp validate_cursor_pair(timestamp, id) when is_binary(timestamp) and is_binary(id),
+    do: :ok
+
+  defp validate_cursor_pair(_timestamp, _id), do: :error
 
   defp parse_datetime(nil), do: {:ok, nil}
 

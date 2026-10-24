@@ -4,9 +4,14 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
   @moduletag :real_connections
   @tag timeout: 60_000
 
+  import Ash.Expr
+  require Ash.Query
+
   alias Ecto.Adapters.SQL.Sandbox
+  alias Store.Entitlements.EntitlementGrant
+  alias Store.Entitlements.Facade, as: EntitlementsFacade
   alias Store.Repo
-  alias Store.Subscriptions.AccessEffectCurrentnessFence
+  alias Store.Subscriptions.{AccessEffect, AccessEffectCurrentnessFence}
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
   alias Store.SubscriptionsFixtures
@@ -38,6 +43,94 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       run_contention!(fixtures, context.effective_repo_pool_size)
     after
       cleanup_owned_sources!(fixtures)
+    end
+  end
+
+  test "duplicate EFFECTIVE workers serialize and converge one exact grant" do
+    fixtures = create_committed_sources!()
+    fixture = fixtures.x
+    parent = self()
+
+    try do
+      workers =
+        for _ <- 1..2 do
+          Task.async(fn ->
+            Repo.checkout(fn ->
+              send(parent, {:effective_worker_ready, self()})
+
+              receive do
+                :execute -> Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+              after
+                @task_timeout -> {:error, :barrier_timeout}
+              end
+            end)
+          end)
+        end
+
+      worker_pids =
+        for _ <- 1..2 do
+          assert_receive {:effective_worker_ready, pid}, @task_timeout
+          pid
+        end
+
+      Enum.each(worker_pids, &send(&1, :execute))
+      results = Enum.map(workers, &Task.await(&1, @transaction_timeout))
+
+      assert Enum.count(results, &(&1 == {:ok, :applied})) == 1
+      assert Enum.count(results, &(&1 == {:ok, :noop})) == 1
+      assert_effective_grant!(fixture)
+    after
+      cleanup_owned_sources!(fixtures)
+    end
+  end
+
+  test "a newer target producer and EFFECTIVE executor serialize in both lock-arrival orders" do
+    producer_first = create_committed_sources!()
+
+    try do
+      run_producer_executor_race!(producer_first.x, :producer_first)
+      assert fetch_effect_status!(producer_first.x.effect.id) == "superseded"
+      assert latest_effect_disposition!(producer_first.x.subscription.id) == "non_effective"
+      assert grants_for_source!(producer_first.x.subscription.id) == []
+    after
+      cleanup_owned_sources!(producer_first)
+    end
+
+    executor_first = create_committed_sources!()
+
+    try do
+      run_producer_executor_race!(executor_first.x, :executor_first)
+      assert fetch_effect_status!(executor_first.x.effect.id) == "applied"
+      assert latest_effect_disposition!(executor_first.x.subscription.id) == "non_effective"
+      assert_effective_grant!(executor_first.x)
+    after
+      cleanup_owned_sources!(executor_first)
+    end
+  end
+
+  test "ordinary legacy issue and F1 convergence contend safely in both arrival orders" do
+    legacy_first = create_committed_sources!()
+
+    try do
+      assert {:ok, :ok} = Repo.transaction(fn -> issue_legacy_grant!(legacy_first.y) end)
+      unrelated_before = grants_for_source!(legacy_first.y.subscription.id)
+      run_legacy_executor_race!(legacy_first.x, :legacy_first)
+      assert_effective_grant!(legacy_first.x)
+      assert grants_for_source!(legacy_first.y.subscription.id) == unrelated_before
+    after
+      cleanup_owned_sources!(legacy_first)
+    end
+
+    executor_first = create_committed_sources!()
+
+    try do
+      assert {:ok, :ok} = Repo.transaction(fn -> issue_legacy_grant!(executor_first.y) end)
+      unrelated_before = grants_for_source!(executor_first.y.subscription.id)
+      run_legacy_executor_race!(executor_first.x, :executor_first)
+      assert_effective_grant!(executor_first.x)
+      assert grants_for_source!(executor_first.y.subscription.id) == unrelated_before
+    after
+      cleanup_owned_sources!(executor_first)
     end
   end
 
@@ -99,6 +192,238 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       stop_task_bounded(task_c)
       stop_task_bounded(task_b)
       stop_task_bounded(task_a)
+    end
+  end
+
+  defp run_producer_executor_race!(fixture, :producer_first) do
+    parent = self()
+    run_ref = make_ref()
+
+    producer =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          producer_pid = backend_pid!()
+          newer = establish_newer_non_effective_effect!(fixture)
+          send(parent, {run_ref, :producer_locked, producer_pid, newer.id})
+          wait_for_release!(run_ref)
+        end)
+      end)
+
+    {producer_pid, newer_id} = receive_race_event!(run_ref, :producer_locked)
+
+    executor =
+      Task.async(fn ->
+        Repo.checkout(fn ->
+          executor_pid = backend_pid!()
+          send(parent, {run_ref, :executor_started, executor_pid})
+          Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+        end)
+      end)
+
+    executor_pid = receive_race_event!(run_ref, :executor_started)
+    await_blocking_pid!(executor_pid, producer_pid)
+    send(producer.pid, {run_ref, :release})
+
+    assert {:ok, _} = Task.await(producer, @task_timeout)
+    assert {:ok, :noop} = Task.await(executor, @task_timeout)
+    assert fetch_effect_status!(newer_id) == "required"
+  end
+
+  defp run_producer_executor_race!(fixture, :executor_first) do
+    parent = self()
+    run_ref = make_ref()
+
+    executor =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          executor_pid = backend_pid!()
+          result = Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+          send(parent, {run_ref, :executor_locked, executor_pid, result})
+          wait_for_release!(run_ref)
+        end)
+      end)
+
+    {executor_pid, executor_outcome} = receive_race_event!(run_ref, :executor_locked)
+    assert executor_outcome == {:ok, :applied_projection_pending}
+
+    producer =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          producer_pid = backend_pid!()
+          send(parent, {run_ref, :producer_started, producer_pid})
+          effect = establish_newer_non_effective_effect!(fixture)
+          effect
+        end)
+      end)
+
+    producer_pid = receive_race_event!(run_ref, :producer_started)
+    await_blocking_pid!(producer_pid, executor_pid)
+    send(executor.pid, {run_ref, :release})
+
+    assert {:ok, :released} = Task.await(executor, @task_timeout)
+    assert {:ok, %AccessEffect{status: :required}} = Task.await(producer, @task_timeout)
+  end
+
+  defp run_legacy_executor_race!(fixture, :legacy_first) do
+    parent = self()
+    run_ref = make_ref()
+
+    legacy =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          legacy_pid = backend_pid!()
+          :ok = issue_legacy_grant!(fixture)
+          send(parent, {run_ref, :legacy_locked, legacy_pid})
+          wait_for_release!(run_ref)
+        end)
+      end)
+
+    legacy_pid = receive_race_event!(run_ref, :legacy_locked)
+
+    executor =
+      Task.async(fn ->
+        Repo.checkout(fn ->
+          executor_pid = backend_pid!()
+          send(parent, {run_ref, :executor_started, executor_pid})
+          Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+        end)
+      end)
+
+    executor_pid = receive_race_event!(run_ref, :executor_started)
+    await_blocking_pid!(executor_pid, legacy_pid)
+    send(legacy.pid, {run_ref, :release})
+
+    assert {:ok, :released} = Task.await(legacy, @task_timeout)
+    assert {:ok, :applied} = Task.await(executor, @task_timeout)
+  end
+
+  defp run_legacy_executor_race!(fixture, :executor_first) do
+    parent = self()
+    run_ref = make_ref()
+
+    executor =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          executor_pid = backend_pid!()
+          result = Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+          send(parent, {run_ref, :executor_locked, executor_pid, result})
+          wait_for_release!(run_ref)
+        end)
+      end)
+
+    {executor_pid, executor_outcome} = receive_race_event!(run_ref, :executor_locked)
+    assert executor_outcome == {:ok, :applied_projection_pending}
+
+    legacy =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          legacy_pid = backend_pid!()
+          send(parent, {run_ref, :legacy_started, legacy_pid})
+          issue_legacy_grant!(fixture)
+        end)
+      end)
+
+    legacy_pid = receive_race_event!(run_ref, :legacy_started)
+    await_blocking_pid!(legacy_pid, executor_pid)
+    send(executor.pid, {run_ref, :release})
+
+    assert {:ok, :released} = Task.await(executor, @task_timeout)
+    assert {:ok, :ok} = Task.await(legacy, @task_timeout)
+  end
+
+  defp establish_newer_non_effective_effect!(fixture) do
+    {:ok, %{rows: [[source_version]]}} =
+      Repo.query(
+        "UPDATE subscriptions SET aggregate_version = aggregate_version + 1 WHERE id = $1 RETURNING aggregate_version",
+        [Ecto.UUID.dump!(fixture.subscription.id)]
+      )
+
+    attrs = %{
+      subscription_id: fixture.subscription.id,
+      source_version: source_version,
+      disposition: :non_effective,
+      entitlement_kind: nil,
+      entitlement_scope_key: nil,
+      valid_from_at: nil,
+      valid_until_at: nil,
+      source_order_line_item_id: fixture.line_item.id,
+      contract_change_id: fixture.subscription.current_contract_change_id,
+      plan_revision_id: fixture.revision.id
+    }
+
+    {:ok, input} = EstablishAccessEffectInput.new(attrs)
+    {:ok, effect} = Facade.establish_access_effect_for_system(input)
+    effect
+  end
+
+  defp issue_legacy_grant!(fixture) do
+    subscription = %{
+      id: fixture.subscription.id,
+      user_id: fixture.subscription.user_id,
+      current_period_end_at: fixture.subscription.current_period_end_at
+    }
+
+    plan = %{
+      entitlement_kind: fixture.revision.entitlement_kind,
+      entitlement_scope_key: fixture.revision.entitlement_scope_key
+    }
+
+    case EntitlementsFacade.issue_subscription_source_grant_strict_for_system(subscription, plan) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp assert_effective_grant!(fixture) do
+    assert [%EntitlementGrant{} = grant] = grants_for_source!(fixture.subscription.id)
+    assert grant.status == :active
+    assert grant.kind == fixture.effect.entitlement_kind
+    assert grant.scope_key == fixture.effect.entitlement_scope_key
+    assert grant.valid_from_at == fixture.effect.valid_from_at
+    assert grant.valid_to_at == fixture.effect.valid_until_at
+    assert grant.revoked_at == nil
+    assert grant.revoked_reason == nil
+  end
+
+  defp grants_for_source!(subscription_id) do
+    EntitlementGrant
+    |> Ash.Query.filter(expr(source_kind == :subscription and source_id == ^subscription_id))
+    |> Ash.read!(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_effect_status!(effect_id) do
+    {:ok, %{rows: [[status]]}} =
+      Repo.query("SELECT status::text FROM access_effects WHERE id = $1", [
+        Ecto.UUID.dump!(effect_id)
+      ])
+
+    status
+  end
+
+  defp latest_effect_disposition!(subscription_id) do
+    {:ok, %{rows: [[disposition]]}} =
+      Repo.query(
+        "SELECT disposition::text FROM access_effects WHERE subscription_id = $1 ORDER BY source_version DESC LIMIT 1",
+        [Ecto.UUID.dump!(subscription_id)]
+      )
+
+    disposition
+  end
+
+  defp receive_race_event!(run_ref, event) do
+    receive do
+      {^run_ref, ^event, value} -> value
+      {^run_ref, ^event, pid, value} -> {pid, value}
+    after
+      @task_timeout -> flunk("timed out waiting for #{event}")
+    end
+  end
+
+  defp wait_for_release!(run_ref) do
+    receive do
+      {^run_ref, :release} -> :released
+    after
+      @transaction_timeout -> Repo.rollback(:source_lock_release_timeout)
     end
   end
 
@@ -335,7 +660,6 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
   end
 
   defp cleanup_owned_source!(fixture) do
-    effect_id = uuid_param!(fixture.effect.id)
     subscription_id = uuid_param!(fixture.subscription.id)
     item_id = uuid_param!(fixture.item.id)
     line_item_id = uuid_param!(fixture.line_item.id)
@@ -346,7 +670,8 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
     product_id = uuid_param!(fixture.product.id)
     user_id = uuid_param!(fixture.customer.id)
 
-    Repo.query!("DELETE FROM access_effects WHERE id = $1", [effect_id])
+    Repo.query!("DELETE FROM entitlement_grants WHERE source_id = $1", [subscription_id])
+    Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [subscription_id])
     Repo.query!("DELETE FROM subscription_items WHERE id = $1", [item_id])
     Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])
     Repo.query!("DELETE FROM email_outboxes WHERE order_id = $1", [order_id])
