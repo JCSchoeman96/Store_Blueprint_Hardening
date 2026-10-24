@@ -1,6 +1,7 @@
 defmodule Store.Subscriptions.AccessEffectEffectiveRecoveryTest do
   use Store.DataCase, async: false
 
+  import Ash.Expr
   require Ash.Query
 
   alias Store.Repo
@@ -163,6 +164,91 @@ defmodule Store.Subscriptions.AccessEffectEffectiveRecoveryTest do
              "disposition='effective'andstatusin'required','pending','failed_retryable'"
   end
 
+  test "EFFECTIVE recovery returns its own count and keyset cursor" do
+    effect = create_effect!(:effective)
+    set_updated_at!([effect], ~U[2026-10-20 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_subscription_access_effect_recovery_for_system(
+               limit: 1,
+               as_of: ~U[2099-01-01 00:00:00.000000Z],
+               skip_execution: true,
+               skip_projection: true
+             )
+
+    assert result.effective_execution_count == 1
+
+    assert result.effective_execution_cursor == %{
+             timestamp: ~U[2026-10-20 11:00:00.000000Z],
+             id: effect.id
+           }
+
+    assert result.execution_count == 0
+    assert result.execution_cursor == nil
+    assert result.projection_cursor == nil
+    assert fetch_effect!(effect.id).status == :applied
+  end
+
+  test "EFFECTIVE recovery rejects either half of its timestamp and id cursor" do
+    assert {:error, _error} =
+             Facade.run_subscription_access_effect_recovery_for_system(
+               effective_execution_after_updated_at: @through_updated_at,
+               skip_execution: true,
+               skip_projection: true
+             )
+
+    assert {:error, _error} =
+             Facade.run_subscription_access_effect_recovery_for_system(
+               effective_execution_after_id: Ecto.UUID.generate(),
+               skip_execution: true,
+               skip_projection: true
+             )
+  end
+
+  test "an exhausted EFFECTIVE stream does not suppress NON_EFFECTIVE or projection work" do
+    effective = create_effect!(:effective)
+    non_effective = create_effect!(:non_effective)
+    projection = create_effect!(:effective)
+
+    Repo.query!("UPDATE subscriptions SET status = 'suspended' WHERE id = $1", [
+      Ecto.UUID.dump!(non_effective.subscription_id)
+    ])
+
+    Repo.query!(
+      "UPDATE access_effects SET status = 'applied', projection_user_ids = ARRAY[$2]::uuid[] WHERE id = $1",
+      [Ecto.UUID.dump!(projection.id), Ecto.UUID.dump!(projection.subscription_id)]
+    )
+
+    set_updated_at!([effective, non_effective, projection], ~U[2026-10-20 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_subscription_access_effect_recovery_for_system(
+               limit: 1,
+               as_of: ~U[2099-01-01 00:00:00.000000Z],
+               execution_after_updated_at: ~U[2026-10-20 10:59:59.999999Z],
+               execution_after_id: "00000000-0000-0000-0000-000000000000",
+               projection_after_inserted_at:
+                 DateTime.add(projection.inserted_at, -1, :microsecond),
+               projection_after_id: "00000000-0000-0000-0000-000000000000",
+               skip_effective_execution: true
+             )
+
+    assert result.effective_execution_count == 0
+    assert result.effective_execution_cursor == nil
+    assert result.execution_count == 1
+
+    assert result.execution_cursor == %{
+             timestamp: ~U[2026-10-20 11:00:00.000000Z],
+             id: non_effective.id
+           }
+
+    assert result.projection_count == 1
+    assert result.projection_cursor == %{timestamp: projection.inserted_at, id: projection.id}
+    assert fetch_effect!(effective.id).status == :required
+    assert fetch_effect!(non_effective.id).status == :applied
+    assert %DateTime{} = fetch_effect!(projection.id).projection_delivered_at
+  end
+
   defp create_effect!(disposition) do
     fixture = create_subscription_fixture!()
     subscription = fixture.subscription
@@ -234,6 +320,12 @@ defmodule Store.Subscriptions.AccessEffectEffectiveRecoveryTest do
         updated_at
       ])
     end)
+  end
+
+  defp fetch_effect!(effect_id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(id == ^effect_id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp read_effects!(opts) do

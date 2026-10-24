@@ -22,10 +22,13 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
   alias Store.Shipping.Inputs.QuoteRequest
   alias Store.Shipping.{ShippingMethod, ShippingRateRule, ShippingZone}
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
-  alias Store.Subscriptions.{RenewalAttempt, RenewalCollectionAttempt, Subscription}
+  alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
+  alias Store.Subscriptions.RenewalAttempt
+  alias Store.Subscriptions.RenewalCollectionAttempt
   alias Store.Subscriptions.RenewalCollectionAttempts
   alias Store.Subscriptions.RenewalCollectionAttempts.PaymentApplicationSettlementInput
   alias Store.Subscriptions.RenewalCollectionAttempts.RecordFinancialOutcomeInput
+  alias Store.Subscriptions.Subscription
   alias Store.SubscriptionsFixtures
   alias Store.Support.Errors.Error
   alias Store.Support.Telemetry.RepoStats
@@ -675,6 +678,23 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
     assert repaired_before_replay.status == :active
     assert fetch_attempt!(subscription.id).status == :processing
     assert [] == grants_for(subscription.id, :active)
+
+    assert {:ok, effect_input} =
+             EstablishAccessEffectInput.new(%{
+               subscription_id: subscription.id,
+               source_version: repaired_before_replay.aggregate_version,
+               disposition: :effective,
+               entitlement_kind: plan.entitlement_kind,
+               entitlement_scope_key: plan.entitlement_scope_key,
+               valid_from_at: attempt.period_start_at,
+               valid_until_at: attempt.period_end_at,
+               source_order_line_item_id: repaired_before_replay.source_order_line_item_id,
+               contract_change_id: repaired_before_replay.current_contract_change_id,
+               plan_revision_id: attempt.plan_revision_id
+             })
+
+    assert {:ok, _renewal_effect} =
+             SubscriptionsFacade.establish_access_effect_for_system(effect_input)
 
     assert {:ok, :reconciled} =
              reconcile_paid_renewal!(attempt)

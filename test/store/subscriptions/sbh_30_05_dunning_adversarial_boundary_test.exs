@@ -767,7 +767,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       [recovery_effect, old_effect] = Enum.sort_by(effects, & &1.source_version, :desc)
       assert recovery_effect.source_version == suspension_effect.source_version + 1
       assert recovery_effect.source_version == active.aggregate_version
-      assert recovery_effect.status == "required"
+      assert recovery_effect.status == "applied"
       assert recovery_effect.disposition == "effective"
 
       assert recovery_effect.valid_from_at ==
