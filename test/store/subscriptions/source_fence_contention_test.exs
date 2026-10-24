@@ -134,6 +134,168 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
     end
   end
 
+  test "F2 holds the Subscription mutex through exact-source convergence and APPLIED commit" do
+    fixtures = create_committed_sources!()
+    fixture = prepare_non_effective_source!(fixtures.x)
+    run_ref = make_ref()
+    parent = self()
+
+    try do
+      {grant_barrier, barrier_pid, _grant_id} =
+        start_source_grant_lock_barrier!(fixture, run_ref)
+
+      executor =
+        Task.async(fn ->
+          Repo.checkout(fn ->
+            executor_pid = backend_pid!()
+            send(parent, {run_ref, :f2_executor_started, executor_pid})
+            Facade.execute_suspension_access_effect_for_system(fixture.effect.id)
+          end)
+        end)
+
+      executor_pid = receive_race_event!(run_ref, :f2_executor_started)
+
+      executor_blockers =
+        assert_blocked_by_barrier!(
+          grant_barrier,
+          run_ref,
+          executor_pid,
+          barrier_pid,
+          :f2_executor_at_source_convergence
+        )
+
+      producer =
+        Task.async(fn ->
+          Repo.transaction(fn ->
+            producer_pid = backend_pid!()
+            send(parent, {run_ref, :f2_producer_started, producer_pid})
+            establish_newer_non_effective_effect!(fixture)
+          end)
+        end)
+
+      producer_pid = receive_race_event!(run_ref, :f2_producer_started)
+
+      producer_blockers =
+        assert_blocked_by_barrier!(
+          grant_barrier,
+          run_ref,
+          producer_pid,
+          executor_pid,
+          :f2_producer_waiting_for_executor
+        )
+
+      status_before_release =
+        read_effect_status_from_barrier!(grant_barrier, run_ref, fixture.effect.id)
+
+      assert status_before_release == "required"
+      send(grant_barrier.pid, {run_ref, :release})
+
+      assert {:ok, :released} = Task.await(grant_barrier, @task_timeout)
+      assert {:ok, :applied} = Task.await(executor, @transaction_timeout)
+
+      assert {:ok, %AccessEffect{status: :required} = newer_effect} =
+               Task.await(producer, @transaction_timeout)
+
+      assert fetch_effect_status!(fixture.effect.id) == "applied"
+      assert latest_effect_id!(fixture.subscription.id) == newer_effect.id
+      assert latest_effect_disposition!(fixture.subscription.id) == "non_effective"
+
+      assert [%EntitlementGrant{status: :revoked, revoked_reason: "grace_expired"}] =
+               grants_for_source!(fixture.subscription.id)
+
+      IO.puts(
+        "F2_REAL_CONNECTION executor_pid=#{executor_pid} executor_blockers=#{inspect(executor_blockers)} " <>
+          "producer_pid=#{producer_pid} producer_blockers=#{inspect(producer_blockers)} " <>
+          "status_before_release=#{status_before_release} f2_committed_before_producer=true"
+      )
+    after
+      cleanup_owned_sources!(fixtures)
+    end
+  end
+
+  test "F2 re-proves currentness before recording a rollback after a newer target wins" do
+    fixtures = create_committed_sources!()
+    fixture = prepare_non_effective_source!(fixtures.x)
+    run_ref = make_ref()
+    parent = self()
+    constraint = "jc246_fail_revoke_#{System.unique_integer([:positive])}"
+    grant = hd(grants_for_source!(fixture.subscription.id))
+
+    Repo.query!("""
+    ALTER TABLE entitlement_grants
+    ADD CONSTRAINT #{constraint}
+    CHECK (status <> 'revoked' OR id <> '#{grant.id}')
+    NOT VALID
+    """)
+
+    {grant_barrier, barrier_pid, _grant_id} =
+      start_source_grant_lock_barrier!(fixture, run_ref)
+
+    executor =
+      Task.async(fn ->
+        Repo.checkout(fn ->
+          executor_pid = backend_pid!()
+          send(parent, {run_ref, :f2_failure_executor_started, executor_pid})
+          Facade.execute_suspension_access_effect_for_system(fixture.effect.id)
+        end)
+      end)
+
+    executor_pid = receive_race_event!(run_ref, :f2_failure_executor_started)
+
+    assert_blocked_by_barrier!(
+      grant_barrier,
+      run_ref,
+      executor_pid,
+      barrier_pid,
+      :f2_failure_executor_at_source_convergence
+    )
+
+    producer =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          producer_pid = backend_pid!()
+          send(parent, {run_ref, :f2_failure_producer_started, producer_pid})
+          insert_newer_non_effective_effect_without_superseding!(fixture)
+        end)
+      end)
+
+    producer_pid = receive_race_event!(run_ref, :f2_failure_producer_started)
+
+    producer_blockers =
+      assert_blocked_by_barrier!(
+        grant_barrier,
+        run_ref,
+        producer_pid,
+        executor_pid,
+        :f2_failure_producer_waiting_for_executor
+      )
+
+    send(grant_barrier.pid, {run_ref, :release})
+
+    try do
+      assert {:ok, :released} = Task.await(grant_barrier, @task_timeout)
+      assert {:error, _reason} = Task.await(executor, @transaction_timeout)
+
+      assert {:ok, %AccessEffect{status: :required} = newer_effect} =
+               Task.await(producer, @transaction_timeout)
+
+      assert fetch_effect_status!(fixture.effect.id) == "superseded"
+      assert fetch_effect_status!(newer_effect.id) == "required"
+
+      assert [%EntitlementGrant{status: :active, revoked_at: nil}] =
+               grants_for_source!(fixture.subscription.id)
+
+      IO.puts(
+        "F2_FAILURE_REPROOF executor_pid=#{executor_pid} producer_pid=#{producer_pid} " <>
+          "producer_blockers=#{inspect(producer_blockers)} older_effect=superseded " <>
+          "grant_rollback=complete"
+      )
+    after
+      Repo.query!("ALTER TABLE entitlement_grants DROP CONSTRAINT IF EXISTS #{constraint}")
+      cleanup_owned_sources!(fixtures)
+    end
+  end
+
   defp run_contention!(%{x: source_x, y: source_y}, pool_size) do
     parent = self()
     run_ref = make_ref()
@@ -436,10 +598,30 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
         send(observer, {run_ref, {:blocking_observed, label}, blockers})
         await_barrier_observation!(run_ref)
 
+      {^run_ref, :read_effect_status, effect_id, observer} ->
+        %{rows: [[status]]} =
+          Repo.query!(
+            "SELECT status::text FROM access_effects WHERE id = $1",
+            [Ecto.UUID.dump!(effect_id)]
+          )
+
+        send(observer, {run_ref, :effect_status_read, status})
+        await_barrier_observation!(run_ref)
+
       {^run_ref, :release} ->
         :released
     after
       @transaction_timeout -> Repo.rollback(:source_lock_release_timeout)
+    end
+  end
+
+  defp read_effect_status_from_barrier!(barrier, run_ref, effect_id) do
+    send(barrier.pid, {run_ref, :read_effect_status, effect_id, self()})
+
+    receive do
+      {^run_ref, :effect_status_read, status} -> status
+    after
+      @task_timeout -> flunk("timed out reading AccessEffect status from the barrier connection")
     end
   end
 
@@ -467,6 +649,86 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
     {:ok, effect} = Facade.establish_access_effect_for_system(input)
     effect
   end
+
+  defp prepare_non_effective_source!(fixture) do
+    {:ok, effect} =
+      Repo.transaction(fn ->
+        {:ok, %{rows: [[source_version]]}} =
+          Repo.query(
+            "UPDATE subscriptions SET status = 'suspended', aggregate_version = aggregate_version + 1 WHERE id = $1 RETURNING aggregate_version",
+            [Ecto.UUID.dump!(fixture.subscription.id)]
+          )
+
+        attrs = %{
+          subscription_id: fixture.subscription.id,
+          source_version: source_version,
+          disposition: :non_effective,
+          entitlement_kind: nil,
+          entitlement_scope_key: nil,
+          valid_from_at: nil,
+          valid_until_at: nil,
+          source_order_line_item_id: fixture.line_item.id,
+          contract_change_id: fixture.subscription.current_contract_change_id,
+          plan_revision_id: fixture.revision.id
+        }
+
+        {:ok, input} = EstablishAccessEffectInput.new(attrs)
+        {:ok, effect} = Facade.establish_access_effect_for_system(input)
+        :ok = issue_legacy_grant!(fixture)
+        effect
+      end)
+
+    Map.put(fixture, :effect, effect)
+  end
+
+  defp insert_newer_non_effective_effect_without_superseding!(fixture) do
+    {:ok, %{rows: [[source_version]]}} =
+      Repo.query(
+        "UPDATE subscriptions SET aggregate_version = aggregate_version + 1 WHERE id = $1 RETURNING aggregate_version",
+        [Ecto.UUID.dump!(fixture.subscription.id)]
+      )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    id = Ash.UUIDv7.generate()
+
+    new_effect = %{
+      fixture.effect
+      | id: id,
+        status: :required,
+        source_version: source_version,
+        inserted_at: now,
+        updated_at: now
+    }
+
+    fingerprint = AccessEffect.target_fingerprint(new_effect)
+
+    Repo.query!(
+      """
+      INSERT INTO access_effects (
+        id, subscription_id, source_version, disposition, entitlement_kind,
+        entitlement_scope_key, valid_from_at, valid_until_at, target_fingerprint,
+        inserted_at, updated_at, source_order_line_item_id, contract_change_id,
+        plan_revision_id, status
+      ) VALUES ($1, $2, $3, 'non_effective', NULL, NULL, NULL, NULL, $4,
+                $5, $5, $6, $7, $8, 'required')
+      """,
+      [
+        Ecto.UUID.dump!(id),
+        Ecto.UUID.dump!(fixture.subscription.id),
+        source_version,
+        fingerprint,
+        now,
+        Ecto.UUID.dump!(fixture.line_item.id),
+        optional_uuid_param(fixture.subscription.current_contract_change_id),
+        Ecto.UUID.dump!(fixture.revision.id)
+      ]
+    )
+
+    %{new_effect | target_fingerprint: fingerprint}
+  end
+
+  defp optional_uuid_param(nil), do: nil
+  defp optional_uuid_param(uuid), do: Ecto.UUID.dump!(uuid)
 
   defp issue_legacy_grant!(fixture) do
     subscription = %{
@@ -520,6 +782,16 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       )
 
     disposition
+  end
+
+  defp latest_effect_id!(subscription_id) do
+    {:ok, %{rows: [[id]]}} =
+      Repo.query(
+        "SELECT id::text FROM access_effects WHERE subscription_id = $1 ORDER BY source_version DESC LIMIT 1",
+        [Ecto.UUID.dump!(subscription_id)]
+      )
+
+    Ecto.UUID.cast!(id)
   end
 
   defp receive_race_event!(run_ref, event) do
