@@ -67,6 +67,64 @@ defmodule Store.Subscriptions.AccessEffectEffectiveExecutionTest do
     assert grants_for_source!(fixture.subscription.id) == []
   end
 
+  test "the public EFFECTIVE executor rejects a caller-owned transaction before writes on commit" do
+    fixture = create_committed_effective_effect_fixture!("jc245_nested_commit")
+
+    assert {:ok, :ok} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Repo.transaction(fn -> issue_legacy_grant!(fixture) end)
+             end)
+
+    before_effect = fetch_effect!(fixture.effect.id)
+    before_grants = grants_for_source!(fixture.subscription.id)
+    assert before_effect.status == :required
+    assert length(before_grants) == 1
+
+    assert {:ok, {result, ^before_effect, ^before_grants}} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Repo.transaction(fn ->
+                 assert Repo.in_transaction?()
+                 result = Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+
+                 {result, fetch_effect!(fixture.effect.id),
+                  grants_for_source!(fixture.subscription.id)}
+               end)
+             end)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} = result
+    assert fetch_effect!(fixture.effect.id) == before_effect
+    assert grants_for_source!(fixture.subscription.id) == before_grants
+  end
+
+  test "the public EFFECTIVE executor rejects a caller-owned transaction before writes on rollback" do
+    fixture = create_committed_effective_effect_fixture!("jc245_nested_rollback")
+
+    assert {:ok, :ok} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Repo.transaction(fn -> issue_legacy_grant!(fixture) end)
+             end)
+
+    before_effect = fetch_effect!(fixture.effect.id)
+    before_grants = grants_for_source!(fixture.subscription.id)
+    assert before_effect.status == :required
+    assert length(before_grants) == 1
+
+    assert {:error, {:forced_rollback, result, ^before_effect, ^before_grants}} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Repo.transaction(fn ->
+                 assert Repo.in_transaction?()
+                 result = Facade.execute_effective_access_effect_for_system(fixture.effect.id)
+                 effect = fetch_effect!(fixture.effect.id)
+                 grants = grants_for_source!(fixture.subscription.id)
+                 Repo.rollback({:forced_rollback, result, effect, grants})
+               end)
+             end)
+
+    assert {:error, %{code: "VALIDATION_ERROR"}} = result
+    assert fetch_effect!(fixture.effect.id) == before_effect
+    assert grants_for_source!(fixture.subscription.id) == before_grants
+  end
+
   test "a PENDING EFFECTIVE effect converges and becomes APPLIED" do
     fixture = create_committed_effective_effect_fixture!("jc245_effective_pending")
 

@@ -161,8 +161,16 @@ defmodule Store.Subscriptions.Facade do
           {:ok, :applied | :applied_projection_pending | :superseded | :noop}
           | {:error, Error.t() | term()}
   def execute_effective_access_effect_for_system(effect_id) when is_binary(effect_id) do
-    Repo.transaction(fn -> execute_effective_access_effect_in_transaction(effect_id) end)
-    |> handle_effective_access_effect_transaction(effect_id)
+    if Repo.in_transaction?() do
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "EFFECTIVE AccessEffect execution must own its correctness transaction"
+       )}
+    else
+      Repo.transaction(fn -> execute_effective_access_effect_in_transaction(effect_id) end)
+      |> handle_effective_access_effect_transaction(effect_id)
+    end
   end
 
   def execute_effective_access_effect_for_system(_effect_id) do

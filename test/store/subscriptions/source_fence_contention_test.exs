@@ -233,18 +233,28 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
     parent = self()
     run_ref = make_ref()
 
+    assert {:ok, :ok} = Repo.transaction(fn -> issue_legacy_grant!(fixture) end)
+    {grant_barrier, barrier_pid, _grant_id} = start_source_grant_lock_barrier!(fixture, run_ref)
+
     executor =
       Task.async(fn ->
-        Repo.transaction(fn ->
+        Repo.checkout(fn ->
           executor_pid = backend_pid!()
-          result = Facade.execute_effective_access_effect_for_system(fixture.effect.id)
-          send(parent, {run_ref, :executor_locked, executor_pid, result})
-          wait_for_release!(run_ref)
+          send(parent, {run_ref, :executor_started, executor_pid})
+          Facade.execute_effective_access_effect_for_system(fixture.effect.id)
         end)
       end)
 
-    {executor_pid, executor_outcome} = receive_race_event!(run_ref, :executor_locked)
-    assert executor_outcome == {:ok, :applied_projection_pending}
+    executor_pid = receive_race_event!(run_ref, :executor_started)
+
+    executor_blockers =
+      assert_blocked_by_barrier!(
+        grant_barrier,
+        run_ref,
+        executor_pid,
+        barrier_pid,
+        :executor_at_source_convergence
+      )
 
     producer =
       Task.async(fn ->
@@ -257,11 +267,28 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       end)
 
     producer_pid = receive_race_event!(run_ref, :producer_started)
-    await_blocking_pid!(producer_pid, executor_pid)
-    send(executor.pid, {run_ref, :release})
 
-    assert {:ok, :released} = Task.await(executor, @task_timeout)
+    producer_blockers =
+      assert_blocked_by_barrier!(
+        grant_barrier,
+        run_ref,
+        producer_pid,
+        executor_pid,
+        :producer_waiting_for_executor
+      )
+
+    send(grant_barrier.pid, {run_ref, :release})
+
+    assert {:ok, :released} = Task.await(grant_barrier, @task_timeout)
+    assert {:ok, :applied} = Task.await(executor, @task_timeout)
     assert {:ok, %AccessEffect{status: :required}} = Task.await(producer, @task_timeout)
+
+    IO.puts(
+      "REAL_CONNECTIONS executor_first producer_vs_f1 executor_pid=#{executor_pid} " <>
+        "grant_barrier_pid=#{barrier_pid} executor_blockers=#{inspect(executor_blockers)} " <>
+        "producer_pid=#{producer_pid} producer_blockers=#{inspect(producer_blockers)} " <>
+        "executor_committed_before_producer=true"
+    )
   end
 
   defp run_legacy_executor_race!(fixture, :legacy_first) do
@@ -301,18 +328,28 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
     parent = self()
     run_ref = make_ref()
 
+    assert {:ok, :ok} = Repo.transaction(fn -> issue_legacy_grant!(fixture) end)
+    {grant_barrier, barrier_pid, grant_id} = start_source_grant_lock_barrier!(fixture, run_ref)
+
     executor =
       Task.async(fn ->
-        Repo.transaction(fn ->
+        Repo.checkout(fn ->
           executor_pid = backend_pid!()
-          result = Facade.execute_effective_access_effect_for_system(fixture.effect.id)
-          send(parent, {run_ref, :executor_locked, executor_pid, result})
-          wait_for_release!(run_ref)
+          send(parent, {run_ref, :executor_started, executor_pid})
+          Facade.execute_effective_access_effect_for_system(fixture.effect.id)
         end)
       end)
 
-    {executor_pid, executor_outcome} = receive_race_event!(run_ref, :executor_locked)
-    assert executor_outcome == {:ok, :applied_projection_pending}
+    executor_pid = receive_race_event!(run_ref, :executor_started)
+
+    executor_blockers =
+      assert_blocked_by_barrier!(
+        grant_barrier,
+        run_ref,
+        executor_pid,
+        barrier_pid,
+        :executor_at_source_convergence
+      )
 
     legacy =
       Task.async(fn ->
@@ -324,11 +361,86 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       end)
 
     legacy_pid = receive_race_event!(run_ref, :legacy_started)
-    await_blocking_pid!(legacy_pid, executor_pid)
-    send(executor.pid, {run_ref, :release})
 
-    assert {:ok, :released} = Task.await(executor, @task_timeout)
+    legacy_blockers =
+      assert_blocked_by_barrier!(
+        grant_barrier,
+        run_ref,
+        legacy_pid,
+        executor_pid,
+        :legacy_waiting_behind_f1
+      )
+
+    send(grant_barrier.pid, {run_ref, :release})
+
+    assert {:ok, :released} = Task.await(grant_barrier, @task_timeout)
+    assert {:ok, :applied} = Task.await(executor, @task_timeout)
     assert {:ok, :ok} = Task.await(legacy, @task_timeout)
+
+    IO.puts(
+      "REAL_CONNECTIONS executor_first legacy_vs_f1 executor_pid=#{executor_pid} " <>
+        "grant_id=#{Ecto.UUID.cast!(grant_id)} grant_barrier_pid=#{barrier_pid} " <>
+        "executor_blockers=#{inspect(executor_blockers)} legacy_pid=#{legacy_pid} " <>
+        "legacy_blockers=#{inspect(legacy_blockers)} f1_committed_before_legacy=true"
+    )
+  end
+
+  defp start_source_grant_lock_barrier!(fixture, run_ref) do
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        Repo.transaction(
+          fn ->
+            barrier_pid = backend_pid!()
+
+            %{rows: [[grant_id]]} =
+              Repo.query!(
+                """
+                SELECT id
+                FROM entitlement_grants
+                WHERE source_kind = 'subscription' AND source_id = $1
+                ORDER BY id
+                LIMIT 1
+                FOR UPDATE
+                """,
+                [Ecto.UUID.dump!(fixture.subscription.id)]
+              )
+
+            send(parent, {run_ref, :grant_barrier_locked, barrier_pid, grant_id})
+            await_barrier_observation!(run_ref)
+          end,
+          timeout: @transaction_timeout
+        )
+      end)
+
+    {barrier_pid, grant_id} = receive_race_event!(run_ref, :grant_barrier_locked)
+    {task, barrier_pid, grant_id}
+  end
+
+  defp assert_blocked_by_barrier!(barrier, run_ref, blocked_pid, expected_blocker_pid, label) do
+    send(
+      barrier.pid,
+      {run_ref, :assert_blocked, blocked_pid, expected_blocker_pid, self(), label}
+    )
+
+    blockers = receive_race_event!(run_ref, {:blocking_observed, label})
+    assert expected_blocker_pid in blockers
+    blockers
+  end
+
+  defp await_barrier_observation!(run_ref) do
+    receive do
+      {^run_ref, :assert_blocked, blocked_pid, expected_blocker_pid, observer, label} ->
+        blockers = await_blocking_pid!(blocked_pid, expected_blocker_pid)
+        send(observer, {run_ref, {:blocking_observed, label}, blockers})
+        await_barrier_observation!(run_ref)
+
+      {^run_ref, :release} ->
+        :released
+    after
+      @transaction_timeout -> Repo.rollback(:source_lock_release_timeout)
+    end
   end
 
   defp establish_newer_non_effective_effect!(fixture) do
