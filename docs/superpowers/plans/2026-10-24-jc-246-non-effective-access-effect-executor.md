@@ -1,5 +1,7 @@
 # JC-246 / F2 NON_EFFECTIVE AccessEffect executor implementation plan
 
+> For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
+
 > Review plan only. Implementation is not authorized by this document.
 
 **Goal:** Replace the partial NON_EFFECTIVE suspension executor with the accepted F0 exact-source convergence and currentness fence. Return a durable success result when only post-commit projection delivery remains pending.
@@ -15,6 +17,8 @@
 ---
 
 ## Spec
+
+This plan is constrained by the accepted [JC-245/246 AccessEffect convergence authority design](../specs/2026-10-22-jc-245-246-access-effect-convergence-authority-design.md) and its [parent convergence implementation plan](2026-10-22-jc-245-246-access-effect-convergence-implementation-plan.md). The F1 EFFECTIVE executor tests provide the accepted caller-owned transaction commit and rollback regression pattern.
 
 F2 executes current NON_EFFECTIVE AccessEffects for the exact Subscription source. The accepted AccessEffectCurrentnessFence.prove/1 remains the sole CURRENT/STALE authority and must remain unchanged.
 
@@ -69,11 +73,13 @@ Keep execute_suspension_access_effect_for_system/1 as the public compatibility e
 
 Use the locked Subscription only for grant revocation reason metadata:
 
-- A suspended Subscription uses grace_expired.
-- A canceled Subscription with canceled_reason canceled_period_end uses canceled_period_end.
-- Immediate cancellation uses the persisted immediate cancellation reason and maps to canceled_now.
+- A suspended Subscription uses `"grace_expired"`.
+- A canceled Subscription with `canceled_reason == "canceled_period_end"` uses `"canceled_period_end"`.
+- Immediate cancellation with persisted `canceled_reason == "user_request"` uses `"canceled_now"`.
 
-Resolve this metadata only during locked correctness execution. If the persisted status/reason cannot identify one of these cases, stop rather than inventing policy. Projection invalidation uses a separate stable reason derived from persisted NON_EFFECTIVE disposition/evidence. Projection repair must not load Subscription or Plan state.
+Resolve this metadata only during locked correctness execution. Current-main immediate cancellation persists canceled_reason == "user_request"; stop if that evidence no longer identifies this case. If the persisted status/reason cannot identify one of these cases, stop rather than inventing policy.
+
+Projection invalidation uses the frozen stable reason "non_effective_access_effect_applied" for both immediate post-commit delivery and later repair. Derive it solely from the persisted NON_EFFECTIVE disposition contract. Keep this projection reason separate from locked grant revocation metadata. Projection repair must not load Subscription or Plan state.
 
 Keep the existing recovery API and selector frozen:
 
@@ -144,8 +150,9 @@ Do not modify Entitlements production modules, AccessEffect resource/index defin
 
 **Files:** lib/store/subscriptions/facade.ex; test/store/subscriptions/access_effect_non_effective_execution_test.exs.
 
-- [ ] Write a failing test that calls the public executor inside an already-open Repo transaction. Assert a validation error and no lifecycle, source grant, projection evidence, or PubSub changes.
-- [ ] Run the focused test and confirm current behavior fails the assertion.
+- [ ] Add the caller-owned outer transaction COMMITS regression test matching F1. Call execute_suspension_access_effect_for_system/1 inside the already-open Repo transaction, assert the executor returns the transaction-ownership validation error (code VALIDATION_ERROR), then commit the caller transaction. Compare before/after snapshots and assert AccessEffect lifecycle, projection evidence (projection_user_ids and projection_delivered_at), and exact-source grants are unchanged; assert no projection delivery occurs.
+- [ ] Add the separate caller-owned outer transaction ROLLS BACK regression test matching F1. Make the same public executor call and validation-error assertion, then roll back the caller transaction. Compare before/after snapshots and assert AccessEffect lifecycle, projection evidence (projection_user_ids and projection_delivered_at), and exact-source grants are unchanged; assert no projection delivery occurs.
+- [ ] Run both focused tests and confirm current behavior fails the assertions.
 - [ ] Add the Repo.in_transaction?() guard before opening the correctness transaction. The public executor must not join a caller transaction.
 - [ ] Prove the normal call owns and commits the outer transaction. Read effect and grant state after the call from a separate transaction/connection.
 - [ ] Inject a convergence failure during correctness execution. Prove grant changes and APPLIED roll back before a separate failure-recording transaction runs.
@@ -196,7 +203,7 @@ Do not modify Entitlements production modules, AccessEffect resource/index defin
 
 - [ ] Add a failing test that forces post-commit Cachex invalidation or PubSub delivery to fail after convergence and APPLIED commit.
 - [ ] Assert the public executor returns {:ok, :applied_projection_pending}, APPLIED and revoked grants remain committed, projection_delivered_at remains nil, and the failure recorder is not called.
-- [ ] Use a stable NON_EFFECTIVE projection reason derived from persisted AccessEffect disposition/evidence. Keep grant revoked_reason metadata separate and determine it only during locked correctness execution.
+- [ ] Use the frozen stable projection reason "non_effective_access_effect_applied" for immediate post-commit delivery and later repair, derived solely from the persisted NON_EFFECTIVE disposition contract. Keep grant revoked_reason metadata separate and determine it only during locked correctness execution.
 - [ ] Change projection repair to require an APPLIED NON_EFFECTIVE effect with persisted projection user IDs. Do not load Subscription or Plan state to decide repair or projection reason.
 - [ ] After APPLIED, change current Subscription status/reason to a different valid value and prove repair still succeeds from effect evidence alone.
 - [ ] Assert the Entitlements projection helper invalidates Cachex before PubSub and records delivery only after both succeed.
@@ -248,6 +255,8 @@ Before local database-dependent commands, read .devcore/project.conf and .devcor
   - `devcore-project run test -- mix check`
 - CI strict test command:
   - `devcore-project run test -- mix test --max-failures 1`
+- Local Dialyzer/type gate:
+  - `devcore-project run test -- mix check.types`
 - Verify generated resource snapshots and migrations have no drift:
   - `devcore-project run test -- mix ash_postgres.generate_migrations --check`
 - Verify whitespace and inspect scope:
