@@ -55,10 +55,20 @@ defmodule Store.Subscriptions.AccessEffectExecutionTest do
 
   test "the indexed recovery sweep rediscovers an effect when its job was lost" do
     fixture = create_committed_suspended_effect_fixture!("jc239_effect_lost_job")
+    effect = fetch_effect!(fixture.effect_id)
+    cursor_start = DateTime.add(effect.updated_at, -1, :microsecond)
+    as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     assert {:ok, result} =
              Sandbox.unboxed_run(Repo, fn ->
-               Facade.run_subscription_access_effect_recovery_for_system(limit: 1)
+               Facade.run_subscription_access_effect_recovery_for_system(
+                 limit: 1,
+                 as_of: as_of,
+                 execution_after_updated_at: cursor_start,
+                 execution_after_id: "00000000-0000-0000-0000-000000000000",
+                 skip_projection: true,
+                 skip_effective_execution: true
+               )
              end)
 
     assert result.execution_count == 1
@@ -66,6 +76,43 @@ defmodule Store.Subscriptions.AccessEffectExecutionTest do
     assert fetch_effect!(fixture.effect_id).status == :applied
     assert [grant] = grants_for_source!(fixture.subscription_id)
     assert grant.status == :revoked
+  end
+
+  test "NON_EFFECTIVE recovery cursor and skip options retain their existing contract" do
+    fixture = create_committed_suspended_effect_fixture!("jc246_execution_cursor")
+    effect = fetch_effect!(fixture.effect_id)
+    cursor_start = DateTime.add(effect.updated_at, -1, :microsecond)
+    as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    base_opts = [
+      limit: 1,
+      as_of: as_of,
+      execution_after_updated_at: cursor_start,
+      execution_after_id: "00000000-0000-0000-0000-000000000000",
+      skip_projection: true,
+      skip_effective_execution: true
+    ]
+
+    assert {:ok, skipped} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Facade.run_subscription_access_effect_recovery_for_system(
+                 Keyword.put(base_opts, :skip_execution, true)
+               )
+             end)
+
+    assert skipped.execution_count == 0
+    assert skipped.execution_cursor == nil
+    assert fetch_effect!(fixture.effect_id).status == :required
+
+    assert {:ok, recovered} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Facade.run_subscription_access_effect_recovery_for_system(base_opts)
+             end)
+
+    assert recovered.execution_count == 1
+    assert recovered.failed_count == 0
+    assert recovered.execution_cursor == %{timestamp: effect.updated_at, id: effect.id}
+    assert fetch_effect!(fixture.effect_id).status == :applied
   end
 
   defp create_committed_suspended_effect_fixture!(prefix) do

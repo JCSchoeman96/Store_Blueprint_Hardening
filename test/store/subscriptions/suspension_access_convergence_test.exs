@@ -48,13 +48,20 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     assert fetch_subscription!(fixture.subscription.id).status == :suspended
     assert Enum.map(source_grants!(fixture.subscription.id), & &1.status) == [:active]
     assert fetch_effect!(effect.id).status == :failed_retryable
+    recovery_cursor_start = DateTime.add(fetch_effect!(effect.id).updated_at, -1, :microsecond)
     assert payment_intent_count(fixture.subscription.id) == 0
     assert :atomics.get(post_count, 1) == 0
 
     clear_grant_update_failure!()
 
     assert {:ok, retry_result} =
-             SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(limit: 100)
+             SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(
+               limit: 100,
+               execution_after_updated_at: recovery_cursor_start,
+               execution_after_id: "00000000-0000-0000-0000-000000000000",
+               skip_projection: true,
+               skip_effective_execution: true
+             )
 
     assert retry_result.execution_count == 1
     assert retry_result.failed_count == 0
@@ -139,7 +146,14 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     clear_grant_update_failure!()
 
     assert {:ok, retry_result} =
-             SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(limit: 100)
+             SubscriptionsFacade.run_subscription_access_effect_recovery_for_system(
+               limit: 100,
+               execution_after_updated_at:
+                 DateTime.add(fetch_effect!(effect.id).updated_at, -1, :microsecond),
+               execution_after_id: "00000000-0000-0000-0000-000000000000",
+               skip_projection: true,
+               skip_effective_execution: true
+             )
 
     assert retry_result.execution_count == 1
     assert retry_result.failed_count == 0
@@ -199,13 +213,13 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
 
     effect = current_effect!(fixture.subscription.id)
 
+    Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(fixture.customer.id))
+
     assert :ok = Supervisor.terminate_child(Store.Supervisor, Cache)
 
     try do
-      assert {:error, %{step: :cache_invalidation, user_id: user_id}} =
+      assert {:ok, :applied_projection_pending} =
                SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
-
-      assert user_id == fixture.customer.id
     after
       assert {:ok, _pid} = Supervisor.restart_child(Store.Supervisor, Cache)
     end
@@ -217,8 +231,18 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     [revoked_before] = source_grants!(fixture.subscription.id)
     assert revoked_before.status == :revoked
 
+    Repo.query!(
+      "UPDATE subscriptions SET status = 'canceled', canceled_reason = 'user_request' WHERE id = $1",
+      [Ecto.UUID.dump!(fixture.subscription.id)]
+    )
+
     assert :ok =
              SubscriptionsFacade.repair_suspension_access_effect_projection_for_system(effect.id)
+
+    assert_receive {:entitlements_invalidated, user_id, "non_effective_access_effect_applied",
+                    _at}
+
+    assert user_id == fixture.customer.id
 
     repaired = fetch_effect!(effect.id)
     assert repaired.status == :applied

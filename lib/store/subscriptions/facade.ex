@@ -78,6 +78,7 @@ defmodule Store.Subscriptions.Facade do
   @shipping_surge_absolute_minor 5_000
   @renewal_authority_withdrawn_code "RENEWAL_AUTHORITY_WITHDRAWN"
   @effective_access_effect_projection_reason "effective_access_effect_applied"
+  @non_effective_access_effect_projection_reason "non_effective_access_effect_applied"
   @payment_retry_reasons MapSet.new([
                            "PAYMENT_METHOD_REQUIRED",
                            "PAYMENT_FAILED",
@@ -237,45 +238,89 @@ defmodule Store.Subscriptions.Facade do
     do: {:error, Normalize.normalize(reason)}
 
   @spec execute_suspension_access_effect_for_system(String.t()) ::
-          {:ok, :applied | :superseded | :noop} | {:error, Error.t() | term()}
+          {:ok, :applied | :applied_projection_pending | :superseded | :noop}
+          | {:error, Error.t() | term()}
   def execute_suspension_access_effect_for_system(effect_id) when is_binary(effect_id) do
-    case Repo.transaction(fn -> execute_suspension_access_effect_in_transaction(effect_id) end) do
-      {:ok, {:applied, effect, notifications, user_ids, reason}} ->
-        :ok =
-          AshNotifications.notify_post_commit(notifications,
-            context: %{
-              flow: :execute_suspension_access_effect,
-              subscription_id: effect.subscription_id,
-              access_effect_id: effect.id
-            }
-          )
-
-        case deliver_access_effect_projection(effect, user_ids, reason) do
-          :ok -> {:ok, :applied}
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:ok, {:superseded, _effect}} ->
-        {:ok, :superseded}
-
-      {:ok, :noop} ->
-        {:ok, :noop}
-
-      {:error, {:entitlements_convergence_failure, reason}} ->
-        _ = mark_current_access_effect_failed_retryable(effect_id)
-        {:error, Normalize.normalize(reason)}
-
-      {:error, %Ash.Changeset{} = reason} ->
-        _ = mark_current_access_effect_failed_retryable(effect_id)
-        {:error, Normalize.normalize(reason)}
-
-      {:error, reason} ->
-        {:error, Normalize.normalize(reason)}
+    if Repo.in_transaction?() do
+      {:error,
+       Error.new(
+         "VALIDATION_ERROR",
+         "NON_EFFECTIVE AccessEffect execution must own its correctness transaction"
+       )}
+    else
+      Repo.transaction(fn -> execute_non_effective_access_effect_in_transaction(effect_id) end)
+      |> handle_non_effective_access_effect_transaction(effect_id)
     end
   end
 
   def execute_suspension_access_effect_for_system(_effect_id) do
     {:error, Error.new("VALIDATION_ERROR", "AccessEffect id must be a UUID")}
+  end
+
+  defp handle_non_effective_access_effect_transaction(
+         {:ok, {:applied, effect, user_ids}},
+         _effect_id
+       ) do
+    :ok =
+      AshNotifications.notify_post_commit([],
+        context: %{
+          flow: :execute_suspension_access_effect,
+          subscription_id: effect.subscription_id,
+          access_effect_id: effect.id
+        }
+      )
+
+    case deliver_access_effect_projection(
+           effect,
+           user_ids,
+           @non_effective_access_effect_projection_reason
+         ) do
+      :ok -> {:ok, :applied}
+      {:error, _reason} -> {:ok, :applied_projection_pending}
+    end
+  end
+
+  defp handle_non_effective_access_effect_transaction(
+         {:ok, {:superseded, _effect}},
+         _effect_id
+       ),
+       do: {:ok, :superseded}
+
+  defp handle_non_effective_access_effect_transaction({:ok, :noop}, _effect_id),
+    do: {:ok, :noop}
+
+  defp handle_non_effective_access_effect_transaction(
+         {:error, {:non_effective_execution_failure, reason}},
+         effect_id
+       ) do
+    case record_non_effective_access_effect_failure(effect_id) do
+      :ok ->
+        {:error, Normalize.normalize(reason)}
+
+      {:error, recording_reason} ->
+        non_effective_failure_recording_error(reason, recording_reason)
+    end
+  end
+
+  defp handle_non_effective_access_effect_transaction(
+         {:error, {:non_effective_proof_failure, reason}},
+         _effect_id
+       ),
+       do: {:error, Normalize.normalize(reason)}
+
+  defp handle_non_effective_access_effect_transaction({:error, reason}, _effect_id),
+    do: {:error, Normalize.normalize(reason)}
+
+  defp non_effective_failure_recording_error(execution_reason, recording_reason) do
+    {:error,
+     Error.new(
+       "INTERNAL_ERROR",
+       "NON_EFFECTIVE AccessEffect failure could not be recorded",
+       %{
+         execution_failure: inspect(execution_reason),
+         failure_recording_failure: inspect(recording_reason)
+       }
+     )}
   end
 
   @spec repair_suspension_access_effect_projection_for_system(String.t()) ::
@@ -284,12 +329,11 @@ defmodule Store.Subscriptions.Facade do
       when is_binary(effect_id) do
     with {:ok, effect} <- fetch_access_effect(effect_id),
          true <- effect.status == :applied and is_list(effect.projection_user_ids),
-         {:ok, subscription} <- fetch_subscription_for_renewal(effect.subscription_id),
          :ok <-
            deliver_access_effect_projection(
              effect,
              effect.projection_user_ids,
-             access_effect_projection_reason(effect, subscription)
+             access_effect_projection_reason(effect)
            ) do
       :ok
     else
@@ -8857,77 +8901,140 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp execute_suspension_access_effect_in_transaction(effect_id) do
-    with {:ok, candidate} <- fetch_access_effect(effect_id),
-         {:ok, subscription} <- fetch_subscription_for_renewal_locked(candidate.subscription_id),
-         {:ok, effect} <- fetch_access_effect_locked(effect_id),
-         {:ok, current} <- read_current_access_effect(subscription.id) do
-      execute_locked_suspension_access_effect(subscription, effect, current)
-    else
-      {:error, reason} -> Repo.rollback(reason)
+  defp execute_non_effective_access_effect_in_transaction(effect_id) do
+    case AccessEffectCurrentnessFence.prove(effect_id) do
+      {:ok, %{access_effect: %AccessEffect{disposition: :non_effective} = effect} = evidence} ->
+        execute_locked_non_effective_access_effect(evidence, effect)
+
+      {:ok, _evidence} ->
+        Repo.rollback(
+          {:non_effective_proof_failure,
+           Error.new(
+             "INVALID_STATE_TRANSITION",
+             "NON_EFFECTIVE executor requires a NON_EFFECTIVE AccessEffect"
+           )}
+        )
+
+      {:error, reason} ->
+        Repo.rollback({:non_effective_proof_failure, reason})
     end
   end
 
-  defp execute_locked_suspension_access_effect(subscription, effect, current) do
+  defp execute_locked_non_effective_access_effect(evidence, effect) do
     cond do
       effect.status in [:applied, :superseded] ->
         :noop
 
-      not current_access_effect?(subscription, effect, current) ->
-        supersede_stale_suspension_access_effect(effect)
+      effect.status not in [:required, :pending, :failed_retryable] ->
+        Repo.rollback(
+          {:non_effective_proof_failure,
+           invalid_access_effect_transition(effect.status, :pending)}
+        )
 
-      effect.status in [:required, :pending, :failed_retryable] ->
-        case non_effective_access_effect_reason(subscription) do
-          reason when is_binary(reason) and effect.disposition == :non_effective ->
-            execute_current_non_effective_access_effect(subscription, effect, reason)
+      evidence.status == :stale ->
+        supersede_stale_non_effective_access_effect(effect)
 
-          _ ->
-            Repo.rollback(
-              Error.new(
-                "INVALID_STATE_TRANSITION",
-                "current non-effective AccessEffect does not match its Subscription source"
-              )
-            )
-        end
+      evidence.status == :current ->
+        execute_current_non_effective_access_effect(evidence)
 
       true ->
-        :noop
+        Repo.rollback(
+          {:non_effective_proof_failure,
+           Error.new("INTERNAL_ERROR", "F0 returned an invalid AccessEffect currentness state")}
+        )
     end
   end
 
-  defp supersede_stale_suspension_access_effect(effect) do
+  defp supersede_stale_non_effective_access_effect(effect) do
     case supersede_older_access_effect(effect) do
       :ok -> {:superseded, effect}
-      {:error, reason} -> Repo.rollback(reason)
+      {:error, reason} -> Repo.rollback({:non_effective_execution_failure, reason})
     end
   end
 
-  defp current_access_effect?(subscription, effect, current) do
-    subscription.aggregate_version == effect.source_version and
-      match?(%AccessEffect{id: id} when id == effect.id, current)
+  defp execute_current_non_effective_access_effect(%{
+         source: %{subscription_id: subscription_id, user_id: user_id},
+         access_effect: %AccessEffect{} = effect
+       }) do
+    with {:ok, subscription} <- fetch_subscription_for_renewal(subscription_id),
+         reason when is_binary(reason) <- non_effective_access_effect_reason(subscription),
+         {:ok, input} <-
+           non_effective_source_convergence_input(subscription_id, user_id, effect, reason) do
+      execute_current_non_effective_with_input(effect, input)
+    else
+      {:error, reason} ->
+        Repo.rollback({:non_effective_proof_failure, reason})
+
+      _reason ->
+        Repo.rollback(
+          {:non_effective_proof_failure,
+           Error.new(
+             "INVALID_STATE_TRANSITION",
+             "current NON_EFFECTIVE AccessEffect lacks persisted revocation-reason evidence"
+           )}
+        )
+    end
   end
 
-  defp execute_current_non_effective_access_effect(subscription, effect, reason) do
-    with {:ok, pending_effect} <- access_effect_to_pending(effect),
-         {:ok, entitlement_result} <-
-           revoke_non_effective_subscription_source(subscription.id, reason),
-         {:ok, applied_effect} <-
-           transition_access_effect_with_attrs(
-             pending_effect,
-             :pending,
-             :applied,
-             :mark_applied,
-             %{projection_user_ids: entitlement_result.user_ids}
-           ) do
-      {:applied, applied_effect, entitlement_result.notifications, entitlement_result.user_ids,
-       reason}
-    else
-      {:error, {:entitlements_convergence_failure, reason}} ->
-        Repo.rollback({:entitlements_convergence_failure, reason})
+  defp execute_current_non_effective_with_input(effect, input) do
+    case access_effect_to_pending(effect) do
+      {:ok, pending_effect} ->
+        converge_and_apply_non_effective_access_effect(input, pending_effect)
 
       {:error, reason} ->
-        Repo.rollback(reason)
+        Repo.rollback({:non_effective_execution_failure, reason})
     end
+  end
+
+  defp converge_and_apply_non_effective_access_effect(input, pending_effect) do
+    case safely_converge_subscription_source(input) do
+      {:ok, convergence} ->
+        finish_non_effective_access_effect(pending_effect, convergence)
+
+      {:error, reason} ->
+        Repo.rollback({:non_effective_execution_failure, reason})
+    end
+  end
+
+  defp finish_non_effective_access_effect(pending_effect, convergence) do
+    case mark_non_effective_access_effect_applied(pending_effect, convergence) do
+      {:ok, applied_effect} ->
+        {:applied, applied_effect, convergence.projection_user_ids}
+
+      {:error, reason} ->
+        Repo.rollback({:non_effective_execution_failure, reason})
+    end
+  end
+
+  defp non_effective_source_convergence_input(subscription_id, user_id, effect, reason) do
+    attrs = %{
+      subscription_id: subscription_id,
+      user_id: user_id,
+      disposition: :non_effective,
+      entitlement_kind: effect.entitlement_kind,
+      entitlement_scope_key: effect.entitlement_scope_key,
+      valid_from_at: effect.valid_from_at,
+      valid_until_at: effect.valid_until_at,
+      reason: reason,
+      access_effect_id: effect.id,
+      source_version: effect.source_version,
+      target_fingerprint: effect.target_fingerprint
+    }
+
+    case SubscriptionSourceConvergenceInput.new(attrs) do
+      {:ok, input} -> {:ok, input}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp mark_non_effective_access_effect_applied(effect, convergence) do
+    transition_access_effect_with_attrs(
+      effect,
+      :pending,
+      :applied,
+      :mark_applied,
+      %{projection_user_ids: convergence.projection_user_ids}
+    )
   end
 
   defp access_effect_to_pending(%AccessEffect{status: :required} = effect),
@@ -8940,19 +9047,6 @@ defmodule Store.Subscriptions.Facade do
 
   defp access_effect_to_pending(%AccessEffect{status: status}) do
     {:error, invalid_access_effect_transition(status, :pending)}
-  end
-
-  defp revoke_non_effective_subscription_source(subscription_id, reason) do
-    case EntitlementsFacade.revoke_subscription_source_grants_strict_for_system(
-           subscription_id,
-           reason
-         ) do
-      {:ok, %{notifications: notifications, user_ids: user_ids}} ->
-        {:ok, %{notifications: notifications, user_ids: user_ids}}
-
-      {:error, reason} ->
-        {:error, {:entitlements_convergence_failure, reason}}
-    end
   end
 
   defp deliver_access_effect_projection(%AccessEffect{} = effect, user_ids, reason)
@@ -8975,19 +9069,63 @@ defmodule Store.Subscriptions.Facade do
        }),
        do: "canceled_period_end"
 
+  defp non_effective_access_effect_reason(%Subscription{
+         status: :canceled,
+         canceled_reason: "user_request"
+       }),
+       do: "canceled_now"
+
   defp non_effective_access_effect_reason(_subscription), do: nil
 
-  defp access_effect_projection_reason(
-         %AccessEffect{disposition: :effective},
-         _subscription
-       ),
-       do: @effective_access_effect_projection_reason
+  defp access_effect_projection_reason(%AccessEffect{disposition: :effective}),
+    do: @effective_access_effect_projection_reason
 
-  defp access_effect_projection_reason(
-         %AccessEffect{disposition: :non_effective},
-         subscription
-       ),
-       do: non_effective_access_effect_reason(subscription)
+  defp access_effect_projection_reason(%AccessEffect{disposition: :non_effective}),
+    do: @non_effective_access_effect_projection_reason
+
+  defp record_non_effective_access_effect_failure(effect_id) do
+    case Repo.transaction(fn ->
+           record_non_effective_access_effect_failure_in_transaction(effect_id)
+         end) do
+      {:ok, :ok} -> :ok
+      {:ok, :noop} -> :ok
+      {:error, reason} -> {:error, Normalize.normalize(reason)}
+    end
+  end
+
+  defp record_non_effective_access_effect_failure_in_transaction(effect_id) do
+    case AccessEffectCurrentnessFence.prove(effect_id) do
+      {:ok, %{access_effect: %AccessEffect{disposition: :non_effective} = effect} = evidence} ->
+        record_non_effective_access_effect_failure_for_proof(evidence, effect)
+
+      {:ok, _evidence} ->
+        Repo.rollback(
+          Error.new(
+            "INVALID_STATE_TRANSITION",
+            "failure recording requires a NON_EFFECTIVE effect"
+          )
+        )
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp record_non_effective_access_effect_failure_for_proof(%{status: :stale}, effect) do
+    case supersede_older_access_effect(effect) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp record_non_effective_access_effect_failure_for_proof(%{status: :current}, effect) do
+    case mark_access_effect_retryable_after_failure(effect) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp record_non_effective_access_effect_failure_for_proof(_evidence, _effect), do: :noop
 
   defp mark_access_effect_projection_delivered(effect_id, expected_user_ids) do
     case Repo.transaction(fn ->
@@ -9036,30 +9174,6 @@ defmodule Store.Subscriptions.Facade do
 
       {:error, reason} ->
         Repo.rollback(reason)
-    end
-  end
-
-  defp mark_current_access_effect_failed_retryable(effect_id) do
-    case Repo.transaction(fn ->
-           mark_current_access_effect_failed_retryable_in_transaction(effect_id)
-         end) do
-      {:ok, result} -> result
-      {:error, reason} -> {:error, Normalize.normalize(reason)}
-    end
-  end
-
-  defp mark_current_access_effect_failed_retryable_in_transaction(effect_id) do
-    with {:ok, candidate} <- fetch_access_effect(effect_id),
-         {:ok, subscription} <- fetch_subscription_for_renewal_locked(candidate.subscription_id),
-         {:ok, effect} <- fetch_access_effect_locked(effect_id),
-         {:ok, current} <- read_current_access_effect(subscription.id) do
-      if current_access_effect?(subscription, effect, current) do
-        mark_access_effect_retryable_after_failure(effect)
-      else
-        supersede_older_access_effect(effect)
-      end
-    else
-      {:error, reason} -> Repo.rollback(reason)
     end
   end
 

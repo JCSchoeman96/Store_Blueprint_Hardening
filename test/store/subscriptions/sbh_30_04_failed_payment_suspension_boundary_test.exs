@@ -218,12 +218,13 @@ defmodule Store.Subscriptions.Sbh3004FailedPaymentSuspensionBoundaryTest do
 
     assert {:ok, :applied} = Facade.execute_suspension_access_effect_for_system(effect_id)
 
-    assert %{rows: [["applied", [], delivered_at]]} =
+    assert %{rows: [["applied", [projection_user_id], delivered_at]]} =
              Repo.query!(
                "SELECT status, projection_user_ids, projection_delivered_at FROM access_effects WHERE id = $1",
                [Ecto.UUID.dump!(effect_id)]
              )
 
+    assert projection_user_id == Ecto.UUID.dump!(customer.id)
     refute is_nil(delivered_at)
   end
 

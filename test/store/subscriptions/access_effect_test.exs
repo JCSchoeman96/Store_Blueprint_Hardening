@@ -89,7 +89,36 @@ defmodule Store.Subscriptions.AccessEffectTest do
     assert effect.id in Enum.map(effects, & &1.id)
   end
 
+  test "NON_EFFECTIVE recovery selector remains backed by its existing partial index" do
+    Repo.query!("SET LOCAL enable_seqscan = off")
+
+    through_updated_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    after_updated_at = DateTime.add(through_updated_at, -1, :second)
+    after_id = Ecto.UUID.dump!("00000000-0000-0000-0000-000000000000")
+
+    {:ok, %{rows: rows}} =
+      Repo.query(
+        """
+        EXPLAIN
+        SELECT id
+        FROM access_effects
+        WHERE disposition = 'non_effective'
+          AND status IN ('required', 'pending', 'failed_retryable')
+          AND updated_at <= $1
+          AND (updated_at > $2 OR (updated_at = $2 AND id > $3))
+        ORDER BY updated_at ASC, id ASC
+        LIMIT 100
+        """,
+        [through_updated_at, after_updated_at, after_id]
+      )
+
+    explain = rows |> List.flatten() |> Enum.join(" ")
+    assert explain =~ "access_effects_non_effective_recovery_index"
+    assert explain =~ "Limit"
+  end
+
   test "bounded AccessEffect recovery advances by its indexed timestamp and id keyset" do
+    cursor_floor = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     fixtures = Enum.map(1..3, fn _ -> create_subscription_fixture!() end)
 
     effects =
@@ -109,7 +138,9 @@ defmodule Store.Subscriptions.AccessEffectTest do
              AccessEffect
              |> Ash.Query.for_read(:read_recoverable_non_effective_for_system, %{
                limit: 2,
-               through_updated_at: as_of
+               through_updated_at: as_of,
+               after_updated_at: cursor_floor,
+               after_id: "00000000-0000-0000-0000-000000000000"
              })
              |> Ash.read(
                domain: Store.Subscriptions,
@@ -864,10 +895,26 @@ defmodule Store.Subscriptions.AccessEffectTest do
         end
 
       grant_updated_at = grant.updated_at
-      _newer_subscription = advance_subscription_aggregate!(fixture)
+      newer_subscription = advance_subscription_aggregate!(fixture)
+
+      newer_effect =
+        establish!(
+          access_effect_input(fixture, %{
+            source_version: newer_subscription.aggregate_version,
+            disposition: :non_effective,
+            entitlement_kind: nil,
+            entitlement_scope_key: nil
+          })
+        )
+
+      Repo.query!(
+        "UPDATE access_effects SET status = $2 WHERE id = $1",
+        [Ecto.UUID.dump!(stale.id), Atom.to_string(initial_status)]
+      )
 
       assert {:ok, :superseded} = Facade.execute_suspension_access_effect_for_system(stale.id)
       assert fetch_access_effect!(stale.id).status == :superseded
+      assert fetch_access_effect!(newer_effect.id).status == :required
 
       assert {:ok, [unchanged_grant]} = read_grant(grant.id)
       assert unchanged_grant.status == :active

@@ -284,7 +284,8 @@ defmodule Store.Entitlements.FacadeTest do
     assert {:ok, :applied} =
              SubscriptionsFacade.execute_suspension_access_effect_for_system(effect.id)
 
-    assert_receive {:entitlements_invalidated, ^customer_id, "grace_expired", _occurred_at}
+    assert_receive {:entitlements_invalidated, ^customer_id,
+                    "non_effective_access_effect_applied", _occurred_at}
 
     assert {:ok, refreshed_set} = Facade.entitlement_set_for_user(customer)
     refreshed_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
