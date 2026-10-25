@@ -66,10 +66,17 @@ T1 renewal transaction:
 
 T1 pauses at paid_renewal_access_sync telemetry boundary
 
-T2 cancellation:
-  lock Subscription FOR UPDATE
-  establish newer NON_EFFECTIVE effect B
+T2 immediate cancellation through the existing public API:
+  Store.Subscriptions.Facade.cancel_subscription_for_user(actor, subscription_id, :now)
+  run_cancel_with_authorized_retry(..., :now, ...)
+  run_cancel_now_or_noop/2 -> run_cancel/3
+  Repo.transaction -> cancel_subscription_in_transaction/4
+  lock_subscription_aggregate_version/1 on the same Subscription
+  maybe_establish_immediate_cancellation_access_effect(:now, canceled)
+  AccessEffectTargetOrder.immediate_cancellation_establish_attrs/1 creates B
+    with disposition NON_EFFECTIVE and nil validity bounds
   commit
+  existing finalize_immediate_cancellation/2 compatibility revoke may run unchanged
 
 T1 resumes:
   execute_effective_access_effect_for_system(A.id)
@@ -77,9 +84,17 @@ T1 resumes:
   A becomes SUPERSEDED; no grant mutation is made from A
 ```
 
+The producer is pinned to the existing `:now` immediate-cancellation path. `test/store/subscriptions/access_effect_target_order_contention_test.exs` calls `Store.Subscriptions.Facade.cancel_subscription_for_user/3` with `:now` and asserts that the resulting latest effect is NON_EFFECTIVE. The existing `cancel-now between paid recovery and access sync blocks stale entitlement reissue` regression in `test/store/subscriptions/cancellation_renewal_authority_test.exs` proves the same API can commit during the paid-renewal post-commit access-sync pause. If this API cannot create B in the planned race fixture without JC-247 behavior, stop; do not substitute a scheduled-cancellation path. The immediate-cancellation compatibility revoke remains untouched in this slice; it may execute as it does today after T2 commits.
+
+```text
+IMMEDIATE_CANCEL_COMPAT_REVOKE_CHANGED=NO
+JC247_POLICY_PATH_USED=NO
+SCHEDULED_REMOVE_POLICY_ASSUMED=NO
+```
+
 Assert the paid period and charged revision remain committed, B is latest and NON_EFFECTIVE, A is SUPERSEDED, the exact source has no active grant after T2's accepted cancellation path, and no stale grant from A appears after T1 resumes. The test must use independent PostgreSQL connections, the telemetry barrier, and explicit release messages; sleeps are not race evidence.
 
-Also test the inverse order with independent connections: let T1's F1 executor reach its exact-source convergence barrier while it holds the Subscription mutex; start T2 cancellation and prove it is blocked behind T1; release F1 and assert A is APPLIED before allowing T2 to commit B. Assert final state follows B and no deadlock occurs. Reuse the established PostgreSQL lock-barrier style from the subscription source-fence contention tests.
+Also test the inverse order with independent connections: let T1's F1 executor reach its exact-source convergence barrier while it holds the Subscription mutex; invoke the same `Store.Subscriptions.Facade.cancel_subscription_for_user(actor, subscription_id, :now)` path for T2 and prove it is blocked behind T1; release F1 and assert A is APPLIED before allowing T2 to commit B. Assert final state follows B and no deadlock occurs. Reuse the established PostgreSQL lock-barrier style from the subscription source-fence contention tests.
 
 ## Required functional proof
 
@@ -87,14 +102,15 @@ The implementation tests must establish all of the following:
 
 1. Ordinary paid renewal executes its exact EFFECTIVE effect through F1 and converges the exact charged target and original period boundaries.
 2. The ordinary renewal call does not invoke `issue_subscription_source_grant_strict_for_system/2`. Use a process-scoped Erlang call trace around the reconciliation call and assert no call trace for that function; always disable the trace pattern in `after` cleanup.
-3. Initial paid-order issuance still uses its existing `issue_subscription_entitlement_for_system/2` path and is otherwise unchanged.
-4. F1 application is exact and replay-safe: first execution applies the persisted pair and validity bounds; replay is a terminal no-op.
-5. The newer NON_EFFECTIVE race above defeats exact old effect A; the inverse order applies A before B is allowed to commit.
-6. A forced F1 correctness failure after the paid transaction leaves commercial fields and AccessEffect committed, returns the established error result, and leaves the exact effect recoverable through existing FAILED_RETRYABLE recovery. A retry must not reapply the period or duplicate the effect.
-7. A post-commit projection failure returns projection-pending success, does not undo commercial truth or F1 convergence, and remains repairable by the existing projection path.
-8. A queued contract-change renewal uses the exact charged-contract target already bound to the RenewalAttempt and established by the source transaction.
-9. Execution uses the persisted effect and exact ID; no mutable Plan read, post-commit latest-effect query, worker-time validity boundary, or period extension is introduced.
-10. Existing F1 replay, currentness, retry, and projection semantics remain unchanged.
+3. Extend the existing test `a charged nil/nil target keeps valid_from_at nil in its AccessEffect` in `test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`: after ordinary renewal is routed through F1, the exact effect ID is handed to F1, the EFFECTIVE nil/nil effect becomes APPLIED, its exact Subscription source has zero active grants, `valid_from_at` remains nil, `valid_until_at` remains `attempt.period_end_at`, and no worker-time start is introduced. Exact replay is idempotent and preserves those fields. Reuse the existing accepted nil/nil target form; do not add a target model.
+4. Initial paid-order issuance still uses its existing `issue_subscription_entitlement_for_system/2` path and is otherwise unchanged.
+5. F1 application is exact and replay-safe: first execution applies the persisted pair and validity bounds; replay is a terminal no-op.
+6. The newer NON_EFFECTIVE race above defeats exact old effect A; the inverse order applies A before B is allowed to commit.
+7. A forced F1 correctness failure after the paid transaction leaves commercial fields and AccessEffect committed, returns the established error result, and leaves the exact effect recoverable through existing FAILED_RETRYABLE recovery. A retry must not reapply the period or duplicate the effect.
+8. A post-commit projection failure returns projection-pending success, does not undo commercial truth or F1 convergence, and remains repairable by the existing projection path.
+9. A queued contract-change renewal uses the exact charged-contract target already bound to the RenewalAttempt and established by the source transaction.
+10. Execution uses the persisted effect and exact ID; no mutable Plan read, post-commit latest-effect query, worker-time validity boundary, or period extension is introduced.
+11. Existing F1 replay, currentness, retry, and projection semantics remain unchanged.
 
 ## Scope boundary
 

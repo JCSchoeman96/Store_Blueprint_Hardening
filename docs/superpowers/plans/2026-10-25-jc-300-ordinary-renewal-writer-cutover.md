@@ -10,7 +10,29 @@
 
 **Tech Stack:** Elixir, Phoenix/Ash, Ecto/PostgreSQL, `Store.Subscriptions.Facade`, accepted AccessEffect F1 executor, ExUnit.
 
+**Spec:** docs/superpowers/specs/2026-10-25-jc-300-ordinary-renewal-writer-cutover-design.md
+
 ---
+
+## Global Constraints
+
+- Change only the ordinary charged-renewal legacy issue dispatch. Keep the already-F1 `:suspended_recovery` lane behavior intact.
+- Carry and execute the exact EFFECTIVE AccessEffect ID returned by the committed renewal transaction. The caller must not select a latest effect after commit.
+- Invoke F1 only after the commercial transaction commits. Paid commercial truth remains independent of F1 or Entitlements availability.
+- Do not modify `lib/store/entitlements/**`, F0 currentness/fingerprint rules, F1 executor semantics, or F2 executor semantics.
+- Add no migration, index, AccessEffect lifecycle state, or generic access abstraction.
+- Keep initial paid activation on its existing legacy issue path.
+- Keep the immediate-cancellation compatibility revoke unchanged; do not remove, gate, or route it in this slice.
+- Keep JC-247 and its purchased policy behavior out of scope.
+- Keep JC-300 final source-coverage proof and final production cutover open.
+
+## Review Focus
+
+1. EFFECTIVE pair target reaches F1 with the exact charged entitlement pair and immutable charged period boundaries.
+2. EFFECTIVE nil/nil target becomes APPLIED with zero active grants for the exact Subscription source, nil `valid_from_at`, and `valid_until_at == attempt.period_end_at`; replay remains idempotent.
+3. Existing immediate cancellation mode `:now` creates newer NON_EFFECTIVE B before T1 executes exact renewal effect A; F1 marks A SUPERSEDED and makes no stale grant.
+4. An F1 correctness failure after commercial commit leaves paid truth committed and the exact effect recoverable through accepted F1 recovery.
+5. Initial paid activation remains on its existing issue path.
 
 ## Authority and implementation boundary
 
@@ -28,6 +50,7 @@ Future production scope: `lib/store/subscriptions/facade.ex` only. Future focuse
 - [ ] Replace the existing `an ordinary charged renewal with an EFFECTIVE predecessor keeps the legacy writer lane` expectation with an ordinary charged-renewal regression using the existing bound-renewal fixture. Reconcile through `Facade.reconcile_paid_subscription_renewal_for_system/2`; locate the unique EFFECTIVE effect from the immutable attempt evidence; assert the facade converges the exact entitlement pair with `valid_from_at == attempt.period_start_at` and `valid_until_at == attempt.period_end_at`, and the effect status is APPLIED.
 - [ ] Wrap the reconciliation call in a process-scoped Erlang call trace for `{Store.Entitlements.Facade, :issue_subscription_source_grant_strict_for_system, 2}`. Assert no trace event is emitted for the ordinary renewal call. In `after`, disable tracing for the process and restore the trace pattern so no test instrumentation leaks.
 - [ ] Assert the public result remains `{:ok, :reconciled}` on first reconciliation and `{:ok, :noop}` on successful exact replay. Assert replay leaves the Subscription period, PlanRevision, RenewalAttempt identity, AccessEffect count, and grant validity boundaries unchanged.
+- [ ] Extend the existing `a charged nil/nil target keeps valid_from_at nil in its AccessEffect` test in this file. After cutover, assert the exact renewal effect ID executes through F1 and becomes APPLIED; the exact Subscription source has zero active grants; `valid_from_at` remains nil; `valid_until_at` remains `attempt.period_end_at`; no worker-time start is introduced; and exact replay preserves the target and is idempotent.
 - [ ] Run the focused test through DevCore: `devcore-project run test -- mix test test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`. First run the new tests against the current ordinary direct-writer path and confirm the no-legacy-call/APPLIED assertions fail for that reason.
 
 ## Task 2: Route the exact ordinary effect through F1
@@ -35,6 +58,10 @@ Future production scope: `lib/store/subscriptions/facade.ex` only. Future focuse
 **Files:**
 - Modify: `lib/store/subscriptions/facade.ex`
 - Test: `test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`
+
+**Interfaces:**
+- Produces the post-commit F1 dispatch contract for both already-classified lanes: `:ordinary` and `:suspended_recovery` receive the exact `renewal_access_effect_id` returned by the source transaction.
+- F1 success outcomes `:applied`, `:applied_projection_pending`, `:superseded`, and `:noop` map to `:ok` synchronization; correctness errors remain normalized errors. Preserve the existing public reconciliation result mapping.
 
 - [ ] Change only `sync_charged_renewal_access/4` dispatch. Make the existing `:ordinary` and `:suspended_recovery` lanes share the existing F1 execution and outcome mapping, guarded by a binary exact effect ID. Keep the invalid/missing classification error. Do not pass a target selected after commit.
 
@@ -85,11 +112,19 @@ end
 **Files:**
 - Create: `test/store/subscriptions/charged_renewal_access_effect_race_test.exs`
 
+**Interfaces:**
+- Consume Task 2's exact `renewal_access_effect_id` handoff: T1 must call F1 with A.id after the commercial commit.
+- Produce B through the current public API `Store.Subscriptions.Facade.cancel_subscription_for_user(fixture.customer, fixture.subscription.id, :now)`. Its current path is `run_cancel_with_authorized_retry/4` → `run_cancel_now_or_noop/2` → `run_cancel/3` → `cancel_subscription_in_transaction/4`, which calls `lock_subscription_aggregate_version/1` and `maybe_establish_immediate_cancellation_access_effect/2`; `AccessEffectTargetOrder.immediate_cancellation_establish_attrs/1` creates the NON_EFFECTIVE target in that transaction.
+- Current-main evidence: `test/store/subscriptions/access_effect_target_order_contention_test.exs` asserts the latest target after this `:now` API is NON_EFFECTIVE, and `test/store/subscriptions/cancellation_renewal_authority_test.exs` covers this API during the paid-renewal access-sync pause.
+- Leave `finalize_immediate_cancellation/2` and its compatibility revoke unchanged. Do not use scheduled cancellation or JC-247 policy behavior.
+- If this API cannot create B in the planned race fixture without JC-247 behavior, stop; do not substitute another cancellation lane.
+
 - [ ] Create a dedicated `ExUnit.Case` module tagged `@moduletag :real_connections`. Build and commit the exact paid RenewalAttempt/order/collection fixture using the existing subscription fixture and collection-handoff APIs; require at least three Repo connections as the accepted contention suite does.
 - [ ] Add a real-connection test that runs paid renewal reconciliation in T1 and blocks its existing `[:store, :subscriptions, :paid_renewal_access_sync]` telemetry callback after the source transaction commits. The barrier handler must send an explicit ready message and wait for an explicit release message; do not sleep.
-- [ ] While T1 is paused, let T2 cancel the same Subscription and commit a newer NON_EFFECTIVE effect B. Release T1. Assert it executes the exact old effect A through F1, A becomes SUPERSEDED, B remains latest, no grant is created from A, and the paid renewal period/charged revision remain committed.
-- [ ] Add the inverse-order test on independent PostgreSQL connections. Pause F1 A at its exact-source convergence barrier while it holds the Subscription mutex, start cancellation T2, and prove T2 waits on T1. Release F1, assert A commits APPLIED before T2 commits B, and assert final grant state follows B with no deadlock.
+- [ ] While T1 is paused, call `Store.Subscriptions.Facade.cancel_subscription_for_user(fixture.customer, fixture.subscription.id, :now)` for T2 and commit the resulting newer NON_EFFECTIVE effect B. The existing immediate-cancellation compatibility revoke may run unchanged after that commit. Release T1. Assert it executes the exact old effect A through F1, A becomes SUPERSEDED, B remains latest, no grant is created from A, and the paid renewal period/charged revision remain committed.
+- [ ] Add the inverse-order test on independent PostgreSQL connections. Pause F1 A at its exact-source convergence barrier while it holds the Subscription mutex, invoke the same `:now` cancellation API for T2, and prove T2 waits on T1. Release F1, assert A commits APPLIED before T2 commits B, and assert final grant state follows B with no deadlock.
 - [ ] Assert both tests use distinct PostgreSQL backend PIDs, deterministic barrier messages/lock evidence, and the same exact paid source. Do not use `Process.sleep/1` as race evidence.
+- [ ] Record `IMMEDIATE_CANCEL_COMPAT_REVOKE_CHANGED=NO`, `JC247_POLICY_PATH_USED=NO`, and `SCHEDULED_REMOVE_POLICY_ASSUMED=NO` in the race proof.
 - [ ] Run ordinary tests with `devcore-project run test -- mix test test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`. Run the new `@moduletag :real_connections` file by itself in a separate process with `devcore-project run test -- mix test test/store/subscriptions/charged_renewal_access_effect_race_test.exs --include real_connections`. Keep default Sandbox configuration unchanged.
 - [ ] Commit the deterministic contention proof with message `test(subscriptions): prove renewal effect supersession`.
 
@@ -97,6 +132,9 @@ end
 
 **Files:**
 - Test: `test/store/subscriptions/sbh_10_05_charged_contract_reconciliation_test.exs`
+
+**Interfaces:**
+- Consume the accepted JC-245/F1 failure and recovery contract without changing executor semantics: qualifying correctness rollback remains recoverable through existing FAILED_RETRYABLE selection; projection failure remains APPLIED with projection pending and uses existing repair.
 
 - [ ] Inject a correctness failure in F1 convergence using the existing database-failure test pattern: add a `NOT VALID` CHECK constraint on `entitlement_grants` that rejects `status = 'active'` for the fixture's exact `source_id`, run reconciliation, then drop the constraint. Assert the commercial renewal transaction already committed the paid period/revision, ContractChange, and exact EFFECTIVE effect; assert reconciliation returns the existing normalized error and does not compensate or duplicate commercial truth.
 - [ ] Assert F1 records a qualifying rolled-back failure as FAILED_RETRYABLE. Remove the injected failure, set `cursor_start = DateTime.add(retryable_effect.updated_at, -1, :microsecond)` and `as_of = DateTime.add(retryable_effect.updated_at, 1, :microsecond)`, then call `Facade.run_subscription_access_effect_recovery_for_system/1` with `limit: 100`, `as_of: as_of`, `effective_execution_after_updated_at: cursor_start`, and `effective_execution_after_id: "00000000-0000-0000-0000-000000000000"`. Assert the same effect applies. Retry reconciliation and assert it finds the same historical effect, does not extend the period/create another effect, marks the attempt succeeded, and returns the existing successful result.
