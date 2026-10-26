@@ -8,6 +8,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
   require Ash.Query
 
   alias Store.Entitlements.EntitlementGrant
+  alias Store.Entitlements.Facade, as: EntitlementsFacade
   alias Store.Orders.Order
   alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
@@ -116,34 +117,18 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     [renewal_effect] = access_effect_records!(subscription.id)
     assert renewal_effect.disposition == :effective
-    assert renewal_effect.status == :required
+    assert renewal_effect.status == :applied
     assert renewal_effect.source_version == applied.aggregate_version
     assert datetime_equal?(renewal_effect.valid_from_at, attempt.period_start_at)
     assert datetime_equal?(renewal_effect.valid_until_at, attempt.period_end_at)
     assert renewal_effect.plan_revision_id == attempt.plan_revision_id
 
-    cursor_start = DateTime.add(renewal_effect.updated_at, -1, :microsecond)
-    as_of = DateTime.add(renewal_effect.updated_at, 1, :microsecond)
-
-    assert {:ok, recovery} =
-             Facade.run_subscription_access_effect_recovery_for_system(
-               limit: 100,
-               as_of: as_of,
-               effective_execution_after_updated_at: cursor_start,
-               effective_execution_after_id: "00000000-0000-0000-0000-000000000000",
-               skip_execution: true,
-               skip_projection: true
-             )
-
-    assert recovery.effective_execution_count >= 1
-    assert fetch_access_effect!(renewal_effect.id).status == :applied
-
-    assert [%EntitlementGrant{} = recovered_grant] = active_grants_for(subscription.id)
-    assert recovered_grant.valid_from_at == attempt.period_start_at
-    assert recovered_grant.valid_to_at == attempt.period_end_at
+    assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
   end
 
-  test "an ordinary charged renewal with an EFFECTIVE predecessor keeps the legacy writer lane" do
+  test "an ordinary charged renewal executes its exact EFFECTIVE effect through F1" do
     %{
       subscription: subscription,
       attempt: attempt,
@@ -153,6 +138,8 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     current_revision =
       read_one!(PlanRevision, subscription.current_plan_revision_id, Store.Subscriptions)
+
+    charged_revision = read_one!(PlanRevision, attempt.plan_revision_id, Store.Subscriptions)
 
     predecessor_attrs = %{
       subscription_id: subscription.id,
@@ -177,22 +164,65 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert {:ok, predecessor} = Facade.establish_access_effect_for_system(predecessor_input)
     assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
 
-    assert {:ok, :reconciled} =
-             Facade.reconcile_paid_subscription_renewal_for_system(
-               order.id,
-               handoff_opts(handoff)
-             )
+    {result, calls} =
+      trace_renewal_writer_calls(fn ->
+        Facade.reconcile_paid_subscription_renewal_for_system(
+          order.id,
+          handoff_opts(handoff)
+        )
+      end)
+
+    assert result == {:ok, :reconciled}
 
     [persisted_predecessor, renewal_effect] = access_effect_records!(subscription.id)
     assert persisted_predecessor.id == predecessor.id
     assert persisted_predecessor.disposition == :effective
     assert persisted_predecessor.status == :superseded
     assert renewal_effect.disposition == :effective
-    assert renewal_effect.status == :required
+    assert renewal_effect.status == :applied
     assert renewal_effect.valid_from_at == attempt.period_start_at
     assert renewal_effect.valid_until_at == attempt.period_end_at
     assert fetch_attempt!(attempt.id).status == :succeeded
-    assert [%EntitlementGrant{status: :active}] = active_grants_for(subscription.id)
+
+    assert [%EntitlementGrant{status: :active} = grant] = active_grants_for(subscription.id)
+    assert grant.kind == charged_revision.entitlement_kind
+    assert grant.scope_key == charged_revision.entitlement_scope_key
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
+
+    assert Enum.filter(calls, &(&1.module == EntitlementsFacade)) == []
+
+    subscription_after_first = fetch_subscription!(subscription.id)
+    grant_id = grant.id
+
+    {replay_result, replay_calls} =
+      trace_renewal_writer_calls(fn ->
+        Facade.reconcile_paid_subscription_renewal_for_system(
+          order.id,
+          handoff_opts(handoff)
+        )
+      end)
+
+    assert replay_result == {:ok, :noop}
+    assert Enum.filter(replay_calls, &(&1.module == EntitlementsFacade)) == []
+
+    subscription_after_replay = fetch_subscription!(subscription.id)
+    assert subscription_after_replay.current_period_start_at ==
+             subscription_after_first.current_period_start_at
+
+    assert subscription_after_replay.current_period_end_at ==
+             subscription_after_first.current_period_end_at
+
+    assert subscription_after_replay.current_plan_revision_id ==
+             subscription_after_first.current_plan_revision_id
+
+    assert fetch_attempt!(attempt.id).id == attempt.id
+    assert length(access_effect_records!(subscription.id)) == 2
+    assert [%EntitlementGrant{id: ^grant_id} = replayed_grant] =
+             active_grants_for(subscription.id)
+
+    assert replayed_grant.valid_from_at == attempt.period_start_at
+    assert replayed_grant.valid_to_at == attempt.period_end_at
   end
 
   test "a charged nil/nil target keeps valid_from_at nil in its AccessEffect" do
@@ -211,12 +241,29 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert applied.status == :active
 
     [effect] = access_effect_rows!(subscription.id)
+    [effect_record] = access_effect_records!(subscription.id)
     assert effect.disposition == "effective"
+    assert effect.status == "applied"
     assert effect.source_version == applied.aggregate_version
     assert effect.entitlement_kind == nil
     assert effect.entitlement_scope_key == nil
     assert effect.valid_from_at == nil
     assert datetime_equal?(effect.valid_until_at, attempt.period_end_at)
+    assert effect_record.id
+    assert effect_record.status == :applied
+    assert active_grants_for(subscription.id) == []
+
+    assert {:ok, :noop} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    [replayed_effect] = access_effect_rows!(subscription.id)
+    assert replayed_effect.status == "applied"
+    assert replayed_effect.valid_from_at == nil
+    assert datetime_equal?(replayed_effect.valid_until_at, attempt.period_end_at)
+    assert active_grants_for(subscription.id) == []
   end
 
   test "suspended charged renewal executes its exact EFFECTIVE target before attempt success" do
@@ -1811,5 +1858,36 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       end
 
     DateTime.compare(left, right) == :eq
+  end
+
+  defp trace_renewal_writer_calls(operation) do
+    pid = self()
+    direct_writer_mfa =
+      {EntitlementsFacade, :issue_subscription_source_grant_strict_for_system, 2}
+
+    :erlang.trace_pattern(direct_writer_mfa, true, [:global])
+    :erlang.trace(pid, true, [:call])
+
+    try do
+      result = operation.()
+      {result, collect_renewal_writer_calls(pid, [])}
+    after
+      if Process.alive?(pid), do: :erlang.trace(pid, false, [:call])
+
+      :erlang.trace_pattern(direct_writer_mfa, false, [:global])
+    end
+  end
+
+  defp collect_renewal_writer_calls(pid, calls) do
+    receive do
+      {:trace, ^pid, :call, {module, function, args}} ->
+        collect_renewal_writer_calls(
+          pid,
+          [%{module: module, function: function, args: args} | calls]
+        )
+    after
+      0 ->
+        Enum.reverse(calls)
+    end
   end
 end
