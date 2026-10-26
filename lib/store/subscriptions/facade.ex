@@ -3894,51 +3894,6 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp current_subscription_for_entitlement_sync(subscription_id) do
-    case Repo.one(
-           from subscription in Subscription,
-             where: subscription.id == ^subscription_id,
-             lock: "FOR UPDATE"
-         ) do
-      %Subscription{status: :active, canceled_at: nil, ended_at: nil} = current ->
-        {:ok, current}
-
-      %Subscription{} ->
-        :skip
-
-      nil ->
-        {:error, Error.new("SUBSCRIPTION_NOT_FOUND", "subscription not found")}
-    end
-  end
-
-  defp project_subscription_entitlement_sync(
-         {:ok, %{outcome: :synchronized, user_ids: user_ids}, notifications},
-         subscription_id
-       ) do
-    :ok =
-      AshNotifications.notify_post_commit(
-        notifications,
-        context: %{
-          flow: :reconcile_paid_renewal_entitlement,
-          subscription_id: subscription_id
-        }
-      )
-
-    EntitlementsFacade.invalidate_subscription_source_users_after_commit_for_system(
-      user_ids,
-      "entitlement_issued"
-    )
-  end
-
-  defp project_subscription_entitlement_sync(
-         {:ok, %{outcome: :skipped}, _notifications},
-         _subscription_id
-       ),
-       do: :ok
-
-  defp project_subscription_entitlement_sync({:error, reason}, _subscription_id),
-    do: {:error, Normalize.normalize(reason)}
-
   defp emit_paid_renewal_access_sync_boundary(
          %Subscription{},
          %RenewalAttempt{}
@@ -7896,19 +7851,8 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp sync_charged_renewal_entitlement(%Subscription{id: subscription_id}, target) do
-    Repo.transaction(fn ->
-      sync_charged_renewal_entitlement_in_transaction(subscription_id, target)
-    end)
-    |> normalize_transaction_notifications()
-    |> project_subscription_entitlement_sync(subscription_id)
-  end
-
-  defp sync_charged_renewal_access(:ordinary, _effect_id, subscription, target),
-    do: sync_charged_renewal_entitlement(subscription, target)
-
-  defp sync_charged_renewal_access(:suspended_recovery, effect_id, _subscription, _target)
-       when is_binary(effect_id) do
+  defp sync_charged_renewal_access(lane, effect_id, _subscription, _target)
+       when lane in [:ordinary, :suspended_recovery] and is_binary(effect_id) do
     case execute_effective_access_effect_for_system(effect_id) do
       {:ok, outcome}
       when outcome in [:applied, :applied_projection_pending, :superseded, :noop] ->
@@ -7933,28 +7877,6 @@ defmodule Store.Subscriptions.Facade do
        "VALIDATION_ERROR",
        "charged-renewal EFFECTIVE AccessEffect handoff classification is missing"
      )}
-  end
-
-  defp sync_charged_renewal_entitlement_in_transaction(_subscription_id, %{entitlement_kind: nil}) do
-    {:ok, %{outcome: :skipped, notifications: [], user_ids: []}}
-  end
-
-  defp sync_charged_renewal_entitlement_in_transaction(subscription_id, target) do
-    case current_subscription_for_entitlement_sync(subscription_id) do
-      {:ok, current} -> issue_charged_renewal_grant(current, target)
-      :skip -> {:ok, %{outcome: :skipped, notifications: [], user_ids: []}}
-      {:error, reason} -> Repo.rollback(reason)
-    end
-  end
-
-  defp issue_charged_renewal_grant(current, target) do
-    case EntitlementsFacade.issue_subscription_source_grant_strict_for_system(current, target) do
-      {:ok, %{notifications: notifications, user_ids: user_ids}} ->
-        {:ok, %{outcome: :synchronized, notifications: notifications, user_ids: user_ids}}
-
-      {:error, reason} ->
-        Repo.rollback(Normalize.normalize(reason))
-    end
   end
 
   defp bounded_due_limit(limit) when is_integer(limit) and limit in 1..500, do: limit

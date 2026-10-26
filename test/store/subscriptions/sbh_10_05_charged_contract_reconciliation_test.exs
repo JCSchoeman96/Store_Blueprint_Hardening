@@ -8,6 +8,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
   require Ash.Query
 
   alias Store.Entitlements.EntitlementGrant
+  alias Store.Entitlements.Facade, as: EntitlementsFacade
   alias Store.Orders.Order
   alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
@@ -116,34 +117,19 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     [renewal_effect] = access_effect_records!(subscription.id)
     assert renewal_effect.disposition == :effective
-    assert renewal_effect.status == :required
+    assert renewal_effect.status == :applied
     assert renewal_effect.source_version == applied.aggregate_version
     assert datetime_equal?(renewal_effect.valid_from_at, attempt.period_start_at)
     assert datetime_equal?(renewal_effect.valid_until_at, attempt.period_end_at)
     assert renewal_effect.plan_revision_id == attempt.plan_revision_id
 
-    cursor_start = DateTime.add(renewal_effect.updated_at, -1, :microsecond)
-    as_of = DateTime.add(renewal_effect.updated_at, 1, :microsecond)
-
-    assert {:ok, recovery} =
-             Facade.run_subscription_access_effect_recovery_for_system(
-               limit: 100,
-               as_of: as_of,
-               effective_execution_after_updated_at: cursor_start,
-               effective_execution_after_id: "00000000-0000-0000-0000-000000000000",
-               skip_execution: true,
-               skip_projection: true
-             )
-
-    assert recovery.effective_execution_count >= 1
-    assert fetch_access_effect!(renewal_effect.id).status == :applied
-
-    assert [%EntitlementGrant{} = recovered_grant] = active_grants_for(subscription.id)
-    assert recovered_grant.valid_from_at == attempt.period_start_at
-    assert recovered_grant.valid_to_at == attempt.period_end_at
+    assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
   end
 
-  test "an ordinary charged renewal with an EFFECTIVE predecessor keeps the legacy writer lane" do
+  test "an ordinary charged renewal executes its exact EFFECTIVE effect through F1",
+       %{sandbox_owners: sandbox_owners} do
     %{
       subscription: subscription,
       attempt: attempt,
@@ -153,6 +139,8 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
 
     current_revision =
       read_one!(PlanRevision, subscription.current_plan_revision_id, Store.Subscriptions)
+
+    charged_revision = read_one!(PlanRevision, attempt.plan_revision_id, Store.Subscriptions)
 
     predecessor_attrs = %{
       subscription_id: subscription.id,
@@ -177,22 +165,117 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert {:ok, predecessor} = Facade.establish_access_effect_for_system(predecessor_input)
     assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
 
-    assert {:ok, :reconciled} =
-             Facade.reconcile_paid_subscription_renewal_for_system(
-               order.id,
-               handoff_opts(handoff)
-             )
+    {result, calls} =
+      trace_renewal_writer_calls(
+        fn ->
+          Facade.reconcile_paid_subscription_renewal_for_system(
+            order.id,
+            handoff_opts(handoff)
+          )
+        end,
+        sandbox_owners
+      )
+
+    assert result == {:ok, :reconciled}
 
     [persisted_predecessor, renewal_effect] = access_effect_records!(subscription.id)
     assert persisted_predecessor.id == predecessor.id
     assert persisted_predecessor.disposition == :effective
     assert persisted_predecessor.status == :superseded
     assert renewal_effect.disposition == :effective
-    assert renewal_effect.status == :required
+    assert renewal_effect.status == :applied
     assert renewal_effect.valid_from_at == attempt.period_start_at
     assert renewal_effect.valid_until_at == attempt.period_end_at
     assert fetch_attempt!(attempt.id).status == :succeeded
-    assert [%EntitlementGrant{status: :active}] = active_grants_for(subscription.id)
+
+    assert [%EntitlementGrant{status: :active} = grant] = active_grants_for(subscription.id)
+    assert grant.kind == charged_revision.entitlement_kind
+    assert grant.scope_key == charged_revision.entitlement_scope_key
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
+
+    assert Enum.filter(calls, &(&1.module == EntitlementsFacade)) == []
+
+    subscription_after_first = fetch_subscription!(subscription.id)
+    grant_id = grant.id
+
+    {replay_result, replay_calls} =
+      trace_renewal_writer_calls(
+        fn ->
+          Facade.reconcile_paid_subscription_renewal_for_system(
+            order.id,
+            handoff_opts(handoff)
+          )
+        end,
+        sandbox_owners
+      )
+
+    assert replay_result == {:ok, :noop}
+    assert Enum.filter(replay_calls, &(&1.module == EntitlementsFacade)) == []
+
+    subscription_after_replay = fetch_subscription!(subscription.id)
+
+    assert subscription_after_replay.current_period_start_at ==
+             subscription_after_first.current_period_start_at
+
+    assert subscription_after_replay.current_period_end_at ==
+             subscription_after_first.current_period_end_at
+
+    assert subscription_after_replay.current_plan_revision_id ==
+             subscription_after_first.current_plan_revision_id
+
+    assert fetch_attempt!(attempt.id).id == attempt.id
+    assert length(access_effect_records!(subscription.id)) == 2
+
+    assert [%EntitlementGrant{id: ^grant_id} = replayed_grant] =
+             active_grants_for(subscription.id)
+
+    assert replayed_grant.valid_from_at == attempt.period_start_at
+    assert replayed_grant.valid_to_at == attempt.period_end_at
+  end
+
+  test "initial paid activation keeps its legacy entitlement issue path",
+       %{sandbox_owners: sandbox_owners} do
+    customer = SubscriptionsFixtures.create_customer!("sbh_10_05_initial_activation")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:initial"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{order: order} =
+      SubscriptionsFixtures.create_paid_order_with_subscription_line!(
+        customer.id,
+        variant,
+        plan
+      )
+
+    {result, calls} =
+      trace_initial_paid_entitlement_call(
+        fn -> Facade.create_subscriptions_from_paid_order_for_system(order.id) end,
+        sandbox_owners
+      )
+
+    assert {:ok, activation} = result
+    assert activation.created_count == 1
+    assert activation.entitlement_issued_count == 1
+
+    assert [issue_call] = calls
+    assert issue_call.module == EntitlementsFacade
+    assert issue_call.function == :issue_subscription_entitlement_for_system
+    assert [%Subscription{} = activated_subscription, activated_plan] = issue_call.args
+    assert activated_plan.id == activated_subscription.current_plan_revision_id
+    assert activated_plan.entitlement_kind == plan.entitlement_kind
+    assert activated_plan.entitlement_scope_key == plan.entitlement_scope_key
+
+    assert [%EntitlementGrant{kind: :membership_access, scope_key: "membership:initial"}] =
+             active_grants_for(activated_subscription.id)
+
+    assert access_effect_records!(activated_subscription.id) == []
   end
 
   test "a charged nil/nil target keeps valid_from_at nil in its AccessEffect" do
@@ -211,12 +294,32 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert applied.status == :active
 
     [effect] = access_effect_rows!(subscription.id)
+    [effect_record] = access_effect_records!(subscription.id)
     assert effect.disposition == "effective"
+    assert effect.status == "applied"
     assert effect.source_version == applied.aggregate_version
     assert effect.entitlement_kind == nil
     assert effect.entitlement_scope_key == nil
     assert effect.valid_from_at == nil
     assert datetime_equal?(effect.valid_until_at, attempt.period_end_at)
+    assert effect_record.id
+    assert effect_record.status == :applied
+    assert active_grants_for(subscription.id) == []
+
+    assert {:ok, :noop} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    [replayed_effect] = access_effect_rows!(subscription.id)
+    [replayed_effect_record] = access_effect_records!(subscription.id)
+    assert replayed_effect.status == "applied"
+    assert replayed_effect_record.id == effect_record.id
+    assert replayed_effect_record.status == :applied
+    assert replayed_effect.valid_from_at == nil
+    assert datetime_equal?(replayed_effect.valid_until_at, attempt.period_end_at)
+    assert active_grants_for(subscription.id) == []
   end
 
   test "suspended charged renewal executes its exact EFFECTIVE target before attempt success" do
@@ -291,6 +394,137 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
     assert grant.valid_from_at == attempt.period_start_at
     assert grant.valid_to_at == attempt.period_end_at
+  end
+
+  test "ordinary renewal F1 failure preserves committed payment truth and recovers the exact effect" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc300_f1_failure_recovery")
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    constraint = "jc300_reject_renewal_grant_#{System.unique_integer([:positive])}"
+
+    Repo.query!("""
+    ALTER TABLE entitlement_grants
+    ADD CONSTRAINT #{constraint}
+    CHECK (source_id <> '#{subscription.id}'::uuid OR status <> 'active')
+    NOT VALID
+    """)
+
+    assert {:error, _reason} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    Repo.query!("ALTER TABLE entitlement_grants DROP CONSTRAINT #{constraint}")
+
+    committed_subscription = fetch_subscription!(subscription.id)
+    assert committed_subscription.current_plan_revision_id == attempt.plan_revision_id
+    assert committed_subscription.current_period_start_at == attempt.period_start_at
+    assert committed_subscription.current_period_end_at == attempt.period_end_at
+    assert fetch_contract_change!(attempt.contract_change_id).status == :applied
+    assert fetch_order!(order.id).state == :paid
+    assert fetch_payment_intent!(collection.payment_intent_id).state == :succeeded
+    assert fetch_collection!(collection.id).financial_outcome == :verified_success
+    assert fetch_attempt!(attempt.id).status != :succeeded
+    assert grants_for_source!(subscription.id) == []
+
+    [failed_effect] = access_effect_records!(subscription.id)
+    assert failed_effect.disposition == :effective
+    assert failed_effect.status == :failed_retryable
+    assert failed_effect.plan_revision_id == attempt.plan_revision_id
+    assert failed_effect.valid_from_at == attempt.period_start_at
+    assert failed_effect.valid_until_at == attempt.period_end_at
+
+    failed_effect = fetch_access_effect!(failed_effect.id)
+    cursor_start = DateTime.add(failed_effect.updated_at, -1, :microsecond)
+    as_of = DateTime.add(failed_effect.updated_at, 1, :microsecond)
+
+    assert {:ok, recovery} =
+             Facade.run_subscription_access_effect_recovery_for_system(
+               limit: 100,
+               as_of: as_of,
+               effective_execution_after_updated_at: cursor_start,
+               effective_execution_after_id: "00000000-0000-0000-0000-000000000000"
+             )
+
+    assert recovery.effective_execution_count >= 1
+    assert fetch_access_effect!(failed_effect.id).status == :applied
+    assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
+
+    version_after_commit = committed_subscription.aggregate_version
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    replayed_subscription = fetch_subscription!(subscription.id)
+    assert replayed_subscription.aggregate_version == version_after_commit
+    assert replayed_subscription.current_period_end_at == attempt.period_end_at
+    assert fetch_contract_change!(attempt.contract_change_id).status == :applied
+    assert fetch_order!(order.id).state == :paid
+    assert fetch_payment_intent!(collection.payment_intent_id).state == :succeeded
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    assert [replayed_effect] = access_effect_records!(subscription.id)
+    assert replayed_effect.id == failed_effect.id
+    assert replayed_effect.status == :applied
+    assert length(grants_for_source!(subscription.id)) == 1
+  end
+
+  test "ordinary renewal projection failure stays successful and repairs without grant mutation" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc300_projection_repair")
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    constraint = "jc300_projection_pending_#{System.unique_integer([:positive])}"
+
+    Repo.query!("""
+    ALTER TABLE access_effects
+    ADD CONSTRAINT #{constraint}
+    CHECK (projection_delivered_at IS NULL)
+    NOT VALID
+    """)
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    Repo.query!("ALTER TABLE access_effects DROP CONSTRAINT #{constraint}")
+
+    assert fetch_order!(order.id).state == :paid
+    assert fetch_payment_intent!(collection.payment_intent_id).state == :succeeded
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    [applied_effect] = access_effect_records!(subscription.id)
+    assert applied_effect.disposition == :effective
+    assert applied_effect.status == :applied
+    assert applied_effect.projection_delivered_at == nil
+
+    assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
+
+    grant_rows_before_repair =
+      grants_for_source!(subscription.id)
+      |> Enum.map(&{&1.id, &1.status, &1.valid_from_at, &1.valid_to_at})
+
+    assert :ok =
+             Facade.repair_suspension_access_effect_projection_for_system(applied_effect.id)
+
+    repaired_effect = fetch_access_effect!(applied_effect.id)
+    assert repaired_effect.status == :applied
+    assert %DateTime{} = repaired_effect.projection_delivered_at
+
+    grant_rows_after_repair =
+      grants_for_source!(subscription.id)
+      |> Enum.map(&{&1.id, &1.status, &1.valid_from_at, &1.valid_to_at})
+
+    assert grant_rows_after_repair == grant_rows_before_repair
   end
 
   test "a suspended renewal retry identifies its historical effect after a newer target commits" do
@@ -1074,7 +1308,23 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert fetch_contract_change!(attempt.contract_change_id).status == :applied
     assert fetch_attempt!(attempt.id).status == :succeeded
 
+    [renewal_effect] = access_effect_records!(subscription.id)
+    assert renewal_effect.status == :applied
+    assert renewal_effect.disposition == :effective
+    assert renewal_effect.plan_revision_id == attempt.plan_revision_id
+    assert renewal_effect.entitlement_kind == fixture.revision.entitlement_kind
+    assert renewal_effect.entitlement_scope_key == fixture.revision.entitlement_scope_key
+    assert renewal_effect.valid_from_at == attempt.period_start_at
+    assert renewal_effect.valid_until_at == attempt.period_end_at
+
+    assert [%EntitlementGrant{} = charged_grant] = active_grants_for(subscription.id)
+    assert charged_grant.kind == fixture.revision.entitlement_kind
+    assert charged_grant.scope_key == fixture.revision.entitlement_scope_key
+    assert charged_grant.valid_from_at == attempt.period_start_at
+    assert charged_grant.valid_to_at == attempt.period_end_at
+
     applied_version = after_subscription.aggregate_version
+    grant_id = charged_grant.id
 
     assert {:ok, :noop} =
              Facade.reconcile_paid_subscription_renewal_for_system(
@@ -1086,6 +1336,15 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert replayed.aggregate_version == applied_version
     assert replayed.current_contract_change_id == queued_before.id
     assert fetch_contract_change!(queued_before.id) == queued_after
+    assert [replayed_effect] = access_effect_records!(subscription.id)
+    assert replayed_effect.id == renewal_effect.id
+    assert replayed_effect.status == :applied
+
+    assert [%EntitlementGrant{id: ^grant_id} = replayed_grant] =
+             active_grants_for(subscription.id)
+
+    assert replayed_grant.valid_from_at == attempt.period_start_at
+    assert replayed_grant.valid_to_at == attempt.period_end_at
 
     assert [attempt.contract_change_id, queued_before.id] ==
              subscription_contract_change_ids!(subscription.id)
@@ -1811,5 +2070,59 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       end
 
     DateTime.compare(left, right) == :eq
+  end
+
+  defp trace_renewal_writer_calls(operation, sandbox_owners) do
+    direct_writer_mfa =
+      {EntitlementsFacade, :issue_subscription_source_grant_strict_for_system, 2}
+
+    trace_calls_in_child(operation, direct_writer_mfa, sandbox_owners)
+  end
+
+  defp trace_initial_paid_entitlement_call(operation, sandbox_owners) do
+    mfa = {EntitlementsFacade, :issue_subscription_entitlement_for_system, 2}
+
+    assert {:module, EntitlementsFacade} = Code.ensure_loaded(EntitlementsFacade)
+    trace_calls_in_child(operation, mfa, sandbox_owners)
+  end
+
+  defp trace_calls_in_child(operation, mfa, sandbox_owners) do
+    start_ref = make_ref()
+
+    task =
+      Task.async(fn ->
+        receive do
+          {:run_traced_operation, ^start_ref} -> operation.()
+        end
+      end)
+
+    :ok = Sandbox.allow(Store.Repo, sandbox_owners[Store.Repo], task.pid)
+    :ok = Sandbox.allow(Store.DirectRepo, sandbox_owners[Store.DirectRepo], task.pid)
+
+    :erlang.trace_pattern(mfa, true, [:global])
+    :erlang.trace(task.pid, true, [:call])
+    send(task.pid, {:run_traced_operation, start_ref})
+
+    try do
+      result = Task.await(task, 10_000)
+      {result, collect_renewal_writer_calls(task.pid, [])}
+    after
+      if Process.alive?(task.pid), do: :erlang.trace(task.pid, false, [:call])
+
+      :erlang.trace_pattern(mfa, false, [:global])
+    end
+  end
+
+  defp collect_renewal_writer_calls(pid, calls) do
+    receive do
+      {:trace, ^pid, :call, {module, function, args}} ->
+        collect_renewal_writer_calls(
+          pid,
+          [%{module: module, function: function, args: args} | calls]
+        )
+    after
+      0 ->
+        Enum.reverse(calls)
+    end
   end
 end
