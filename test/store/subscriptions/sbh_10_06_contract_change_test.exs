@@ -9,11 +9,14 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
   alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
   alias Store.Payments.Types.ProviderObservation
+  alias Store.Entitlements.EntitlementGrant
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
   alias Store.Subscriptions.Inputs.QueueSubscriptionVariantChangeInput
 
   alias Store.Subscriptions.{
+    AccessEffect,
+    PlanRevision,
     RenewalAttempt,
     RenewalCollectionAttempt,
     Subscription,
@@ -538,6 +541,107 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
     assert after_subscription.subscription_plan_id == current_plan.id
     assert Map.get(after_subscription, :current_contract_change_id) != nil
     assert fetch_attempt!(attempt.id).status == :processing
+  end
+
+  test "a bound ContractChange renewal applies its exact charged AccessEffect target" do
+    customer = SubscriptionsFixtures.create_customer!("sbh_10_06_bound_effective_target")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    current_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 1,
+        amount_minor: 1_100,
+        currency: "USD",
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:current"
+      })
+
+    target_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :month,
+        interval_count: 2,
+        amount_minor: 5_700,
+        currency: "EUR",
+        entitlement_kind: :digital_library,
+        entitlement_scope_key: "library:charged"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, target_plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, current_plan, %{
+        provider_billing_ref: "pm_sbh_10_06_bound_effective_target",
+        started_at: DateTime.add(now, -86_410, :second),
+        next_renewal_at: DateTime.add(now, -10, :second)
+      })
+
+    target_revision = SubscriptionsFixtures.create_plan_revision!(target_plan)
+    assert {:ok, queued} = queue_plan_change(customer, subscription, target_plan)
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: now)
+
+    attempt = fetch_latest_attempt!(subscription.id)
+    contract_change_id = Map.get(queued, :current_contract_change_id)
+    assert attempt.plan_revision_id == target_revision.id
+    assert attempt.contract_change_id == contract_change_id
+
+    bound_change = fetch_contract_change!(attempt.contract_change_id)
+    assert bound_change.status == :bound_to_renewal
+    assert bound_change.target_plan_revision_id == target_revision.id
+
+    mark_collection_successful!(attempt)
+
+    Store.Repo.query!(
+      "UPDATE subscription_plans SET entitlement_kind = 'membership_access', entitlement_scope_key = 'membership:decoy' WHERE id = $1",
+      [Ecto.UUID.dump!(target_plan.id)]
+    )
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               attempt.order_id,
+               exact_reconciliation_opts!(attempt)
+             )
+
+    [effect] =
+      AccessEffect
+      |> Ash.Query.filter(expr(subscription_id == ^subscription.id))
+      |> Ash.Query.sort(source_version: :asc)
+      |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    charged_revision =
+      PlanRevision
+      |> Ash.Query.filter(expr(id == ^attempt.plan_revision_id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert effect.disposition == :effective
+    assert effect.status == :applied
+    assert effect.plan_revision_id == attempt.plan_revision_id
+    assert effect.entitlement_kind == charged_revision.entitlement_kind
+    assert effect.entitlement_scope_key == charged_revision.entitlement_scope_key
+    assert effect.entitlement_scope_key == "library:charged"
+    assert effect.valid_from_at == attempt.period_start_at
+    assert effect.valid_until_at == attempt.period_end_at
+
+    applied = fetch_subscription!(subscription.id)
+    assert applied.current_plan_revision_id == target_revision.id
+    assert fetch_contract_change!(attempt.contract_change_id).status == :applied
+
+    assert [%EntitlementGrant{kind: :digital_library, scope_key: "library:charged"} = grant] =
+             EntitlementGrant
+             |> Ash.Query.filter(expr(source_id == ^subscription.id and status == :active))
+             |> Ash.read!(
+               domain: Store.Entitlements,
+               authorize?: false,
+               context: %{system?: true}
+             )
+
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
   end
 
   test "a succeeded reconciliation replay ignores a later ContractChange" do
