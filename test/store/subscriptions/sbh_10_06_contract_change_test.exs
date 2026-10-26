@@ -5,11 +5,11 @@ defmodule Store.Subscriptions.Sbh1006ContractChangeTest do
   require Ash.Query
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Store.Entitlements.EntitlementGrant
   alias Store.Orders.Order
   alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
   alias Store.Payments.Types.ProviderObservation
-  alias Store.Entitlements.EntitlementGrant
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
   alias Store.Subscriptions.Inputs.QueueSubscriptionVariantChangeInput

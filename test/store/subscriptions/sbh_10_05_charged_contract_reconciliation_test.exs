@@ -396,6 +396,137 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     assert grant.valid_to_at == attempt.period_end_at
   end
 
+  test "ordinary renewal F1 failure preserves committed payment truth and recovers the exact effect" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc300_f1_failure_recovery")
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    constraint = "jc300_reject_renewal_grant_#{System.unique_integer([:positive])}"
+
+    Repo.query!("""
+    ALTER TABLE entitlement_grants
+    ADD CONSTRAINT #{constraint}
+    CHECK (source_id <> '#{subscription.id}'::uuid OR status <> 'active')
+    NOT VALID
+    """)
+
+    assert {:error, _reason} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    Repo.query!("ALTER TABLE entitlement_grants DROP CONSTRAINT #{constraint}")
+
+    committed_subscription = fetch_subscription!(subscription.id)
+    assert committed_subscription.current_plan_revision_id == attempt.plan_revision_id
+    assert committed_subscription.current_period_start_at == attempt.period_start_at
+    assert committed_subscription.current_period_end_at == attempt.period_end_at
+    assert fetch_contract_change!(attempt.contract_change_id).status == :applied
+    assert fetch_order!(order.id).state == :paid
+    assert fetch_payment_intent!(collection.payment_intent_id).state == :succeeded
+    assert fetch_collection!(collection.id).financial_outcome == :verified_success
+    assert fetch_attempt!(attempt.id).status != :succeeded
+    assert grants_for_source!(subscription.id) == []
+
+    [failed_effect] = access_effect_records!(subscription.id)
+    assert failed_effect.disposition == :effective
+    assert failed_effect.status == :failed_retryable
+    assert failed_effect.plan_revision_id == attempt.plan_revision_id
+    assert failed_effect.valid_from_at == attempt.period_start_at
+    assert failed_effect.valid_until_at == attempt.period_end_at
+
+    failed_effect = fetch_access_effect!(failed_effect.id)
+    cursor_start = DateTime.add(failed_effect.updated_at, -1, :microsecond)
+    as_of = DateTime.add(failed_effect.updated_at, 1, :microsecond)
+
+    assert {:ok, recovery} =
+             Facade.run_subscription_access_effect_recovery_for_system(
+               limit: 100,
+               as_of: as_of,
+               effective_execution_after_updated_at: cursor_start,
+               effective_execution_after_id: "00000000-0000-0000-0000-000000000000"
+             )
+
+    assert recovery.effective_execution_count >= 1
+    assert fetch_access_effect!(failed_effect.id).status == :applied
+    assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
+
+    version_after_commit = committed_subscription.aggregate_version
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    replayed_subscription = fetch_subscription!(subscription.id)
+    assert replayed_subscription.aggregate_version == version_after_commit
+    assert replayed_subscription.current_period_end_at == attempt.period_end_at
+    assert fetch_contract_change!(attempt.contract_change_id).status == :applied
+    assert fetch_order!(order.id).state == :paid
+    assert fetch_payment_intent!(collection.payment_intent_id).state == :succeeded
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    assert [replayed_effect] = access_effect_records!(subscription.id)
+    assert replayed_effect.id == failed_effect.id
+    assert replayed_effect.status == :applied
+    assert length(grants_for_source!(subscription.id)) == 1
+  end
+
+  test "ordinary renewal projection failure stays successful and repairs without grant mutation" do
+    %{subscription: subscription, attempt: attempt, order: order, collection: collection} =
+      charged_bound_renewal!("jc300_projection_repair")
+
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    constraint = "jc300_projection_pending_#{System.unique_integer([:positive])}"
+
+    Repo.query!("""
+    ALTER TABLE access_effects
+    ADD CONSTRAINT #{constraint}
+    CHECK (projection_delivered_at IS NULL)
+    NOT VALID
+    """)
+
+    assert {:ok, :reconciled} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               order.id,
+               handoff_opts(handoff)
+             )
+
+    Repo.query!("ALTER TABLE access_effects DROP CONSTRAINT #{constraint}")
+
+    assert fetch_order!(order.id).state == :paid
+    assert fetch_payment_intent!(collection.payment_intent_id).state == :succeeded
+    assert fetch_attempt!(attempt.id).status == :succeeded
+    [applied_effect] = access_effect_records!(subscription.id)
+    assert applied_effect.disposition == :effective
+    assert applied_effect.status == :applied
+    assert applied_effect.projection_delivered_at == nil
+
+    assert [%EntitlementGrant{} = grant] = active_grants_for(subscription.id)
+    assert grant.valid_from_at == attempt.period_start_at
+    assert grant.valid_to_at == attempt.period_end_at
+
+    grant_rows_before_repair =
+      grants_for_source!(subscription.id)
+      |> Enum.map(&{&1.id, &1.status, &1.valid_from_at, &1.valid_to_at})
+
+    assert :ok =
+             Facade.repair_suspension_access_effect_projection_for_system(applied_effect.id)
+
+    repaired_effect = fetch_access_effect!(applied_effect.id)
+    assert repaired_effect.status == :applied
+    assert %DateTime{} = repaired_effect.projection_delivered_at
+
+    grant_rows_after_repair =
+      grants_for_source!(subscription.id)
+      |> Enum.map(&{&1.id, &1.status, &1.valid_from_at, &1.valid_to_at})
+
+    assert grant_rows_after_repair == grant_rows_before_repair
+  end
+
   test "a suspended renewal retry identifies its historical effect after a newer target commits" do
     stub_processing_provider_response!()
 

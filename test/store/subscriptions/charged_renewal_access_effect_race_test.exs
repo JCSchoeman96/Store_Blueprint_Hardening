@@ -28,7 +28,7 @@ defmodule Store.Subscriptions.ChargedRenewalAccessEffectRaceTest do
   @blocking_timeout 8_000
 
   setup_all do
-    assert_test_database!()
+    expected_database = assert_test_database!()
 
     pool_size = Repo.config()[:pool_size]
 
@@ -43,6 +43,9 @@ defmodule Store.Subscriptions.ChargedRenewalAccessEffectRaceTest do
       :ok = Sandbox.mode(Store.Repo, :manual)
       :ok = Sandbox.mode(Store.DirectRepo, :manual)
     end)
+
+    assert_connected_test_database!(Store.Repo, expected_database)
+    assert_connected_test_database!(Store.DirectRepo, expected_database)
 
     {:ok, %{effective_repo_pool_size: pool_size}}
   end
@@ -347,36 +350,40 @@ defmodule Store.Subscriptions.ChargedRenewalAccessEffectRaceTest do
 
     task =
       Task.async(fn ->
-        Repo.checkout(fn ->
-          Repo.transaction(
-            fn ->
-              barrier_backend = backend_pid!()
-
-              %{rows: [[grant_id]]} =
-                Repo.query!(
-                  """
-                  SELECT id
-                  FROM entitlement_grants
-                  WHERE source_kind = 'subscription' AND source_id = $1
-                  ORDER BY id
-                  LIMIT 1
-                  FOR UPDATE
-                  """,
-                  [Ecto.UUID.dump!(subscription_id)]
-                )
-
-              send(parent, {run_ref, :exact_source_grant_locked, barrier_backend, grant_id})
-              await_barrier_messages!(run_ref, parent)
-            end,
-            timeout: @transaction_timeout
-          )
-        end)
+        hold_exact_source_grant_barrier!(subscription_id, run_ref, parent)
       end)
 
     assert_receive {^run_ref, :exact_source_grant_locked, barrier_backend, grant_id},
                    @task_timeout
 
     {task, barrier_backend, grant_id}
+  end
+
+  defp hold_exact_source_grant_barrier!(subscription_id, run_ref, parent) do
+    Repo.checkout(fn ->
+      Repo.transaction(
+        fn ->
+          barrier_backend = backend_pid!()
+
+          %{rows: [[grant_id]]} =
+            Repo.query!(
+              """
+              SELECT id
+              FROM entitlement_grants
+              WHERE source_kind = 'subscription' AND source_id = $1
+              ORDER BY id
+              LIMIT 1
+              FOR UPDATE
+              """,
+              [Ecto.UUID.dump!(subscription_id)]
+            )
+
+          send(parent, {run_ref, :exact_source_grant_locked, barrier_backend, grant_id})
+          await_barrier_messages!(run_ref, parent)
+        end,
+        timeout: @transaction_timeout
+      )
+    end)
   end
 
   defp assert_barrier_observes_blocker!(barrier, run_ref, blocked_pid, expected_blocker, label) do
@@ -568,15 +575,35 @@ defmodule Store.Subscriptions.ChargedRenewalAccessEffectRaceTest do
   end
 
   defp assert_test_database! do
+    suffix = System.get_env("STORE_TEST_DB_SUFFIX")
+
+    unless is_binary(suffix) and suffix != "" do
+      raise "JC-300 race tests create immutable renewal collection history. " <>
+              "Run with STORE_TEST_DB_SUFFIX=<unique suffix>. " <>
+              "Shared canonical TEST execution is forbidden."
+    end
+
     expected_database =
-      System.get_env("STORE_TEST_DATABASE_NAME", "store_blueprint_test") <>
-        (System.get_env("STORE_TEST_DB_SUFFIX") || System.get_env("MIX_TEST_PARTITION") || "")
+      System.get_env("STORE_TEST_DATABASE_NAME", "store_blueprint_test") <> suffix
 
-    actual_database = Repo.config()[:database]
+    configured_databases = [Repo.config()[:database], Store.DirectRepo.config()[:database]]
 
-    unless Mix.env() == :test and actual_database == expected_database do
+    unless Mix.env() == :test and Enum.all?(configured_databases, &(&1 == expected_database)) do
       raise "real-connection test database guard failed: MIX_ENV=#{inspect(Mix.env())}, " <>
-              "configured_database=#{inspect(actual_database)}, expected_database=#{inspect(expected_database)}"
+              "configured_databases=#{inspect(configured_databases)}, " <>
+              "expected_database=#{inspect(expected_database)}"
+    end
+
+    expected_database
+  end
+
+  defp assert_connected_test_database!(repo, expected_database) do
+    %{rows: [[actual_database]]} = repo.query!("SELECT current_database()")
+
+    unless actual_database == expected_database do
+      raise "real-connection test database guard failed: " <>
+              "connected_database=#{inspect(actual_database)}, " <>
+              "expected_database=#{inspect(expected_database)}"
     end
 
     :ok
