@@ -4,6 +4,7 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
   import Ash.Expr
   require Ash.Query
 
+  alias Ash.Resource.Info, as: ResourceInfo
   alias Ecto.Adapters.SQL.Sandbox
   alias Store.Entitlements.{Cache, EntitlementGrant}
   alias Store.Repo
@@ -219,8 +220,12 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
              grant.status == :revoked and grant.revoked_reason == "grace_expired"
            end)
 
-    assert fetch_grant!(revoked.id) == revoked
-    assert fetch_grant!(expired.id) == expired
+    assert entitlement_grant_attributes(fetch_grant!(revoked.id)) ==
+             entitlement_grant_attributes(revoked)
+
+    assert entitlement_grant_attributes(fetch_grant!(expired.id)) ==
+             entitlement_grant_attributes(expired)
+
     assert fetch_grant!(other_source.id) == before_other_source
   end
 
@@ -799,6 +804,10 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
     EntitlementGrant
     |> Ash.Query.filter(expr(id == ^grant_id))
     |> Ash.read_one!(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
+  end
+
+  defp entitlement_grant_attributes(grant) do
+    Map.take(grant, EntitlementGrant |> ResourceInfo.attribute_names() |> MapSet.to_list())
   end
 
   defp create_grant!(fixture, scope_key, status, opts) do
