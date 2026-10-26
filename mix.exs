@@ -52,8 +52,8 @@ defmodule Store.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:decimal, "~> 3.1.2"},
       {:postgrex, ">= 0.22.4 and < 0.23.0-0"},
-      {:ash, ">= 3.36.0 and < 4.0.0-0"},
-      {:ash_postgres, "~> 2.13.0"},
+      {:ash, ">= 3.37.2 and < 4.0.0-0"},
+      {:ash_postgres, "~> 2.15.2"},
       # These transitive security floors are explicit so parent ranges cannot
       # re-resolve the graph to an advisory-affected release.
       {:ash_sql, ">= 0.7.1 and < 1.0.0-0"},
