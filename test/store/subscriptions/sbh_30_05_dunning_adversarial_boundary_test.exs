@@ -69,16 +69,15 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
           grace_period_days: 7
         )
 
-      effects_before = access_effect_rows!(subscription.id)
-      grants_before = subscription_entitlement_grants(subscription.id)
-
       assert {:ok, %{failed_count: 1}} = Facade.run_due_renewals_for_system(now: now, limit: 20)
       failed = fetch_subscription!(subscription.id)
       attempt = fetch_current_attempt!(subscription.id)
       assert failed.status == :past_due
       assert failed.current_dunning_renewal_attempt_id == attempt.id
-      assert access_effect_rows!(subscription.id) == effects_before
-      assert subscription_entitlement_grants(subscription.id) == grants_before
+
+      [keep_grace_effect] = access_effect_rows!(subscription.id)
+      assert keep_grace_effect.disposition == "effective"
+      effects_after_first_failure = access_effect_rows!(subscription.id)
       assert %DateTime{} = failed.next_retry_at
       retry_at = failed.next_retry_at
       assert retry_at == DateTime.add(now, 1, :hour)
@@ -99,6 +98,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert retried.status == :past_due
       assert retried.dunning_attempt_count == 2
       assert retried.current_dunning_renewal_attempt_id == attempt.id
+      assert access_effect_rows!(subscription.id) == effects_after_first_failure
     end
   end
 
@@ -326,7 +326,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert suspended.current_dunning_renewal_attempt_id == attempt.id
       assert suspended.aggregate_version == exhausted.aggregate_version + 1
 
-      [effect] = access_effect_rows!(subscription.id)
+      effect = suspension_access_effect_row!(subscription.id)
       assert effect.source_version == suspended.aggregate_version
       assert effect.status == "required"
       assert effect.disposition == "non_effective"
@@ -377,7 +377,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert suspended.status == :suspended
       assert suspended.current_dunning_renewal_attempt_id == attempt.id
       assert suspended.aggregate_version == exhausted.aggregate_version + 1
-      [effect] = access_effect_rows!(subscription.id)
+      effect = suspension_access_effect_row!(subscription.id)
       assert effect.source_version == suspended.aggregate_version
       assert effect.disposition == "non_effective"
       assert is_nil(effect.valid_from_at)
@@ -1014,7 +1014,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       suspended = fetch_subscription!(subscription.id)
       assert suspended.status == :suspended
       assert suspended.aggregate_version == past_due.aggregate_version + 1
-      [effect] = access_effect_rows!(subscription.id)
+      effect = suspension_access_effect_row!(subscription.id)
       assert effect.source_version == suspended.aggregate_version
       assert effect.disposition == "non_effective"
 
@@ -1022,7 +1022,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
                Facade.run_due_failed_payment_suspensions_for_system(now: boundary_at, limit: 20)
 
       assert fetch_subscription!(subscription.id).aggregate_version == suspended.aggregate_version
-      assert access_effect_rows!(subscription.id) == [effect]
+      assert suspension_access_effect_row!(subscription.id) == effect
       assert provider_mutation_count() == 0
     end
   end
@@ -1205,6 +1205,13 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
     )
 
     boundary_at
+  end
+
+  defp suspension_access_effect_row!(subscription_id) do
+    case Enum.find(access_effect_rows!(subscription_id), &(&1.disposition == "non_effective")) do
+      %{} = effect -> effect
+      nil -> flunk("expected suspension AccessEffect for subscription #{subscription_id}")
+    end
   end
 
   defp access_effect_rows!(subscription_id) do

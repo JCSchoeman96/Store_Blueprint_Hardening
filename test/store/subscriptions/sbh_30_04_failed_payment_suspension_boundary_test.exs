@@ -210,7 +210,13 @@ defmodule Store.Subscriptions.Sbh3004FailedPaymentSuspensionBoundaryTest do
 
     assert %{rows: [[effect_id, "required", "non_effective", effect_version]]} =
              Repo.query!(
-               "SELECT id::text, status, disposition, source_version FROM access_effects WHERE subscription_id = $1",
+               """
+               SELECT id::text, status, disposition, source_version
+               FROM access_effects
+               WHERE subscription_id = $1 AND disposition = 'non_effective'
+               ORDER BY source_version DESC
+               LIMIT 1
+               """,
                [Ecto.UUID.dump!(subscription.id)]
              )
 
@@ -255,11 +261,13 @@ defmodule Store.Subscriptions.Sbh3004FailedPaymentSuspensionBoundaryTest do
     assert result.failed_count == 1
     assert fetch_subscription!(subscription.id).status == :past_due
 
-    assert %{rows: [[0]]} =
+    assert %{rows: [[effect_count]]} =
              Repo.query!(
                "SELECT count(*) FROM access_effects WHERE subscription_id = $1",
                [Ecto.UUID.dump!(subscription.id)]
              )
+
+    assert effect_count == 1
   end
 
   test "boundary and quarantine selectors match their partial index contracts" do

@@ -261,6 +261,7 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
         grace_period_days: 1,
         max_retry_attempts: 0,
         retry_schedule_hours: [0],
+        access_on_past_due: :remove_immediately,
         entitlement_kind: :membership_access,
         entitlement_scope_key: "membership:#{prefix}"
       })
@@ -389,7 +390,9 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
 
   defp current_effect!(subscription_id) do
     AccessEffect
-    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.Query.filter(
+      expr(subscription_id == ^subscription_id and disposition == :non_effective)
+    )
     |> Ash.Query.sort(source_version: :desc)
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
