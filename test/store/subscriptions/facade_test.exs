@@ -779,7 +779,10 @@ defmodule Store.Subscriptions.FacadeTest do
           next_retry_at: nil,
           retry_suppressed_at: now
         },
-        context: %{system?: true}
+        context: %{system?: true},
+        private_arguments: %{
+          dunning_renewal_attempt_id: fetch_collection!(first_collection_id).renewal_attempt_id
+        }
       )
       |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
 

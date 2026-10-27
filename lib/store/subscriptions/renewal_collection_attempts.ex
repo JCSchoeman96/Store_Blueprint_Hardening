@@ -72,6 +72,29 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
   def payment_intent_key(collection_attempt_id) when is_binary(collection_attempt_id),
     do: "renewal-collection:" <> collection_attempt_id
 
+  @spec ensure_current_dunning_attempt_owner(Subscription.t(), RenewalAttempt.t()) ::
+          :ok | {:error, Error.t()}
+  def ensure_current_dunning_attempt_owner(
+        %Subscription{current_dunning_renewal_attempt_id: nil},
+        %RenewalAttempt{}
+      ),
+      do: :ok
+
+  def ensure_current_dunning_attempt_owner(
+        %Subscription{current_dunning_renewal_attempt_id: attempt_id},
+        %RenewalAttempt{id: attempt_id}
+      )
+      when is_binary(attempt_id),
+      do: :ok
+
+  def ensure_current_dunning_attempt_owner(%Subscription{}, %RenewalAttempt{}) do
+    {:error,
+     Error.new(
+       @renewal_authority_withdrawn_code,
+       "renewal attempt does not own the current dunning episode"
+     )}
+  end
+
   @spec attach_payment_intent_for_system(PaymentIntentBindingInput.t()) ::
           {:ok, map()} | {:error, Error.t() | term()}
   def attach_payment_intent_for_system(%PaymentIntentBindingInput{} = input) do
@@ -2374,10 +2397,12 @@ defmodule Store.Subscriptions.RenewalCollectionAttempts do
          %Subscription{} = subscription,
          %RenewalAttempt{} = attempt
        ) do
-    if renewal_authority_withdrawn?(subscription, attempt) do
-      {:error, Error.new("RENEWAL_AUTHORITY_WITHDRAWN", "renewal authority is withdrawn")}
-    else
-      :ok
+    with :ok <- ensure_current_dunning_attempt_owner(subscription, attempt) do
+      if renewal_authority_withdrawn?(subscription, attempt) do
+        {:error, Error.new("RENEWAL_AUTHORITY_WITHDRAWN", "renewal authority is withdrawn")}
+      else
+        :ok
+      end
     end
   end
 

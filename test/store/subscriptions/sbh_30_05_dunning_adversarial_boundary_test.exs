@@ -1,10 +1,14 @@
 defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
   use Store.DataCase, async: false
 
+  alias Ash.Resource.Info
+  alias Ash.Type.UUID, as: UUIDType
+
   import Ash.Expr
   require Ash.Query
 
   alias Store.Comms.EmailOutbox
+  alias Store.Entitlements.EntitlementGrant
   alias Store.Orders.Order
   alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
   alias Store.Payments.PaymentIntent
@@ -37,6 +41,21 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
     :ok
   end
 
+  test "dunning renewal attempt identity is represented by a private nullable UUID" do
+    attribute = Info.attribute(Subscription, :current_dunning_renewal_attempt_id)
+
+    relationship = Info.relationship(Subscription, :current_dunning_renewal_attempt)
+
+    assert attribute
+    assert attribute.type == UUIDType
+    assert attribute.allow_nil? == true
+    assert attribute.public? == false
+
+    assert relationship.destination == RenewalAttempt
+    assert relationship.source_attribute == :current_dunning_renewal_attempt_id
+    assert relationship.attribute_writable? == false
+  end
+
   describe "retry timing" do
     # Invariant: due selection is false one microsecond before the persisted retry time, and true at and after it.
     # Mutation caught: changing the selector comparison from <= to < drops the exact-time retry.
@@ -50,9 +69,16 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
           grace_period_days: 7
         )
 
+      effects_before = access_effect_rows!(subscription.id)
+      grants_before = subscription_entitlement_grants(subscription.id)
+
       assert {:ok, %{failed_count: 1}} = Facade.run_due_renewals_for_system(now: now, limit: 20)
       failed = fetch_subscription!(subscription.id)
+      attempt = fetch_current_attempt!(subscription.id)
       assert failed.status == :past_due
+      assert failed.current_dunning_renewal_attempt_id == attempt.id
+      assert access_effect_rows!(subscription.id) == effects_before
+      assert subscription_entitlement_grants(subscription.id) == grants_before
       assert %DateTime{} = failed.next_retry_at
       retry_at = failed.next_retry_at
       assert retry_at == DateTime.add(now, 1, :hour)
@@ -72,6 +98,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       retried = fetch_subscription!(subscription.id)
       assert retried.status == :past_due
       assert retried.dunning_attempt_count == 2
+      assert retried.current_dunning_renewal_attempt_id == attempt.id
     end
   end
 
@@ -271,8 +298,10 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
                Facade.run_due_renewals_for_system(now: first_failure_at, limit: 20)
 
       first_failure = fetch_subscription!(subscription.id)
+      attempt = fetch_current_attempt!(subscription.id)
       boundary_at = first_failure.failed_payment_boundary_at
       assert first_failure.status == :past_due
+      assert first_failure.current_dunning_renewal_attempt_id == attempt.id
       assert first_failure.next_retry_at == first_failure_at
       assert DateTime.compare(first_failure.next_retry_at, boundary_at) == :lt
 
@@ -285,6 +314,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert %DateTime{} = exhausted.retry_suppressed_at
       assert is_nil(exhausted.next_retry_at)
       assert exhausted.failed_payment_boundary_at == boundary_at
+      assert exhausted.current_dunning_renewal_attempt_id == attempt.id
       refute due_retry?(subscription.id, boundary_at)
       assert subscription.id in due_boundary_ids(boundary_at)
 
@@ -293,6 +323,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
 
       suspended = fetch_subscription!(subscription.id)
       assert suspended.status == :suspended
+      assert suspended.current_dunning_renewal_attempt_id == attempt.id
       assert suspended.aggregate_version == exhausted.aggregate_version + 1
 
       [effect] = access_effect_rows!(subscription.id)
@@ -329,8 +360,10 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
                Facade.run_due_renewals_for_system(now: first_failure_at, limit: 20)
 
       exhausted = fetch_subscription!(subscription.id)
+      attempt = fetch_current_attempt!(subscription.id)
       boundary_at = exhausted.failed_payment_boundary_at
       assert exhausted.status == :past_due
+      assert exhausted.current_dunning_renewal_attempt_id == attempt.id
       assert exhausted.dunning_attempt_count == 1
       assert %DateTime{} = exhausted.retry_suppressed_at
       assert is_nil(exhausted.next_retry_at)
@@ -342,6 +375,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
 
       suspended = fetch_subscription!(subscription.id)
       assert suspended.status == :suspended
+      assert suspended.current_dunning_renewal_attempt_id == attempt.id
       assert suspended.aggregate_version == exhausted.aggregate_version + 1
       [effect] = access_effect_rows!(subscription.id)
       assert effect.source_version == suspended.aggregate_version
@@ -375,6 +409,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       first_failure = fetch_subscription!(subscription.id)
       attempt = fetch_current_attempt!(subscription.id)
       boundary_at = first_failure.failed_payment_boundary_at
+      assert first_failure.current_dunning_renewal_attempt_id == attempt.id
       assert attempt.charged_contract_snapshot["retry_schedule_hours"] == [2, 5, 72]
       assert attempt.charged_contract_snapshot["max_retry_attempts"] == 3
       assert attempt.charged_contract_snapshot["grace_period_days"] == 7
@@ -421,6 +456,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
 
       after_retry = fetch_subscription!(subscription.id)
       assert after_retry.status == :past_due
+      assert after_retry.current_dunning_renewal_attempt_id == attempt.id
       assert after_retry.dunning_attempt_count == 2
       assert after_retry.failed_payment_boundary_at == boundary_at
       assert after_retry.next_retry_at == DateTime.add(first_failure_at, 5, :hour)
@@ -432,6 +468,73 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert updated_plan.access_on_past_due == :remove_immediately
       assert access_effect_rows!(subscription.id) == baseline_effects
       assert provider_mutation_count() == 0
+    end
+  end
+
+  test "pointer-bearing past_due rejects activate_now while legacy null-pointer recovery remains valid" do
+    occurrence = create_failed_then_inflight_occurrence!("jc247_activate_now_pointer")
+    past_due = fetch_subscription!(occurrence.subscription.id)
+
+    assert past_due.current_dunning_renewal_attempt_id == occurrence.attempt.id
+
+    assert {:error, _reason} =
+             past_due
+             |> Ash.Changeset.for_update(:activate_now, %{}, context: @system_context)
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: @system_context
+             )
+
+    unchanged = fetch_subscription!(occurrence.subscription.id)
+    assert unchanged.status == :past_due
+    assert unchanged.current_dunning_renewal_attempt_id == occurrence.attempt.id
+
+    Repo.query!(
+      "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(occurrence.subscription.id)]
+    )
+
+    legacy = fetch_subscription!(occurrence.subscription.id)
+
+    assert {:ok, recovered} =
+             legacy
+             |> Ash.Changeset.for_update(:activate_now, %{}, context: @system_context)
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: @system_context
+             )
+
+    assert recovered.status == :active
+    assert is_nil(recovered.current_dunning_renewal_attempt_id)
+  end
+
+  test "cancel-now and expiry clear current dunning attempt identity" do
+    for {label, action, target_status} <- [
+          {"cancel", :cancel_now_transition, :canceled},
+          {"expire", :mark_expired_transition, :expired}
+        ] do
+      occurrence = create_failed_then_inflight_occurrence!("jc247_terminal_#{label}")
+      source = fetch_subscription!(occurrence.subscription.id)
+
+      assert source.current_dunning_renewal_attempt_id == occurrence.attempt.id
+
+      assert {:ok, terminal} =
+               source
+               |> Ash.Changeset.for_update(
+                 action,
+                 %{canceled_reason: "jc247_#{label}"},
+                 context: @system_context
+               )
+               |> Ash.update(
+                 domain: Store.Subscriptions,
+                 authorize?: false,
+                 context: @system_context
+               )
+
+      assert terminal.status == target_status
+      assert is_nil(terminal.current_dunning_renewal_attempt_id)
     end
   end
 
@@ -458,6 +561,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
         RenewalCollectionAttempts.success_handoff_for_system(occurrence.inflight_collection.id)
 
       before_success = fetch_subscription!(occurrence.subscription.id)
+      assert before_success.current_dunning_renewal_attempt_id == occurrence.attempt.id
 
       assert {:ok, :reconciled} =
                Facade.reconcile_paid_subscription_renewal_for_system(
@@ -467,11 +571,15 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
 
       active = fetch_subscription!(occurrence.subscription.id)
       assert active.status == :active
+      assert is_nil(active.current_dunning_renewal_attempt_id)
       assert active.current_period_start_at == occurrence.attempt.period_start_at
       assert active.current_period_end_at == occurrence.attempt.period_end_at
       assert active.aggregate_version == before_success.aggregate_version + 1
       assert active.dunning_attempt_count == 0
+      assert is_nil(active.past_due_since_at)
       assert is_nil(active.failed_payment_boundary_at)
+      assert is_nil(active.next_retry_at)
+      assert is_nil(active.retry_suppressed_at)
       effects_after_success = access_effect_rows!(occurrence.subscription.id)
 
       assert Enum.count(effects_after_success, &(&1.source_version == active.aggregate_version)) <=
@@ -663,6 +771,7 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
     test "duplicate failure observation leaves dunning, retry, access, and outbox evidence unchanged" do
       occurrence = create_failed_then_inflight_occurrence!("jc240_duplicate_failure")
       before = fetch_subscription!(occurrence.subscription.id)
+      assert before.current_dunning_renewal_attempt_id == occurrence.attempt.id
       before_effects = access_effect_rows!(occurrence.subscription.id)
       before_outbox_count = email_outbox_count(occurrence.subscription.id)
       before_collections = Enum.map(list_collections!(occurrence.attempt.id), & &1.id)
@@ -676,6 +785,10 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
       assert after_replay.next_retry_at == before.next_retry_at
       assert after_replay.retry_suppressed_at == before.retry_suppressed_at
       assert after_replay.failed_payment_boundary_at == before.failed_payment_boundary_at
+
+      assert after_replay.current_dunning_renewal_attempt_id ==
+               before.current_dunning_renewal_attempt_id
+
       assert after_replay.aggregate_version == before.aggregate_version
       assert access_effect_rows!(occurrence.subscription.id) == before_effects
       assert email_outbox_count(occurrence.subscription.id) == before_outbox_count
@@ -1116,6 +1229,13 @@ defmodule Store.Subscriptions.Sbh3005DunningAdversarialBoundaryTest do
     EmailOutbox
     |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
     |> Ash.count!(domain: Store.Comms, authorize?: false, context: @system_context)
+  end
+
+  defp subscription_entitlement_grants(subscription_id) do
+    EntitlementGrant
+    |> Ash.Query.filter(expr(source_kind == :subscription and source_id == ^subscription_id))
+    |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+    |> Ash.read!(domain: Store.Entitlements, authorize?: false, context: @system_context)
   end
 
   defp provider_mutation_count, do: length(drain_provider_requests())

@@ -574,6 +574,12 @@ defmodule Store.Subscriptions.AccessEffectEffectiveExecutionTest do
 
       Repo.query!("DELETE FROM entitlement_grants WHERE source_id = $1", [subscription_id])
       Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [subscription_id])
+
+      Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+        [subscription_id]
+      )
+
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])

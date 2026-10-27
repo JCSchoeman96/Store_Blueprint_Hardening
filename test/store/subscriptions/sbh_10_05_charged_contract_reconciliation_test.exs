@@ -816,6 +816,7 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
     grace_period_days = attempt.charged_contract_snapshot["grace_period_days"]
 
     assert past_due.status == :past_due
+    assert past_due.current_dunning_renewal_attempt_id == attempt.id
     assert past_due.past_due_since_at == now
 
     assert past_due.failed_payment_boundary_at ==
@@ -835,6 +836,77 @@ defmodule Store.Subscriptions.Sbh1005ChargedContractReconciliationTest do
       |> Enum.map(& &1.id)
 
     assert subscription.id in due_ids
+  end
+
+  test "paid recovery cannot clear a different current dunning RenewalAttempt" do
+    recovery = charged_bound_renewal!("jc247_recovery_identity", success?: true)
+    recovered_attempt = recovery.attempt
+
+    wrong_pointer_attempt =
+      recovered_attempt
+      |> Map.from_struct()
+      |> Map.take([
+        :subscription_id,
+        :period_start_at,
+        :period_end_at,
+        :plan_revision_id,
+        :variant_id,
+        :quantity,
+        :amount_minor,
+        :currency,
+        :contract_change_id,
+        :expected_subscription_version,
+        :charged_contract_version,
+        :charged_contract_snapshot
+      ])
+      |> Map.put(:renewal_key, recovered_attempt.renewal_key <> ":jc247:" <> Ecto.UUID.generate())
+      |> then(fn attrs ->
+        RenewalAttempt
+        |> Ash.Changeset.for_create(:create_or_reuse, attrs, context: %{system?: true})
+        |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+      end)
+
+    now = recovery.now
+    past_due_since_at = DateTime.add(now, -1, :day)
+    boundary_at = DateTime.add(past_due_since_at, 7, :day)
+
+    {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(recovery.collection.id)
+
+    Store.Repo.query!(
+      """
+      UPDATE subscriptions
+      SET status = 'past_due',
+          current_dunning_renewal_attempt_id = $2,
+          billing_status_reason = 'PAYMENT_FAILED',
+          past_due_since_at = $3,
+          failed_payment_boundary_at = $4,
+          dunning_attempt_count = 1,
+          next_retry_at = NULL,
+          retry_suppressed_at = $5
+      WHERE id = $1
+      """,
+      [
+        Ecto.UUID.dump!(recovery.subscription.id),
+        Ecto.UUID.dump!(wrong_pointer_attempt.id),
+        past_due_since_at,
+        boundary_at,
+        now
+      ]
+    )
+
+    assert {:error, _reason} =
+             Facade.reconcile_paid_subscription_renewal_for_system(
+               recovery.order.id,
+               handoff_opts(handoff)
+             )
+
+    unchanged = fetch_subscription!(recovery.subscription.id)
+    assert unchanged.status == :past_due
+    assert unchanged.current_dunning_renewal_attempt_id == wrong_pointer_attempt.id
+    assert unchanged.current_dunning_renewal_attempt_id != recovered_attempt.id
+    assert unchanged.past_due_since_at == past_due_since_at
+    assert unchanged.failed_payment_boundary_at == boundary_at
+    assert unchanged.dunning_attempt_count == 1
   end
 
   test "replayed requires_action after a Plan change preserves the bound boundary and starts no collection" do

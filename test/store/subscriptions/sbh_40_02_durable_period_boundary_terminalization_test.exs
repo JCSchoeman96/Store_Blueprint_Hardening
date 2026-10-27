@@ -43,6 +43,54 @@ defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
     assert cancellation_flag.public?
   end
 
+  test "database rejects a nonexistent current dunning RenewalAttempt" do
+    {_customer, subscription} = create_subscription("jc247_missing_dunning_attempt")
+    missing_attempt_id = Ecto.UUID.generate()
+
+    assert {:error,
+            %Postgrex.Error{
+              postgres: %{
+                code: :foreign_key_violation,
+                constraint: "subscriptions_current_dunning_renewal_attempt_id_fkey"
+              }
+            }} =
+             Repo.query(
+               "UPDATE subscriptions SET status = 'past_due', current_dunning_renewal_attempt_id = $2 WHERE id = $1",
+               [Ecto.UUID.dump!(subscription.id), Ecto.UUID.dump!(missing_attempt_id)]
+             )
+  end
+
+  test "database restricts non-null current dunning identity to past_due and suspended" do
+    {_customer, subscription} = create_subscription("jc247_dunning_status_check")
+    attempt = create_renewal_attempt(subscription)
+
+    for status <- [:active, :canceled, :expired] do
+      assert {:error,
+              %Postgrex.Error{
+                postgres: %{
+                  code: :check_violation,
+                  constraint: "subscriptions_current_dunning_renewal_attempt_status_check"
+                }
+              }} =
+               Repo.query(
+                 "UPDATE subscriptions SET status = $2, current_dunning_renewal_attempt_id = $3 WHERE id = $1",
+                 [
+                   Ecto.UUID.dump!(subscription.id),
+                   Atom.to_string(status),
+                   Ecto.UUID.dump!(attempt.id)
+                 ]
+               )
+    end
+
+    for status <- [:past_due, :suspended] do
+      assert {:ok, %{num_rows: 1}} =
+               Repo.query(
+                 "UPDATE subscriptions SET status = $2, current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+                 [Ecto.UUID.dump!(subscription.id), Atom.to_string(status)]
+               )
+    end
+  end
+
   test "database rejects a scheduled cancellation without exactly one target" do
     {_customer, subscription} = create_subscription("jc242_missing_target")
 
@@ -616,6 +664,7 @@ defmodule Store.Subscriptions.Sbh4002DurablePeriodBoundaryTerminalizationTest do
     canceled = fetch_subscription!(subscription.id)
     assert canceled.status == :canceled
     assert canceled.canceled_reason == "canceled_period_end"
+    assert is_nil(canceled.current_dunning_renewal_attempt_id)
     assert canceled.canceled_at == attempt.period_end_at
     assert canceled.ended_at == attempt.period_end_at
     assert canceled.current_period_end_at == attempt.period_end_at

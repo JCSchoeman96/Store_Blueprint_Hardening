@@ -232,7 +232,7 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
     assert revoked_before.status == :revoked
 
     Repo.query!(
-      "UPDATE subscriptions SET status = 'canceled', canceled_reason = 'user_request' WHERE id = $1",
+      "UPDATE subscriptions SET status = 'canceled', canceled_reason = 'user_request', current_dunning_renewal_attempt_id = NULL WHERE id = $1",
       [Ecto.UUID.dump!(fixture.subscription.id)]
     )
 

@@ -685,7 +685,7 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
   defp set_cancellation_evidence!(subscription_id, canceled_reason) do
     Sandbox.unboxed_run(Repo, fn ->
       Repo.query!(
-        "UPDATE subscriptions SET status = 'canceled', canceled_reason = $2 WHERE id = $1",
+        "UPDATE subscriptions SET status = 'canceled', canceled_reason = $2, current_dunning_renewal_attempt_id = NULL WHERE id = $1",
         [Ecto.UUID.dump!(subscription_id), canceled_reason]
       )
     end)
@@ -737,6 +737,12 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
       plan_id = Ecto.UUID.dump!(fixture.plan.id)
 
       Repo.query!("DELETE FROM entitlement_grants WHERE source_id = $1", [subscription_id])
+
+      Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+        [subscription_id]
+      )
+
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])
@@ -765,6 +771,12 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
 
       Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM entitlement_grants WHERE user_id = $1", [user_id])
+
+      Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+        [subscription_id]
+      )
+
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])

@@ -857,6 +857,11 @@ defmodule Store.Subscriptions.Sbh2003RenewalVsContractChangeTest do
         [user_id]
       )
 
+      Store.Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+        [subscription_id]
+      )
+
       Store.Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [
         subscription_id
       ])
