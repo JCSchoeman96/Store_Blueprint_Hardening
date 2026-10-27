@@ -7,8 +7,8 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
   alias Store.Repo
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.Facade
-  alias Store.Subscriptions.RenewalAttempt
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
+  alias Store.Subscriptions.RenewalAttempt
   alias Store.SubscriptionsFixtures
 
   @cursor_floor "00000000-0000-7000-8000-000000000000"

@@ -172,9 +172,8 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
          :ok <- require_past_due_since_at(subscription),
          :ok <- require_failed_payment_boundary(subscription),
          :ok <- require_uuid(subscription.source_order_line_item_id, "source order line item"),
-         :ok <- require_uuid(subscription.current_plan_revision_id, "plan revision"),
-         :ok <- require_funded_revision_identity(subscription, funded_revision) do
-      :ok
+         :ok <- require_uuid(subscription.current_plan_revision_id, "plan revision") do
+      require_funded_revision_identity(subscription, funded_revision)
     end
   end
 

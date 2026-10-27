@@ -190,6 +190,24 @@ defmodule Store.Subscriptions.Jc247AKeepDuringGraceTest do
     assert hd(access_effects!(subscription.id)).id == first_effect.id
   end
 
+  test "fault injection for one subscription does not break AccessEffect insert for another" do
+    armed = create_due_fixture!("jc247_a_fault_isolation_armed")
+    other = create_due_fixture!("jc247_a_fault_isolation_other")
+
+    fail_access_effect_insert!(armed.subscription.id)
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "canceled"})
+      )
+    end)
+
+    assert {:error, %{code: "PAYMENT_FAILED"}} = other.run.()
+    assert length(access_effects!(other.subscription.id)) == 1
+    assert access_effects!(armed.subscription.id) == []
+  end
+
   test "malformed keep-grace pair interval rolls back past_due without AccessEffect" do
     fixture = create_due_fixture!("jc247_a_malformed_pair")
     force_malformed_keep_grace_boundary!(fixture.subscription.id)
@@ -205,6 +223,11 @@ defmodule Store.Subscriptions.Jc247AKeepDuringGraceTest do
 
     assert {:error, %{code: "PAYMENT_FAILED"}} =
              Repo.checkout(fn ->
+               Repo.query!(
+                 "SELECT set_config('store.jc247_malformed_boundary_subscription', $1, true)",
+                 [fixture.subscription.id]
+               )
+
                Repo.query!("SELECT set_config('store.jc247_force_malformed_boundary', '1', true)")
 
                fixture.run.()
@@ -306,7 +329,53 @@ defmodule Store.Subscriptions.Jc247AKeepDuringGraceTest do
   end
 
   defp force_malformed_keep_grace_boundary!(subscription_id) do
-    function_name = "jc247_malformed_boundary_#{System.unique_integer([:positive])}"
+    {trigger_name, function_name} = install_subscription_boundary_trigger!(subscription_id)
+    on_exit(fn -> drop_trigger_and_function!("subscriptions", trigger_name, function_name) end)
+  end
+
+  defp fail_access_effect_insert!(subscription_id) do
+    {trigger_name, function_name} = install_access_effect_insert_trigger!()
+    on_exit(fn -> drop_trigger_and_function!("access_effects", trigger_name, function_name) end)
+
+    Repo.checkout(fn ->
+      Repo.query!(
+        "SELECT set_config('store.jc247_fail_access_effect_subscription', $1, true)",
+        [subscription_id]
+      )
+    end)
+  end
+
+  defp install_access_effect_insert_trigger! do
+    suffix = System.unique_integer([:positive])
+    trigger_name = "jc247_fail_access_effect_#{suffix}"
+    function_name = "jc247_fail_access_effect_fn_#{suffix}"
+
+    Repo.query!("""
+    CREATE FUNCTION #{function_name}() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF NEW.subscription_id::text = current_setting('store.jc247_fail_access_effect_subscription', true) THEN
+        RAISE EXCEPTION 'injected JC-247 AccessEffect insert failure';
+      END IF;
+      RETURN NEW;
+    END;
+    $function$;
+    """)
+
+    Repo.query!("""
+    CREATE TRIGGER #{trigger_name}
+    BEFORE INSERT ON access_effects
+    FOR EACH ROW EXECUTE FUNCTION #{function_name}()
+    """)
+
+    {trigger_name, function_name}
+  end
+
+  defp install_subscription_boundary_trigger!(subscription_id) do
+    suffix = System.unique_integer([:positive])
+    trigger_name = "jc247_malformed_boundary_#{suffix}"
+    function_name = "jc247_malformed_boundary_fn_#{suffix}"
 
     Repo.query!("""
     CREATE FUNCTION #{function_name}() RETURNS trigger
@@ -324,43 +393,17 @@ defmodule Store.Subscriptions.Jc247AKeepDuringGraceTest do
     """)
 
     Repo.query!("""
-    CREATE TRIGGER #{function_name}
+    CREATE TRIGGER #{trigger_name}
     BEFORE UPDATE ON subscriptions
     FOR EACH ROW EXECUTE FUNCTION #{function_name}()
     """)
 
-    Repo.query!(
-      "SELECT set_config('store.jc247_malformed_boundary_subscription', $1, false)",
-      [subscription_id]
-    )
+    {trigger_name, function_name}
   end
 
-  defp fail_access_effect_insert!(subscription_id) do
-    function_name = "jc247_fail_access_effect_#{System.unique_integer([:positive])}"
-
-    Repo.query!("""
-    CREATE FUNCTION #{function_name}() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $function$
-    BEGIN
-      IF NEW.subscription_id::text = current_setting('store.jc247_fail_access_effect_subscription', true)
-         OR NEW.subscription_id::text = current_setting('store.jc247_fail_access_effect_subscription', false) THEN
-        RAISE EXCEPTION 'injected JC-247 AccessEffect insert failure';
-      END IF;
-      RETURN NEW;
-    END;
-    $function$;
-    """)
-
-    Repo.query!(
-      "SELECT set_config('store.jc247_fail_access_effect_subscription', $1, false)",
-      [subscription_id]
-    )
-
-    Repo.query!("""
-    CREATE TRIGGER #{function_name}
-    BEFORE INSERT ON access_effects
-    FOR EACH ROW EXECUTE FUNCTION #{function_name}()
-    """)
+  defp drop_trigger_and_function!(table, trigger_name, function_name) do
+    Repo.query("DROP TRIGGER IF EXISTS #{trigger_name} ON #{table}")
+    Repo.query("DROP FUNCTION IF EXISTS #{function_name}()")
+    :ok
   end
 end
