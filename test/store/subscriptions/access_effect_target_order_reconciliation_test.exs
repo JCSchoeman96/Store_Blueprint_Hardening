@@ -7,6 +7,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
   alias Store.Repo
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.Facade
+  alias Store.Subscriptions.RenewalAttempt
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
   alias Store.SubscriptionsFixtures
 
@@ -197,6 +198,239 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     assert unchanged.source_version == candidate.source_version
   end
 
+  test "past_due keep-grace effect is already_covered when only aggregate_version advanced" do
+    fixture = past_due_keep_grace_fixture!()
+    subscription = fixture.subscription
+    revision = fixture.revision
+
+    effect =
+      establish_effect!(
+        subscription,
+        revision,
+        %{
+          valid_from_at: subscription.current_period_start_at,
+          valid_until_at: subscription.failed_payment_boundary_at
+        }
+      )
+
+    bump_aggregate_version!(subscription.id)
+    bump_aggregate_version!(subscription.id)
+    subscription = reload_subscription!(subscription.id)
+
+    set_updated_at!([effect], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: effect.inserted_at,
+               after_inserted_at: effect.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.already_covered_count == 1
+    assert result.repaired_count == 0
+    assert length(access_effect_rows!(subscription.id)) == 1
+  end
+
+  test "legacy nil-pointer past_due candidate increments noop_count without mutating effects" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    Repo.query!(
+      """
+      UPDATE subscriptions
+      SET status = 'past_due',
+          current_dunning_renewal_attempt_id = NULL,
+          failed_payment_boundary_at = clock_timestamp(),
+          past_due_since_at = clock_timestamp(),
+          aggregate_version = aggregate_version + 1
+      WHERE id = $1
+      """,
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: candidate.inserted_at,
+               after_inserted_at: candidate.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.noop_count == 1
+    assert result.repaired_count == 0
+    assert Map.has_key?(result, :repaired_count)
+    refute Map.has_key?(result, :skipped_count)
+
+    [unchanged] = access_effect_rows!(subscription.id)
+    assert unchanged.id == candidate.id
+    assert unchanged.status == "required"
+  end
+
+  test "jc247_b remove_immediately past_due candidate increments noop_count without mutating effects" do
+    fixture = past_due_keep_grace_fixture!(access_on_past_due: "remove_immediately")
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{
+          valid_from_at: subscription.current_period_start_at,
+          valid_until_at: subscription.failed_payment_boundary_at
+        }
+      )
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: candidate.inserted_at,
+               after_inserted_at: candidate.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.noop_count == 1
+    assert result.repaired_count == 0
+    assert length(access_effect_rows!(subscription.id)) == 1
+  end
+
+  test "reconciliation fails closed when past_due_since_at is missing" do
+    fixture = past_due_keep_grace_fixture!()
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{
+          valid_from_at: subscription.current_period_start_at,
+          valid_until_at: subscription.failed_payment_boundary_at
+        }
+      )
+
+    Repo.query!(
+      "UPDATE subscriptions SET past_due_since_at = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: candidate.inserted_at,
+               after_inserted_at: candidate.inserted_at,
+               after_id: @cursor_floor
+             )
+  end
+
+  defp past_due_keep_grace_fixture!(opts \\ []) do
+    access_on_past_due = Keyword.get(opts, :access_on_past_due, "keep_during_grace")
+    customer = SubscriptionsFixtures.create_customer!("jc247_pd_#{Ecto.UUID.generate()}")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 1,
+        grace_period_days: 7,
+        max_retry_attempts: 3,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "jc247-pd"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription, revision: revision} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_jc247_pd",
+        started_at: DateTime.add(now, -86_400, :second),
+        next_renewal_at: DateTime.add(now, -1, :microsecond)
+      })
+
+    boundary_at = DateTime.add(now, 7, :day)
+
+    snapshot = %{
+      "version" => 1,
+      "subscription_plan_key" => plan.key,
+      "interval_unit" => "day",
+      "interval_count" => 1,
+      "trial_days" => 0,
+      "anchor_mode" => "start_anniversary",
+      "anchor_day_of_month" => nil,
+      "billing_timezone" => "Etc/UTC",
+      "term_mode" => "until_canceled",
+      "term_cycles" => nil,
+      "term_end_at" => nil,
+      "access_on_past_due" => access_on_past_due,
+      "access_on_cancel" => "keep_until_period_end",
+      "grace_period_days" => 7,
+      "max_retry_attempts" => 3,
+      "retry_schedule_hours" => [0, 24, 72],
+      "entitlement_kind" => "membership_access",
+      "entitlement_scope_key" => "jc247-pd"
+    }
+
+    subscription = reload_subscription!(subscription.id)
+
+    attempt =
+      RenewalAttempt
+      |> Ash.Changeset.for_create(
+        :create_or_reuse,
+        %{
+          subscription_id: subscription.id,
+          renewal_key: "jc247-pd:#{Ecto.UUID.generate()}",
+          period_start_at: subscription.current_period_end_at,
+          period_end_at: DateTime.add(subscription.current_period_end_at, 1, :day),
+          plan_revision_id: revision.id,
+          variant_id: variant.id,
+          quantity: 1,
+          amount_minor: plan.amount_minor,
+          currency: plan.currency,
+          expected_subscription_version: subscription.aggregate_version,
+          charged_contract_version: 1,
+          charged_contract_snapshot: snapshot,
+          status: :failed
+        },
+        context: %{system?: true}
+      )
+      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    Repo.query!(
+      """
+      UPDATE subscriptions
+      SET status = 'past_due',
+          current_dunning_renewal_attempt_id = $2,
+          failed_payment_boundary_at = $3,
+          past_due_since_at = $4,
+          dunning_attempt_count = 1
+      WHERE id = $1
+      """,
+      [
+        Ecto.UUID.dump!(subscription.id),
+        Ecto.UUID.dump!(attempt.id),
+        boundary_at,
+        now
+      ]
+    )
+
+    subscription = reload_subscription!(subscription.id)
+    %{subscription: subscription, revision: revision, plan: plan, variant: variant}
+  end
+
   defp subscription_fixture! do
     customer =
       SubscriptionsFixtures.create_customer!("f05_reconcile_#{Ecto.UUID.generate()}")
@@ -221,7 +455,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
         entitlement_kind: revision.entitlement_kind,
         entitlement_scope_key: revision.entitlement_scope_key,
         valid_from_at: Map.get(overrides, :valid_from_at, subscription.current_period_start_at),
-        valid_until_at: subscription.current_period_end_at,
+        valid_until_at: Map.get(overrides, :valid_until_at, subscription.current_period_end_at),
         source_order_line_item_id: subscription.source_order_line_item_id,
         contract_change_id: subscription.current_contract_change_id,
         plan_revision_id: revision.id

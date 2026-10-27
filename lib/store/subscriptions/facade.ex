@@ -3357,7 +3357,7 @@ defmodule Store.Subscriptions.Facade do
         :ok
 
       {:error, settlement_error} ->
-        {:error, settlement_error}
+        preserve_payment_failure_after_settlement_rollback(reason, settlement_error)
     end
   end
 
@@ -3371,6 +3371,28 @@ defmodule Store.Subscriptions.Facade do
        do: {:error, reason}
 
   defp settle_due_renewal_result(result, _subscription, _attempt, _policy, _now), do: result
+
+  defp preserve_payment_failure_after_settlement_rollback(
+         %Error{code: "PAYMENT_FAILED"} = reason,
+         %Error{code: "TARGET_ORDER_BLOCKED", meta: %{keep_grace_establishment: true}}
+       ),
+       do: {:error, reason}
+
+  defp preserve_payment_failure_after_settlement_rollback(_reason, settlement_error),
+    do: {:error, settlement_error}
+
+  defp map_keep_grace_establishment_failure({:ok, _} = ok), do: ok
+
+  defp map_keep_grace_establishment_failure({:error, error}),
+    do: {:error, keep_grace_access_effect_establishment_failed(Normalize.normalize(error))}
+
+  defp keep_grace_access_effect_establishment_failed(%Error{} = cause) do
+    Error.new(
+      "TARGET_ORDER_BLOCKED",
+      "keep_during_grace AccessEffect establishment failed during payment failure settlement",
+      %{cause: cause, keep_grace_establishment: true}
+    )
+  end
 
   defp ensure_subscription_contract_resolved(%Subscription{current_plan_revision_id: id})
        when is_binary(id),
@@ -5449,7 +5471,8 @@ defmodule Store.Subscriptions.Facade do
              subscription,
              updated_subscription,
              attempt
-           ) do
+           )
+           |> map_keep_grace_establishment_failure() do
       {:ok,
        %{
          outcome: :failure_recorded,
@@ -5726,8 +5749,15 @@ defmodule Store.Subscriptions.Facade do
                  subscription,
                  attempt,
                  revision
-               ) do
-          establish_keep_during_grace_target_if_temporal(target, subscription)
+               ),
+             attrs <-
+               AccessEffectTargetOrder.keep_during_grace_establish_attrs(subscription, target),
+             {:ok, input} <- EstablishAccessEffectInput.new(attrs),
+             {:ok, %AccessEffect{id: effect_id}} <- establish_access_effect_for_system(input) do
+          {:ok, effect_id}
+        else
+          {:error, error} ->
+            {:error, keep_grace_access_effect_establishment_failed(Normalize.normalize(error))}
         end
 
       %{access_on_past_due: :remove_immediately} ->
@@ -5756,33 +5786,6 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp sync_keep_grace_access_after_commit(_settlement), do: :ok
-
-  defp establish_keep_during_grace_target_if_temporal(target, subscription) do
-    if keep_grace_target_temporally_establishable?(target) do
-      attrs = AccessEffectTargetOrder.keep_during_grace_establish_attrs(subscription, target)
-
-      with {:ok, input} <- EstablishAccessEffectInput.new(attrs),
-           {:ok, %AccessEffect{id: effect_id}} <- establish_access_effect_for_system(input) do
-        {:ok, effect_id}
-      end
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp keep_grace_target_temporally_establishable?(%{
-         valid_from_at: nil,
-         valid_until_at: %DateTime{}
-       }),
-       do: true
-
-  defp keep_grace_target_temporally_establishable?(%{
-         valid_from_at: %DateTime{} = from,
-         valid_until_at: %DateTime{} = until
-       }),
-       do: DateTime.compare(from, until) == :lt
-
-  defp keep_grace_target_temporally_establishable?(_target), do: false
 
   defp ensure_renewal_chargeability(subscription, _plan) do
     with :ok <- Providers.ensure_enabled_provider(subscription.provider),
@@ -9714,22 +9717,25 @@ defmodule Store.Subscriptions.Facade do
              subscription.current_dunning_renewal_attempt_id
            ),
          :ok <- ensure_complete_bound_renewal_attempt(attempt),
-         {:ok, access_on_past_due} <-
-           AccessEffectTargetOrder.access_on_past_due_from_snapshot(
-             attempt.charged_contract_snapshot
-           ),
          {:ok, %PlanRevision{} = revision} <-
            fetch_plan_revision_for_target_order_reconciliation(subscription) do
-      case access_on_past_due do
-        :remove_immediately ->
+      case renewal_policy_from_attempt(attempt) do
+        %{access_on_past_due: :remove_immediately} ->
           {:ok, :jc247_b_policy_deferred}
 
-        :keep_during_grace ->
+        %{access_on_past_due: :keep_during_grace} ->
           AccessEffectTargetOrder.derive_keep_during_grace_target(
             subscription,
             attempt,
             revision
           )
+
+        _ ->
+          {:error,
+           Error.new(
+             "TARGET_ORDER_UNPROVABLE",
+             "renewal attempt charged-contract past_due policy is incomplete"
+           )}
       end
     end
   end

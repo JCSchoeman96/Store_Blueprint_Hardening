@@ -150,6 +150,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         current_period_start_at: @period_start,
         current_period_end_at: @period_end,
         failed_payment_boundary_at: @boundary,
+        past_due_since_at: @period_start,
         current_dunning_renewal_attempt_id: @attempt_id
       }
 
@@ -194,6 +195,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         current_period_start_at: @period_start,
         current_period_end_at: @period_end,
         failed_payment_boundary_at: @boundary,
+        past_due_since_at: @period_start,
         current_dunning_renewal_attempt_id: @attempt_id
       }
 
@@ -230,6 +232,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         current_period_start_at: @period_start,
         current_period_end_at: @period_end,
         failed_payment_boundary_at: @boundary,
+        past_due_since_at: @period_start,
         current_dunning_renewal_attempt_id: @attempt_id
       }
 
@@ -271,7 +274,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         period_end_at: DateTime.add(@period_end, 30, :day)
       }
 
-      assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+      assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
                AccessEffectTargetOrder.derive_keep_during_grace_target(
                  base_subscription,
                  wrong_owner,
@@ -298,6 +301,72 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
                    entitlement_kind: nil,
                    entitlement_scope_key: nil
                  }
+               )
+    end
+
+    test "rejects malformed pair interval and funded revision identity mismatch" do
+      funded_revision = %PlanRevision{
+        id: @funded_revision_id,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "gold"
+      }
+
+      attempt = %RenewalAttempt{
+        id: @attempt_id,
+        subscription_id: @subscription_id,
+        period_start_at: @period_end,
+        period_end_at: DateTime.add(@period_end, 30, :day)
+      }
+
+      invalid_interval = %Subscription{
+        id: @subscription_id,
+        status: :past_due,
+        source_order_line_item_id: @line_item_id,
+        current_plan_revision_id: @funded_revision_id,
+        current_period_start_at: @boundary,
+        current_period_end_at: @period_end,
+        failed_payment_boundary_at: @period_start,
+        past_due_since_at: @period_start,
+        current_dunning_renewal_attempt_id: @attempt_id
+      }
+
+      assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+               AccessEffectTargetOrder.derive_keep_during_grace_target(
+                 invalid_interval,
+                 attempt,
+                 funded_revision
+               )
+
+      assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+               AccessEffectTargetOrder.derive_keep_during_grace_target(
+                 Map.put(invalid_interval, :past_due_since_at, nil),
+                 attempt,
+                 funded_revision
+               )
+
+      wrong_revision = %PlanRevision{
+        id: Ecto.UUID.generate(),
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "gold"
+      }
+
+      valid_subscription = %Subscription{
+        id: @subscription_id,
+        status: :past_due,
+        source_order_line_item_id: @line_item_id,
+        current_plan_revision_id: @funded_revision_id,
+        current_period_start_at: @period_start,
+        current_period_end_at: @period_end,
+        failed_payment_boundary_at: @boundary,
+        past_due_since_at: @period_start,
+        current_dunning_renewal_attempt_id: @attempt_id
+      }
+
+      assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+               AccessEffectTargetOrder.derive_keep_during_grace_target(
+                 valid_subscription,
+                 attempt,
+                 wrong_revision
                )
     end
   end
