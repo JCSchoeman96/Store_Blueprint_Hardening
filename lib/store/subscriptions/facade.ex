@@ -1014,6 +1014,29 @@ defmodule Store.Subscriptions.Facade do
 
   defp current_bound_renewal_attempt(%Subscription{
          id: subscription_id,
+         current_period_end_at: %DateTime{} = period_start_at,
+         current_dunning_renewal_attempt_id: attempt_id
+       })
+       when not is_nil(attempt_id) do
+    with {:ok, %RenewalAttempt{} = attempt} <- fetch_renewal_attempt_by_id(attempt_id),
+         true <- attempt.subscription_id == subscription_id,
+         true <- DateTime.compare(attempt.period_start_at, period_start_at) == :eq do
+      {:ok, attempt}
+    else
+      false ->
+        {:error,
+         Error.new(
+           "FAILED_PAYMENT_EVIDENCE_MISSING",
+           "current dunning RenewalAttempt does not match the locked Subscription period"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp current_bound_renewal_attempt(%Subscription{
+         id: subscription_id,
          current_period_end_at: %DateTime{} = period_start_at
        }) do
     query =
@@ -5257,6 +5280,28 @@ defmodule Store.Subscriptions.Facade do
          reason,
          now
        ) do
+    with :ok <-
+           RenewalCollectionAttempts.ensure_current_dunning_attempt_owner(subscription, attempt),
+         :ok <- ensure_locked_dunning_attempt_identity(subscription, attempt),
+         do:
+           settle_locked_renewal_failure_with_identity(
+             subscription,
+             attempt,
+             collection_attempt,
+             retry_policy,
+             reason,
+             now
+           )
+  end
+
+  defp settle_locked_renewal_failure_with_identity(
+         subscription,
+         attempt,
+         collection_attempt,
+         retry_policy,
+         reason,
+         now
+       ) do
     cond do
       attempt.status == :succeeded ->
         {:ok, %{outcome: :success_already_terminal}}
@@ -5268,23 +5313,93 @@ defmodule Store.Subscriptions.Facade do
         {:ok, %{outcome: :terminal_noop}}
 
       true ->
-        case exact_paid_renewal_success_handoff(attempt) do
-          {:ok, %{} = handoff} ->
-            {:ok, %{outcome: :success_won, handoff: handoff}}
+        settle_failure_after_paid_handoff(
+          subscription,
+          attempt,
+          collection_attempt,
+          retry_policy,
+          reason,
+          now
+        )
+    end
+  end
 
-          {:ok, nil} ->
-            persist_failure_and_dunning(
-              subscription,
-              attempt,
-              collection_attempt,
-              retry_policy,
-              reason,
-              now
-            )
+  defp settle_failure_after_paid_handoff(
+         subscription,
+         attempt,
+         collection_attempt,
+         retry_policy,
+         reason,
+         now
+       ) do
+    case exact_paid_renewal_success_handoff(attempt) do
+      {:ok, %{} = handoff} ->
+        {:ok, %{outcome: :success_won, handoff: handoff}}
 
-          {:error, authority_error} ->
-            {:error, authority_error}
-        end
+      {:ok, nil} ->
+        persist_failure_and_dunning(
+          subscription,
+          attempt,
+          collection_attempt,
+          retry_policy,
+          reason,
+          now
+        )
+
+      {:error, authority_error} ->
+        {:error, authority_error}
+    end
+  end
+
+  defp ensure_locked_dunning_attempt_identity(
+         %Subscription{status: :active} = subscription,
+         %RenewalAttempt{} = attempt
+       ) do
+    ensure_bound_dunning_attempt_identity(subscription, attempt)
+  end
+
+  defp ensure_locked_dunning_attempt_identity(
+         %Subscription{
+           status: :past_due,
+           current_dunning_renewal_attempt_id: nil
+         },
+         %RenewalAttempt{}
+       ) do
+    :ok
+  end
+
+  defp ensure_locked_dunning_attempt_identity(
+         %Subscription{
+           status: status,
+           current_dunning_renewal_attempt_id: attempt_id
+         } = subscription,
+         %RenewalAttempt{id: attempt_id} = attempt
+       )
+       when status in [:past_due, :suspended] and not is_nil(attempt_id),
+       do: ensure_bound_dunning_attempt_identity(subscription, attempt)
+
+  defp ensure_locked_dunning_attempt_identity(
+         %Subscription{status: :suspended},
+         %RenewalAttempt{}
+       ),
+       do: :ok
+
+  defp ensure_locked_dunning_attempt_identity(%Subscription{}, %RenewalAttempt{}), do: :ok
+
+  defp ensure_bound_dunning_attempt_identity(subscription, attempt) do
+    with true <- same_bound_renewal_occurrence?(subscription, attempt),
+         :ok <- ensure_complete_bound_renewal_attempt(attempt) do
+      :ok
+    else
+      false ->
+        {:error,
+         Error.new(
+           "VALIDATION_ERROR",
+           "RenewalAttempt does not match the locked Subscription period"
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -5324,6 +5439,7 @@ defmodule Store.Subscriptions.Facade do
          {:ok, updated_subscription, dunning_notifications, dunning_count} <-
            mark_subscription_past_due_in_transaction(
              subscription,
+             attempt,
              retry_policy,
              reason,
              now
@@ -5382,7 +5498,7 @@ defmodule Store.Subscriptions.Facade do
     end
   end
 
-  defp mark_subscription_past_due_in_transaction(subscription, retry_policy, reason, now) do
+  defp mark_subscription_past_due_in_transaction(subscription, attempt, retry_policy, reason, now) do
     message =
       case reason do
         %Error{code: code} -> code
@@ -5411,8 +5527,16 @@ defmodule Store.Subscriptions.Facade do
           failed_payment_boundary_at
         )
 
-      subscription
-      |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
+      private_arguments = dunning_transition_private_arguments(subscription, attempt)
+
+      changeset =
+        subscription
+        |> Ash.Changeset.for_update(:mark_past_due_transition, attrs,
+          context: %{system?: true},
+          private_arguments: private_arguments
+        )
+
+      changeset
       |> Ash.update(
         domain: Subscriptions,
         authorize?: false,
@@ -5431,6 +5555,24 @@ defmodule Store.Subscriptions.Facade do
       end
     end
   end
+
+  defp dunning_transition_private_arguments(
+         %Subscription{status: :active},
+         %RenewalAttempt{id: attempt_id}
+       ),
+       do: %{dunning_renewal_attempt_id: attempt_id}
+
+  defp dunning_transition_private_arguments(
+         %Subscription{
+           status: :past_due,
+           current_dunning_renewal_attempt_id: attempt_id
+         },
+         %RenewalAttempt{id: attempt_id}
+       )
+       when not is_nil(attempt_id),
+       do: %{dunning_renewal_attempt_id: attempt_id}
+
+  defp dunning_transition_private_arguments(%Subscription{}, %RenewalAttempt{}), do: %{}
 
   defp fetch_renewal_attempt_for_failure_settlement(attempt_id, subscription_id) do
     query =
@@ -6808,30 +6950,67 @@ defmodule Store.Subscriptions.Facade do
          now,
          replay?
        ) do
-    terminal? =
-      attempt.status == :succeeded or
-        attempt.failure_code == @renewal_authority_withdrawn_code or
-        subscription.status in [:canceled, :expired, :pending, :suspended]
+    with :ok <-
+           RenewalCollectionAttempts.ensure_current_dunning_attempt_owner(subscription, attempt),
+         :ok <- ensure_locked_dunning_attempt_identity(subscription, attempt),
+         do:
+           settle_locked_authentication_required_with_identity(
+             subscription,
+             attempt,
+             collection_attempt,
+             now,
+             replay?
+           )
+  end
 
-    if terminal? do
+  defp settle_locked_authentication_required_with_identity(
+         subscription,
+         attempt,
+         collection_attempt,
+         now,
+         replay?
+       ) do
+    if authentication_required_terminal?(subscription, attempt) do
       {:ok, %{outcome: :noop}}
     else
-      case exact_paid_renewal_success_handoff(attempt) do
-        {:ok, %{} = handoff} ->
-          {:ok, %{outcome: :success_won, handoff: handoff}}
+      settle_authentication_required_after_paid_handoff(
+        subscription,
+        attempt,
+        collection_attempt,
+        now,
+        replay?
+      )
+    end
+  end
 
-        {:ok, nil} ->
-          persist_authentication_required_dunning(
-            subscription,
-            attempt,
-            collection_attempt,
-            now,
-            replay?
-          )
+  defp authentication_required_terminal?(subscription, attempt) do
+    attempt.status == :succeeded or
+      attempt.failure_code == @renewal_authority_withdrawn_code or
+      subscription.status in [:canceled, :expired, :pending, :suspended]
+  end
 
-        {:error, authority_error} ->
-          {:error, authority_error}
-      end
+  defp settle_authentication_required_after_paid_handoff(
+         subscription,
+         attempt,
+         collection_attempt,
+         now,
+         replay?
+       ) do
+    case exact_paid_renewal_success_handoff(attempt) do
+      {:ok, %{} = handoff} ->
+        {:ok, %{outcome: :success_won, handoff: handoff}}
+
+      {:ok, nil} ->
+        persist_authentication_required_dunning(
+          subscription,
+          attempt,
+          collection_attempt,
+          now,
+          replay?
+        )
+
+      {:error, authority_error} ->
+        {:error, authority_error}
     end
   end
 
@@ -6892,8 +7071,16 @@ defmodule Store.Subscriptions.Facade do
       retry_suppressed_at: now
     }
 
-    subscription
-    |> Ash.Changeset.for_update(:mark_past_due_transition, attrs, context: %{system?: true})
+    private_arguments = dunning_transition_private_arguments(subscription, attempt)
+
+    changeset =
+      subscription
+      |> Ash.Changeset.for_update(:mark_past_due_transition, attrs,
+        context: %{system?: true},
+        private_arguments: private_arguments
+      )
+
+    changeset
     |> Ash.update(
       domain: Subscriptions,
       authorize?: false,
@@ -7600,9 +7787,25 @@ defmodule Store.Subscriptions.Facade do
   end
 
   defp ensure_reconciliation_period_boundary(subscription, attempt) do
-    if subscription.current_period_end_at == attempt.period_start_at,
-      do: :ok,
-      else: {:error, Error.new("VALIDATION_ERROR", "renewal period is stale or out of order")}
+    cond do
+      subscription.id != attempt.subscription_id ->
+        {:error, Error.new("VALIDATION_ERROR", "RenewalAttempt belongs to another Subscription")}
+
+      not is_nil(subscription.current_dunning_renewal_attempt_id) and
+          (subscription.status not in [:past_due, :suspended] or
+             subscription.current_dunning_renewal_attempt_id != attempt.id) ->
+        {:error,
+         Error.new(
+           "VALIDATION_ERROR",
+           "paid RenewalAttempt does not own the current dunning episode"
+         )}
+
+      DateTime.compare(subscription.current_period_end_at, attempt.period_start_at) != :eq ->
+        {:error, Error.new("VALIDATION_ERROR", "renewal period is stale or out of order")}
+
+      true ->
+        :ok
+    end
   end
 
   defp ensure_reconciliation_no_future_target(subscription, bound_change, attempt) do
@@ -7816,8 +8019,21 @@ defmodule Store.Subscriptions.Facade do
         attrs
       end
 
-    subscription
-    |> Ash.Changeset.for_update(:extend_period, attrs, context: %{system?: true})
+    private_arguments =
+      if is_nil(subscription.current_dunning_renewal_attempt_id) do
+        %{}
+      else
+        %{recovery_renewal_attempt_id: attempt.id}
+      end
+
+    changeset =
+      subscription
+      |> Ash.Changeset.for_update(:extend_period, attrs,
+        context: %{system?: true},
+        private_arguments: private_arguments
+      )
+
+    changeset
     |> Ash.update(
       domain: Subscriptions,
       authorize?: false,

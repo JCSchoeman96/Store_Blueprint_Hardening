@@ -18,6 +18,8 @@ defmodule Store.Subscriptions.Sbh2005SuccessVsLateFailureDunningTest do
     Subscription
   }
 
+  alias Store.Subscriptions.RenewalCollectionAttempts.StartInput
+
   alias Store.SubscriptionsFixtures
   alias Store.Support.Telemetry.RepoStats
   alias Store.TestSupport.StripeAPIStub
@@ -80,6 +82,115 @@ defmodule Store.Subscriptions.Sbh2005SuccessVsLateFailureDunningTest do
     assert fetch_subscription!(fixture.subscription.id) == before_subscription
     assert count_collections_for_attempt(attempt.id) == 0
     refute_receive {:jc235_dunning, _metadata}, 0
+  end
+
+  test "retry attempt identity is checked before dispatch and again after provider work",
+       context do
+    fixture = create_due_fixture!("jc247_retry_identity_race")
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "canceled"})
+      )
+    end)
+
+    assert {:error, %{code: "PAYMENT_FAILED"}} = fixture.run.()
+
+    past_due = fetch_subscription!(fixture.subscription.id)
+    attempt = fetch_attempt_for_subscription!(fixture.subscription.id)
+    assert past_due.current_dunning_renewal_attempt_id == attempt.id
+
+    other_attempt = create_sibling_attempt!(attempt)
+
+    assert {:error, %{code: "RENEWAL_AUTHORITY_WITHDRAWN"}} =
+             RenewalCollectionAttempts.start_for_system(%StartInput{
+               renewal_attempt_id: other_attempt.id,
+               subscription_id: fixture.subscription.id,
+               now: past_due.next_retry_at
+             })
+
+    assert count_collections_for_attempt(other_attempt.id) == 0
+
+    assert {:error, action_error} =
+             past_due
+             |> Ash.Changeset.for_update(
+               :mark_past_due_transition,
+               %{billing_status_reason: "PAYMENT_FAILED"},
+               context: @system_context,
+               private_arguments: %{dunning_renewal_attempt_id: other_attempt.id}
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: @system_context
+             )
+
+    assert inspect(action_error) =~ "current dunning RenewalAttempt identity cannot be replaced"
+
+    assert {:error, missing_identity_error} =
+             past_due
+             |> Ash.Changeset.for_update(
+               :mark_past_due_transition,
+               %{billing_status_reason: "PAYMENT_FAILED"},
+               context: @system_context
+             )
+             |> Ash.update(
+               domain: Store.Subscriptions,
+               authorize?: false,
+               context: @system_context
+             )
+
+    assert inspect(missing_identity_error) =~
+             "current dunning RenewalAttempt identity cannot be replaced"
+
+    assert fetch_subscription!(fixture.subscription.id).current_dunning_renewal_attempt_id ==
+             attempt.id
+
+    parent = self()
+    barrier = make_ref()
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      send(parent, {:jc247_retry_provider_started, self(), params})
+
+      receive do
+        {:jc247_release_retry_provider, ^barrier} -> :ok
+      after
+        10_000 -> raise "retry provider barrier timed out"
+      end
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "canceled"})
+      )
+    end)
+
+    retry_task =
+      Task.async(fn ->
+        Facade.process_due_subscription_renewal_for_system(fixture.subscription.id,
+          now: past_due.next_retry_at
+        )
+      end)
+
+    assert_receive {:jc247_retry_provider_started, provider_pid, _params}, 10_000
+    :ok = Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], retry_task.pid)
+
+    :ok =
+      Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], retry_task.pid)
+
+    Repo.query!(
+      "UPDATE subscriptions SET current_dunning_renewal_attempt_id = $2 WHERE id = $1",
+      [Ecto.UUID.dump!(fixture.subscription.id), Ecto.UUID.dump!(other_attempt.id)]
+    )
+
+    send(provider_pid, {:jc247_release_retry_provider, barrier})
+    assert {:error, _reason} = Task.await(retry_task, 10_000)
+
+    unchanged = fetch_subscription!(fixture.subscription.id)
+    assert unchanged.status == :past_due
+    assert unchanged.current_dunning_renewal_attempt_id == other_attempt.id
+    assert unchanged.dunning_attempt_count == 1
+    assert fetch_attempt!(attempt.id).status == :processing
   end
 
   test "dunning write errors roll back the attempt failure" do
@@ -481,6 +592,31 @@ defmodule Store.Subscriptions.Sbh2005SuccessVsLateFailureDunningTest do
       now: now,
       run: fn -> Facade.process_due_subscription_renewal_for_system(subscription.id, now: now) end
     }
+  end
+
+  defp create_sibling_attempt!(%RenewalAttempt{} = attempt) do
+    attrs =
+      attempt
+      |> Map.from_struct()
+      |> Map.take([
+        :subscription_id,
+        :period_start_at,
+        :period_end_at,
+        :plan_revision_id,
+        :variant_id,
+        :quantity,
+        :amount_minor,
+        :currency,
+        :contract_change_id,
+        :expected_subscription_version,
+        :charged_contract_version,
+        :charged_contract_snapshot
+      ])
+      |> Map.put(:renewal_key, attempt.renewal_key <> ":jc247:" <> Ecto.UUID.generate())
+
+    RenewalAttempt
+    |> Ash.Changeset.for_create(:create_or_reuse, attrs, context: @system_context)
+    |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: @system_context)
   end
 
   defp start_blocked_failure_charge!(label, sandbox_owners) do

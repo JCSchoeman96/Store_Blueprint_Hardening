@@ -2918,6 +2918,11 @@ defmodule Store.Subscriptions.CancellationRenewalAuthorityTest do
         [user_id]
       )
 
+      Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
+        [sub_id]
+      )
+
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [sub_id])
       Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [sub_id])
 

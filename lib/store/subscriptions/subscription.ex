@@ -69,6 +69,11 @@ defmodule Store.Subscriptions.Subscription do
       public?(false)
     end
 
+    attribute :current_dunning_renewal_attempt_id, :uuid do
+      allow_nil?(true)
+      public?(false)
+    end
+
     attribute :started_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -231,6 +236,15 @@ defmodule Store.Subscriptions.Subscription do
       source_attribute(:cancel_after_renewal_attempt_id)
       allow_nil?(true)
       attribute_writable?(true)
+      public?(false)
+    end
+
+    belongs_to :current_dunning_renewal_attempt, Store.Subscriptions.RenewalAttempt do
+      source_attribute(:current_dunning_renewal_attempt_id)
+      destination_attribute(:id)
+      define_attribute?(false)
+      allow_nil?(true)
+      attribute_writable?(false)
       public?(false)
     end
 
@@ -495,6 +509,17 @@ defmodule Store.Subscriptions.Subscription do
     update :activate_now do
       require_atomic?(false)
 
+      validate(fn changeset, _context ->
+        if Ash.Changeset.get_data(changeset, :status) == :past_due and
+             not is_nil(Ash.Changeset.get_data(changeset, :current_dunning_renewal_attempt_id)) do
+          {:error,
+           field: :current_dunning_renewal_attempt_id,
+           message: "paid recovery must reconcile the current dunning RenewalAttempt"}
+        else
+          :ok
+        end
+      end)
+
       accept([
         :started_at,
         :current_period_start_at,
@@ -522,6 +547,11 @@ defmodule Store.Subscriptions.Subscription do
     update :mark_past_due_transition do
       require_atomic?(false)
 
+      argument :dunning_renewal_attempt_id, :uuid do
+        allow_nil?(true)
+        public?(false)
+      end
+
       accept([
         :billing_status_reason,
         :past_due_since_at,
@@ -530,6 +560,44 @@ defmodule Store.Subscriptions.Subscription do
         :next_retry_at,
         :retry_suppressed_at
       ])
+
+      change(fn changeset, _context ->
+        source_status = Ash.Changeset.get_data(changeset, :status)
+
+        current_attempt_id =
+          Ash.Changeset.get_data(changeset, :current_dunning_renewal_attempt_id)
+
+        incoming_attempt_id = Ash.Changeset.get_argument(changeset, :dunning_renewal_attempt_id)
+
+        cond do
+          source_status == :active and is_nil(current_attempt_id) ->
+            Ash.Changeset.change_attribute(
+              changeset,
+              :current_dunning_renewal_attempt_id,
+              incoming_attempt_id
+            )
+
+          source_status == :past_due and is_nil(current_attempt_id) and
+              is_nil(incoming_attempt_id) ->
+            changeset
+
+          source_status == :past_due and not is_nil(current_attempt_id) and
+              incoming_attempt_id == current_attempt_id ->
+            changeset
+
+          is_nil(current_attempt_id) and is_nil(incoming_attempt_id) ->
+            changeset
+
+          current_attempt_id == incoming_attempt_id ->
+            changeset
+
+          true ->
+            Ash.Changeset.add_error(changeset,
+              field: :current_dunning_renewal_attempt_id,
+              message: "current dunning RenewalAttempt identity cannot be replaced"
+            )
+        end
+      end)
 
       change(fn changeset, _context ->
         if is_nil(Ash.Changeset.get_attribute(changeset, :past_due_since_at)) do
@@ -650,6 +718,7 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_renewal_at, nil)
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
+        |> Ash.Changeset.change_attribute(:current_dunning_renewal_attempt_id, nil)
       end)
 
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
@@ -678,6 +747,7 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_renewal_at, nil)
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
+        |> Ash.Changeset.change_attribute(:current_dunning_renewal_attempt_id, nil)
       end)
 
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
@@ -685,6 +755,30 @@ defmodule Store.Subscriptions.Subscription do
 
     update :extend_period do
       require_atomic?(false)
+
+      argument :recovery_renewal_attempt_id, :uuid do
+        allow_nil?(true)
+        public?(false)
+      end
+
+      validate(fn changeset, _context ->
+        source_status = Ash.Changeset.get_data(changeset, :status)
+
+        current_attempt_id =
+          Ash.Changeset.get_data(changeset, :current_dunning_renewal_attempt_id)
+
+        recovery_attempt_id = Ash.Changeset.get_argument(changeset, :recovery_renewal_attempt_id)
+
+        if not is_nil(current_attempt_id) and
+             (source_status not in [:past_due, :suspended] or
+                recovery_attempt_id != current_attempt_id) do
+          {:error,
+           field: :current_dunning_renewal_attempt_id,
+           message: "paid recovery does not match the current dunning RenewalAttempt"}
+        else
+          :ok
+        end
+      end)
 
       accept([
         :current_period_start_at,
@@ -711,6 +805,7 @@ defmodule Store.Subscriptions.Subscription do
 
       change(set_attribute(:past_due_since_at, nil))
       change(set_attribute(:failed_payment_boundary_at, nil))
+      change(set_attribute(:current_dunning_renewal_attempt_id, nil))
       change(set_attribute(:billing_status_reason, nil))
       change(set_attribute(:dunning_attempt_count, 0))
       change(set_attribute(:next_retry_at, nil))
@@ -769,6 +864,7 @@ defmodule Store.Subscriptions.Subscription do
         |> Ash.Changeset.change_attribute(:next_renewal_at, nil)
         |> Ash.Changeset.change_attribute(:next_retry_at, nil)
         |> Ash.Changeset.change_attribute(:retry_suppressed_at, nil)
+        |> Ash.Changeset.change_attribute(:current_dunning_renewal_attempt_id, nil)
       end)
 
       change(Store.Subscriptions.Changes.OptimisticAggregateLock)
@@ -834,10 +930,17 @@ defmodule Store.Subscriptions.Subscription do
         "subscriptions_active_failed_payment_boundary_check",
         check: "NOT (status = 'active' AND failed_payment_boundary_at IS NOT NULL)"
       )
+
+      check_constraint(
+        :current_dunning_renewal_attempt_id,
+        "subscriptions_current_dunning_renewal_attempt_status_check",
+        check: "current_dunning_renewal_attempt_id IS NULL OR status IN ('past_due', 'suspended')"
+      )
     end
 
     references do
       reference(:cancel_after_renewal_attempt, on_delete: :restrict)
+      reference(:current_dunning_renewal_attempt, on_delete: :restrict)
       reference(:current_plan_revision, on_delete: :restrict)
       reference(:current_contract_change, on_delete: :restrict)
     end

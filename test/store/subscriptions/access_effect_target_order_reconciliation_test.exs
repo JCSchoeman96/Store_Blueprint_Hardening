@@ -180,7 +180,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
       )
 
     Repo.query!(
-      "UPDATE subscriptions SET status = 'expired', aggregate_version = aggregate_version + 1 WHERE id = $1",
+      "UPDATE subscriptions SET status = 'expired', aggregate_version = aggregate_version + 1, current_dunning_renewal_attempt_id = NULL WHERE id = $1",
       [Ecto.UUID.dump!(subscription.id)]
     )
 

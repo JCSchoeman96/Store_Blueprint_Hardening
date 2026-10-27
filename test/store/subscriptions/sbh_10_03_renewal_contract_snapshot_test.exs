@@ -567,7 +567,8 @@ defmodule Store.Subscriptions.Sbh1003RenewalContractSnapshotTest do
         dunning_attempt_count: 1,
         next_retry_at: DateTime.add(now, -10, :second)
       },
-      context: %{system?: true}
+      context: %{system?: true},
+      private_arguments: %{dunning_renewal_attempt_id: attempt.id}
     )
     |> Ash.update!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
 
