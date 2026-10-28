@@ -335,7 +335,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
              )
   end
 
-  test "TASK2 legacy nil-pointer and keep-grace repair share one bounded page and advance cursor" do
+  test "TASK2 legacy nil-pointer cursor page 1 noop then page 2 repairs eligible candidate" do
     legacy = legacy_nil_pointer_fixture!()
     eligible = past_due_keep_grace_fixture!()
 
@@ -357,38 +357,52 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     bump_aggregate_version!(eligible.subscription.id)
 
     t0 = ~U[2026-10-23 10:00:00.000000Z]
+    as_of = DateTime.add(t0, 2, :second)
+    page_start = DateTime.add(t0, -1, :second)
 
     set_effect_timestamps!([legacy_candidate], t0)
     set_effect_timestamps!([eligible_candidate], DateTime.add(t0, 1, :second))
 
-    assert {:ok, first_page} =
+    assert {:ok, page_one} =
              Facade.run_access_effect_target_order_reconciliation_for_system(
-               limit: 2,
-               as_of: DateTime.add(t0, 2, :second),
-               after_inserted_at: DateTime.add(t0, -1, :second),
+               limit: 1,
+               as_of: as_of,
+               after_inserted_at: page_start,
                after_id: @cursor_floor
              )
 
-    assert first_page.noop_count == 1
-    assert first_page.repaired_count == 1
-    assert first_page.already_covered_count == 0
-    refute Map.has_key?(first_page, :skipped_count)
+    assert page_one.noop_count == 1
+    assert page_one.repaired_count == 0
+    assert page_one.already_covered_count == 0
+    refute Map.has_key?(page_one, :skipped_count)
+    assert %{inserted_at: cursor_at, id: cursor_id} = page_one.candidate_cursor
+
+    assert {:ok, page_two} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 1,
+               as_of: as_of,
+               after_inserted_at: cursor_at,
+               after_id: cursor_id
+             )
+
+    assert page_two.repaired_count == 1
+    assert page_two.noop_count == 0
     assert length(access_effect_rows!(eligible.subscription.id)) == 2
+    assert length(access_effect_rows!(legacy.subscription.id)) == 1
 
-    assert {:ok, second_page} =
+    assert {:ok, fresh_sweep} =
              Facade.run_access_effect_target_order_reconciliation_for_system(
-               limit: 2,
-               as_of: DateTime.add(t0, 2, :second),
-               after_inserted_at: DateTime.add(t0, -1, :second),
+               limit: 50,
+               as_of: as_of,
+               after_inserted_at: page_start,
                after_id: @cursor_floor
              )
 
-    assert second_page.noop_count == 1
-    assert second_page.repaired_count == 0
-    assert length(access_effect_rows!(legacy.subscription.id)) == 1
+    assert fresh_sweep.noop_count >= 1
+    assert fresh_sweep.repaired_count == 0
   end
 
-  test "TASK2 jc247_b remove_immediately noop and keep-grace repair share one bounded page" do
+  test "TASK2 jc247_b deferred cursor page 1 noop then page 2 repairs eligible candidate" do
     deferred = past_due_keep_grace_fixture!(access_on_past_due: "remove_immediately")
     eligible = past_due_keep_grace_fixture!()
 
@@ -413,21 +427,47 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     bump_aggregate_version!(eligible.subscription.id)
 
     t0 = ~U[2026-10-23 10:00:00.000000Z]
+    as_of = DateTime.add(t0, 2, :second)
+    page_start = DateTime.add(t0, -1, :second)
+
     set_effect_timestamps!([deferred_candidate], t0)
     set_effect_timestamps!([eligible_candidate], DateTime.add(t0, 1, :second))
 
-    assert {:ok, result} =
+    assert {:ok, page_one} =
              Facade.run_access_effect_target_order_reconciliation_for_system(
-               limit: 2,
-               as_of: DateTime.add(t0, 2, :second),
-               after_inserted_at: DateTime.add(t0, -1, :second),
+               limit: 1,
+               as_of: as_of,
+               after_inserted_at: page_start,
                after_id: @cursor_floor
              )
 
-    assert result.noop_count == 1
-    assert result.repaired_count == 1
+    assert page_one.noop_count == 1
+    assert page_one.repaired_count == 0
+    assert %{inserted_at: cursor_at, id: cursor_id} = page_one.candidate_cursor
+
+    assert {:ok, page_two} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 1,
+               as_of: as_of,
+               after_inserted_at: cursor_at,
+               after_id: cursor_id
+             )
+
+    assert page_two.repaired_count == 1
+    assert page_two.noop_count == 0
     assert length(access_effect_rows!(deferred.subscription.id)) == 1
     assert length(access_effect_rows!(eligible.subscription.id)) == 2
+
+    assert {:ok, fresh_sweep} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 50,
+               as_of: as_of,
+               after_inserted_at: page_start,
+               after_id: @cursor_floor
+             )
+
+    assert fresh_sweep.noop_count >= 1
+    assert fresh_sweep.repaired_count == 0
   end
 
   test "TASK3 pointer wrong attempt fails closed with TARGET_ORDER_UNPROVABLE" do
@@ -444,22 +484,16 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
 
   test "TASK3 attempt owner mismatch fails closed with TARGET_ORDER_UNPROVABLE" do
     assert_malformed_reconciliation_fails!("owner_mismatch", fn fixture ->
+      foreign = foreign_subscription_attempt_fixture!()
+
+      assert foreign.attempt.subscription_id != fixture.subscription.id
+
       Repo.query!(
         "UPDATE subscriptions SET current_dunning_renewal_attempt_id = $2 WHERE id = $1",
         [
           Ecto.UUID.dump!(fixture.subscription.id),
-          Ecto.UUID.dump!(fixture.attempt.id)
+          Ecto.UUID.dump!(foreign.attempt.id)
         ]
-      )
-
-      Repo.query!(
-        """
-        UPDATE renewal_attempts
-        SET period_start_at = period_end_at + interval '1 day',
-            period_end_at = period_end_at + interval '2 days'
-        WHERE id = $1
-        """,
-        [Ecto.UUID.dump!(fixture.attempt.id)]
       )
     end)
   end
@@ -741,6 +775,72 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
       snapshot: snapshot,
       attempt_period_start: attempt_period_start
     }
+  end
+
+  defp foreign_subscription_attempt_fixture! do
+    customer = SubscriptionsFixtures.create_customer!("f05_foreign_#{Ecto.UUID.generate()}")
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "f05-foreign"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
+
+    %{subscription: subscription, revision: revision} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
+        provider_billing_ref: "pm_f05_foreign"
+      })
+
+    subscription = reload_subscription!(subscription.id)
+
+    snapshot = %{
+      "version" => 1,
+      "subscription_plan_key" => plan.key,
+      "interval_unit" => "day",
+      "interval_count" => 1,
+      "trial_days" => 0,
+      "anchor_mode" => "start_anniversary",
+      "anchor_day_of_month" => nil,
+      "billing_timezone" => "Etc/UTC",
+      "term_mode" => "until_canceled",
+      "term_cycles" => nil,
+      "term_end_at" => nil,
+      "access_on_past_due" => "keep_during_grace",
+      "access_on_cancel" => "keep_until_period_end",
+      "grace_period_days" => 7,
+      "max_retry_attempts" => 3,
+      "retry_schedule_hours" => [0, 24, 72],
+      "entitlement_kind" => "membership_access",
+      "entitlement_scope_key" => "f05-foreign"
+    }
+
+    attempt =
+      RenewalAttempt
+      |> Ash.Changeset.for_create(
+        :create_or_reuse,
+        %{
+          subscription_id: subscription.id,
+          renewal_key: "f05-foreign:#{Ecto.UUID.generate()}",
+          period_start_at: subscription.current_period_end_at,
+          period_end_at: DateTime.add(subscription.current_period_end_at, 1, :day),
+          plan_revision_id: revision.id,
+          variant_id: variant.id,
+          quantity: 1,
+          amount_minor: plan.amount_minor,
+          currency: plan.currency,
+          expected_subscription_version: subscription.aggregate_version,
+          charged_contract_version: 1,
+          charged_contract_snapshot: snapshot,
+          status: :failed
+        },
+        context: %{system?: true}
+      )
+      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    %{subscription: subscription, attempt: attempt}
   end
 
   defp subscription_fixture! do

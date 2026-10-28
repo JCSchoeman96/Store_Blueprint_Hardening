@@ -6,6 +6,9 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Store.Entitlements.EntitlementGrant
+  alias Store.Orders.Order
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.ContractChange
@@ -13,6 +16,7 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
   alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
   alias Store.Subscriptions.RenewalAttempt
+  alias Store.Subscriptions.RenewalCollectionAttempts
   alias Store.Subscriptions.Subscription
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
@@ -35,14 +39,15 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
     stub_canceled_payment!()
 
     assert {:error, %{code: "PAYMENT_FAILED"}} =
-             run_failure_with_barrier!(context, fixture, barrier, fn _effect -> :ok end)
+             run_failure_with_barrier!(context, fixture, barrier, fn effect ->
+               assert effect.status == :required
+             end)
 
-    [effect] = access_effects!(fixture.subscription.id)
-    assert effect.status == :applied
+    assert_durable_f1_outcome!(fixture.subscription.id, :applied)
   end
 
   test "TASK1 payment failure preserves PAYMENT_FAILED for F1 applied", %{context: context} do
-    assert_payment_failure_outer_preserved(context, fn _effect -> :ok end)
+    assert_payment_failure_outer_preserved(context, :applied, fn _effect -> :ok end)
   end
 
   test "TASK1 payment failure preserves PAYMENT_FAILED for F1 projection pending", %{
@@ -50,11 +55,13 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
   } do
     constraint = add_projection_pending_constraint!()
 
-    assert_payment_failure_outer_preserved(context, fn _effect -> :ok end, constraint: constraint)
+    assert_payment_failure_outer_preserved(context, :projection_pending, fn _effect -> :ok end,
+      constraint: constraint
+    )
   end
 
   test "TASK1 payment failure preserves PAYMENT_FAILED for F1 superseded", %{context: context} do
-    assert_payment_failure_outer_preserved(context, fn effect ->
+    assert_payment_failure_outer_preserved(context, :superseded, fn effect ->
       subscription = reload_subscription!(effect.subscription_id)
       attempt = fetch_attempt!(subscription.id)
       establish_newer_non_effective_effect!(subscription, attempt)
@@ -62,30 +69,35 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
   end
 
   test "TASK1 payment failure preserves PAYMENT_FAILED for F1 noop", %{context: context} do
-    assert_payment_failure_outer_preserved(context, &mark_effect_applied!/1)
+    assert_payment_failure_outer_preserved(context, :noop, &mark_effect_applied!/1)
   end
 
   test "TASK1 payment failure preserves PAYMENT_FAILED for F1 error", %{context: context} do
-    assert_payment_failure_outer_preserved(context, fn _effect -> :ok end, grant_block: true)
+    assert_payment_failure_outer_preserved(context, :error, fn _effect -> :ok end,
+      grant_block: true
+    )
   end
 
   test "TASK1 auth required preserves {:ok, :processed} for F1 applied", %{context: context} do
-    assert_auth_outer_preserved(context, fn _effect -> :ok end)
+    assert_auth_outer_preserved(context, :applied, fn _effect -> :ok end)
   end
 
   test "TASK1 auth required preserves {:ok, :processed} for F1 noop", %{context: context} do
-    assert_auth_outer_preserved(context, &mark_effect_applied!/1)
+    assert_auth_outer_preserved(context, :noop, &mark_effect_applied!/1)
   end
 
   test "TASK1 auth required preserves {:ok, :processed} for F1 projection pending", %{
     context: context
   } do
     constraint = add_projection_pending_constraint!()
-    assert_auth_outer_preserved(context, fn _effect -> :ok end, constraint: constraint)
+
+    assert_auth_outer_preserved(context, :projection_pending, fn _effect -> :ok end,
+      constraint: constraint
+    )
   end
 
   test "TASK1 auth required preserves {:ok, :processed} for F1 superseded", %{context: context} do
-    assert_auth_outer_preserved(context, fn effect ->
+    assert_auth_outer_preserved(context, :superseded, fn effect ->
       subscription = reload_subscription!(effect.subscription_id)
       attempt = fetch_attempt!(subscription.id)
       establish_newer_non_effective_effect!(subscription, attempt)
@@ -93,7 +105,7 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
   end
 
   test "TASK1 auth required preserves {:ok, :processed} for F1 error", %{context: context} do
-    assert_auth_outer_preserved(context, fn _effect -> :ok end, grant_block: true)
+    assert_auth_outer_preserved(context, :error, fn _effect -> :ok end, grant_block: true)
   end
 
   test "TASK1 auth replay matrix — no second producer effect" do
@@ -138,104 +150,136 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
     Agent.stop(params_agent)
   end
 
-  test "TASK4 contract change X to Y reconciliation repairs provenance only" do
-    fixture = create_due_fixture!("jc247mx_xy")
+  test "TASK4 contract change X to Y reconciliation repairs provenance only", %{context: context} do
+    fixture = create_contract_bound_due_fixture!("jc247mx_xy")
+    change_x = fixture.change_x
+    funded_revision_id = fixture.funded_revision_id
+    barrier = make_ref()
+    handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
     stub_canceled_payment!()
 
-    case fixture.run.() do
-      {:error, %{code: "PAYMENT_FAILED"}} -> :ok
-      other -> flunk("STOP=establishment rejects: #{inspect(other)}")
-    end
+    failure_task =
+      Task.async(fn ->
+        Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], self())
+        Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], self())
+        fixture.run.()
+      end)
 
-    subscription = reload_subscription!(fixture.subscription.id)
-    [e1] = access_effects!(subscription.id)
-    attempt = fetch_attempt!(subscription.id)
-    pointer = subscription.current_dunning_renewal_attempt_id
-    boundary = subscription.failed_payment_boundary_at
-    funded_revision_id = subscription.current_plan_revision_id
+    assert_receive {:jc247_postcommit_dunning, ^barrier, subscription_id}, @barrier_timeout
+    subscription = reload_subscription!(subscription_id)
+    [e1] = access_effects!(subscription_id)
+    attempt = fetch_attempt!(subscription_id)
 
+    assert e1.status == :required
+    assert attempt.contract_change_id == change_x.id
     assert attempt.charged_contract_snapshot["access_on_past_due"] == "keep_during_grace"
     assert e1.plan_revision_id == funded_revision_id
 
-    target_plan =
-      SubscriptionsFixtures.create_subscription_plan!(%{
-        interval_unit: :month,
-        interval_count: 1,
-        grace_period_days: 7,
-        max_retry_attempts: 3,
-        entitlement_kind: :membership_access,
-        entitlement_scope_key: "jc247mx-target"
-      })
+    pointer = subscription.current_dunning_renewal_attempt_id
+    boundary = subscription.failed_payment_boundary_at
 
-    SubscriptionsFixtures.create_plan_revision!(target_plan)
-    SubscriptionsFixtures.attach_variant_plan!(subscription.variant_id, target_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(fixture.plan_y)
 
-    assert {:ok, queued_y} = queue_plan_change(fixture.customer, subscription.id, target_plan)
+    assert {:ok, queued_y} = queue_plan_change(fixture.customer, subscription.id, fixture.plan_y)
     change_y = fetch_contract_change!(queued_y.current_contract_change_id)
     subscription = reload_subscription!(subscription.id)
+
     assert subscription.current_contract_change_id == change_y.id
+    assert fetch_attempt!(subscription.id).contract_change_id == change_x.id
+    assert subscription.current_plan_revision_id == funded_revision_id
+    assert subscription.failed_payment_boundary_at == boundary
 
-    if e1.contract_change_id == change_y.id do
-      Repo.query!(
-        "UPDATE access_effects SET contract_change_id = NULL WHERE id = $1",
-        [Ecto.UUID.dump!(e1.id)]
-      )
-    end
-
-    Repo.query!(
-      "UPDATE access_effects SET valid_from_at = $2 WHERE id = $1",
-      [Ecto.UUID.dump!(e1.id), ~U[2020-01-01 00:00:00.000000Z]]
-    )
-
-    Repo.query!(
-      """
-      UPDATE access_effects
-      SET status = 'required',
-          contract_change_id = NULL,
-          projection_delivered_at = NULL,
-          projection_user_ids = NULL
-      WHERE id = $1
-      """,
-      [Ecto.UUID.dump!(e1.id)]
-    )
-
-    set_updated_at!([fetch_effect!(e1.id)], ~U[2026-10-23 11:00:00.000000Z])
     e1 = fetch_effect!(e1.id)
+    assert e1.contract_change_id != change_y.id
+    assert e1.plan_revision_id == subscription.current_plan_revision_id
+    assert is_nil(e1.valid_from_at)
+    assert e1.valid_until_at == subscription.failed_payment_boundary_at
+    assert e1.contract_change_id != subscription.current_contract_change_id
 
-    assert {:ok, result} =
-             Facade.run_access_effect_target_order_reconciliation_for_system(
-               limit: 50,
-               as_of: e1.inserted_at,
-               after_inserted_at: e1.inserted_at,
-               after_id: @cursor_floor
-             )
+    set_updated_at!([e1], DateTime.add(DateTime.utc_now(), -1, :second))
+
+    reconcile_result =
+      Facade.run_access_effect_target_order_reconciliation_for_system(
+        limit: 50,
+        as_of: DateTime.utc_now(),
+        after_inserted_at: e1.inserted_at,
+        after_id: @cursor_floor
+      )
+
+    assert {:ok, result} = reconcile_result
 
     assert result.repaired_count == 1
     rows = access_effect_rows!(subscription.id)
     assert length(rows) == 2
-    assert Enum.any?(rows, &(&1.status == "superseded" and &1.id == e1.id))
 
-    e2 = Enum.find(rows, &(&1.status == "required" and &1.id != e1.id))
-    assert e2.contract_change_id == change_y.id
-    assert e2.plan_revision_id == funded_revision_id
+    e1_id = e1.id
+    assert Enum.any?(rows, &(&1.status == "superseded" and &1.id == e1_id))
+
+    e2_row =
+      Enum.find(rows, fn row -> row.status == "required" and row.id != e1_id end)
+
+    assert e2_row.contract_change_id == change_y.id
+    assert e2_row.plan_revision_id == funded_revision_id
+
+    e1 = fetch_effect!(e1.id)
+    e2 = fetch_effect!(e2_row.id)
+    assert e2.valid_from_at == e1.valid_from_at
+    assert e2.valid_until_at == e1.valid_until_at
+
+    send(failure_task.pid, {:jc247_release_keep_grace_sync, barrier})
+    assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @barrier_timeout)
+
+    assert fetch_effect!(e1.id).status == :superseded
+    assert latest_effect!(subscription.id).id == e2.id
     assert reload_subscription!(subscription.id).current_dunning_renewal_attempt_id == pointer
-    assert reload_subscription!(subscription.id).failed_payment_boundary_at == boundary
   end
 
-  test "TASK5 F1 V1 succeeds after aggregate advances to V2" do
+  test "TASK5 unresolved V1 keep-grace effect executes after same-episode dunning bookkeeping", %{
+    context: context
+  } do
     fixture = create_due_fixture!("jc247mx_v1_after_v2")
+    barrier = make_ref()
+    handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
     stub_canceled_payment!()
-    assert {:error, %{code: "PAYMENT_FAILED"}} = fixture.run.()
 
-    subscription = reload_subscription!(fixture.subscription.id)
-    [effect] = access_effects!(subscription.id)
-    v1 = effect.source_version
-    bump_aggregate_version!(subscription.id)
-    assert reload_subscription!(subscription.id).aggregate_version > v1
+    failure_task =
+      Task.async(fn ->
+        Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], self())
+        Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], self())
+        fixture.run.()
+      end)
 
-    assert {:ok, outcome} = Facade.execute_effective_access_effect_for_system(effect.id)
-    assert outcome in [:applied, :noop]
-    assert fetch_effect!(effect.id).status == :applied
+    assert_receive {:jc247_postcommit_dunning, ^barrier, subscription_id}, @barrier_timeout
+    [e1] = access_effects!(subscription_id)
+    assert e1.status == :required
+    v1 = e1.source_version
+    pointer = reload_subscription!(subscription_id).current_dunning_renewal_attempt_id
+    boundary = reload_subscription!(subscription_id).failed_payment_boundary_at
+
+    :telemetry.detach(handler_id)
+    stub_canceled_payment!()
+
+    assert {:error, %{code: "PAYMENT_FAILED"}} =
+             Facade.process_due_subscription_renewal_for_system(
+               subscription_id,
+               now: reload_subscription!(subscription_id).next_retry_at
+             )
+
+    subscription = reload_subscription!(subscription_id)
+    assert subscription.aggregate_version > v1
+    assert subscription.current_dunning_renewal_attempt_id == pointer
+    assert subscription.failed_payment_boundary_at == boundary
+    assert [^e1] = access_effects!(subscription_id)
+
+    send(failure_task.pid, {:jc247_release_keep_grace_sync, barrier})
+    assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @barrier_timeout)
+
+    e1 = fetch_effect!(e1.id)
+    assert e1.source_version < subscription.aggregate_version
+    assert e1.status == :applied
+    assert active_source_grants!(subscription_id) >= 1
   end
 
   test "TASK5 exact failure replay does not create second keep-grace producer effect" do
@@ -247,7 +291,6 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
     [first] = access_effects!(subscription.id)
     pointer = subscription.current_dunning_renewal_attempt_id
     boundary = subscription.failed_payment_boundary_at
-    bump_aggregate_version!(subscription.id)
 
     assert {:error, %{code: "PAYMENT_FAILED"}} =
              Facade.process_due_subscription_renewal_for_system(
@@ -283,6 +326,7 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
 
     assert_receive {:jc247_postcommit_dunning, ^barrier, subscription_id}, @barrier_timeout
     [keep_grace] = access_effects!(subscription_id)
+    assert keep_grace.status == :required
 
     cancel_task =
       Task.async(fn ->
@@ -300,10 +344,157 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
     send(failure_task.pid, {:jc247_release_keep_grace_sync, barrier})
     assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @barrier_timeout)
 
+    subscription = reload_subscription!(subscription_id)
+    assert subscription.status == :canceled
+    assert active_source_grants!(subscription_id) == 0
+
     effects = access_effects!(subscription_id)
+
+    assert Enum.any?(
+             effects,
+             &(&1.disposition == :non_effective and &1.status in [:applied, :required])
+           )
+
     keep = fetch_effect!(keep_grace.id)
-    assert keep.status in [:superseded, :applied, :required]
-    assert Enum.any?(effects, &(&1.disposition == :non_effective))
+    assert keep.status in [:superseded, :applied]
+    refute keep.status == :required and active_source_grants!(subscription_id) > 0
+  end
+
+  @tag :real_connections
+  test "TASK6 paused keep-grace sync loses to exact paid recovery", %{context: context} do
+    fixture = create_due_fixture!("jc247mx_race_recovery")
+    barrier = make_ref()
+    handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    payment_phase = :atomics.new(1, [])
+    :atomics.put(payment_phase, 1, 1)
+
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      status =
+        case :atomics.get(payment_phase, 1) do
+          1 -> "canceled"
+          _ -> "processing"
+        end
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => status})
+      )
+    end)
+
+    failure_task =
+      Task.async(fn ->
+        Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], self())
+        Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], self())
+        fixture.run.()
+      end)
+
+    assert_receive {:jc247_postcommit_dunning, ^barrier, subscription_id}, @barrier_timeout
+    [e1] = access_effects!(subscription_id)
+    assert e1.status == :required
+
+    past_due = reload_subscription!(subscription_id)
+    assert past_due.status == :past_due
+    assert %DateTime{} = past_due.next_retry_at
+    attempt = fetch_attempt!(subscription_id)
+    assert attempt.id == past_due.current_dunning_renewal_attempt_id
+    order = fetch_order!(attempt.order_id)
+
+    recovery_task =
+      Task.async(fn ->
+        Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], self())
+        Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], self())
+
+        :atomics.put(payment_phase, 1, 2)
+
+        assert {:ok, :processed} =
+                 Facade.process_due_subscription_renewal_for_system(subscription_id,
+                   now: past_due.next_retry_at
+                 )
+
+        retry_collection = latest_collection_for_attempt!(attempt.id)
+        refute retry_collection.financial_outcome == :verified_failure
+
+        mark_collection_successful!(retry_collection)
+        {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(retry_collection.id)
+
+        assert handoff.renewal_attempt_id == attempt.id
+
+        Facade.reconcile_paid_subscription_renewal_for_system(order.id, handoff_opts(handoff))
+      end)
+
+    assert {:ok, :reconciled} = Task.await(recovery_task, @barrier_timeout)
+    send(failure_task.pid, {:jc247_release_keep_grace_sync, barrier})
+    assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @barrier_timeout)
+
+    subscription = reload_subscription!(subscription_id)
+    assert subscription.status == :active
+    assert is_nil(subscription.current_dunning_renewal_attempt_id)
+    assert active_source_grants!(subscription_id) >= 1
+
+    e1 = fetch_effect!(e1.id)
+    latest = latest_effect!(subscription_id)
+    assert latest.id != e1.id
+    assert latest.disposition == :effective
+    assert latest.status == :applied
+    assert e1.status == :superseded
+    refute e1.valid_until_at == latest.valid_until_at and e1.valid_from_at == latest.valid_from_at
+  end
+
+  @tag :real_connections
+  test "TASK6 paused keep-grace sync loses to grace-boundary suspension", %{context: context} do
+    fixture = create_due_fixture!("jc247mx_race_suspend")
+    barrier = make_ref()
+    handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    stub_canceled_payment!()
+
+    failure_task =
+      Task.async(fn ->
+        Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], self())
+        Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], self())
+        fixture.run.()
+      end)
+
+    assert_receive {:jc247_postcommit_dunning, ^barrier, subscription_id}, @barrier_timeout
+    [e1] = access_effects!(subscription_id)
+    assert e1.status == :required
+
+    subscription = reload_subscription!(subscription_id)
+
+    suspend_task =
+      Task.async(fn ->
+        Sandbox.allow(Store.Repo, context.sandbox_owners[Store.Repo], self())
+        Sandbox.allow(Store.DirectRepo, context.sandbox_owners[Store.DirectRepo], self())
+
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        boundary_at = DateTime.add(now, -1, :second)
+
+        Repo.query!(
+          """
+          UPDATE subscriptions
+          SET failed_payment_boundary_at = $2,
+              retry_suppressed_at = $3,
+              next_retry_at = NULL
+          WHERE id = $1
+          """,
+          [Ecto.UUID.dump!(subscription_id), boundary_at, now]
+        )
+
+        Facade.run_due_failed_payment_suspensions_for_system(now: now, limit: 20)
+      end)
+
+    assert {:ok, %{suspended_count: 1}} = Task.await(suspend_task, @barrier_timeout)
+    send(failure_task.pid, {:jc247_release_keep_grace_sync, barrier})
+    assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @barrier_timeout)
+
+    subscription = reload_subscription!(subscription_id)
+    assert subscription.status == :suspended
+    assert active_source_grants!(subscription_id) == 0
+
+    e1 = fetch_effect!(e1.id)
+    assert e1.status in [:superseded, :applied]
+    assert Enum.any?(access_effects!(subscription_id), &(&1.disposition == :non_effective))
   end
 
   test "TASK7 unrelated subscription grant unchanged after keep-grace F1" do
@@ -346,35 +537,27 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
       )
       |> Ash.create!(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
 
+    before_unrelated = snapshot_grant!(unrelated.id)
     stub_canceled_payment!()
     assert {:error, %{code: "PAYMENT_FAILED"}} = fixture.run.()
+    after_unrelated = snapshot_grant!(unrelated.id)
 
-    before = snapshot_grant!(unrelated.id)
-    assert length(access_effects!(subscription.id)) == 1
-    assert snapshot_grant!(unrelated.id) == before
+    assert after_unrelated == before_unrelated
+    assert active_source_grants!(subscription.id) >= 1
+    [effect] = access_effects!(subscription.id)
+    assert effect.status == :applied
   end
 
-  defp assert_payment_failure_outer_preserved(context, at_barrier_fn, opts \\ []) do
+  defp assert_payment_failure_outer_preserved(context, outcome, at_barrier_fn, opts \\ []) do
     fixture = create_due_fixture!("jc247mx_pf_#{System.unique_integer([:positive])}")
-
-    if Keyword.get(opts, :grant_block) do
-      constraint = add_grant_block_constraint!(fixture.subscription.id)
-
-      on_exit(fn ->
-        Repo.query!("ALTER TABLE entitlement_grants DROP CONSTRAINT IF EXISTS #{constraint}")
-      end)
-    end
-
-    if constraint = Keyword.get(opts, :constraint) do
-      on_exit(fn ->
-        Repo.query!("ALTER TABLE access_effects DROP CONSTRAINT IF EXISTS #{constraint}")
-      end)
-    end
+    setup_f1_injection!(fixture, opts)
 
     barrier = make_ref()
     handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
     on_exit(fn -> :telemetry.detach(handler_id) end)
     stub_canceled_payment!()
+
+    grants_before = active_source_grants!(fixture.subscription.id)
 
     outer =
       run_failure_with_barrier!(context, fixture, barrier, fn effect ->
@@ -385,11 +568,32 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
 
     assert {:error, %{code: "PAYMENT_FAILED"}} = outer
     assert reload_subscription!(fixture.subscription.id).status == :past_due
+    assert_durable_f1_outcome!(fixture.subscription.id, outcome, grants_before: grants_before)
   end
 
-  defp assert_auth_outer_preserved(context, at_barrier_fn, opts \\ []) do
+  defp assert_auth_outer_preserved(context, outcome, at_barrier_fn, opts \\ []) do
     fixture = create_due_fixture!("jc247mx_auth_#{System.unique_integer([:positive])}")
+    setup_f1_injection!(fixture, opts)
 
+    barrier = make_ref()
+    handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    stub_requires_action_payment!("auth-#{System.unique_integer([:positive])}")
+
+    grants_before = active_source_grants!(fixture.subscription.id)
+
+    outer =
+      run_auth_with_barrier!(context, fixture, barrier, fn effect ->
+        assert effect.status == :required
+        at_barrier_fn.(effect)
+      end)
+
+    assert {:ok, :processed} = outer
+    assert reload_subscription!(fixture.subscription.id).status == :past_due
+    assert_durable_f1_outcome!(fixture.subscription.id, outcome, grants_before: grants_before)
+  end
+
+  defp setup_f1_injection!(fixture, opts) do
     if Keyword.get(opts, :grant_block) do
       constraint = add_grant_block_constraint!(fixture.subscription.id)
 
@@ -404,18 +608,35 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
       end)
     end
 
-    barrier = make_ref()
-    handler_id = attach_dunning_postcommit_barrier!(self(), barrier, fixture.subscription.id)
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-    stub_requires_action_payment!("auth-#{System.unique_integer([:positive])}")
+    :ok
+  end
 
-    outer =
-      run_auth_with_barrier!(context, fixture, barrier, fn effect ->
-        at_barrier_fn.(effect)
-      end)
+  defp assert_durable_f1_outcome!(subscription_id, outcome, opts \\ []) do
+    _grants_before = Keyword.get(opts, :grants_before, 0)
+    [effect | _] = access_effects!(subscription_id)
 
-    assert {:ok, :processed} = outer
-    assert reload_subscription!(fixture.subscription.id).status == :past_due
+    case outcome do
+      :applied ->
+        assert effect.status == :applied
+        assert active_source_grants!(subscription_id) >= 1
+
+      :projection_pending ->
+        assert effect.status == :applied
+        assert is_nil(effect.projection_delivered_at)
+        assert is_list(effect.projection_user_ids)
+
+      :superseded ->
+        assert effect.status == :superseded
+        assert Enum.any?(access_effects!(subscription_id), &(&1.id != effect.id))
+
+      :noop ->
+        assert effect.status == :applied
+        assert length(access_effects!(subscription_id)) == 1
+
+      :error ->
+        assert effect.status in [:failed_retryable, :required, :failed]
+        assert reload_subscription!(subscription_id).status == :past_due
+    end
   end
 
   defp run_failure_with_barrier!(context, fixture, barrier, at_barrier_fn) do
@@ -557,6 +778,192 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
     assert {:ok, _effect} = Facade.establish_access_effect_for_system(input)
   end
 
+  defp create_contract_bound_due_fixture!(label) do
+    customer = SubscriptionsFixtures.create_customer!(unique_label(label))
+    %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    current_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 1,
+        amount_minor: 1_100,
+        currency: "USD"
+      })
+
+    plan_x =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :month,
+        interval_count: 2,
+        amount_minor: 4_700,
+        currency: "EUR",
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:#{label}-x"
+      })
+
+    plan_y =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :month,
+        interval_count: 2,
+        amount_minor: 8_300,
+        currency: "GBP",
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "membership:#{label}-y"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan_x.id)
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, plan_y.id)
+    SubscriptionsFixtures.create_plan_revision!(plan_x)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{subscription: subscription} =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, current_plan, %{
+        started_at: DateTime.add(now, -86_410, :second),
+        next_renewal_at: DateTime.add(now, -10, :microsecond),
+        quantity: 1,
+        provider_billing_ref: "pm_#{label}"
+      })
+
+    subscription = reload_subscription!(subscription.id)
+
+    Repo.query!(
+      "UPDATE subscriptions SET next_renewal_at = current_period_end_at WHERE id = $1",
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    subscription = reload_subscription!(subscription.id)
+
+    assert {:ok, input_x} =
+             QueueSubscriptionPlanChangeInput.new(%{
+               "subscription_id" => subscription.id,
+               "subscription_plan_id" => plan_x.id
+             })
+
+    assert {:ok, queued_x} =
+             Facade.queue_subscription_plan_change_for_user(customer, subscription.id, input_x)
+
+    change_x = fetch_contract_change!(queued_x.current_contract_change_id)
+    subscription = reload_subscription!(subscription.id)
+    funded_revision_id = subscription.current_plan_revision_id
+
+    assert subscription.current_contract_change_id == change_x.id
+    assert change_x.status == :queued
+    assert change_x.effective_at == subscription.current_period_end_at
+
+    %{
+      subscription: subscription,
+      customer: customer,
+      change_x: change_x,
+      plan_y: plan_y,
+      funded_revision_id: funded_revision_id,
+      run: fn -> Facade.process_due_subscription_renewal_for_system(subscription.id, now: now) end
+    }
+  end
+
+  defp active_source_grants!(subscription_id) do
+    EntitlementGrant
+    |> Ash.Query.filter(
+      expr(source_kind == :subscription and source_id == ^subscription_id and status == :active)
+    )
+    |> Ash.read!(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
+    |> length()
+  end
+
+  defp latest_effect!(subscription_id) do
+    subscription_id
+    |> access_effects!()
+    |> Enum.max_by(& &1.source_version)
+  end
+
+  defp fetch_order!(id) do
+    Order
+    |> Ash.get!(id, domain: Store.Orders, authorize?: false, context: %{system?: true})
+  end
+
+  defp latest_collection_for_attempt!(attempt_id) do
+    alias Store.Subscriptions.RenewalCollectionAttempt
+
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt_id))
+    |> Ash.Query.sort(inserted_at: :asc)
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    |> List.last()
+    |> case do
+      nil -> raise "no renewal collection for attempt #{attempt_id}"
+      collection -> collection
+    end
+  end
+
+  defp handoff_opts(handoff) do
+    [
+      renewal_attempt_id: handoff.renewal_attempt_id,
+      collection_attempt_id: handoff.collection_attempt_id,
+      payment_intent_id: handoff.payment_intent_id
+    ]
+  end
+
+  defp mark_collection_successful!(collection) do
+    alias Store.Payments.PaymentIntent
+
+    payment_intent =
+      PaymentIntent
+      |> Ash.get!(collection.payment_intent_id,
+        domain: Store.Payments,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    {provider_reference, provider_reference_kind} =
+      if is_binary(payment_intent.provider_payment_id) do
+        {payment_intent.provider_payment_id, :payment_intent}
+      else
+        {payment_intent.provider_request_reference, :transaction_reference}
+      end
+
+    observation = %ProviderObservation{
+      provider: payment_intent.provider,
+      provider_reference: provider_reference,
+      provider_reference_kind: provider_reference_kind,
+      provider_transaction_id: payment_intent.provider_payment_id || "pi_#{payment_intent.id}",
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: :authoritative_success,
+      raw_provider_status: "succeeded",
+      amount_minor: payment_intent.amount_received_minor,
+      currency: payment_intent.currency,
+      provider_environment: "test",
+      observed_at: db_now!()
+    }
+
+    assert {:ok, %{outcome: outcome}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               observation
+             )
+
+    assert outcome in [:authoritative_success, :already_applied_success]
+
+    updated =
+      Store.Subscriptions.RenewalCollectionAttempt
+      |> Ash.get!(collection.id,
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    assert updated.financial_outcome == :verified_success
+
+    assert :ok ==
+             Store.Payments.validate_collection_outcome_certification_for_system(
+               %ValidateRenewalCollectionOutcomeInput{
+                 payment_attempt_id: updated.payment_attempt_id,
+                 payment_intent_id: collection.payment_intent_id,
+                 financial_outcome: :verified_success
+               }
+             )
+  end
+
   defp create_due_fixture!(label) do
     now = db_now!()
     customer = SubscriptionsFixtures.create_customer!(unique_label(label))
@@ -639,13 +1046,6 @@ defmodule Store.Subscriptions.Jc247AAcceptanceMatrixTest do
         updated_at
       ])
     end)
-  end
-
-  defp bump_aggregate_version!(subscription_id) do
-    Repo.query!(
-      "UPDATE subscriptions SET aggregate_version = aggregate_version + 1 WHERE id = $1",
-      [Ecto.UUID.dump!(subscription_id)]
-    )
   end
 
   defp unique_label(label), do: "#{label}_#{Ecto.UUID.generate()}"
