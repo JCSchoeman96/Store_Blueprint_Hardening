@@ -335,6 +335,266 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
              )
   end
 
+  test "TASK2 legacy nil-pointer and keep-grace repair share one bounded page and advance cursor" do
+    legacy = legacy_nil_pointer_fixture!()
+    eligible = past_due_keep_grace_fixture!()
+
+    legacy_candidate =
+      establish_effect!(
+        legacy.subscription,
+        legacy.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    eligible_candidate =
+      establish_effect!(
+        eligible.subscription,
+        eligible.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    bump_aggregate_version!(eligible.subscription.id)
+    bump_aggregate_version!(eligible.subscription.id)
+
+    t0 = ~U[2026-10-23 10:00:00.000000Z]
+
+    set_effect_timestamps!([legacy_candidate], t0)
+    set_effect_timestamps!([eligible_candidate], DateTime.add(t0, 1, :second))
+
+    assert {:ok, first_page} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 2,
+               as_of: DateTime.add(t0, 2, :second),
+               after_inserted_at: DateTime.add(t0, -1, :second),
+               after_id: @cursor_floor
+             )
+
+    assert first_page.noop_count == 1
+    assert first_page.repaired_count == 1
+    assert first_page.already_covered_count == 0
+    refute Map.has_key?(first_page, :skipped_count)
+    assert length(access_effect_rows!(eligible.subscription.id)) == 2
+
+    assert {:ok, second_page} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 2,
+               as_of: DateTime.add(t0, 2, :second),
+               after_inserted_at: DateTime.add(t0, -1, :second),
+               after_id: @cursor_floor
+             )
+
+    assert second_page.noop_count == 1
+    assert second_page.repaired_count == 0
+    assert length(access_effect_rows!(legacy.subscription.id)) == 1
+  end
+
+  test "TASK2 jc247_b remove_immediately noop and keep-grace repair share one bounded page" do
+    deferred = past_due_keep_grace_fixture!(access_on_past_due: "remove_immediately")
+    eligible = past_due_keep_grace_fixture!()
+
+    deferred_candidate =
+      establish_effect!(
+        deferred.subscription,
+        deferred.revision,
+        %{
+          valid_from_at: deferred.subscription.current_period_start_at,
+          valid_until_at: deferred.subscription.failed_payment_boundary_at
+        }
+      )
+
+    eligible_candidate =
+      establish_effect!(
+        eligible.subscription,
+        eligible.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    bump_aggregate_version!(eligible.subscription.id)
+    bump_aggregate_version!(eligible.subscription.id)
+
+    t0 = ~U[2026-10-23 10:00:00.000000Z]
+    set_effect_timestamps!([deferred_candidate], t0)
+    set_effect_timestamps!([eligible_candidate], DateTime.add(t0, 1, :second))
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 2,
+               as_of: DateTime.add(t0, 2, :second),
+               after_inserted_at: DateTime.add(t0, -1, :second),
+               after_id: @cursor_floor
+             )
+
+    assert result.noop_count == 1
+    assert result.repaired_count == 1
+    assert length(access_effect_rows!(deferred.subscription.id)) == 1
+    assert length(access_effect_rows!(eligible.subscription.id)) == 2
+  end
+
+  test "TASK3 pointer wrong attempt fails closed with TARGET_ORDER_UNPROVABLE" do
+    assert_malformed_reconciliation_fails!("wrong_pointer", fn fixture ->
+      Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = $2 WHERE id = $1",
+        [
+          Ecto.UUID.dump!(fixture.subscription.id),
+          Ecto.UUID.dump!(fixture.other_attempt.id)
+        ]
+      )
+    end)
+  end
+
+  test "TASK3 attempt owner mismatch fails closed with TARGET_ORDER_UNPROVABLE" do
+    assert_malformed_reconciliation_fails!("owner_mismatch", fn fixture ->
+      Repo.query!(
+        "UPDATE subscriptions SET current_dunning_renewal_attempt_id = $2 WHERE id = $1",
+        [
+          Ecto.UUID.dump!(fixture.subscription.id),
+          Ecto.UUID.dump!(fixture.attempt.id)
+        ]
+      )
+
+      Repo.query!(
+        """
+        UPDATE renewal_attempts
+        SET period_start_at = period_end_at + interval '1 day',
+            period_end_at = period_end_at + interval '2 days'
+        WHERE id = $1
+        """,
+        [Ecto.UUID.dump!(fixture.attempt.id)]
+      )
+    end)
+  end
+
+  test "TASK3 period mismatch fails closed with TARGET_ORDER_UNPROVABLE" do
+    assert_malformed_reconciliation_fails!("period_mismatch", fn fixture ->
+      Repo.query!(
+        "UPDATE renewal_attempts SET period_start_at = period_start_at - interval '1 day' WHERE id = $1",
+        [Ecto.UUID.dump!(fixture.attempt.id)]
+      )
+    end)
+  end
+
+  test "TASK3 missing boundary fails closed with TARGET_ORDER_UNPROVABLE" do
+    assert_malformed_reconciliation_fails!("missing_boundary", fn fixture ->
+      Repo.query!(
+        "UPDATE subscriptions SET failed_payment_boundary_at = NULL WHERE id = $1",
+        [Ecto.UUID.dump!(fixture.subscription.id)]
+      )
+    end)
+  end
+
+  test "TASK3 incomplete snapshot fails closed with TARGET_ORDER_UNPROVABLE" do
+    assert_malformed_reconciliation_fails!(
+      "incomplete_snapshot",
+      fn fixture ->
+        Repo.query!(
+          """
+          UPDATE renewal_attempts
+          SET charged_contract_snapshot =
+            jsonb_set(charged_contract_snapshot, '{entitlement_scope_key}', 'null'::jsonb)
+          WHERE id = $1
+          """,
+          [Ecto.UUID.dump!(fixture.attempt.id)]
+        )
+      end,
+      allow_validation_error?: true
+    )
+  end
+
+  test "TASK3 funded revision mismatch fails closed with TARGET_ORDER_UNPROVABLE" do
+    assert_malformed_reconciliation_fails!("funded_revision_mismatch", fn fixture ->
+      Repo.query!(
+        "UPDATE subscriptions SET current_plan_revision_id = $2 WHERE id = $1",
+        [
+          Ecto.UUID.dump!(fixture.subscription.id),
+          Ecto.UUID.dump!(fixture.wrong_revision.id)
+        ]
+      )
+    end)
+  end
+
+  defp assert_malformed_reconciliation_fails!(_label, mutate, opts \\ []) do
+    allow_validation_error? = Keyword.get(opts, :allow_validation_error?, false)
+    fixture = past_due_keep_grace_fixture!()
+
+    candidate =
+      establish_effect!(
+        fixture.subscription,
+        fixture.revision,
+        %{
+          valid_from_at: fixture.subscription.current_period_start_at,
+          valid_until_at: fixture.subscription.failed_payment_boundary_at
+        }
+      )
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+    mutate.(fixture)
+
+    assert {:error, %{code: code}} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 10,
+               as_of: candidate.inserted_at,
+               after_inserted_at: candidate.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    allowed =
+      if allow_validation_error? do
+        ["TARGET_ORDER_UNPROVABLE", "IDEMPOTENCY_KEY_REUSE_MISMATCH", "VALIDATION_ERROR"]
+      else
+        ["TARGET_ORDER_UNPROVABLE", "IDEMPOTENCY_KEY_REUSE_MISMATCH"]
+      end
+
+    assert code in allowed
+
+    [unchanged] = access_effect_rows!(fixture.subscription.id)
+    assert unchanged.id == candidate.id
+    assert unchanged.status == "required"
+  end
+
+  test "TASK3 legacy nil-pointer malformed subscription still increments noop_count" do
+    legacy = legacy_nil_pointer_fixture!()
+
+    candidate =
+      establish_effect!(
+        legacy.subscription,
+        legacy.revision,
+        %{valid_from_at: ~U[2020-01-01 00:00:00.000000Z]}
+      )
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} =
+             Facade.run_access_effect_target_order_reconciliation_for_system(
+               limit: 10,
+               as_of: candidate.inserted_at,
+               after_inserted_at: candidate.inserted_at,
+               after_id: @cursor_floor
+             )
+
+    assert result.noop_count == 1
+    assert result.repaired_count == 0
+  end
+
+  defp legacy_nil_pointer_fixture! do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+
+    Repo.query!(
+      """
+      UPDATE subscriptions
+      SET status = 'past_due',
+          current_dunning_renewal_attempt_id = NULL,
+          failed_payment_boundary_at = clock_timestamp(),
+          past_due_since_at = clock_timestamp(),
+          aggregate_version = aggregate_version + 1
+      WHERE id = $1
+      """,
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    %{subscription: reload_subscription!(subscription.id), revision: fixture.revision}
+  end
+
   defp past_due_keep_grace_fixture!(opts \\ []) do
     access_on_past_due = Keyword.get(opts, :access_on_past_due, "keep_during_grace")
     customer = SubscriptionsFixtures.create_customer!("jc247_pd_#{Ecto.UUID.generate()}")
@@ -428,7 +688,59 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     )
 
     subscription = reload_subscription!(subscription.id)
-    %{subscription: subscription, revision: revision, plan: plan, variant: variant}
+
+    other_attempt =
+      RenewalAttempt
+      |> Ash.Changeset.for_create(
+        :create_or_reuse,
+        %{
+          subscription_id: subscription.id,
+          renewal_key: "jc247-pd-other:#{Ecto.UUID.generate()}",
+          period_start_at: DateTime.add(subscription.current_period_end_at, -2, :day),
+          period_end_at: DateTime.add(subscription.current_period_end_at, -1, :day),
+          plan_revision_id: revision.id,
+          variant_id: variant.id,
+          quantity: 1,
+          amount_minor: plan.amount_minor,
+          currency: plan.currency,
+          expected_subscription_version: subscription.aggregate_version,
+          charged_contract_version: 1,
+          charged_contract_snapshot: snapshot,
+          status: :failed
+        },
+        context: %{system?: true}
+      )
+      |> Ash.create!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    wrong_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 1,
+        grace_period_days: 7,
+        max_retry_attempts: 3,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "jc247-pd-wrong"
+      })
+
+    SubscriptionsFixtures.attach_variant_plan!(variant.id, wrong_plan.id)
+    wrong_revision = SubscriptionsFixtures.create_plan_revision!(wrong_plan)
+
+    subscription = reload_subscription!(subscription.id)
+    attempt_period_start = subscription.current_period_end_at
+
+    %{
+      subscription: subscription,
+      revision: revision,
+      plan: plan,
+      variant: variant,
+      attempt: attempt,
+      other_attempt: other_attempt,
+      wrong_revision: wrong_revision,
+      boundary_at: boundary_at,
+      past_due_since_at: now,
+      snapshot: snapshot,
+      attempt_period_start: attempt_period_start
+    }
   end
 
   defp subscription_fixture! do
@@ -479,6 +791,15 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     Store.Subscriptions.Subscription
     |> Ash.Query.filter(expr(id == ^id))
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp set_effect_timestamps!(effects, timestamp) do
+    Enum.each(effects, fn effect ->
+      Repo.query!("UPDATE access_effects SET inserted_at = $2, updated_at = $2 WHERE id = $1", [
+        Ecto.UUID.dump!(effect.id),
+        timestamp
+      ])
+    end)
   end
 
   defp set_updated_at!(effects, updated_at) do
