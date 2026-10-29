@@ -188,20 +188,40 @@ defmodule Store.Subscriptions.AccessEffectExecutionTest do
   defp cleanup_fixture!(fixture) do
     Sandbox.unboxed_run(Repo, fn ->
       subscription_id = Ecto.UUID.dump!(fixture.subscription_id)
-      effect_id = Ecto.UUID.dump!(fixture.effect_id)
       line_item_id = Ecto.UUID.dump!(fixture.line_item_id)
       order_id = Ecto.UUID.dump!(fixture.order_id)
       variant_id = Ecto.UUID.dump!(fixture.variant_id)
       product_id = Ecto.UUID.dump!(fixture.product_id)
       plan_id = Ecto.UUID.dump!(fixture.plan_id)
 
-      Repo.query!("DELETE FROM access_effects WHERE id = $1", [effect_id])
+      Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM entitlement_grants WHERE source_id = $1", [subscription_id])
 
       Repo.query!(
         "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
         [subscription_id]
       )
+
+      {:ok, _result} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            "ALTER TABLE renewal_collection_attempts DISABLE TRIGGER renewal_collection_attempts_guard"
+          )
+
+          Repo.query!(
+            """
+            DELETE FROM renewal_collection_attempts
+            WHERE renewal_attempt_id IN (
+              SELECT id FROM renewal_attempts WHERE subscription_id = $1
+            )
+            """,
+            [subscription_id]
+          )
+
+          Repo.query!(
+            "ALTER TABLE renewal_collection_attempts ENABLE TRIGGER renewal_collection_attempts_guard"
+          )
+        end)
 
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [subscription_id])
@@ -225,6 +245,7 @@ defmodule Store.Subscriptions.AccessEffectExecutionTest do
       expr(subscription_id == ^subscription_id and disposition == :non_effective)
     )
     |> Ash.Query.sort(source_version: :desc)
+    |> Ash.Query.limit(1)
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 

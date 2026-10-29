@@ -18,6 +18,28 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
     StripeAPIStub.setup_default(context)
   end
 
+  test "current non-effective effect revokes past-due source grants with purchased-policy reason" do
+    fixture = create_committed_suspended_effect_fixture!("jc247_b_past_due")
+
+    Sandbox.unboxed_run(Repo, fn ->
+      Repo.query!("UPDATE subscriptions SET status = 'past_due' WHERE id = $1", [
+        Ecto.UUID.dump!(fixture.subscription_id)
+      ])
+    end)
+
+    Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(fixture.user_id))
+
+    assert {:ok, :applied} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Facade.execute_suspension_access_effect_for_system(fixture.effect_id)
+             end)
+
+    assert [%EntitlementGrant{status: :revoked, revoked_reason: "past_due_remove_immediately"}] =
+             grants_for_source!(fixture.subscription_id)
+
+    assert_receive {:entitlements_invalidated, _, "non_effective_access_effect_applied", _}
+  end
+
   test "the public NON_EFFECTIVE executor rejects a caller-owned transaction before writes on commit" do
     fixture = create_committed_suspended_effect_fixture!("jc246_nested_commit")
     Phoenix.PubSub.subscribe(Store.PubSub, Cache.topic(fixture.user_id))
@@ -461,6 +483,13 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
   end
 
   defp create_committed_suspended_effect_fixture!(prefix) do
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => "canceled"})
+      )
+    end)
+
     fixture =
       Sandbox.unboxed_run(Repo, fn ->
         {:ok, fixture} = Repo.transaction(fn -> create_suspended_effect_fixture!(prefix) end)
@@ -472,7 +501,7 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
   end
 
   defp create_suspended_effect_fixture!(prefix) do
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    setup_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     customer = SubscriptionsFixtures.create_customer!("#{prefix}_#{Ecto.UUID.generate()}")
     %{product: product, variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
@@ -480,7 +509,7 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
       SubscriptionsFixtures.create_subscription_plan!(%{
         max_retry_attempts: 0,
         grace_period_days: 0,
-        access_on_past_due: :remove_immediately,
+        access_on_past_due: :keep_during_grace,
         entitlement_kind: :membership_access,
         entitlement_scope_key: "membership:#{prefix}"
       })
@@ -489,8 +518,11 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
 
     %{subscription: subscription, order: order, line_item: line_item} =
       SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan, %{
-        next_renewal_at: DateTime.add(now, -1, :second)
+        provider_billing_ref: "pm_#{prefix}",
+        next_renewal_at: DateTime.add(setup_now, -1, :second)
       })
+
+    failure_now = DateTime.add(subscription.current_period_start_at, 1, :second)
 
     grant =
       EntitlementGrant
@@ -503,14 +535,15 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
           source_kind: :subscription,
           source_id: subscription.id,
           status: :active,
-          valid_from_at: DateTime.add(now, -60, :second),
-          valid_to_at: DateTime.add(now, 86_400, :second)
+          valid_from_at: DateTime.add(setup_now, -60, :second),
+          valid_to_at: DateTime.add(setup_now, 86_400, :second)
         },
         context: %{system?: true}
       )
       |> Ash.create!(domain: Store.Entitlements, authorize?: false, context: %{system?: true})
 
-    assert {:ok, %{failed_count: 1}} = Facade.run_due_renewals_for_system(now: now)
+    assert {:error, %{code: "PAYMENT_FAILED"}} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id, now: failure_now)
 
     Repo.query!(
       "UPDATE subscriptions SET failed_payment_boundary_at = clock_timestamp() - interval '1 second' WHERE id = $1",
@@ -760,8 +793,6 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
   defp cleanup_fixture!(fixture) do
     Sandbox.unboxed_run(Repo, fn ->
       subscription_id = Ecto.UUID.dump!(fixture.subscription_id)
-      line_item_id = Ecto.UUID.dump!(fixture.line_item_id)
-      order_id = Ecto.UUID.dump!(fixture.order_id)
       variant_id = Ecto.UUID.dump!(fixture.variant_id)
       product_id = Ecto.UUID.dump!(fixture.product_id)
       plan_id = Ecto.UUID.dump!(fixture.plan_id)
@@ -771,18 +802,83 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
       Repo.query!("DELETE FROM entitlement_grants WHERE user_id = $1", [user_id])
 
       Repo.query!(
+        "DELETE FROM refunds WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM payment_applications WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM payment_outcome_certifications WHERE payment_intent_id IN (SELECT id FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1))",
+        [user_id]
+      )
+
+      Repo.transaction(fn ->
+        Repo.query!(
+          "ALTER TABLE renewal_collection_attempts DISABLE TRIGGER renewal_collection_attempts_guard"
+        )
+
+        Repo.query!(
+          """
+          DELETE FROM renewal_collection_attempts
+          WHERE renewal_attempt_id IN (
+            SELECT id
+            FROM renewal_attempts
+            WHERE subscription_id = $1
+          )
+          """,
+          [subscription_id]
+        )
+
+        Repo.query!(
+          "ALTER TABLE renewal_collection_attempts ENABLE TRIGGER renewal_collection_attempts_guard"
+        )
+      end)
+
+      Repo.query!(
         "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL WHERE id = $1",
         [subscription_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM payment_attempts WHERE payment_intent_id IN (SELECT id FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1))",
+        [user_id]
       )
 
       Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [subscription_id])
       Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])
-      Repo.query!("DELETE FROM order_line_items WHERE id = $1", [line_item_id])
-      Repo.query!("DELETE FROM order_adjustments WHERE order_id = $1", [order_id])
-      Repo.query!("DELETE FROM fulfillment_orders WHERE order_id = $1", [order_id])
-      Repo.query!("DELETE FROM payment_intents WHERE order_id = $1", [order_id])
-      Repo.query!("DELETE FROM orders WHERE id = $1", [order_id])
+
+      Repo.query!(
+        "DELETE FROM email_outboxes WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM order_adjustments WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM fulfillment_orders WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!(
+        "DELETE FROM order_line_items WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+        [user_id]
+      )
+
+      Repo.query!("DELETE FROM orders WHERE user_id = $1", [user_id])
+      Repo.query!("DELETE FROM stored_payment_methods WHERE user_id = $1", [user_id])
       Repo.query!("DELETE FROM variant_subscription_plans WHERE variant_id = $1", [variant_id])
       Repo.query!("DELETE FROM plan_revisions WHERE subscription_plan_id = $1", [plan_id])
       Repo.query!("DELETE FROM subscription_plans WHERE id = $1", [plan_id])

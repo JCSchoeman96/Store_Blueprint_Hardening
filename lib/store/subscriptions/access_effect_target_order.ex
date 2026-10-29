@@ -87,8 +87,19 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
     end
   end
 
-  @spec keep_during_grace_establish_attrs(Subscription.t(), target_evidence()) :: map()
-  def keep_during_grace_establish_attrs(%Subscription{} = subscription, target)
+  @spec derive_remove_immediately_target(Subscription.t(), RenewalAttempt.t()) ::
+          {:ok, target_evidence()} | {:error, Error.t()}
+  def derive_remove_immediately_target(
+        %Subscription{} = subscription,
+        %RenewalAttempt{} = attempt
+      ) do
+    with :ok <- prove_past_due_episode(subscription, attempt) do
+      {:ok, non_effective_evidence(subscription)}
+    end
+  end
+
+  @spec past_due_policy_establish_attrs(Subscription.t(), target_evidence()) :: map()
+  def past_due_policy_establish_attrs(%Subscription{} = subscription, target)
       when is_map(target) do
     %{
       subscription_id: subscription.id,
@@ -166,15 +177,19 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
          %RenewalAttempt{} = attempt,
          %PlanRevision{} = funded_revision
        ) do
+    with :ok <- prove_past_due_episode(subscription, attempt) do
+      require_funded_revision_identity(subscription, funded_revision)
+    end
+  end
+
+  defp prove_past_due_episode(%Subscription{} = subscription, %RenewalAttempt{} = attempt) do
     with :ok <- require_past_due_status(subscription),
          :ok <- require_bound_dunning_pointer(subscription, attempt),
          :ok <- prove_bound_dunning_attempt(subscription, attempt),
          :ok <- require_past_due_since_at(subscription),
          :ok <- require_failed_payment_boundary(subscription),
          :ok <- require_uuid(subscription.source_order_line_item_id, "source order line item"),
-         :ok <- require_uuid(subscription.current_plan_revision_id, "plan revision") do
-      require_funded_revision_identity(subscription, funded_revision)
-    end
+         do: require_uuid(subscription.current_plan_revision_id, "plan revision")
   end
 
   defp require_past_due_status(%Subscription{status: :past_due}), do: :ok

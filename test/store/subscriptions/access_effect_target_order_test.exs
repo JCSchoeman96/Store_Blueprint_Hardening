@@ -18,6 +18,78 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
   @contract_change_y Ecto.UUID.generate()
   @contract_change_x Ecto.UUID.generate()
 
+  describe "derive_remove_immediately_target/2" do
+    test "derives an empty target using locked subscription provenance" do
+      subscription = %Subscription{
+        id: @subscription_id,
+        status: :past_due,
+        source_order_line_item_id: @line_item_id,
+        current_contract_change_id: @contract_change_y,
+        current_plan_revision_id: @funded_revision_id,
+        current_period_end_at: @period_end,
+        failed_payment_boundary_at: @boundary,
+        past_due_since_at: @period_start,
+        current_dunning_renewal_attempt_id: @attempt_id
+      }
+
+      attempt = %RenewalAttempt{
+        id: @attempt_id,
+        subscription_id: @subscription_id,
+        contract_change_id: @contract_change_x,
+        period_start_at: @period_end
+      }
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_remove_immediately_target(subscription, attempt)
+
+      assert target == %{
+               disposition: :non_effective,
+               entitlement_kind: nil,
+               entitlement_scope_key: nil,
+               valid_from_at: nil,
+               valid_until_at: nil,
+               source_order_line_item_id: @line_item_id,
+               contract_change_id: @contract_change_y,
+               plan_revision_id: @funded_revision_id
+             }
+    end
+
+    test "rejects invalid episode evidence without requiring a revision" do
+      subscription = %Subscription{
+        id: @subscription_id,
+        status: :past_due,
+        source_order_line_item_id: @line_item_id,
+        current_plan_revision_id: @funded_revision_id,
+        current_period_end_at: @period_end,
+        failed_payment_boundary_at: @boundary,
+        past_due_since_at: @period_start,
+        current_dunning_renewal_attempt_id: @attempt_id
+      }
+
+      attempt = %RenewalAttempt{
+        id: @attempt_id,
+        subscription_id: @subscription_id,
+        period_start_at: @period_end
+      }
+
+      invalid = [
+        {Map.put(subscription, :status, :active), attempt},
+        {Map.put(subscription, :current_dunning_renewal_attempt_id, nil), attempt},
+        {subscription, Map.put(attempt, :subscription_id, Ecto.UUID.generate())},
+        {subscription, Map.put(attempt, :period_start_at, @period_start)},
+        {Map.put(subscription, :past_due_since_at, nil), attempt},
+        {Map.put(subscription, :failed_payment_boundary_at, nil), attempt},
+        {Map.put(subscription, :source_order_line_item_id, nil), attempt},
+        {Map.put(subscription, :current_plan_revision_id, nil), attempt}
+      ]
+
+      for {source, candidate} <- invalid do
+        assert {:error, _} =
+                 AccessEffectTargetOrder.derive_remove_immediately_target(source, candidate)
+      end
+    end
+  end
+
   describe "derive_current_target/2" do
     test "active subscription with entitlement pair uses current period boundaries" do
       subscription = %Subscription{
