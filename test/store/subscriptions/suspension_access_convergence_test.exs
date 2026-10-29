@@ -394,6 +394,7 @@ defmodule Store.Subscriptions.SuspensionAccessConvergenceTest do
       expr(subscription_id == ^subscription_id and disposition == :non_effective)
     )
     |> Ash.Query.sort(source_version: :desc)
+    |> Ash.Query.limit(1)
     |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 

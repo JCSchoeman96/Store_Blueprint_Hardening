@@ -276,7 +276,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     assert unchanged.status == "required"
   end
 
-  test "jc247_b remove_immediately past_due candidate increments noop_count without mutating effects" do
+  test "jc247_b reconciliation repairs current effective evidence to non-effective" do
     fixture = past_due_keep_grace_fixture!(access_on_past_due: "remove_immediately")
     subscription = fixture.subscription
 
@@ -290,6 +290,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
         }
       )
 
+    bump_aggregate_version!(subscription.id)
     set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
 
     assert {:ok, result} =
@@ -300,9 +301,10 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
                after_id: @cursor_floor
              )
 
-    assert result.noop_count == 1
-    assert result.repaired_count == 0
-    assert length(access_effect_rows!(subscription.id)) == 1
+    assert result.noop_count == 0
+    assert result.repaired_count == 1
+    assert [_, repaired] = access_effect_rows!(subscription.id)
+    assert repaired.disposition == "non_effective"
   end
 
   test "reconciliation fails closed when past_due_since_at is missing" do
@@ -335,7 +337,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
              )
   end
 
-  test "TASK2 legacy nil-pointer cursor page 1 noop then page 2 repairs eligible candidate" do
+  test "legacy nil-pointer cursor stays noop while eligible target repairs and is already covered" do
     legacy = legacy_nil_pointer_fixture!()
     eligible = past_due_keep_grace_fixture!()
 
@@ -375,6 +377,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     assert page_one.repaired_count == 0
     assert page_one.already_covered_count == 0
     refute Map.has_key?(page_one, :skipped_count)
+    assert page_one.candidate_cursor == %{inserted_at: t0, id: legacy_candidate.id}
     assert %{inserted_at: cursor_at, id: cursor_id} = page_one.candidate_cursor
 
     assert {:ok, page_two} =
@@ -387,34 +390,51 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
 
     assert page_two.repaired_count == 1
     assert page_two.noop_count == 0
+    assert page_two.already_covered_count == 0
+
+    assert page_two.candidate_cursor == %{
+             inserted_at: DateTime.add(t0, 1, :second),
+             id: eligible_candidate.id
+           }
+
     assert length(access_effect_rows!(eligible.subscription.id)) == 2
-    assert length(access_effect_rows!(legacy.subscription.id)) == 1
+    legacy_effects_before_fresh_sweep = access_effect_rows!(legacy.subscription.id)
+    assert length(legacy_effects_before_fresh_sweep) == 1
+
+    fresh_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     assert {:ok, fresh_sweep} =
              Facade.run_access_effect_target_order_reconciliation_for_system(
                limit: 50,
-               as_of: as_of,
+               as_of: fresh_as_of,
                after_inserted_at: page_start,
                after_id: @cursor_floor
              )
 
-    assert fresh_sweep.noop_count >= 1
+    assert fresh_sweep.noop_count == 1
     assert fresh_sweep.repaired_count == 0
+    assert fresh_sweep.already_covered_count == 1
+    assert is_nil(fresh_sweep.candidate_cursor)
+    assert access_effect_rows!(legacy.subscription.id) == legacy_effects_before_fresh_sweep
   end
 
-  test "TASK2 jc247_b deferred cursor page 1 noop then page 2 repairs eligible candidate" do
-    deferred = past_due_keep_grace_fixture!(access_on_past_due: "remove_immediately")
+  test "JC247-B remove-immediately cursor repairs current target and later reports both covered" do
+    remove_immediately =
+      past_due_keep_grace_fixture!(access_on_past_due: "remove_immediately")
+
     eligible = past_due_keep_grace_fixture!()
 
-    deferred_candidate =
+    remove_immediately_candidate =
       establish_effect!(
-        deferred.subscription,
-        deferred.revision,
+        remove_immediately.subscription,
+        remove_immediately.revision,
         %{
-          valid_from_at: deferred.subscription.current_period_start_at,
-          valid_until_at: deferred.subscription.failed_payment_boundary_at
+          valid_from_at: remove_immediately.subscription.current_period_start_at,
+          valid_until_at: remove_immediately.subscription.failed_payment_boundary_at
         }
       )
+
+    bump_aggregate_version!(remove_immediately.subscription.id)
 
     eligible_candidate =
       establish_effect!(
@@ -430,7 +450,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     as_of = DateTime.add(t0, 2, :second)
     page_start = DateTime.add(t0, -1, :second)
 
-    set_effect_timestamps!([deferred_candidate], t0)
+    set_effect_timestamps!([remove_immediately_candidate], t0)
     set_effect_timestamps!([eligible_candidate], DateTime.add(t0, 1, :second))
 
     assert {:ok, page_one} =
@@ -441,9 +461,26 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
                after_id: @cursor_floor
              )
 
-    assert page_one.noop_count == 1
-    assert page_one.repaired_count == 0
+    assert page_one.noop_count == 0
+    assert page_one.repaired_count == 1
+    assert page_one.already_covered_count == 0
+    assert page_one.candidate_cursor == %{inserted_at: t0, id: remove_immediately_candidate.id}
     assert %{inserted_at: cursor_at, id: cursor_id} = page_one.candidate_cursor
+
+    assert [remove_immediately_candidate, remove_immediately_target] =
+             access_effect_rows!(remove_immediately.subscription.id)
+
+    assert remove_immediately_candidate.status == "superseded"
+    assert remove_immediately_target.status == "required"
+    assert remove_immediately_target.disposition == "non_effective"
+    assert is_nil(remove_immediately_target.valid_from_at)
+    assert is_nil(remove_immediately_target.valid_until_at)
+
+    assert %{rows: [[nil, nil]]} =
+             Repo.query!(
+               "SELECT entitlement_kind, entitlement_scope_key FROM access_effects WHERE id = $1",
+               [Ecto.UUID.dump!(remove_immediately_target.id)]
+             )
 
     assert {:ok, page_two} =
              Facade.run_access_effect_target_order_reconciliation_for_system(
@@ -455,19 +492,31 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
 
     assert page_two.repaired_count == 1
     assert page_two.noop_count == 0
-    assert length(access_effect_rows!(deferred.subscription.id)) == 1
-    assert length(access_effect_rows!(eligible.subscription.id)) == 2
+    assert page_two.already_covered_count == 0
+
+    assert page_two.candidate_cursor == %{
+             inserted_at: DateTime.add(t0, 1, :second),
+             id: eligible_candidate.id
+           }
+
+    assert [_, keep_grace_target] = access_effect_rows!(eligible.subscription.id)
+    assert keep_grace_target.status == "required"
+    assert keep_grace_target.disposition == "effective"
+
+    fresh_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     assert {:ok, fresh_sweep} =
              Facade.run_access_effect_target_order_reconciliation_for_system(
                limit: 50,
-               as_of: as_of,
+               as_of: fresh_as_of,
                after_inserted_at: page_start,
                after_id: @cursor_floor
              )
 
-    assert fresh_sweep.noop_count >= 1
+    assert fresh_sweep.noop_count == 0
     assert fresh_sweep.repaired_count == 0
+    assert fresh_sweep.already_covered_count == 2
+    assert is_nil(fresh_sweep.candidate_cursor)
   end
 
   test "TASK3 pointer wrong attempt fails closed with TARGET_ORDER_UNPROVABLE" do

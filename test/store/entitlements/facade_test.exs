@@ -291,9 +291,11 @@ defmodule Store.Entitlements.FacadeTest do
     effect =
       AccessEffect
       |> Ash.Query.filter(
-        expr(subscription_id == ^subscription.id and disposition == :non_effective)
+        expr(
+          subscription_id == ^subscription.id and disposition == :non_effective and
+            status == :required
+        )
       )
-      |> Ash.Query.sort(source_version: :desc)
       |> Ash.read_one!(
         domain: Store.Subscriptions,
         authorize?: false,

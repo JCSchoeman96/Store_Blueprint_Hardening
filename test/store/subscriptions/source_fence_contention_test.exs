@@ -10,16 +10,27 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Store.Entitlements.EntitlementGrant
   alias Store.Entitlements.Facade, as: EntitlementsFacade
+  alias Store.Orders.Order
+  alias Store.Payments.Inputs.ValidateRenewalCollectionOutcomeInput
+  alias Store.Payments.PaymentIntent
+  alias Store.Payments.Types.ProviderObservation
   alias Store.Repo
   alias Store.Subscriptions.{AccessEffect, AccessEffectCurrentnessFence}
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
+  alias Store.Subscriptions.Inputs.QueueSubscriptionPlanChangeInput
+  alias Store.Subscriptions.RenewalAttempt
+  alias Store.Subscriptions.RenewalCollectionAttempt
+  alias Store.Subscriptions.RenewalCollectionAttempts
+  alias Store.Subscriptions.Subscription
   alias Store.SubscriptionsFixtures
+  alias Store.TestSupport.StripeAPIStub
 
   @start_timeout 30_000
   @transaction_timeout 30_000
   @task_timeout 10_000
   @blocking_timeout 8_000
+  @jc247_b_barrier_timeout 15_000
 
   setup_all do
     assert_test_database!()
@@ -34,6 +45,12 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
     on_exit(fn -> :ok = Sandbox.mode(Repo, :manual) end)
 
     {:ok, %{effective_repo_pool_size: pool_size}}
+  end
+
+  setup do
+    direct_repo_owner = Sandbox.start_owner!(Store.DirectRepo, shared: true)
+    on_exit(fn -> Sandbox.stop_owner(direct_repo_owner) end)
+    {:ok, direct_repo_owner: direct_repo_owner}
   end
 
   test "same subscription blocks while an independent subscription proceeds", context do
@@ -294,6 +311,134 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       Repo.query!("ALTER TABLE entitlement_grants DROP CONSTRAINT IF EXISTS #{constraint}")
       cleanup_owned_sources!(fixtures)
     end
+  end
+
+  @tag :real_connections
+  test "JC247-B paid recovery wins before the paused stale B executor", context do
+    StripeAPIStub.setup_default(context)
+    fixture = create_committed_b_due_fixture!("recovery_first")
+    establish_jc247_b_initial_effective_access!(fixture)
+    original_grant = hd(grants_for_source!(fixture.subscription.id))
+    payment_phase = :atomics.new(1, [])
+    :atomics.put(payment_phase, 1, 1)
+    stub_b_payment_phase!(payment_phase)
+
+    barrier = make_ref()
+    handler_id = attach_jc247_b_dunning_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    failure_task = start_jc247_b_failure_task(context, fixture)
+    assert_receive {:jc247_b_dunning_paused, ^barrier, subscription_id}, @task_timeout
+    [original_effect, old_effect] = access_effects_for_subscription!(subscription_id)
+    assert original_effect.disposition == :effective
+    assert old_effect.disposition == :non_effective
+    assert old_effect.status == :required
+
+    :atomics.put(payment_phase, 1, 2)
+    recovery_task = start_jc247_b_recovery_task(context, fixture, barrier)
+    assert {:ok, :reconciled} = Task.await(recovery_task, @transaction_timeout)
+
+    recovered_effect = latest_access_effect!(subscription_id)
+    assert recovered_effect.id != old_effect.id
+    assert recovered_effect.disposition == :effective
+    assert recovered_effect.status == :applied
+    assert active_grants_for_source!(subscription_id) != []
+
+    grants_before_stale_executor = grants_for_source!(subscription_id)
+    send(failure_task.pid, {barrier, :release_dunning})
+    assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @transaction_timeout)
+
+    assert fetch_access_effect!(old_effect.id).status == :superseded
+    assert grants_for_source!(subscription_id) == grants_before_stale_executor
+    assert active_grants_for_source!(subscription_id) != []
+    assert fetch_subscription!(subscription_id).status == :active
+    assert Enum.any?(active_grants_for_source!(subscription_id), &(&1.id != original_grant.id))
+    cleanup_committed_b_fixture!(fixture)
+  end
+
+  @tag :real_connections
+  test "JC247-B convergence locks first, then paid recovery establishes newer EFFECTIVE access",
+       context do
+    StripeAPIStub.setup_default(context)
+    fixture = create_committed_b_due_fixture!("b_executor_first")
+    _original_effect = establish_jc247_b_initial_effective_access!(fixture)
+    original_grant = hd(grants_for_source!(fixture.subscription.id))
+    payment_phase = :atomics.new(1, [])
+    :atomics.put(payment_phase, 1, 1)
+    stub_b_payment_phase!(payment_phase)
+
+    barrier = make_ref()
+    handler_id = attach_jc247_b_dunning_barrier!(self(), barrier, fixture.subscription.id)
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    failure_task = start_jc247_b_failure_task(context, fixture)
+
+    assert_receive {:jc247_b_dunning_paused, ^barrier, subscription_id}, @task_timeout
+    [original_effect, b_effect] = access_effects_for_subscription!(subscription_id)
+    assert original_effect.disposition == :effective
+    assert b_effect.disposition == :non_effective
+    assert b_effect.status == :required
+    attempt = fetch_attempt!(subscription_id)
+
+    {attempt_barrier, attempt_barrier_pid} =
+      start_jc247_b_recovery_order_barrier!(attempt.id, original_grant.id, barrier)
+
+    :ok = Sandbox.checkin(Repo)
+
+    executor_task = start_jc247_b_executor_task(b_effect.id, barrier)
+    executor_pid = receive_jc247_b_event!(barrier, :executor_started)
+
+    executor_blockers =
+      await_jc247_b_lock_blocker!(
+        executor_pid,
+        attempt_barrier_pid,
+        context.direct_repo_owner
+      )
+
+    :atomics.put(payment_phase, 1, 2)
+    recovery_task = start_jc247_b_recovery_task(context, fixture, barrier)
+    recovery_pid = receive_jc247_b_event!(barrier, :recovery_started)
+
+    recovery_blockers =
+      await_jc247_b_lock_blocker!(recovery_pid, executor_pid, context.direct_repo_owner)
+
+    send(attempt_barrier.pid, {barrier, :release_b_grant_lock})
+    assert_receive {^barrier, :b_grant_lock_released, ^attempt_barrier_pid}, @task_timeout
+    assert {:ok, :applied} = Task.await(executor_task, @transaction_timeout)
+
+    _attempt_blockers =
+      await_jc247_b_lock_blocker!(
+        recovery_pid,
+        attempt_barrier_pid,
+        context.direct_repo_owner
+      )
+
+    assert Enum.any?(grants_for_source!(subscription_id), fn grant ->
+             grant.id == original_grant.id and grant.status == :revoked and
+               grant.revoked_reason == "past_due_remove_immediately"
+           end)
+
+    send(attempt_barrier.pid, {barrier, :release_recovery_lock})
+    assert {:ok, :released} = Task.await(attempt_barrier, @transaction_timeout)
+    assert {:ok, :reconciled} = Task.await(recovery_task, @transaction_timeout)
+
+    assert fetch_access_effect!(b_effect.id).status == :applied
+    assert latest_access_effect!(subscription_id).disposition == :effective
+    assert fetch_subscription!(subscription_id).status == :active
+
+    assert active_grants_for_source!(subscription_id) != []
+    assert Enum.any?(active_grants_for_source!(subscription_id), &(&1.id != original_grant.id))
+
+    send(failure_task.pid, {barrier, :release_dunning})
+    assert {:error, %{code: "PAYMENT_FAILED"}} = Task.await(failure_task, @transaction_timeout)
+    assert active_grants_for_source!(subscription_id) != []
+
+    IO.puts(
+      "JC247_B_RECOVERY_RACE order=b_executor_first executor_pid=#{executor_pid} " <>
+        "executor_blockers=#{inspect(executor_blockers)} recovery_pid=#{recovery_pid} " <>
+        "recovery_blockers=#{inspect(recovery_blockers)} b_applied_before_recovery=true"
+    )
+
+    cleanup_committed_b_fixture!(fixture)
   end
 
   defp run_contention!(%{x: source_x, y: source_y}, pool_size) do
@@ -730,24 +875,6 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
   defp optional_uuid_param(nil), do: nil
   defp optional_uuid_param(uuid), do: Ecto.UUID.dump!(uuid)
 
-  defp issue_legacy_grant!(fixture) do
-    subscription = %{
-      id: fixture.subscription.id,
-      user_id: fixture.subscription.user_id,
-      current_period_end_at: fixture.subscription.current_period_end_at
-    }
-
-    plan = %{
-      entitlement_kind: fixture.revision.entitlement_kind,
-      entitlement_scope_key: fixture.revision.entitlement_scope_key
-    }
-
-    case EntitlementsFacade.issue_subscription_source_grant_strict_for_system(subscription, plan) do
-      {:ok, _result} -> :ok
-      {:error, reason} -> Repo.rollback(reason)
-    end
-  end
-
   defp assert_effective_grant!(fixture) do
     assert [%EntitlementGrant{} = grant] = grants_for_source!(fixture.subscription.id)
     assert grant.status == :active
@@ -1019,6 +1146,550 @@ defmodule Store.Subscriptions.SourceFenceContentionTest do
       plan: plan,
       effect: effect
     })
+  end
+
+  defp create_committed_b_due_fixture!(label) do
+    assert_test_database!()
+    now = db_now!()
+    unique = Ecto.UUID.generate()
+    customer = SubscriptionsFixtures.create_customer!("jc247_b_race_#{label}_#{unique}")
+    %{product: product, variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
+
+    current_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 1,
+        retry_schedule_hours: [0, 24, 72],
+        max_retry_attempts: 3,
+        grace_period_days: 7,
+        access_on_past_due: :keep_during_grace,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "jc247-b-race-current-#{label}-#{unique}"
+      })
+
+    remove_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        interval_unit: :day,
+        interval_count: 1,
+        retry_schedule_hours: [0, 24, 72],
+        max_retry_attempts: 3,
+        grace_period_days: 7,
+        access_on_past_due: :remove_immediately,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "jc247-b-race-remove-#{label}-#{unique}"
+      })
+
+    current_variant_plan =
+      SubscriptionsFixtures.attach_variant_plan!(variant.id, current_plan.id)
+
+    remove_variant_plan = SubscriptionsFixtures.attach_variant_plan!(variant.id, remove_plan.id)
+    SubscriptionsFixtures.create_plan_revision!(remove_plan)
+
+    fixture =
+      SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, current_plan, %{
+        provider_billing_ref: "pm_jc247_b_#{label}_#{unique}",
+        started_at: DateTime.add(now, -86_410, :second),
+        next_renewal_at: DateTime.add(now, -10, :microsecond)
+      })
+
+    Repo.query!(
+      "UPDATE subscriptions SET next_renewal_at = current_period_end_at WHERE id = $1",
+      [
+        uuid_param!(fixture.subscription.id)
+      ]
+    )
+
+    assert {:ok, plan_change_input} =
+             QueueSubscriptionPlanChangeInput.new(%{
+               "subscription_id" => fixture.subscription.id,
+               "subscription_plan_id" => remove_plan.id
+             })
+
+    assert {:ok, queued} =
+             Facade.queue_subscription_plan_change_for_user(
+               customer,
+               fixture.subscription.id,
+               plan_change_input
+             )
+
+    subscription = fetch_subscription!(queued.id)
+
+    Map.merge(fixture, %{
+      customer: customer,
+      product: product,
+      variant: variant,
+      variant_plan: current_variant_plan,
+      remove_variant_plan: remove_variant_plan,
+      plan: current_plan,
+      remove_plan: remove_plan,
+      subscription: subscription,
+      run: fn ->
+        Facade.process_due_subscription_renewal_for_system(fixture.subscription.id, now: now)
+      end
+    })
+  end
+
+  defp cleanup_committed_b_fixture!(fixture) do
+    subscription_id = uuid_param!(fixture.subscription.id)
+    user_id = uuid_param!(fixture.customer.id)
+
+    case Repo.transaction(
+           fn ->
+             Repo.query!("DELETE FROM entitlement_grants WHERE source_id = $1", [subscription_id])
+
+             Repo.query!("DELETE FROM access_effects WHERE subscription_id = $1", [
+               subscription_id
+             ])
+
+             Repo.query!(
+               "DELETE FROM refunds WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!(
+               "DELETE FROM payment_applications WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!(
+               "DELETE FROM payment_outcome_certifications WHERE payment_intent_id IN (SELECT id FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1))",
+               [user_id]
+             )
+
+             Repo.query!(
+               "UPDATE subscriptions SET current_dunning_renewal_attempt_id = NULL, current_contract_change_id = NULL WHERE id = $1",
+               [subscription_id]
+             )
+
+             Repo.query!(
+               "ALTER TABLE renewal_collection_attempts DISABLE TRIGGER renewal_collection_attempts_guard"
+             )
+
+             Repo.query!(
+               """
+               DELETE FROM renewal_collection_attempts
+               WHERE renewal_attempt_id IN (
+                 SELECT id FROM renewal_attempts WHERE subscription_id = $1
+               )
+               """,
+               [subscription_id]
+             )
+
+             Repo.query!(
+               "ALTER TABLE renewal_collection_attempts ENABLE TRIGGER renewal_collection_attempts_guard"
+             )
+
+             Repo.query!(
+               "DELETE FROM payment_attempts WHERE payment_intent_id IN (SELECT id FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1))",
+               [user_id]
+             )
+
+             Repo.query!("DELETE FROM renewal_attempts WHERE subscription_id = $1", [
+               subscription_id
+             ])
+
+             Repo.query!("DELETE FROM contract_changes WHERE subscription_id = $1", [
+               subscription_id
+             ])
+
+             Repo.query!("DELETE FROM subscription_items WHERE subscription_id = $1", [
+               subscription_id
+             ])
+
+             Repo.query!("DELETE FROM subscriptions WHERE id = $1", [subscription_id])
+
+             Repo.query!(
+               "DELETE FROM email_outboxes WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!(
+               "DELETE FROM payment_intents WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!(
+               "DELETE FROM fulfillment_orders WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!(
+               "DELETE FROM order_adjustments WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!(
+               "DELETE FROM order_line_items WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+               [user_id]
+             )
+
+             Repo.query!("DELETE FROM orders WHERE user_id = $1", [user_id])
+
+             Repo.query!("DELETE FROM stored_payment_methods WHERE user_id = $1", [
+               user_id
+             ])
+
+             Repo.query!("DELETE FROM variant_subscription_plans WHERE variant_id = $1", [
+               uuid_param!(fixture.variant.id)
+             ])
+
+             Repo.query!("DELETE FROM plan_revisions WHERE subscription_plan_id = $1", [
+               uuid_param!(fixture.plan.id)
+             ])
+
+             Repo.query!("DELETE FROM plan_revisions WHERE subscription_plan_id = $1", [
+               uuid_param!(fixture.remove_plan.id)
+             ])
+
+             Repo.query!("DELETE FROM subscription_plans WHERE id = $1", [
+               uuid_param!(fixture.plan.id)
+             ])
+
+             Repo.query!("DELETE FROM subscription_plans WHERE id = $1", [
+               uuid_param!(fixture.remove_plan.id)
+             ])
+
+             Repo.query!("SET CONSTRAINTS products_default_variant_id_fkey DEFERRED")
+             Repo.query!("DELETE FROM products WHERE id = $1", [uuid_param!(fixture.product.id)])
+             Repo.query!("DELETE FROM users WHERE id = $1", [uuid_param!(fixture.customer.id)])
+           end,
+           timeout: @transaction_timeout
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        raise "unable to clean JC247-B real-connection fixture: #{inspect(reason)}"
+    end
+  end
+
+  defp issue_legacy_grant!(fixture) do
+    subscription = %{
+      id: fixture.subscription.id,
+      user_id: fixture.subscription.user_id,
+      current_period_end_at: fixture.subscription.current_period_end_at
+    }
+
+    plan = %{
+      entitlement_kind: fixture.revision.entitlement_kind,
+      entitlement_scope_key: fixture.revision.entitlement_scope_key
+    }
+
+    case EntitlementsFacade.issue_subscription_source_grant_strict_for_system(subscription, plan) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp establish_jc247_b_initial_effective_access!(fixture) do
+    attrs = %{
+      subscription_id: fixture.subscription.id,
+      source_version: fixture.subscription.aggregate_version,
+      disposition: :effective,
+      entitlement_kind: fixture.revision.entitlement_kind,
+      entitlement_scope_key: fixture.revision.entitlement_scope_key,
+      valid_from_at: fixture.subscription.current_period_start_at,
+      valid_until_at: fixture.subscription.current_period_end_at,
+      source_order_line_item_id: fixture.line_item.id,
+      contract_change_id: fixture.subscription.current_contract_change_id,
+      plan_revision_id: fixture.revision.id
+    }
+
+    assert {:ok, input} = EstablishAccessEffectInput.new(attrs)
+    assert {:ok, effect} = Facade.establish_access_effect_for_system(input)
+    assert {:ok, :applied} = Facade.execute_effective_access_effect_for_system(effect.id)
+    effect
+  end
+
+  defp stub_b_payment_phase!(phase) do
+    StripeAPIStub.stub_payment_intent(fn conn, params ->
+      status = if :atomics.get(phase, 1) == 1, do: "canceled", else: "processing"
+
+      StripeAPIStub.json_response(
+        conn,
+        StripeAPIStub.payment_intent_response(params, %{"status" => status})
+      )
+    end)
+  end
+
+  defp start_jc247_b_failure_task(context, fixture) do
+    Task.async(fn ->
+      Sandbox.allow(Store.DirectRepo, context.direct_repo_owner, self())
+      Repo.checkout(fn -> fixture.run.() end)
+    end)
+  end
+
+  defp start_jc247_b_recovery_task(context, fixture, barrier) do
+    parent = self()
+
+    Task.async(fn ->
+      Sandbox.allow(Store.DirectRepo, context.direct_repo_owner, self())
+
+      Repo.checkout(fn ->
+        recovery_pid = backend_pid!()
+        send(parent, {barrier, :recovery_started, recovery_pid})
+        recover_jc247_b_paid_episode!(fixture)
+      end)
+    end)
+  end
+
+  defp start_jc247_b_executor_task(effect_id, barrier) do
+    parent = self()
+
+    Task.async(fn ->
+      Repo.checkout(fn ->
+        executor_pid = backend_pid!()
+        send(parent, {barrier, :executor_started, executor_pid})
+        Facade.execute_suspension_access_effect_for_system(effect_id)
+      end)
+    end)
+  end
+
+  defp start_jc247_b_recovery_order_barrier!(attempt_id, grant_id, barrier) do
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        Repo.transaction(
+          fn ->
+            barrier_pid = backend_pid!()
+
+            Repo.query!("SELECT id FROM renewal_attempts WHERE id = $1 FOR UPDATE", [
+              uuid_param!(attempt_id)
+            ])
+
+            Repo.query!("SAVEPOINT jc247_b_grant_row_lock")
+
+            Repo.query!("SELECT id FROM entitlement_grants WHERE id = $1 FOR UPDATE", [
+              uuid_param!(grant_id)
+            ])
+
+            send(parent, {barrier, :recovery_order_locks_acquired, barrier_pid})
+
+            receive do
+              {^barrier, :release_b_grant_lock} ->
+                Repo.query!("ROLLBACK TO SAVEPOINT jc247_b_grant_row_lock")
+                send(parent, {barrier, :b_grant_lock_released, barrier_pid})
+
+                receive do
+                  {^barrier, :release_recovery_lock} -> :released
+                after
+                  @transaction_timeout -> Repo.rollback(:recovery_lock_release_timeout)
+                end
+            after
+              @transaction_timeout -> Repo.rollback(:b_grant_lock_release_timeout)
+            end
+          end,
+          timeout: @transaction_timeout
+        )
+      end)
+
+    barrier_pid = receive_jc247_b_event!(barrier, :recovery_order_locks_acquired)
+    {task, barrier_pid}
+  end
+
+  defp attach_jc247_b_dunning_barrier!(owner, barrier, subscription_id) do
+    handler_id = "jc247_b_dunning_#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:store, :subscriptions, :dunning],
+        fn _event, _measurements, %{subscription_id: event_subscription_id}, config ->
+          if event_subscription_id == config.subscription_id do
+            send(config.owner, {:jc247_b_dunning_paused, config.barrier, event_subscription_id})
+
+            receive do
+              {ref, :release_dunning} when ref == config.barrier -> :ok
+            after
+              @jc247_b_barrier_timeout -> raise "JC247-B dunning barrier timed out"
+            end
+          end
+        end,
+        %{owner: owner, barrier: barrier, subscription_id: subscription_id}
+      )
+
+    handler_id
+  end
+
+  defp recover_jc247_b_paid_episode!(fixture) do
+    subscription = fetch_subscription!(fixture.subscription.id)
+    attempt = fetch_attempt!(subscription.id)
+
+    order =
+      Ash.get!(Order, attempt.order_id,
+        domain: Store.Orders,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    assert {:ok, :processed} =
+             Facade.process_due_subscription_renewal_for_system(subscription.id,
+               now: subscription.next_retry_at
+             )
+
+    collection = latest_collection_for_attempt!(attempt.id)
+    refute collection.financial_outcome == :verified_failure
+    mark_collection_successful!(collection)
+    assert {:ok, handoff} = RenewalCollectionAttempts.success_handoff_for_system(collection.id)
+    assert handoff.renewal_attempt_id == attempt.id
+
+    Facade.reconcile_paid_subscription_renewal_for_system(order.id,
+      renewal_attempt_id: handoff.renewal_attempt_id,
+      collection_attempt_id: handoff.collection_attempt_id,
+      payment_intent_id: handoff.payment_intent_id
+    )
+  end
+
+  defp latest_collection_for_attempt!(attempt_id) do
+    RenewalCollectionAttempt
+    |> Ash.Query.filter(expr(renewal_attempt_id == ^attempt_id))
+    |> Ash.Query.sort(inserted_at: :asc)
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    |> List.last()
+    |> case do
+      nil -> raise "no renewal collection for attempt #{attempt_id}"
+      collection -> collection
+    end
+  end
+
+  defp mark_collection_successful!(collection) do
+    payment_intent =
+      Ash.get!(PaymentIntent, collection.payment_intent_id,
+        domain: Store.Payments,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    provider_reference =
+      payment_intent.provider_payment_id || payment_intent.provider_request_reference
+
+    provider_reference_kind =
+      if payment_intent.provider_payment_id, do: :payment_intent, else: :transaction_reference
+
+    observation = %ProviderObservation{
+      provider: payment_intent.provider,
+      provider_reference: provider_reference,
+      provider_reference_kind: provider_reference_kind,
+      provider_transaction_id: payment_intent.provider_payment_id || "pi_#{payment_intent.id}",
+      local_payment_intent_id: payment_intent.id,
+      observation_source: :verification,
+      normalized_outcome: :authoritative_success,
+      raw_provider_status: "succeeded",
+      amount_minor: payment_intent.amount_received_minor,
+      currency: payment_intent.currency,
+      provider_environment: "test",
+      observed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    }
+
+    assert {:ok, %{outcome: outcome}} =
+             Store.Payments.record_and_apply_payment_observation_for_system(
+               payment_intent,
+               observation
+             )
+
+    assert outcome in [:authoritative_success, :already_applied_success]
+
+    updated =
+      RenewalCollectionAttempt
+      |> Ash.get!(collection.id,
+        domain: Store.Subscriptions,
+        authorize?: false,
+        context: %{system?: true}
+      )
+
+    assert updated.financial_outcome == :verified_success
+
+    assert :ok ==
+             Store.Payments.validate_collection_outcome_certification_for_system(
+               %ValidateRenewalCollectionOutcomeInput{
+                 payment_attempt_id: updated.payment_attempt_id,
+                 payment_intent_id: collection.payment_intent_id,
+                 financial_outcome: :verified_success
+               }
+             )
+  end
+
+  defp fetch_subscription!(id) do
+    Subscription
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_attempt!(subscription_id) do
+    RenewalAttempt
+    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.Query.sort(inserted_at: :desc)
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp access_effects_for_subscription!(subscription_id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(subscription_id == ^subscription_id))
+    |> Ash.Query.sort(source_version: :asc)
+    |> Ash.read!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp fetch_access_effect!(id) do
+    Ash.get!(AccessEffect, id,
+      domain: Store.Subscriptions,
+      authorize?: false,
+      context: %{system?: true}
+    )
+  end
+
+  defp latest_access_effect!(subscription_id) do
+    subscription_id
+    |> access_effects_for_subscription!()
+    |> Enum.max_by(& &1.source_version)
+  end
+
+  defp active_grants_for_source!(subscription_id) do
+    Enum.filter(grants_for_source!(subscription_id), &(&1.status == :active))
+  end
+
+  defp receive_jc247_b_event!(barrier, event) do
+    receive do
+      {^barrier, ^event, backend_pid} -> backend_pid
+    after
+      @task_timeout -> flunk("timed out waiting for JC247-B #{event}")
+    end
+  end
+
+  defp await_jc247_b_lock_blocker!(blocked_pid, expected_blocker_pid, direct_repo_owner) do
+    case Sandbox.allow(Store.DirectRepo, direct_repo_owner, self()) do
+      :ok -> :ok
+      {:already, :allowed} -> :ok
+      other -> raise "could not allow direct Repo access for lock observation: #{inspect(other)}"
+    end
+
+    deadline = System.monotonic_time(:millisecond) + @blocking_timeout
+    await_jc247_b_lock_blocker!(blocked_pid, expected_blocker_pid, deadline, [])
+  end
+
+  defp await_jc247_b_lock_blocker!(blocked_pid, expected_blocker_pid, deadline, last_blockers) do
+    %{rows: [[blockers]]} =
+      Store.DirectRepo.query!("SELECT pg_blocking_pids($1)", [blocked_pid])
+
+    cond do
+      expected_blocker_pid in blockers ->
+        blockers
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk(
+          "expected PostgreSQL backend #{expected_blocker_pid} to block #{blocked_pid}; " <>
+            "last blockers were #{inspect(last_blockers)}"
+        )
+
+      true ->
+        :erlang.yield()
+        await_jc247_b_lock_blocker!(blocked_pid, expected_blocker_pid, deadline, blockers)
+    end
+  end
+
+  defp db_now! do
+    {:ok, %{rows: [[%DateTime{} = now]]}} = Repo.query("SELECT clock_timestamp()")
+    now
   end
 
   defp input!(attrs) do
