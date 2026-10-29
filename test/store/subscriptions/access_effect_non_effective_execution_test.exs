@@ -480,6 +480,7 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
       SubscriptionsFixtures.create_subscription_plan!(%{
         max_retry_attempts: 0,
         grace_period_days: 0,
+        access_on_past_due: :remove_immediately,
         entitlement_kind: :membership_access,
         entitlement_scope_key: "membership:#{prefix}"
       })
@@ -518,10 +519,7 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
 
     assert {:ok, %{suspended_count: 1}} = Facade.run_due_failed_payment_suspensions_for_system()
 
-    effect =
-      AccessEffect
-      |> Ash.Query.filter(expr(subscription_id == ^subscription.id))
-      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+    effect = suspension_access_effect!(subscription.id)
 
     %{
       effect_id: effect.id,
@@ -791,6 +789,15 @@ defmodule Store.Subscriptions.AccessEffectNonEffectiveExecutionTest do
       Repo.query!("SET CONSTRAINTS products_default_variant_id_fkey DEFERRED")
       Repo.query!("DELETE FROM products WHERE id = $1", [product_id])
     end)
+  end
+
+  defp suspension_access_effect!(subscription_id) do
+    AccessEffect
+    |> Ash.Query.filter(
+      expr(subscription_id == ^subscription_id and disposition == :non_effective)
+    )
+    |> Ash.Query.sort(source_version: :desc)
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
   end
 
   defp fetch_effect!(effect_id) do

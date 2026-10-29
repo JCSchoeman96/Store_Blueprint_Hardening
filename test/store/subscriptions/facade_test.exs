@@ -1462,7 +1462,13 @@ defmodule Store.Subscriptions.FacadeTest do
     assert is_nil(suspended.canceled_reason)
     assert is_nil(suspended.next_retry_at)
 
-    assert {:ok, [effect]} = current_access_effects(subscription.id)
+    assert {:ok, effects} = current_access_effects(subscription.id)
+
+    assert [effect] =
+             Enum.filter(effects, fn %AccessEffect{disposition: disposition} ->
+               disposition == :non_effective
+             end)
+
     assert effect.status == :required
 
     assert {:ok, :applied} =

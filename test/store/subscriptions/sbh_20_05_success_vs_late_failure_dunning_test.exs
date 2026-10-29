@@ -239,7 +239,8 @@ defmodule Store.Subscriptions.Sbh2005SuccessVsLateFailureDunningTest do
     IO.puts("JC-235 current collection-identity failure query_count=#{stats.query_count}")
     assert {:error, %{code: "PAYMENT_FAILED"}} = result
     assert stats.query_count > 0
-    assert stats.query_count <= 110
+    # JC247-A keep-grace establishment measured 120 queries on 2026-10-27 (was <=110 pre-JC247-A).
+    assert stats.query_count <= 122
     assert fetch_subscription!(fixture.subscription.id).status == :past_due
     assert fetch_attempt_for_subscription!(fixture.subscription.id).status == :failed
   end

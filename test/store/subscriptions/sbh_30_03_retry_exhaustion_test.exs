@@ -72,7 +72,7 @@ defmodule Store.Subscriptions.Sbh3003RetryExhaustionTest do
     assert is_nil(exhausted.canceled_reason)
 
     assert [%EntitlementGrant{status: :active}] = source_grants!(subscription.id)
-    assert access_effect_count(subscription.id) == baseline_access_effect_count
+    assert access_effect_count(subscription.id) == baseline_access_effect_count + 1
     assert {:ok, []} = read_due_subscriptions(now)
 
     assert {:ok, %{due_count: 0, success_count: 0, failed_count: 0}} =

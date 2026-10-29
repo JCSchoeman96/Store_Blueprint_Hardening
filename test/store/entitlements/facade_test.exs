@@ -6,8 +6,10 @@ defmodule Store.Entitlements.FacadeTest do
 
   alias Store.Entitlements.{Cache, EntitlementGrant, Facade}
   alias Store.Entitlements.Types.EntitlementSet
+  alias Store.Repo
   alias Store.Subscriptions.AccessEffect
   alias Store.Subscriptions.Facade, as: SubscriptionsFacade
+  alias Store.Subscriptions.Subscription
   alias Store.SubscriptionsFixtures
   alias Store.TestSupport.StripeAPIStub
 
@@ -240,7 +242,8 @@ defmodule Store.Entitlements.FacadeTest do
         entitlement_kind: :membership_access,
         entitlement_scope_key: "membership:worker-revoke",
         max_retry_attempts: 0,
-        grace_period_days: 0
+        grace_period_days: 0,
+        access_on_past_due: :remove_immediately
       })
 
     _attachment = SubscriptionsFixtures.attach_variant_plan!(variant.id, plan.id)
@@ -256,7 +259,20 @@ defmodule Store.Entitlements.FacadeTest do
     assert {:ok, %{due_count: 1, failed_count: 1}} =
              SubscriptionsFacade.run_due_renewals_for_system(now: now)
 
-    assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(subscription, plan)
+    past_due =
+      Subscription
+      |> Ash.Query.filter(expr(id == ^subscription.id))
+      |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+
+    assert past_due.status == :past_due
+    assert %DateTime{} = past_due.failed_payment_boundary_at
+
+    Repo.query!(
+      "UPDATE subscriptions SET failed_payment_boundary_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+      [Ecto.UUID.dump!(subscription.id)]
+    )
+
+    assert {:ok, _grant} = Facade.issue_subscription_entitlement_for_system(past_due, plan)
     assert {:ok, cached_set} = Facade.entitlement_set_for_user(customer)
     cached_as_of = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
@@ -274,7 +290,10 @@ defmodule Store.Entitlements.FacadeTest do
 
     effect =
       AccessEffect
-      |> Ash.Query.filter(expr(subscription_id == ^subscription.id))
+      |> Ash.Query.filter(
+        expr(subscription_id == ^subscription.id and disposition == :non_effective)
+      )
+      |> Ash.Query.sort(source_version: :desc)
       |> Ash.read_one!(
         domain: Store.Subscriptions,
         authorize?: false,
