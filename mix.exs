@@ -93,7 +93,7 @@ defmodule Store.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.3.0"},
-      {:bandit, ">= 1.14.0 and < 2.0.0-0"},
+      {:bandit, ">= 1.14.1 and < 2.0.0-0"},
       # Security floors for transitive HTTP/authentication runtime packages.
       {:mint, ">= 1.11.0 and < 2.0.0-0"},
       {:plug, ">= 1.19.5 and < 2.0.0-0"},
