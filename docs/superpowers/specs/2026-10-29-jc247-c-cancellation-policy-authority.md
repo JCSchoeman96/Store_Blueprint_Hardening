@@ -58,7 +58,7 @@ The Subscription state machine currently permits `pending` for its private cance
 
 The transaction locks the Subscription first through `lock_subscription_aggregate_version/1`. It then runs the existing exact renewal-attempt and payment-application precedence checks, performs the existing cancellation transition, derives the target from the exact funded revision, and establishes or reuses the immutable AccessEffect before commit. Keep the payment and cancellation ordering rules from JC281 and JC265 unchanged.
 
-The transaction result must carry the exact effect identity and disposition, equivalent to `%{id: access_effect_id, disposition: :effective | :non_effective}`. After the outer transaction commits, route that exact ID to F1 or F2. Do not query the newest effect or infer an executor from Subscription state after commit.
+The transaction result must carry the exact effect identity and disposition, equivalent to `%{id: access_effect_id, disposition: :effective | :non_effective}`. For cancellation email eligibility, it also carries an internal `membership_access_ended_email?` boolean derived from the same exact funded PlanRevision used for target derivation. After the outer transaction commits, route the exact effect ID to F1 or F2. Do not query the newest effect or infer an executor from Subscription state after commit. Keep effect IDs and the email flag out of public scheduled-sweep results.
 
 The cancellation transaction commits commercial truth together with the immutable target. A post-commit F1/F2 failure does not undo or rewrite the canceled Subscription. The existing AccessEffect recovery path can retry the durable target.
 
@@ -66,7 +66,9 @@ The cancellation transaction commits commercial truth together with the immutabl
 
 The current post-commit path is `Store.Subscriptions.Facade.finalize_immediate_cancellation/2`, called by the shared customer/admin path. It calls `Store.Entitlements.Facade.revoke_subscription_entitlements_for_system/2` with `canceled_now`. This is a post-commit direct grant writer. Remove that call from the cancel-now finalizer so it cannot race with or duplicate the exact F1/F2 executor.
 
-The current finalizer also queues an `access_ended` email whose body says membership access has ended. For cancel-now, never queue it for an EFFECTIVE keep-until-period-end target because access remains valid through the funded boundary. For a NON_EFFECTIVE target, queue the existing outbox message only after the exact F2 effect returns `{:ok, :applied}` or `{:ok, :applied_projection_pending}`. Both results mean durable grant convergence succeeded; the latter means projection invalidation still needs repair. Do not queue it after an F2 error, `:noop`, or `:superseded` result. Determine eligibility from the exact established AccessEffect ID and immutable disposition plus the F2 result. Do not read mutable Plan policy. Keep this post-commit consequence outside the source transaction. Do not add a deferred email, new template, or email worker, and do not make the email a correctness authority.
+The current finalizer also queues a membership `access_ended` outbox message. Its audience gate must use `funded_revision.entitlement_kind == :membership_access`, where `funded_revision` is the exact PlanRevision already loaded inside the cancel-now source transaction. Carry the resulting boolean in the internal transaction result. Do not read mutable `SubscriptionPlan` after commit, add an email field to AccessEffect, or change schema. The existing Comms enqueue path must accept this evidence without looking up mutable Plan data; keep its recipient, template, and outbox idempotency behavior. If the existing subject needs a Plan name or key, use a generic access-ended subject rather than fetching mutable Plan data.
+
+For cancel-now, queue that existing message only when all three conditions hold: the internal flag is true, the exact established effect disposition is NON_EFFECTIVE, and exact F2 execution returns `{:ok, :applied}` or `{:ok, :applied_projection_pending}`. Both results mean durable grant convergence succeeded; the latter means projection invalidation still needs repair. Never queue for EFFECTIVE, a non-membership funded revision, F2 error, `:noop`, or `:superseded`. Use the exact effect ID and disposition plus the F2 result. Keep this post-commit consequence outside the source transaction. The email is not correctness authority.
 
 ### Scheduling and rescission
 
@@ -76,7 +78,11 @@ Schedule and rescind continue through the existing Subscription-locked contract-
 
 `Store.Workers.RunDueScheduledCancellationsWorker` calls `run_due_scheduled_cancellations_for_system/1`. The facade selects due active Subscriptions, locks each source, rechecks the exact boundary, writes `canceled_period_end`, sets `canceled_at` to the boundary, clears cancellation flags and dunning identity, and establishes a NON_EFFECTIVE target in the same source transaction.
 
-The current direct due-worker path discards the effect ID and only sends post-commit notifications and email. Late paid renewal reconciliation can call the same terminalization helper from its locked transaction; that path also discards the effect ID and defers execution to recovery. JC247-C must return the exact NON_EFFECTIVE ID from both paths and dispatch existing F2 after the owning outer transaction commits. It must not read `access_on_cancel` at the boundary.
+The current direct due-worker path discards the effect ID and sends post-commit notifications and email. Late paid renewal reconciliation can call the same terminalization helper from its locked transaction; that path also discards the effect ID and defers execution to recovery. JC247-C must return the exact NON_EFFECTIVE ID from both paths and dispatch existing F2 after the owning outer transaction commits. It must not read `access_on_cancel` at the boundary. The public `run_due_scheduled_cancellations_for_system/1` result remains unchanged, including `due_count`, `canceled_count`, `failed_count`, `cursor`, and `now`; exact effect IDs and the membership-email flag stay internal.
+
+For the existing scheduled-boundary membership email, derive the same membership flag from the exact funded PlanRevision in the source transaction and carry it internally. Commit `canceled_period_end` and the NON_EFFECTIVE effect first, then run exact F2. Queue the existing email only after F2 returns `{:ok, :applied}` or `{:ok, :applied_projection_pending}` and the membership flag is true. F2 errors, `:noop`, and `:superseded` must not enqueue a new message in the direct path. The existing scheduled-notification replay must not bypass this rule: it may enqueue only after the exact current boundary effect has durable-applied, and it must use funded-revision membership evidence rather than mutable Plan data. If the exact revision cannot be proved, suppress the email without changing cancellation target or source transition.
+
+Email delivery remains best effort. JC247-C does not make F2 application and outbox enqueue one atomic transaction. A crash after F2 commits but before the outbox enqueue can omit this communication. Closing that gap requires separate Comms/outbox authority and is outside JC247-C.
 
 ## F1, F2, and F0.5 admission
 
@@ -124,9 +130,10 @@ Payment-first and cancellation-first outcomes stay those already accepted by JC2
 Expected production files:
 
 - `lib/store/subscriptions/access_effect_target_order.ex` for classified canceled target derivation.
-- `lib/store/subscriptions/facade.ex` for source transaction target establishment, exact post-commit dispatch, direct-revoke removal, scheduled-boundary result propagation, and source-state admission.
+- `lib/store/subscriptions/facade.ex` for source transaction target establishment, internal email evidence, exact post-commit dispatch, direct-revoke removal, scheduled-boundary result propagation, and source-state admission.
+- `lib/store/comms/domain.ex` for a narrow update to the existing access-ended enqueue path so cancellation callers can pass immutable membership evidence without a mutable Plan lookup. Preserve the existing recipient, template, and outbox behavior. Do not redesign Comms.
 
-Expected tests are focused additions or edits under `test/store/subscriptions/`, including the target-order unit and reconciliation tests, cancellation acceptance coverage, currentness/executor tests, existing payment/cancellation races, scheduled-boundary tests, and target-order contention coverage.
+Expected tests are focused additions or edits under `test/store/subscriptions/` and `test/store/comms/domain_test.exs`, including the target-order unit and reconciliation tests, cancellation acceptance coverage, exact email eligibility and no mutable Plan read, currentness/executor tests, existing payment/cancellation races, scheduled-boundary tests, and target-order contention coverage.
 
 Do not modify `Store.Entitlements` production code, AccessEffect schema, Subscription schema, RenewalAttempt schema, migrations, indexes, public executors, or worker architecture. The existing worker calls the facade; no worker change is required if the facade returns and dispatches the effect ID. Stop for authority review if a schema, migration, Entitlements, executor, term-end, or JC300 change appears necessary.
 
@@ -135,13 +142,13 @@ Do not modify `Store.Entitlements` production code, AccessEffect schema, Subscri
 | Dimension | JC247-C plan |
 |---|---|
 | Hot, warm, cold | Cancellation is a warm source write. Storefront entitlement reads remain hot and unchanged. F0.5 reconciliation remains cold, bounded PostgreSQL work. |
-| Query added | Cancel-now and each canceled `user_request` F0.5 candidate need the exact funded PlanRevision row. Reuse the locked Subscription fields; the current source flow does not retain the funded revision, so fetch it by `current_plan_revision_id` primary key. Do not load Plan or traverse a collection. |
-| Query count and N+1 | One exact PlanRevision lookup per cancel-now source transition and one per canceled `user_request` candidate. The F0.5 page is already bounded and processes each candidate under its existing source lock. No per-grant loop or relationship fan-out is added. Measure the transaction query delta. |
+| Query added | Cancel-now, scheduled-boundary email eligibility, and each canceled `user_request` F0.5 candidate may need the exact funded PlanRevision row. Reuse it when target derivation already loaded it. Otherwise use `current_plan_revision_id` as an exact primary-key lookup. Do not load mutable Plan or traverse a collection. |
+| Query count and N+1 | At most one exact PlanRevision lookup per cancellation source transaction, reused for target or email evidence, and one per canceled `user_request` F0.5 candidate. The F0.5 page is already bounded and processes each candidate under its existing source lock. No per-grant loop or relationship fan-out is added. Measure the transaction query delta. |
 | Indexes and scans | The PlanRevision lookup is a primary-key lookup. Add no index and no scan. Existing AccessEffect and Subscription indexes remain unchanged. |
 | Transaction and locks | The warm cancellation transaction gains one exact identity read inside its existing transaction; it adds no second transaction. Subscription remains the first source lock. The PlanRevision read adds no correctness lock. AccessEffect establishment and F1/F2 retain their existing lock order. Do not add a second source lock. |
 | Cache and correctness | `CORRECTNESS_AUTHORITY=PostgreSQL`; `CACHE_CORRECTNESS_ROLE=NONE`. Cachex, Redis, and PubSub do not select policy or target. No cache, TTL, invalidation, or stampede changes are authorized. Existing executor projection invalidation stays post-commit. |
 | Post-commit work | Keep exact F1/F2 dispatch outside the source transaction after commit. The transaction persists commercial truth and target even if execution later fails. |
-| Oban and email | Add no job or enqueue path. Keep existing scheduled-cancellation and AccessEffect recovery uniqueness and idempotency. After F2 durably applies the exact NON_EFFECTIVE cancel-now effect, queue the existing access-ended outbox post-commit. Do not queue it for EFFECTIVE, error, `:noop`, or `:superseded` outcomes. Recovery remains a retry mechanism, not correctness authority. |
+| Oban and email | Add no job, worker, or outbox architecture. Keep existing scheduled-cancellation and AccessEffect recovery uniqueness and outbox idempotency. Derive membership email eligibility from the exact funded PlanRevision and carry it internally. Queue the existing message only after exact NON_EFFECTIVE F2 returns `:applied` or `:applied_projection_pending`. Do not queue it for EFFECTIVE, non-membership revisions, errors, `:noop`, or `:superseded`. The F2/outbox crash window remains a best-effort communication limit. |
 | Telemetry | Preserve existing cancellation, executor, and recovery telemetry. Record exact effect ID, disposition, outcome, bounded candidate progress, and relevant query/lock timing without logging customer data. |
 
 ## Runtime Resource Safety Review
@@ -167,7 +174,13 @@ F0_5_CANCELED_POLICY_GAP=STATUS_ONLY_CANCELED_MAPPING
 LEGACY_DIRECT_REVOKE_LOCATION=Store.Subscriptions.Facade.finalize_immediate_cancellation/2
 LEGACY_DIRECT_REVOKE_TRANSACTIONAL_OR_POSTCOMMIT=POSTCOMMIT
 LEGACY_DIRECT_REVOKE_DECISION=REMOVE
-EXPECTED_PRODUCTION_FILES=lib/store/subscriptions/access_effect_target_order.ex, lib/store/subscriptions/facade.ex
+EXPECTED_PRODUCTION_FILES=lib/store/subscriptions/access_effect_target_order.ex, lib/store/subscriptions/facade.ex, lib/store/comms/domain.ex
+IMMUTABLE_EMAIL_KIND_AUTHORITY=PlanRevision.entitlement_kind
+MUTABLE_PLAN_EMAIL_READ_REQUIRED=NO
+CANCEL_NOW_EMAIL_RULE_FROZEN=YES
+SCHEDULED_BOUNDARY_EMAIL_AFTER_F2=YES
+COMMUNICATION_CRASH_WINDOW_DOCUMENTED=YES
+SCHEDULED_SWEEP_PUBLIC_RESULT_SHAPE=UNCHANGED
 SCHEMA_CHANGE_REQUIRED=NO
 MIGRATION_REQUIRED=NO
 ENTITLEMENTS_CHANGE_REQUIRED=NO
