@@ -86,6 +86,17 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
       assert target == expected_cancel_target(subscription)
     end
 
+    test "keep_until_period_end is non-effective before the funded period starts" do
+      subscription = canceled_subscription(canceled_at: DateTime.add(@period_start, -1, :second))
+
+      revision = funded_cancel_revision(access_on_cancel: :keep_until_period_end)
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_cancel_now_target(subscription, revision)
+
+      assert target == expected_cancel_target(subscription)
+    end
+
     test "cancellation at the inclusive period start remains effective" do
       subscription = canceled_subscription(canceled_at: @period_start)
 
