@@ -21,9 +21,13 @@ Mix commands with the matching profile:
 devcore-project plan
 devcore-project activate
 devcore-project run dev -- mix setup
-devcore-project run dev -- mix phx.server
+PORT=4010 devcore-project run dev -- mix phx.server
 devcore-project run test -- mix test
 ```
+
+The development-only Tidewave MCP endpoint is `http://127.0.0.1:4010/tidewave/mcp`
+when started with the command above. The local Codex MCP name is
+`store_blueprint_tidewave`.
 
 DevCore writes ignored `.env.development.local` and `.env.test.local` files with
 mode `0600`. `.env.example` lists safe settings for other local secret managers.

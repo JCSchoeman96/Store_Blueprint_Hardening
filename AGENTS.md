@@ -95,6 +95,8 @@ Only report a bootstrap or service failure if these steps fail. Never request or
 
 Use current code, tests, accepted changes on `main`, and relevant technical documentation to understand behavior and constraints. Historical governance documents, `docs/agent_rules/active_workstreams.md`, and old branch SHA pins are provenance only; they are not execution gates and cannot override current Git state or Linear acceptance criteria.
 
+For development runtime verification and evaluation, use the project-specific Tidewave MCP `store_blueprint_tidewave` at `http://127.0.0.1:4010/tidewave/mcp` when applicable. Start the app with `PORT=4010 devcore-project run dev -- mix phx.server`; Tidewave supplements the required tests and checks.
+
 ---
 
 ## Global Laws (MUST)
