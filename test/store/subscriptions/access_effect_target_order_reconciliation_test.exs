@@ -6,6 +6,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
 
   alias Store.Repo
   alias Store.Subscriptions.AccessEffect
+  alias Store.Subscriptions.AccessEffectTargetOrder
   alias Store.Subscriptions.Facade
   alias Store.Subscriptions.Inputs.EstablishAccessEffectInput
   alias Store.Subscriptions.RenewalAttempt
@@ -128,6 +129,303 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     assert result.already_covered_count == 1
     assert result.repaired_count == 0
     assert length(access_effect_rows!(subscription.id)) == 1
+  end
+
+  test "user_request keep policy is already covered by the exact funded effective target" do
+    fixture = subscription_fixture!(%{access_on_cancel: :keep_until_period_end})
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{
+          disposition: :effective,
+          valid_from_at: subscription.current_period_start_at,
+          valid_until_at: subscription.current_period_end_at
+        }
+      )
+
+    canceled = set_canceled_source!(subscription, "user_request")
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert target_evidence(candidate) == expected_effective_target(canceled, fixture.revision)
+
+    assert {:ok, result} = reconcile_candidate!(candidate)
+
+    assert result.already_covered_count == 1
+    assert result.repaired_count == 0
+    assert length(access_effect_rows!(subscription.id)) == 1
+  end
+
+  test "user_request keep policy repairs a mismatched target to the exact funded target" do
+    fixture = subscription_fixture!(%{access_on_cancel: :keep_until_period_end})
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{
+          disposition: :effective,
+          valid_from_at: DateTime.add(subscription.current_period_start_at, 1, :second),
+          valid_until_at: subscription.current_period_end_at
+        }
+      )
+
+    canceled = set_canceled_source!(subscription, "user_request")
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} = reconcile_candidate!(candidate)
+
+    assert result.repaired_count == 1
+    assert result.already_covered_count == 0
+
+    assert %{status: "superseded"} =
+             Enum.find(access_effect_rows!(subscription.id), &(&1.id == candidate.id))
+
+    repaired = required_access_effect!(subscription.id)
+    assert target_evidence(repaired) == expected_effective_target(canceled, fixture.revision)
+    assert repaired.plan_revision_id == subscription.current_plan_revision_id
+  end
+
+  test "user_request remove-immediately repairs to a complete non-effective target" do
+    fixture = subscription_fixture!(%{access_on_cancel: :remove_immediately})
+    subscription = fixture.subscription
+    candidate = establish_effect!(subscription, fixture.revision, %{})
+
+    canceled = set_canceled_source!(subscription, "user_request")
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} = reconcile_candidate!(candidate)
+
+    assert result.repaired_count == 1
+
+    assert target_evidence(required_access_effect!(subscription.id)) ==
+             expected_non_effective_target(canceled)
+  end
+
+  test "user_request keep policy preserves nil/nil composition through period end" do
+    fixture =
+      subscription_fixture!(%{
+        access_on_cancel: :keep_until_period_end,
+        entitlement_kind: nil,
+        entitlement_scope_key: nil
+      })
+
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{
+          disposition: :effective,
+          entitlement_kind: nil,
+          entitlement_scope_key: nil,
+          valid_from_at: nil,
+          valid_until_at: subscription.current_period_end_at
+        }
+      )
+
+    canceled = set_canceled_source!(subscription, "user_request")
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} = reconcile_candidate!(candidate)
+
+    assert result.already_covered_count == 1
+    assert result.repaired_count == 0
+    assert target_evidence(candidate) == expected_effective_target(canceled, fixture.revision)
+  end
+
+  test "canceled_period_end is policy-free for both purchased cancellation policies" do
+    for access_on_cancel <- [:keep_until_period_end, :remove_immediately] do
+      fixture = subscription_fixture!(%{access_on_cancel: access_on_cancel})
+      subscription = fixture.subscription
+
+      candidate =
+        establish_effect!(
+          subscription,
+          fixture.revision,
+          %{
+            disposition: :non_effective,
+            entitlement_kind: nil,
+            entitlement_scope_key: nil,
+            valid_from_at: nil,
+            valid_until_at: nil
+          }
+        )
+
+      canceled =
+        set_canceled_source!(subscription, "canceled_period_end", %{
+          canceled_at: subscription.current_period_end_at
+        })
+
+      set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+      assert {:ok, result} = reconcile_candidate!(candidate)
+
+      assert result.already_covered_count == 1
+      assert result.repaired_count == 0
+      assert target_evidence(candidate) == expected_non_effective_target(canceled)
+    end
+  end
+
+  test "unknown and missing canceled reasons fail closed" do
+    outcomes =
+      for reason <- ["future_reason", nil] do
+        fixture = subscription_fixture!()
+        subscription = fixture.subscription
+        candidate = establish_effect!(subscription, fixture.revision, %{})
+
+        canceled = set_canceled_source!(subscription, reason)
+        set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+        result = reconcile_candidate!(candidate)
+        rows = access_effect_rows!(subscription.id)
+        unchanged = Enum.find(rows, &(&1.id == candidate.id))
+
+        {
+          reason,
+          result,
+          canceled.status == :canceled,
+          canceled.canceled_reason == reason,
+          length(rows) == 1,
+          unchanged && unchanged.status == "required",
+          unchanged && unchanged.disposition == "effective"
+        }
+      end
+
+    assert Enum.all?(outcomes, fn
+             {_reason, {:error, %{code: "TARGET_ORDER_UNPROVABLE"}}, true, true, true, true, true} ->
+               true
+
+             _ ->
+               false
+           end),
+           inspect(outcomes)
+  end
+
+  test "user_request without persisted canceled_at fails closed" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+    candidate = establish_effect!(subscription, fixture.revision, %{})
+
+    set_canceled_source!(subscription, "user_request", %{canceled_at: nil})
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} = reconcile_candidate!(candidate)
+
+    [unchanged] = access_effect_rows!(subscription.id)
+    assert unchanged.status == "required"
+  end
+
+  test "user_request without current_plan_revision_id fails closed" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+    candidate = establish_effect!(subscription, fixture.revision, %{})
+
+    canceled =
+      set_canceled_source!(subscription, "user_request", %{current_plan_revision_id: nil})
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert canceled.status == :canceled
+    assert canceled.canceled_reason == "user_request"
+    assert is_nil(canceled.current_plan_revision_id)
+
+    assert {:error, _reason} = reconcile_candidate!(candidate)
+
+    [unchanged] = access_effect_rows!(subscription.id)
+    assert unchanged.id == candidate.id
+    assert unchanged.status == "required"
+    assert unchanged.disposition == "effective"
+  end
+
+  test "user_request with equal funded bounds fails closed" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+    candidate = establish_effect!(subscription, fixture.revision, %{})
+
+    set_canceled_source!(subscription, "user_request", %{
+      current_period_start_at: subscription.current_period_start_at,
+      current_period_end_at: subscription.current_period_start_at
+    })
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} = reconcile_candidate!(candidate)
+
+    [unchanged] = access_effect_rows!(subscription.id)
+    assert unchanged.id == candidate.id
+    assert unchanged.status == "required"
+  end
+
+  test "user_request with reversed funded bounds fails closed" do
+    fixture = subscription_fixture!()
+    subscription = fixture.subscription
+    candidate = establish_effect!(subscription, fixture.revision, %{})
+
+    set_canceled_source!(subscription, "user_request", %{
+      current_period_start_at: subscription.current_period_end_at,
+      current_period_end_at: subscription.current_period_start_at
+    })
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} = reconcile_candidate!(candidate)
+
+    [unchanged] = access_effect_rows!(subscription.id)
+    assert unchanged.id == candidate.id
+    assert unchanged.status == "required"
+  end
+
+  test "user_request repairs old candidate revision provenance from the locked current revision" do
+    fixture = subscription_fixture!(%{access_on_cancel: :remove_immediately})
+    subscription = fixture.subscription
+
+    candidate =
+      establish_effect!(
+        subscription,
+        fixture.revision,
+        %{
+          disposition: :non_effective,
+          entitlement_kind: nil,
+          entitlement_scope_key: nil,
+          valid_from_at: nil,
+          valid_until_at: nil
+        }
+      )
+
+    current_plan =
+      SubscriptionsFixtures.create_subscription_plan!(%{
+        access_on_cancel: :keep_until_period_end,
+        entitlement_kind: :membership_access,
+        entitlement_scope_key: "f05-current-revision"
+      })
+
+    current_revision = SubscriptionsFixtures.create_plan_revision!(current_plan)
+
+    canceled =
+      set_canceled_source!(subscription, "user_request", %{
+        subscription_plan_id: current_plan.id,
+        current_plan_revision_id: current_revision.id
+      })
+
+    set_updated_at!([candidate], ~U[2026-10-23 11:00:00.000000Z])
+
+    assert {:ok, result} = reconcile_candidate!(candidate)
+
+    assert result.repaired_count == 1
+    assert result.already_covered_count == 0
+
+    assert %{status: "superseded"} =
+             Enum.find(access_effect_rows!(subscription.id), &(&1.id == candidate.id))
+
+    repaired = required_access_effect!(subscription.id)
+    assert target_evidence(repaired) == expected_effective_target(canceled, current_revision)
+    assert repaired.plan_revision_id == canceled.current_plan_revision_id
+    assert repaired.plan_revision_id == current_revision.id
   end
 
   test "unresolved candidate remains discoverable after lifecycle updates move updated_at past the watermark" do
@@ -892,19 +1190,23 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     %{subscription: subscription, attempt: attempt}
   end
 
-  defp subscription_fixture! do
+  defp subscription_fixture!(plan_overrides \\ %{}) do
     customer =
       SubscriptionsFixtures.create_customer!("f05_reconcile_#{Ecto.UUID.generate()}")
 
     %{variant: variant} = SubscriptionsFixtures.create_subscription_sellable!()
 
     plan =
-      SubscriptionsFixtures.create_subscription_plan!(%{
-        entitlement_kind: :membership_access,
-        entitlement_scope_key: "f05-members"
-      })
+      SubscriptionsFixtures.create_subscription_plan!(
+        %{
+          entitlement_kind: :membership_access,
+          entitlement_scope_key: "f05-members"
+        }
+        |> Map.merge(Map.new(plan_overrides))
+      )
 
     SubscriptionsFixtures.create_subscription_fixture!(customer.id, variant, plan)
+    |> Map.put(:plan, plan)
   end
 
   defp establish_effect!(subscription, revision, overrides) do
@@ -912,19 +1214,110 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
       %{
         subscription_id: subscription.id,
         source_version: Map.get(overrides, :source_version, subscription.aggregate_version),
-        disposition: :effective,
-        entitlement_kind: revision.entitlement_kind,
-        entitlement_scope_key: revision.entitlement_scope_key,
+        disposition: Map.get(overrides, :disposition, :effective),
+        entitlement_kind: Map.get(overrides, :entitlement_kind, revision.entitlement_kind),
+        entitlement_scope_key:
+          Map.get(overrides, :entitlement_scope_key, revision.entitlement_scope_key),
         valid_from_at: Map.get(overrides, :valid_from_at, subscription.current_period_start_at),
         valid_until_at: Map.get(overrides, :valid_until_at, subscription.current_period_end_at),
         source_order_line_item_id: subscription.source_order_line_item_id,
         contract_change_id: subscription.current_contract_change_id,
-        plan_revision_id: revision.id
+        plan_revision_id: Map.get(overrides, :plan_revision_id, revision.id)
       }
 
     assert {:ok, input} = EstablishAccessEffectInput.new(attrs)
     assert {:ok, effect} = Facade.establish_access_effect_for_system(input)
     effect
+  end
+
+  defp set_canceled_source!(subscription, reason, overrides \\ %{}) do
+    overrides = Map.new(overrides)
+
+    Repo.query!(
+      """
+      UPDATE subscriptions
+      SET status = 'canceled',
+          canceled_reason = $2,
+          canceled_at = $3,
+          subscription_plan_id = $4,
+          current_plan_revision_id = $5,
+          current_period_start_at = $6,
+          current_period_end_at = $7,
+          cancel_at_period_end = false,
+          cancel_at_period_end_at = NULL,
+          aggregate_version = aggregate_version + 1
+      WHERE id = $1
+      """,
+      [
+        Ecto.UUID.dump!(subscription.id),
+        reason,
+        Map.get(overrides, :canceled_at, subscription.current_period_start_at),
+        dump_optional_uuid(
+          Map.get(overrides, :subscription_plan_id, subscription.subscription_plan_id)
+        ),
+        dump_optional_uuid(
+          Map.get(overrides, :current_plan_revision_id, subscription.current_plan_revision_id)
+        ),
+        Map.get(overrides, :current_period_start_at, subscription.current_period_start_at),
+        Map.get(overrides, :current_period_end_at, subscription.current_period_end_at)
+      ]
+    )
+
+    reload_subscription!(subscription.id)
+  end
+
+  defp dump_optional_uuid(nil), do: nil
+  defp dump_optional_uuid(id), do: Ecto.UUID.dump!(id)
+
+  defp reconcile_candidate!(candidate) do
+    Facade.run_access_effect_target_order_reconciliation_for_system(
+      limit: 10,
+      as_of: candidate.inserted_at,
+      after_inserted_at: candidate.inserted_at,
+      after_id: @cursor_floor
+    )
+  end
+
+  defp target_evidence(effect), do: AccessEffectTargetOrder.evidence_from_access_effect(effect)
+
+  defp expected_effective_target(subscription, revision) do
+    %{
+      disposition: :effective,
+      entitlement_kind: revision.entitlement_kind,
+      entitlement_scope_key: revision.entitlement_scope_key,
+      valid_from_at:
+        if(is_nil(revision.entitlement_kind), do: nil, else: subscription.current_period_start_at),
+      valid_until_at: subscription.current_period_end_at,
+      source_order_line_item_id: subscription.source_order_line_item_id,
+      contract_change_id: subscription.current_contract_change_id,
+      plan_revision_id: subscription.current_plan_revision_id
+    }
+  end
+
+  defp expected_non_effective_target(subscription) do
+    %{
+      disposition: :non_effective,
+      entitlement_kind: nil,
+      entitlement_scope_key: nil,
+      valid_from_at: nil,
+      valid_until_at: nil,
+      source_order_line_item_id: subscription.source_order_line_item_id,
+      contract_change_id: subscription.current_contract_change_id,
+      plan_revision_id: subscription.current_plan_revision_id
+    }
+  end
+
+  defp reload_access_effect!(id) do
+    AccessEffect
+    |> Ash.Query.filter(expr(id == ^id))
+    |> Ash.read_one!(domain: Store.Subscriptions, authorize?: false, context: %{system?: true})
+  end
+
+  defp required_access_effect!(subscription_id) do
+    case Enum.find(access_effect_rows!(subscription_id), &(&1.status == "required")) do
+      %{id: id} -> reload_access_effect!(id)
+      nil -> flunk("expected a required AccessEffect for subscription #{subscription_id}")
+    end
   end
 
   defp bump_aggregate_version!(subscription_id) do
