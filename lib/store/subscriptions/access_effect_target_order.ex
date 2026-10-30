@@ -98,6 +98,34 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
     end
   end
 
+  @spec derive_cancel_now_target(Subscription.t(), PlanRevision.t()) ::
+          {:ok, target_evidence()} | {:error, Error.t()}
+  def derive_cancel_now_target(
+        %Subscription{} = subscription,
+        %PlanRevision{} = funded_revision
+      ) do
+    with :ok <- require_user_cancel_now(subscription),
+         :ok <- require_canceled_at(subscription.canceled_at),
+         :ok <- require_uuid(subscription.current_plan_revision_id, "plan revision"),
+         :ok <- require_funded_revision_identity(subscription, funded_revision),
+         :ok <- require_uuid(subscription.source_order_line_item_id, "source order line item"),
+         :ok <- require_period_start(subscription.current_period_start_at),
+         :ok <- require_period_end(subscription.current_period_end_at),
+         :ok <-
+           validate_funded_period(
+             subscription.current_period_start_at,
+             subscription.current_period_end_at
+           ),
+         {:ok, policy} <- validate_access_on_cancel(funded_revision.access_on_cancel),
+         {:ok, kind, scope} <- revision_entitlement_pair(funded_revision),
+         :ok <- validate_entitlement_pair(kind, scope) do
+      derive_cancel_now_access_target(subscription, policy, kind, scope)
+    end
+  end
+
+  def derive_cancel_now_target(%Subscription{}, _funded_revision),
+    do: missing_plan_revision_error()
+
   @spec past_due_policy_establish_attrs(Subscription.t(), target_evidence()) :: map()
   def past_due_policy_establish_attrs(%Subscription{} = subscription, target)
       when is_map(target) do
@@ -157,6 +185,88 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
       contract_change_id: subscription.current_contract_change_id,
       plan_revision_id: subscription.current_plan_revision_id
     }
+  end
+
+  defp require_user_cancel_now(%Subscription{
+         status: :canceled,
+         canceled_reason: "user_request"
+       }),
+       do: :ok
+
+  defp require_user_cancel_now(%Subscription{}) do
+    {:error,
+     Error.new(
+       "TARGET_ORDER_UNPROVABLE",
+       "cancel-now target derivation requires a user-requested canceled Subscription"
+     )}
+  end
+
+  defp require_canceled_at(%DateTime{}), do: :ok
+
+  defp require_canceled_at(_) do
+    {:error,
+     Error.new(
+       "TARGET_ORDER_UNPROVABLE",
+       "canceled_at is required for cancel-now target derivation"
+     )}
+  end
+
+  defp validate_funded_period(%DateTime{} = start_at, %DateTime{} = end_at) do
+    if DateTime.compare(start_at, end_at) == :lt do
+      :ok
+    else
+      missing_period_evidence_error()
+    end
+  end
+
+  defp validate_access_on_cancel(policy)
+       when policy in [:remove_immediately, :keep_until_period_end],
+       do: {:ok, policy}
+
+  defp validate_access_on_cancel(_) do
+    {:error,
+     Error.new(
+       "TARGET_ORDER_UNPROVABLE",
+       "funded PlanRevision access_on_cancel policy is unsupported"
+     )}
+  end
+
+  defp validate_entitlement_pair(nil, nil), do: :ok
+
+  defp validate_entitlement_pair(kind, scope) when not is_nil(kind) and not is_nil(scope),
+    do: :ok
+
+  defp validate_entitlement_pair(_kind, _scope), do: incomplete_pair_error()
+
+  defp derive_cancel_now_access_target(
+         %Subscription{} = subscription,
+         :remove_immediately,
+         _kind,
+         _scope
+       ) do
+    {:ok, non_effective_evidence(subscription)}
+  end
+
+  defp derive_cancel_now_access_target(
+         %Subscription{} = subscription,
+         :keep_until_period_end,
+         kind,
+         scope
+       ) do
+    if canceled_within_funded_period?(subscription) do
+      effective_target_evidence(subscription, kind, scope)
+    else
+      {:ok, non_effective_evidence(subscription)}
+    end
+  end
+
+  defp canceled_within_funded_period?(%Subscription{
+         canceled_at: %DateTime{} = canceled_at,
+         current_period_start_at: %DateTime{} = start_at,
+         current_period_end_at: %DateTime{} = end_at
+       }) do
+    DateTime.compare(start_at, canceled_at) in [:lt, :eq] and
+      DateTime.compare(canceled_at, end_at) == :lt
   end
 
   defp derive_effective_target(%Subscription{} = subscription, %PlanRevision{} = revision) do

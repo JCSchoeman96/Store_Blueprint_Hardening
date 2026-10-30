@@ -18,6 +18,146 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
   @contract_change_y Ecto.UUID.generate()
   @contract_change_x Ecto.UUID.generate()
 
+  describe "derive_cancel_now_target/2" do
+    test "remove_immediately returns a non-effective target with exact provenance" do
+      subscription = canceled_subscription()
+      revision = funded_cancel_revision(access_on_cancel: :remove_immediately)
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_cancel_now_target(subscription, revision)
+
+      assert target == expected_cancel_target(subscription)
+    end
+
+    test "keep_until_period_end retains a funded pair through the period end" do
+      subscription = canceled_subscription()
+
+      revision =
+        funded_cancel_revision(
+          access_on_cancel: :keep_until_period_end,
+          entitlement_kind: :membership_access,
+          entitlement_scope_key: "funded-gold"
+        )
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_cancel_now_target(subscription, revision)
+
+      assert target ==
+               expected_cancel_target(subscription, %{
+                 disposition: :effective,
+                 entitlement_kind: :membership_access,
+                 entitlement_scope_key: "funded-gold",
+                 valid_from_at: @period_start,
+                 valid_until_at: @period_end
+               })
+    end
+
+    test "keep_until_period_end retains nil/nil composition without a start time" do
+      subscription = canceled_subscription()
+
+      revision =
+        funded_cancel_revision(
+          access_on_cancel: :keep_until_period_end,
+          entitlement_kind: nil,
+          entitlement_scope_key: nil
+        )
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_cancel_now_target(subscription, revision)
+
+      assert target ==
+               expected_cancel_target(subscription, %{
+                 disposition: :effective,
+                 entitlement_kind: nil,
+                 entitlement_scope_key: nil,
+                 valid_from_at: nil,
+                 valid_until_at: @period_end
+               })
+    end
+
+    test "keep_until_period_end is non-effective at the exclusive period end" do
+      subscription = canceled_subscription(canceled_at: @period_end)
+
+      revision = funded_cancel_revision(access_on_cancel: :keep_until_period_end)
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_cancel_now_target(subscription, revision)
+
+      assert target == expected_cancel_target(subscription)
+    end
+
+    test "cancellation at the inclusive period start remains effective" do
+      subscription = canceled_subscription(canceled_at: @period_start)
+
+      revision = funded_cancel_revision(access_on_cancel: :keep_until_period_end)
+
+      assert {:ok, target} =
+               AccessEffectTargetOrder.derive_cancel_now_target(subscription, revision)
+
+      assert target ==
+               expected_cancel_target(subscription, %{
+                 disposition: :effective,
+                 entitlement_kind: :membership_access,
+                 entitlement_scope_key: "funded-gold",
+                 valid_from_at: @period_start,
+                 valid_until_at: @period_end
+               })
+    end
+
+    test "fails closed for malformed cancellation, policy, period, and provenance evidence" do
+      subscription = canceled_subscription()
+      revision = funded_cancel_revision(access_on_cancel: :keep_until_period_end)
+
+      invalid_cases = [
+        {"status", Map.put(subscription, :status, :active), revision},
+        {"cancellation reason", Map.put(subscription, :canceled_reason, "admin_request"),
+         revision},
+        {"canceled_at", Map.put(subscription, :canceled_at, nil), revision},
+        {"current revision id", Map.put(subscription, :current_plan_revision_id, nil), revision},
+        {"revision identity", subscription, Map.put(revision, :id, @plan_revision_id)},
+        {"period start", Map.put(subscription, :current_period_start_at, nil), revision},
+        {"period end", Map.put(subscription, :current_period_end_at, nil), revision},
+        {
+          "equal period bounds",
+          Map.put(subscription, :current_period_end_at, @period_start),
+          revision
+        },
+        {
+          "reversed period bounds",
+          subscription
+          |> Map.put(:current_period_start_at, @period_end)
+          |> Map.put(:current_period_end_at, @period_start),
+          revision
+        },
+        {"unsupported cancellation policy", subscription,
+         Map.put(revision, :access_on_cancel, :unsupported)},
+        {
+          "kind without scope",
+          subscription,
+          Map.put(revision, :entitlement_scope_key, nil)
+        },
+        {
+          "scope without kind",
+          subscription,
+          revision
+          |> Map.put(:entitlement_kind, nil)
+          |> Map.put(:entitlement_scope_key, "funded-gold")
+        },
+        {"source order line item provenance",
+         Map.put(subscription, :source_order_line_item_id, nil), revision}
+      ]
+
+      for {evidence, invalid_subscription, invalid_revision} <- invalid_cases do
+        assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+                 AccessEffectTargetOrder.derive_cancel_now_target(
+                   invalid_subscription,
+                   invalid_revision
+                 ),
+               evidence
+      end
+    end
+  end
+
   describe "derive_remove_immediately_target/2" do
     test "derives an empty target using locked subscription provenance" do
       subscription = %Subscription{
@@ -467,5 +607,47 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
       assert attrs.valid_until_at == @period_end
       assert attrs.source_version == 4
     end
+  end
+
+  defp canceled_subscription(overrides \\ %{}) do
+    defaults = %{
+      id: @subscription_id,
+      status: :canceled,
+      canceled_reason: "user_request",
+      canceled_at: @boundary,
+      source_order_line_item_id: @line_item_id,
+      current_contract_change_id: @contract_change_y,
+      current_plan_revision_id: @funded_revision_id,
+      current_period_start_at: @period_start,
+      current_period_end_at: @period_end
+    }
+
+    struct(Subscription, Map.merge(defaults, Map.new(overrides)))
+  end
+
+  defp funded_cancel_revision(overrides) do
+    defaults = %{
+      id: @funded_revision_id,
+      access_on_cancel: :remove_immediately,
+      entitlement_kind: :membership_access,
+      entitlement_scope_key: "funded-gold"
+    }
+
+    struct(PlanRevision, Map.merge(defaults, Map.new(overrides)))
+  end
+
+  defp expected_cancel_target(subscription, overrides \\ %{}) do
+    defaults = %{
+      disposition: :non_effective,
+      entitlement_kind: nil,
+      entitlement_scope_key: nil,
+      valid_from_at: nil,
+      valid_until_at: nil,
+      source_order_line_item_id: subscription.source_order_line_item_id,
+      contract_change_id: subscription.current_contract_change_id,
+      plan_revision_id: subscription.current_plan_revision_id
+    }
+
+    Map.merge(defaults, overrides)
   end
 end
