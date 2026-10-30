@@ -314,7 +314,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
                AccessEffectTargetOrder.derive_current_target(subscription, revision)
     end
 
-    test "canceled subscription is non-effective nil target" do
+    test "canceled subscription without cancellation reason fails closed" do
       subscription = %Subscription{
         id: @subscription_id,
         status: :canceled,
@@ -323,10 +323,8 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderTest do
         current_plan_revision_id: @plan_revision_id
       }
 
-      assert {:ok, derived} = AccessEffectTargetOrder.derive_current_target(subscription, nil)
-      assert derived.disposition == :non_effective
-      assert derived.entitlement_kind == nil
-      assert derived.valid_until_at == nil
+      assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+               AccessEffectTargetOrder.derive_current_target(subscription, nil)
     end
 
     test "pending subscription fails closed" do

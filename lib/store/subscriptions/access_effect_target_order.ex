@@ -16,7 +16,7 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
           plan_revision_id: Ecto.UUID.t()
         }
 
-  @non_effective_statuses [:suspended, :canceled]
+  @non_effective_statuses [:suspended]
 
   @spec evidence_from_access_effect(AccessEffect.t()) :: target_evidence()
   def evidence_from_access_effect(%AccessEffect{} = effect) do
@@ -62,6 +62,9 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
            "TARGET_ORDER_UNPROVABLE",
            "past_due target derivation requires the bound dunning RenewalAttempt"
          )}
+
+      subscription.status == :canceled ->
+        derive_canceled_target(subscription, plan_revision)
 
       subscription.status in @non_effective_statuses ->
         {:ok, non_effective_evidence(subscription)}
@@ -125,6 +128,26 @@ defmodule Store.Subscriptions.AccessEffectTargetOrder do
 
   def derive_cancel_now_target(%Subscription{}, _funded_revision),
     do: missing_plan_revision_error()
+
+  defp derive_canceled_target(
+         %Subscription{canceled_reason: "canceled_period_end"} = subscription,
+         _plan_revision
+       ),
+       do: {:ok, non_effective_evidence(subscription)}
+
+  defp derive_canceled_target(
+         %Subscription{canceled_reason: "user_request"} = subscription,
+         funded_revision
+       ),
+       do: derive_cancel_now_target(subscription, funded_revision)
+
+  defp derive_canceled_target(%Subscription{}, _plan_revision) do
+    {:error,
+     Error.new(
+       "TARGET_ORDER_UNPROVABLE",
+       "canceled subscription reason is unsupported"
+     )}
+  end
 
   @spec past_due_policy_establish_attrs(Subscription.t(), target_evidence()) :: map()
   def past_due_policy_establish_attrs(%Subscription{} = subscription, target)

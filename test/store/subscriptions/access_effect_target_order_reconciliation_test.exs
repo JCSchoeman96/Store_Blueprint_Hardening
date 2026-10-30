@@ -131,6 +131,37 @@ defmodule Store.Subscriptions.AccessEffectTargetOrderReconciliationTest do
     assert length(access_effect_rows!(subscription.id)) == 1
   end
 
+  test "derive_current_target applies the funded cancellation policy for user_request" do
+    fixture = subscription_fixture!(%{access_on_cancel: :keep_until_period_end})
+    canceled = set_canceled_source!(fixture.subscription, "user_request")
+
+    assert {:ok, target} =
+             AccessEffectTargetOrder.derive_current_target(canceled, fixture.revision)
+
+    assert target == expected_effective_target(canceled, fixture.revision)
+  end
+
+  test "derive_current_target keeps canceled_period_end policy-free" do
+    fixture = subscription_fixture!(%{access_on_cancel: :remove_immediately})
+    subscription = fixture.subscription
+
+    canceled =
+      set_canceled_source!(subscription, "canceled_period_end", %{
+        canceled_at: subscription.current_period_end_at
+      })
+
+    assert {:ok, target} = AccessEffectTargetOrder.derive_current_target(canceled, nil)
+    assert target == expected_non_effective_target(canceled)
+  end
+
+  test "derive_current_target fails closed for unsupported cancellation reasons" do
+    fixture = subscription_fixture!()
+    canceled = set_canceled_source!(fixture.subscription, "future_reason")
+
+    assert {:error, %{code: "TARGET_ORDER_UNPROVABLE"}} =
+             AccessEffectTargetOrder.derive_current_target(canceled, nil)
+  end
+
   test "user_request keep policy is already covered by the exact funded effective target" do
     fixture = subscription_fixture!(%{access_on_cancel: :keep_until_period_end})
     subscription = fixture.subscription
