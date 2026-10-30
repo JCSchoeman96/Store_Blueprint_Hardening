@@ -1,6 +1,8 @@
 # JC247-C purchased cancellation policy authority
 
-Status: Proposed additive implementation authority. Human review is required. This document does not authorize runtime implementation or merge.
+Status: Runtime-authorization amendment for the accepted JC247-C authority. This authorization takes effect after this amendment is merged to main. Human review and merge remain required for the runtime PR.
+
+Once merged, implementation must execute the existing frozen JC247-C authority and implementation plan without semantic drift. This authorization applies only to the existing frozen scope. It does not authorize JC247-C authority redesign, JC300 final cutover, term-end behavior, schema or migration work, Entitlements redesign, F1/F2 core redesign, a new public executor, new worker architecture, or a Comms redesign.
 
 Repository: `JCSchoeman96/Store_Blueprint_Hardening`
 Accepted main SHA: `b877e0c0b50fd7171c16a3a6ba4b6151681ce49c`
@@ -185,7 +187,7 @@ SCHEMA_CHANGE_REQUIRED=NO
 MIGRATION_REQUIRED=NO
 ENTITLEMENTS_CHANGE_REQUIRED=NO
 NEW_PUBLIC_EXECUTOR_REQUIRED=NO
-IMPLEMENTATION_AUTHORIZED=NO
+IMPLEMENTATION_AUTHORIZED=YES
 MERGE_AUTHORIZED=NO
 STOP_CONDITION=NONE
 ```

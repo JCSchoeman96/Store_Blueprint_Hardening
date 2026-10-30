@@ -1,6 +1,6 @@
 # JC247-C purchased cancellation policy implementation plan
 
-> Runtime implementation remains unauthorized by this preflight. After separate authorization, execute this checklist task by task with focused reviews. Do not merge without human approval.
+> Runtime implementation is authorized by the merged JC247-C runtime-authorization amendment. Execute this already-approved plan with strict TDD and without semantic drift. Human merge remains required.
 
 **Goal:** Make cancel-now access follow the purchased policy on the exact funded PlanRevision while preserving target-neutral scheduling and existing F1/F2 execution.
 
@@ -143,6 +143,6 @@ No process, mailbox, cache, or resource lifecycle is added. Measure cancellation
 ## Authorization boundary
 
 ```text
-IMPLEMENTATION_AUTHORIZED=NO
+IMPLEMENTATION_AUTHORIZED=YES
 MERGE_AUTHORIZED=NO
 ```
