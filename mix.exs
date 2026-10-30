@@ -47,6 +47,7 @@ defmodule Store.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      {:tidewave, "~> 0.9", only: :dev},
       {:phoenix, ">= 1.8.9 and < 1.9.0-0"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},

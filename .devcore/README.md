@@ -16,7 +16,7 @@ Start the app with the DEV profile:
 
 ```sh
 devcore-project run dev -- mix setup
-devcore-project run dev -- mix phx.server
+PORT=4010 devcore-project run dev -- mix phx.server
 ```
 
 Run tests with the TEST profile. Add a suffix when a separate database is needed
