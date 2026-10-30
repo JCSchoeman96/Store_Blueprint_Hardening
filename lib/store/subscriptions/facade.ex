@@ -9707,6 +9707,15 @@ defmodule Store.Subscriptions.Facade do
     derive_past_due_reconciliation_target(subscription)
   end
 
+  defp derive_reconciliation_target(
+         %Subscription{status: :canceled, canceled_reason: "user_request"} = subscription
+       ) do
+    with {:ok, %PlanRevision{} = revision} <-
+           fetch_plan_revision_for_target_order_reconciliation(subscription) do
+      AccessEffectTargetOrder.derive_current_target(subscription, revision)
+    end
+  end
+
   defp derive_reconciliation_target(%Subscription{} = subscription) do
     with {:ok, revision} <- plan_revision_for_target_order_reconciliation(subscription) do
       AccessEffectTargetOrder.derive_current_target(subscription, revision)
